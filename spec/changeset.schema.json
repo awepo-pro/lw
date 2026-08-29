@@ -1,0 +1,249 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/awepo-pro/lw/spec/changeset.schema.json",
+  "title": "Changeset",
+  "description": "On-disk shape of .llmwiki/changesets/{open,committed}/<id>/changeset.json (backbone.md §5.3, §14). Property names are the Go JSON tags of stage.Changeset / stage.Op / stage.Hunk / stage.Author / stage.Checks, verbatim.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "intent", "author", "opened_at", "ops", "checks"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^cs-[0-9a-f]{7}$",
+      "description": "MASTER §9 D-H changeset id, e.g. cs-0193f2a."
+    },
+    "intent": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Human-readable summary of what this changeset is for."
+    },
+    "author": { "$ref": "#/$defs/author" },
+    "opened_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339 UTC timestamp (00-conventions.md §3)."
+    },
+    "ops": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/op" }
+    },
+    "checks": { "$ref": "#/$defs/checks" }
+  },
+
+  "$defs": {
+    "vaultPath": {
+      "type": "string",
+      "pattern": "^[a-z0-9/_.-]+\\.md$",
+      "description": "Vault-relative, slash-separated, lowercase-hyphen path (00-conventions.md §3; backbone §5.5)."
+    },
+
+    "opId": {
+      "type": "string",
+      "pattern": "^op[0-9]+$",
+      "description": "\"op1\", \"op2\", … unique within the changeset (backbone §5.3)."
+    },
+
+    "opState": {
+      "type": "string",
+      "enum": ["proposed", "accepted", "dropped", "rejected", "stale"],
+      "description": "stage.OpState (backbone §5.3)."
+    },
+
+    "author": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": { "type": "string", "enum": ["agent", "human"] },
+        "model": { "type": "string" },
+        "session": { "type": "string" }
+      }
+    },
+
+    "checks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "lint", "orphans", "broken_links"],
+      "properties": {
+        "schema": { "type": "string", "enum": ["pass", "fail"] },
+        "lint": { "type": "string", "enum": ["pass", "fail"] },
+        "orphans": { "type": "integer", "minimum": 0 },
+        "broken_links": { "type": "integer", "minimum": 0 }
+      }
+    },
+
+    "hunk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id"],
+      "description": "stage.Hunk. Note: Hunk.Before is json:\"-\" (never serialized) and therefore has no property here.",
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "path": { "$ref": "#/$defs/vaultPath" },
+        "section": { "type": "string" },
+        "+": { "type": "array", "items": { "type": "string" } },
+        "-": { "type": "array", "items": { "type": "string" } },
+        "dropped": { "type": "boolean" }
+      }
+    },
+
+    "op": {
+      "description": "stage.Op discriminated by the \"op\" property (stage.OpKind). Exactly the 8 kinds in backbone §5.3; per-kind required sets from backbone §5.5 (ValidateOp).",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "path", "sha256", "extractor"],
+          "properties": {
+            "id": { "$ref": "#/$defs/opId" },
+            "op": { "const": "ingest_source" },
+            "path": { "$ref": "#/$defs/vaultPath" },
+            "sha256": { "type": "string" },
+            "extractor": { "type": "string", "minLength": 1 },
+            "state": { "$ref": "#/$defs/opState" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "path", "after", "rationale", "provenance"],
+          "properties": {
+            "id": { "$ref": "#/$defs/opId" },
+            "op": { "const": "create_page" },
+            "path": { "$ref": "#/$defs/vaultPath" },
+            "after": { "type": "string" },
+            "rationale": { "type": "string", "minLength": 1 },
+            "provenance": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/vaultPath" }
+            },
+            "state": { "$ref": "#/$defs/opState" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "path", "section", "before", "after", "hunks"],
+          "properties": {
+            "id": { "$ref": "#/$defs/opId" },
+            "op": { "const": "patch_page" },
+            "path": { "$ref": "#/$defs/vaultPath" },
+            "section": { "type": "string", "minLength": 1 },
+            "before": { "type": "string" },
+            "after": { "type": "string" },
+            "hunks": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/hunk" },
+              "minItems": 1
+            },
+            "state": { "$ref": "#/$defs/opState" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "from", "to", "cascade"],
+          "properties": {
+            "id": { "$ref": "#/$defs/opId" },
+            "op": { "const": "rename_page" },
+            "from": { "$ref": "#/$defs/vaultPath" },
+            "to": { "$ref": "#/$defs/vaultPath" },
+            "cascade": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/op" },
+              "minItems": 1,
+              "description": "Every inbound backlink must be covered; an incomplete cascade is rejected (backbone §5.5)."
+            },
+            "state": { "$ref": "#/$defs/opState" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "sources", "to"],
+          "properties": {
+            "id": { "$ref": "#/$defs/opId" },
+            "op": { "const": "merge_pages" },
+            "sources": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/vaultPath" },
+              "minItems": 2
+            },
+            "to": { "$ref": "#/$defs/vaultPath" },
+            "state": { "$ref": "#/$defs/opState" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "path", "sources"],
+          "properties": {
+            "id": { "$ref": "#/$defs/opId" },
+            "op": { "const": "split_page" },
+            "path": { "$ref": "#/$defs/vaultPath" },
+            "sources": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/vaultPath" },
+              "minItems": 2
+            },
+            "state": { "$ref": "#/$defs/opState" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "from", "to"],
+          "properties": {
+            "id": { "$ref": "#/$defs/opId" },
+            "op": { "const": "add_link" },
+            "from": { "$ref": "#/$defs/vaultPath" },
+            "to": { "$ref": "#/$defs/vaultPath" },
+            "state": { "$ref": "#/$defs/opState" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "path", "rationale"],
+          "properties": {
+            "id": { "$ref": "#/$defs/opId" },
+            "op": { "const": "retract" },
+            "path": { "$ref": "#/$defs/vaultPath" },
+            "rationale": { "type": "string", "minLength": 1 },
+            "state": { "$ref": "#/$defs/opState" }
+          }
+        }
+      ]
+    }
+  },
+
+  "examples": [
+    {
+      "id": "cs-0193f2a",
+      "intent": "Ingest 3 papers on speculative decoding",
+      "author": { "kind": "agent", "model": "deepseek-v4-flash", "session": "se-8821" },
+      "opened_at": "2026-08-29T14:02:11Z",
+      "ops": [
+        { "op": "ingest_source", "path": "raw/papers/leviathan-2023.md",
+          "sha256": "…", "extractor": "go/html" },
+        { "op": "create_page", "path": "wiki/concepts/speculative-decoding.md",
+          "after": "sha256:…",
+          "rationale": "Central to 3 of 3 ingested sources; meets page threshold.",
+          "provenance": ["raw/papers/leviathan-2023.md", "raw/papers/chen-2023.md"] },
+        { "op": "patch_page", "path": "wiki/concepts/kv-cache.md",
+          "section": "## Related", "before": "sha256:…", "after": "sha256:…",
+          "hunks": [ { "id": "h1", "+": ["- [[speculative-decoding]] — …"] } ] },
+        { "op": "rename_page", "from": "wiki/entities/gpt4.md",
+          "to": "wiki/entities/gpt-4.md",
+          "cascade": [
+            { "op": "patch_page", "path": "wiki/concepts/kv-cache.md",
+              "section": "## Related", "before": "sha256:aaaaaaaa", "after": "sha256:bbbbbbbb",
+              "hunks": [ { "id": "h1", "path": "wiki/concepts/kv-cache.md",
+                "-": ["- [[gpt4]] serves as a baseline for comparison."],
+                "+": ["- [[gpt-4]] serves as a baseline for comparison."] } ] }
+          ] }
+      ],
+      "checks": { "schema": "pass", "lint": "pass", "orphans": 0, "broken_links": 0 }
+    }
+  ]
+}
