@@ -1,0 +1,590 @@
+<title>llmwiki Review Buffer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300..700;1,6..72,300..600&family=JetBrains+Mono:wght@400;500;700&display=swap">
+<style>
+:root{
+  --paper:#F5F6F8; --surface:#FFFFFF; --sunk:#EDEFF3;
+  --ink:#14171D; --muted:#5B6675; --faint:#8A93A1;
+  --rule:#DCE1E8; --rule-soft:#E9ECF1;
+  --accent:#9C6410; --accent-ink:#7A4E0A; --accent-wash:#F6ECDA;
+  --good:#1C6E48; --warn:#8A6410; --bad:#A63535;
+  --shadow:0 1px 2px rgba(20,23,29,.05), 0 12px 34px -18px rgba(20,23,29,.28);
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+  --paper:#0F1217; --surface:#161A20; --sunk:#1B2028;
+  --ink:#E4E8EE; --muted:#8E98A7; --faint:#6B7482;
+  --rule:#252B34; --rule-soft:#1E232B;
+  --accent:#DFA344; --accent-ink:#EFBE6E; --accent-wash:#241D12;
+  --good:#57C48C; --warn:#D9A63F; --bad:#EE7B72;
+  --shadow:0 1px 2px rgba(0,0,0,.4), 0 14px 40px -20px rgba(0,0,0,.7);
+}}
+:root[data-theme="dark"]{
+  --paper:#0F1217; --surface:#161A20; --sunk:#1B2028;
+  --ink:#E4E8EE; --muted:#8E98A7; --faint:#6B7482;
+  --rule:#252B34; --rule-soft:#1E232B;
+  --accent:#DFA344; --accent-ink:#EFBE6E; --accent-wash:#241D12;
+  --good:#57C48C; --warn:#D9A63F; --bad:#EE7B72;
+  --shadow:0 1px 2px rgba(0,0,0,.4), 0 14px 40px -20px rgba(0,0,0,.7);
+}
+
+/* the terminal is a constant dark island in both themes, like a screenshot */
+.term-pre{
+  --tbg:#0D1015; --tfg:#BFC8D4; --tbar:#39424F; --tdim:#6E7887; --thi:#F2F5F9;
+  --tadd:#5FC48E; --tdel:#F0817A; --tstage:#E5A94A; --tkey:#7FB6E8; --ttitle:#E5A94A;
+}
+
+*{box-sizing:border-box}
+body{
+  background:var(--paper); color:var(--ink);
+  font-family:"Newsreader",Georgia,"Times New Roman",serif;
+  font-size:17px; line-height:1.65;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1180px; margin:0 auto; padding:0 24px 96px}
+.prose{max-width:65ch}
+h1,h2,h3{text-wrap:balance; margin:0; font-weight:500}
+p{margin:0}
+a{color:var(--accent); text-decoration:none; border-bottom:1px solid color-mix(in srgb,var(--accent) 35%,transparent)}
+a:hover{border-bottom-color:var(--accent)}
+:focus-visible{outline:2px solid var(--accent); outline-offset:3px; border-radius:2px}
+
+.mono{font-family:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.eyebrow{
+  font-family:"JetBrains Mono",ui-monospace,Menlo,monospace;
+  font-size:11px; font-weight:500; letter-spacing:.16em; text-transform:uppercase;
+  color:var(--faint);
+}
+
+/* ── masthead ───────────────────────────────── */
+.mast{padding:72px 0 40px; border-bottom:1px solid var(--rule)}
+.mast-name{
+  font-family:"JetBrains Mono",ui-monospace,Menlo,monospace;
+  font-size:13px; font-weight:700; letter-spacing:.06em; color:var(--accent);
+}
+.mast h1{
+  font-size:clamp(34px,5.2vw,58px); line-height:1.08; letter-spacing:-.022em;
+  margin:18px 0 0; max-width:19ch;
+}
+.mast h1 em{font-style:italic; color:var(--accent)}
+.lede{margin-top:22px; font-size:19px; color:var(--muted); max-width:62ch}
+.chips{display:flex; flex-wrap:wrap; gap:8px; margin-top:28px}
+.chip{
+  font-family:"JetBrains Mono",ui-monospace,Menlo,monospace;
+  font-size:11px; letter-spacing:.04em; color:var(--muted);
+  border:1px solid var(--rule); border-radius:2px; padding:5px 9px; background:var(--surface);
+}
+.chip b{color:var(--ink); font-weight:500}
+
+/* ── sections ───────────────────────────────── */
+section{padding-top:64px}
+.shead{display:flex; flex-direction:column; gap:12px; margin-bottom:26px}
+.shead h2{font-size:clamp(24px,3vw,32px); letter-spacing:-.015em}
+.shead p{color:var(--muted); max-width:66ch}
+
+/* ── terminal ───────────────────────────────── */
+.termbox{
+  background:#0D1015; border:1px solid var(--rule); border-radius:6px;
+  box-shadow:var(--shadow); overflow:hidden;
+}
+.termbar{
+  display:flex; align-items:center; gap:10px; padding:9px 14px;
+  border-bottom:1px solid #1C222B; background:#10141A;
+}
+.dot{width:9px; height:9px; border-radius:50%; background:#2C333E}
+.dot.a{background:#B9553F} .dot.b{background:#B98B3F} .dot.c{background:#4C7A55}
+.termbar span{
+  font-family:"JetBrains Mono",ui-monospace,Menlo,monospace;
+  font-size:11px; color:#6E7887; margin-left:6px; letter-spacing:.03em;
+}
+.termscroll{overflow-x:auto; padding:16px 18px 18px}
+.term-pre{
+  margin:0; color:var(--tfg); background:transparent;
+  font-family:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  font-size:12.5px; line-height:1.55; letter-spacing:0; white-space:pre;
+  font-variant-ligatures:none;
+}
+@media(max-width:900px){ .term-pre{font-size:10.5px} }
+@media(max-width:640px){ .term-pre{font-size:9px} }
+.t-bar{color:var(--tbar)} .t-dim{color:var(--tdim)} .t-hi{color:var(--thi)}
+.t-add{color:var(--tadd)} .t-del{color:var(--tdel)} .t-ok{color:var(--tadd)}
+.t-stage{color:var(--tstage)} .t-key{color:var(--tkey)} .t-title{color:var(--ttitle)}
+.t-mode{color:var(--thi)} .t-deny{color:var(--tdel)}
+.cap{
+  margin-top:14px; color:var(--muted); font-size:15.5px; max-width:70ch;
+}
+.cap b{color:var(--ink); font-weight:500}
+
+/* ── tabs ───────────────────────────────────── */
+.tabs{display:flex; gap:2px; flex-wrap:wrap; margin-bottom:16px}
+.tab{
+  font-family:"JetBrains Mono",ui-monospace,Menlo,monospace;
+  font-size:11.5px; letter-spacing:.1em; text-transform:uppercase;
+  background:transparent; color:var(--faint); border:1px solid transparent;
+  border-bottom:1px solid var(--rule);
+  padding:9px 15px; cursor:pointer; transition:color .15s, border-color .15s;
+}
+.tab:hover{color:var(--ink)}
+.tab.is-on{
+  color:var(--accent); border-color:var(--rule); border-bottom-color:transparent;
+  background:var(--surface); border-radius:3px 3px 0 0;
+}
+.tabpanel{border:0}
+
+/* ── flow diagram ───────────────────────────── */
+.flow{
+  display:grid; grid-template-columns:1fr auto 1fr auto 1fr; gap:0 14px; align-items:stretch;
+  margin-top:8px;
+}
+@media(max-width:820px){ .flow{grid-template-columns:1fr; gap:12px} .arrow{transform:rotate(90deg); justify-self:start; margin-left:26px} }
+.node{
+  background:var(--surface); border:1px solid var(--rule); border-radius:4px;
+  padding:18px 18px 16px; display:flex; flex-direction:column; gap:8px;
+}
+.node.stage{border-color:var(--accent); background:var(--accent-wash)}
+.node h4{
+  margin:0; font-family:"JetBrains Mono",ui-monospace,Menlo,monospace;
+  font-size:11px; letter-spacing:.14em; text-transform:uppercase; font-weight:500; color:var(--faint);
+}
+.node.stage h4{color:var(--accent-ink)}
+.node .big{font-size:19px; line-height:1.3; letter-spacing:-.01em}
+.node ul{margin:4px 0 0; padding-left:0; list-style:none; display:flex; flex-direction:column; gap:5px}
+.node li{
+  font-family:"JetBrains Mono",ui-monospace,Menlo,monospace;
+  font-size:11.5px; color:var(--muted); line-height:1.5;
+}
+.arrow{display:flex; align-items:center; justify-content:center; color:var(--faint); font-size:20px}
+.denied{
+  margin-top:20px; border:1px dashed color-mix(in srgb,var(--bad) 45%,transparent);
+  border-radius:4px; padding:14px 16px; display:flex; gap:12px; align-items:baseline;
+  background:color-mix(in srgb,var(--bad) 6%,transparent);
+}
+.denied .x{color:var(--bad); font-family:"JetBrains Mono",monospace; font-size:13px; font-weight:700}
+.denied p{font-size:15px; color:var(--muted)}
+.denied code{color:var(--ink)}
+
+/* ── tables ─────────────────────────────────── */
+.tablewrap{overflow-x:auto; border:1px solid var(--rule); border-radius:4px; background:var(--surface)}
+table{border-collapse:collapse; width:100%; min-width:640px; font-size:15px}
+th,td{text-align:left; padding:13px 16px; border-bottom:1px solid var(--rule-soft); vertical-align:top}
+tr:last-child td{border-bottom:0}
+th{
+  font-family:"JetBrains Mono",ui-monospace,Menlo,monospace;
+  font-size:10.5px; letter-spacing:.13em; text-transform:uppercase; color:var(--faint);
+  font-weight:500; background:var(--sunk); border-bottom:1px solid var(--rule);
+}
+td code, td .m{
+  font-family:"JetBrains Mono",ui-monospace,Menlo,monospace; font-size:12.5px;
+}
+td .shell{color:var(--bad)}
+td .tool{color:var(--accent); font-weight:500}
+td.n{font-variant-numeric:tabular-nums; color:var(--muted); white-space:nowrap}
+.small{color:var(--muted); font-size:14px}
+
+/* ── steps ──────────────────────────────────── */
+.steps{display:grid; grid-template-columns:repeat(auto-fit,minmax(228px,1fr)); gap:1px; background:var(--rule);
+  border:1px solid var(--rule); border-radius:4px; overflow:hidden}
+.step{background:var(--surface); padding:20px 20px 22px; display:flex; flex-direction:column; gap:9px}
+.step .num{
+  font-family:"JetBrains Mono",ui-monospace,Menlo,monospace; font-size:11px;
+  letter-spacing:.1em; color:var(--accent);
+}
+.step h4{margin:0; font-size:18px; letter-spacing:-.01em; font-weight:500}
+.step p{font-size:14.5px; color:var(--muted); line-height:1.55}
+.step .who{
+  margin-top:auto; padding-top:10px;
+  font-family:"JetBrains Mono",ui-monospace,Menlo,monospace; font-size:10.5px;
+  letter-spacing:.1em; text-transform:uppercase; color:var(--faint);
+}
+.step .who.h{color:var(--accent)}
+
+/* ── milestones ─────────────────────────────── */
+.ms{display:flex; flex-direction:column; border:1px solid var(--rule); border-radius:4px; overflow:hidden; background:var(--surface)}
+.msrow{display:grid; grid-template-columns:52px 1fr 200px 62px; gap:16px; padding:14px 18px; border-bottom:1px solid var(--rule-soft); align-items:baseline}
+.msrow:last-child{border-bottom:0}
+@media(max-width:760px){ .msrow{grid-template-columns:48px 1fr 56px} .msrow .det{grid-column:2/-1; grid-row:2} }
+.msrow .id{font-family:"JetBrains Mono",monospace; font-size:12px; color:var(--accent); font-weight:500}
+.msrow .nm{font-size:16.5px}
+.msrow .det{font-size:13.5px; color:var(--muted)}
+.msrow .wk{font-family:"JetBrains Mono",monospace; font-size:12px; color:var(--faint); text-align:right; font-variant-numeric:tabular-nums}
+.msrow.core{background:var(--accent-wash)}
+.msrow.core .nm{font-weight:500}
+
+/* ── questions ──────────────────────────────── */
+.qs{display:flex; flex-direction:column; gap:0; border-top:1px solid var(--rule)}
+.q{display:grid; grid-template-columns:30px 1fr; gap:16px; padding:18px 0; border-bottom:1px solid var(--rule-soft)}
+.q .qn{font-family:"JetBrains Mono",monospace; font-size:12px; color:var(--accent)}
+.q h4{margin:0 0 5px; font-size:17.5px; font-weight:500}
+.q p{font-size:15px; color:var(--muted)}
+
+footer{margin-top:72px; padding-top:24px; border-top:1px solid var(--rule); color:var(--faint); font-size:13.5px;
+  display:flex; justify-content:space-between; gap:16px; flex-wrap:wrap}
+footer .mono{font-size:12px}
+
+@media(prefers-reduced-motion:reduce){ *{animation:none!important; transition:none!important} }
+</style>
+
+<div class="wrap">
+
+<header class="mast">
+  <div class="mast-name">llmwiki</div>
+  <h1>The agent proposes. <em>You</em> commit.</h1>
+  <p class="lede">A terminal workbench for LLM-compiled knowledge vaults. The model reads your
+  sources and drafts the wiki, but it never touches the filesystem — every change lands in a
+  staging buffer you review hunk by hunk, the way you review a commit.</p>
+  <div class="chips">
+    <span class="chip"><b>Go</b> &mdash; one binary, no runtimes</span>
+    <span class="chip"><b>6</b> direct dependencies</span>
+    <span class="chip">Any <b>OpenAI-compatible</b> endpoint</span>
+    <span class="chip"><b>~13 weeks</b> to v0.1</span>
+    <span class="chip">Karpathy 3-layer vault</span>
+    <span class="chip">Obsidian-compatible</span>
+  </div>
+</header>
+
+<section>
+  <div class="shead">
+    <div class="eyebrow">The screen that matters</div>
+    <h2>Review</h2>
+    <p>An agent just read three papers and wants to change eleven things. Nothing has been written.
+    Each operation carries the reason it was proposed and the sources it came from, and you can drop
+    a single hunk without rejecting the rest.</p>
+  </div>
+  <div class="termbox">
+    <div class="termbar"><i class="dot a"></i><i class="dot b"></i><i class="dot c"></i><span>lw &mdash; ~/vaults/ml-systems</span></div>
+    <div class="termscroll"><pre class="term-pre"><span class="t-bar">┌─ </span><span class="t-title">ml-systems</span><span class="t-bar"> ─────────────────────────────────────────────────────── </span><span class="t-mode">REVIEW   cs-0193f2a</span><span class="t-bar"> ─┐</span>
+<span class="t-bar">│</span><span class="t-dim"> INTENT  </span><span class="t-hi">Ingest 3 papers on speculative decoding</span>                                          <span class="t-bar">│</span>
+<span class="t-bar">│</span><span class="t-dim"> AUTHOR  </span>agent:wiki-curator<span class="t-dim">    OPENED </span>14:02<span class="t-dim">    CHECKS </span><span class="t-ok">schema pass  lint pass</span>              <span class="t-bar">│</span>
+<span class="t-bar">├──────────────────────────────┬───────────────────────────────────────────────────────────┤</span>
+<span class="t-bar">│</span><span class="t-dim"> OPS </span><span class="t-hi">11</span><span class="t-dim">  staged, </span><span class="t-hi">0</span><span class="t-dim"> applied</span>    <span class="t-bar">│</span><span class="t-hi"> wiki/concepts/kv-cache.md</span><span class="t-dim">            hunk 2 of 3</span>          <span class="t-bar">│</span>
+<span class="t-bar">│</span>                              <span class="t-bar">│</span> <span class="t-dim">─────────────────────────────────────────────────────────</span> <span class="t-bar">│</span>
+<span class="t-bar">│</span> <span class="t-add">+</span> speculative-decoding.md    <span class="t-bar">│</span><span class="t-dim">     ## Related</span>                                            <span class="t-bar">│</span>
+<span class="t-bar">│</span> <span class="t-add">+</span> leviathan-2023.md          <span class="t-bar">│</span>   <span class="t-add">+   - [[speculative-decoding]] - drafts k tokens</span>        <span class="t-bar">│</span>
+<span class="t-bar">│</span> <span class="t-add">+</span> assisted-generation.md     <span class="t-bar">│</span>   <span class="t-add">+     then verifies them in one forward pass</span>            <span class="t-bar">│</span>
+<span class="t-bar">│</span> <span class="t-stage">~</span><span class="t-hi"> kv-cache.md</span>            <span class="t-key">&lt;</span>   <span class="t-bar">│</span><span class="t-dim">       - [[flash-attention]]</span>                               <span class="t-bar">│</span>
+<span class="t-bar">│</span> <span class="t-stage">~</span> flash-attention.md         <span class="t-bar">│</span><span class="t-dim">       - [[paged-attention]]</span>                               <span class="t-bar">│</span>
+<span class="t-bar">│</span> <span class="t-stage">~</span> index.md                   <span class="t-bar">│</span>                                                           <span class="t-bar">│</span>
+<span class="t-bar">│</span> <span class="t-key">R</span> gpt4.md -&gt; gpt-4.md        <span class="t-bar">│</span><span class="t-dim"> WHY   </span>Central to 3 of 3 ingested sources;                 <span class="t-bar">│</span>
+<span class="t-bar">│</span>     <span class="t-dim">+12 backlink rewrites</span>    <span class="t-bar">│</span>       meets the 2-source page threshold.                  <span class="t-bar">│</span>
+<span class="t-bar">│</span>                              <span class="t-bar">│</span><span class="t-dim"> FROM  </span>raw/papers/leviathan-2023.md                        <span class="t-bar">│</span>
+<span class="t-bar">│</span> <span class="t-del">!</span><span class="t-del"> 1 op stale on disk</span>         <span class="t-bar">│</span>       raw/papers/chen-2023.md                             <span class="t-bar">│</span>
+<span class="t-bar">│</span>                              <span class="t-bar">│</span>                                                           <span class="t-bar">│</span>
+<span class="t-bar">│</span>  <span class="t-key">[A]</span><span class="t-dim"> accept all   </span><span class="t-key">[X]</span><span class="t-dim"> reject</span> <span class="t-bar">│</span>  <span class="t-key">[y]</span><span class="t-dim"> keep hunk   </span><span class="t-key">[n]</span><span class="t-dim"> drop   </span><span class="t-key">[s]</span><span class="t-dim"> split</span>                     <span class="t-bar">│</span>
+<span class="t-bar">├──────────────────────────────┴───────────────────────────────────────────────────────────┤</span>
+<span class="t-bar">└─ </span><span class="t-key">tab</span><span class="t-dim"> pane   </span><span class="t-key">j/k</span><span class="t-dim"> move   </span><span class="t-key">c</span><span class="t-dim"> commit   </span><span class="t-key">g</span><span class="t-dim"> graph   </span><span class="t-key">q</span><span class="t-dim"> quit</span><span class="t-bar"> ──────────────────────────────────────┘</span></pre></div>
+  </div>
+  <p class="cap"><b>Note the rename.</b> <code class="mono">gpt4.md &rarr; gpt-4.md</code> is not a
+  file move — it is one operation that also rewrites twelve inbound wikilinks, each staged as its own
+  reviewable hunk. A shell <code class="mono">mv</code> would have silently broken all twelve.</p>
+</section>
+
+<section>
+  <div class="shead">
+    <div class="eyebrow">The rule everything else follows</div>
+    <h2>One write path</h2>
+    <p>The agent runs with write access denied across the whole vault. Its only way to change
+    anything is a set of validating, graph-aware tools that append to a buffer. That buffer is the
+    only thing a commit can read from.</p>
+  </div>
+  <div class="flow">
+    <div class="node">
+      <h4>Agent</h4>
+      <div class="big">Reads freely, writes nothing</div>
+      <ul>
+        <li>vault.orient()</li>
+        <li>wiki.search / get / neighbors</li>
+        <li>wiki.lint()</li>
+        <li>raw.get()</li>
+      </ul>
+    </div>
+    <div class="arrow">&rarr;</div>
+    <div class="node stage">
+      <h4>Buffer &nbsp;cs-0193f2a</h4>
+      <div class="big">Proposed, not applied</div>
+      <ul>
+        <li>stage.create_page()</li>
+        <li>stage.patch_page()</li>
+        <li>stage.rename_page()</li>
+        <li>stage.retract()</li>
+      </ul>
+    </div>
+    <div class="arrow">&rarr;</div>
+    <div class="node">
+      <h4>You &nbsp;then vault</h4>
+      <div class="big">The only commit authority</div>
+      <ul>
+        <li>hunk-level accept / drop</li>
+        <li>atomic apply + snapshot</li>
+        <li>journal record, reindex</li>
+        <li>revert stages the inverse</li>
+      </ul>
+    </div>
+  </div>
+  <div class="denied">
+    <span class="x">&times;</span>
+    <p><b style="color:var(--ink);font-weight:500">Blocked, and recorded.</b>
+    <code>Write</code>, <code>Edit</code>, <code>rm</code>, <code>mv</code>, <code>cp</code> anywhere
+    under the vault are refused twice — once by the agent's permission profile, once by the engine.
+    Every denial is written to the journal, so a misbehaving agent costs you review time and nothing else.</p>
+  </div>
+</section>
+
+<section>
+  <div class="shead">
+    <div class="eyebrow">The rest of the workbench</div>
+    <h2>Five screens</h2>
+    <p>Panel model borrowed from superfile, vim-first keymap, markdown rendered with glamour. Chat is
+    rendered natively rather than shelled out, which is cheap precisely because we own the loop.
+    Everything except <em>Ask</em> works with no model and no network.</p>
+  </div>
+  <div class="tabs" role="tablist"><button class="tab is-on" role="tab" aria-selected="true" data-target="review">Review</button><button class="tab" role="tab" aria-selected="false" data-target="browse">Browse</button><button class="tab" role="tab" aria-selected="false" data-target="ask">Ask</button><button class="tab" role="tab" aria-selected="false" data-target="lint">Lint</button><button class="tab" role="tab" aria-selected="false" data-target="log">Log</button></div>
+  <div class="termbox tabpanel">
+    <div class="termbar"><i class="dot a"></i><i class="dot b"></i><i class="dot c"></i><span>lw &mdash; ~/vaults/ml-systems</span></div>
+    <div class="termscroll"><div class="screen" id="scr-review"><pre class="term-pre"><span class="t-bar">┌─ </span><span class="t-title">ml-systems</span><span class="t-bar"> ─────────────────────────────────────────────────────── </span><span class="t-mode">REVIEW   cs-0193f2a</span><span class="t-bar"> ─┐</span>
+<span class="t-bar">│</span><span class="t-dim"> INTENT  </span><span class="t-hi">Ingest 3 papers on speculative decoding</span>                                          <span class="t-bar">│</span>
+<span class="t-bar">│</span><span class="t-dim"> AUTHOR  </span>agent:wiki-curator<span class="t-dim">    OPENED </span>14:02<span class="t-dim">    CHECKS </span><span class="t-ok">schema pass  lint pass</span>              <span class="t-bar">│</span>
+<span class="t-bar">├──────────────────────────────┬───────────────────────────────────────────────────────────┤</span>
+<span class="t-bar">│</span><span class="t-dim"> OPS </span><span class="t-hi">11</span><span class="t-dim">  staged, </span><span class="t-hi">0</span><span class="t-dim"> applied</span>    <span class="t-bar">│</span><span class="t-hi"> wiki/concepts/kv-cache.md</span><span class="t-dim">            hunk 2 of 3</span>          <span class="t-bar">│</span>
+<span class="t-bar">│</span>                              <span class="t-bar">│</span> <span class="t-dim">─────────────────────────────────────────────────────────</span> <span class="t-bar">│</span>
+<span class="t-bar">│</span> <span class="t-add">+</span> speculative-decoding.md    <span class="t-bar">│</span><span class="t-dim">     ## Related</span>                                            <span class="t-bar">│</span>
+<span class="t-bar">│</span> <span class="t-add">+</span> leviathan-2023.md          <span class="t-bar">│</span>   <span class="t-add">+   - [[speculative-decoding]] - drafts k tokens</span>        <span class="t-bar">│</span>
+<span class="t-bar">│</span> <span class="t-add">+</span> assisted-generation.md     <span class="t-bar">│</span>   <span class="t-add">+     then verifies them in one forward pass</span>            <span class="t-bar">│</span>
+<span class="t-bar">│</span> <span class="t-stage">~</span><span class="t-hi"> kv-cache.md</span>            <span class="t-key">&lt;</span>   <span class="t-bar">│</span><span class="t-dim">       - [[flash-attention]]</span>                               <span class="t-bar">│</span>
+<span class="t-bar">│</span> <span class="t-stage">~</span> flash-attention.md         <span class="t-bar">│</span><span class="t-dim">       - [[paged-attention]]</span>                               <span class="t-bar">│</span>
+<span class="t-bar">│</span> <span class="t-stage">~</span> index.md                   <span class="t-bar">│</span>                                                           <span class="t-bar">│</span>
+<span class="t-bar">│</span> <span class="t-key">R</span> gpt4.md -&gt; gpt-4.md        <span class="t-bar">│</span><span class="t-dim"> WHY   </span>Central to 3 of 3 ingested sources;                 <span class="t-bar">│</span>
+<span class="t-bar">│</span>     <span class="t-dim">+12 backlink rewrites</span>    <span class="t-bar">│</span>       meets the 2-source page threshold.                  <span class="t-bar">│</span>
+<span class="t-bar">│</span>                              <span class="t-bar">│</span><span class="t-dim"> FROM  </span>raw/papers/leviathan-2023.md                        <span class="t-bar">│</span>
+<span class="t-bar">│</span> <span class="t-del">!</span><span class="t-del"> 1 op stale on disk</span>         <span class="t-bar">│</span>       raw/papers/chen-2023.md                             <span class="t-bar">│</span>
+<span class="t-bar">│</span>                              <span class="t-bar">│</span>                                                           <span class="t-bar">│</span>
+<span class="t-bar">│</span>  <span class="t-key">[A]</span><span class="t-dim"> accept all   </span><span class="t-key">[X]</span><span class="t-dim"> reject</span> <span class="t-bar">│</span>  <span class="t-key">[y]</span><span class="t-dim"> keep hunk   </span><span class="t-key">[n]</span><span class="t-dim"> drop   </span><span class="t-key">[s]</span><span class="t-dim"> split</span>                     <span class="t-bar">│</span>
+<span class="t-bar">├──────────────────────────────┴───────────────────────────────────────────────────────────┤</span>
+<span class="t-bar">└─ </span><span class="t-key">tab</span><span class="t-dim"> pane   </span><span class="t-key">j/k</span><span class="t-dim"> move   </span><span class="t-key">c</span><span class="t-dim"> commit   </span><span class="t-key">g</span><span class="t-dim"> graph   </span><span class="t-key">q</span><span class="t-dim"> quit</span><span class="t-bar"> ──────────────────────────────────────┘</span></pre></div><div class="screen" id="scr-browse" hidden><pre class="term-pre"><span class="t-bar">┌─ </span><span class="t-title">ml-systems</span><span class="t-bar"> ──────────────────────────────────────────────────────────────────── </span><span class="t-mode">BROWSE</span><span class="t-bar"> ─┐</span>
+<span class="t-bar">├─────────────────┬────────────────────────┬───────────────────────────────────────────────┤</span>
+<span class="t-bar">│</span> <span class="t-dim">raw/</span>            <span class="t-bar">│</span><span class="t-dim"> concepts/</span>              <span class="t-bar">│</span> <span class="t-hi"># Speculative Decoding</span>                        <span class="t-bar">│</span>
+<span class="t-bar">│</span>   articles   <span class="t-dim">12</span> <span class="t-bar">│</span>   assisted-generation  <span class="t-bar">│</span>                                               <span class="t-bar">│</span>
+<span class="t-bar">│</span>   papers      <span class="t-dim">9</span> <span class="t-bar">│</span> <span class="t-key">&gt;</span><span class="t-hi"> speculative-decoding</span> <span class="t-bar">│</span>  Draft k tokens with a small model,           <span class="t-bar">│</span>
+<span class="t-bar">│</span>   transcripts <span class="t-dim">4</span> <span class="t-bar">│</span>   kv-cache             <span class="t-bar">│</span>  then verify them in a single forward         <span class="t-bar">│</span>
+<span class="t-bar">│</span> <span class="t-dim">wiki/</span>           <span class="t-bar">│</span>   flash-attention      <span class="t-bar">│</span>  pass of the target model.                    <span class="t-bar">│</span>
+<span class="t-bar">│</span>   entities   <span class="t-dim">86</span> <span class="t-bar">│</span>   paged-attention      <span class="t-bar">│</span>                                               <span class="t-bar">│</span>
+<span class="t-bar">│</span>   concepts  <span class="t-dim">141</span> <span class="t-bar">│</span>   continuous-batching  <span class="t-bar">│</span>  <span class="t-dim">tags</span>  inference  decoding                    <span class="t-bar">│</span>
+<span class="t-bar">│</span>   comparisons <span class="t-dim">22</span><span class="t-bar">│</span>   quantization         <span class="t-bar">│</span>  <span class="t-dim">conf</span>  high        <span class="t-ok">2 sources</span>                  <span class="t-bar">│</span>
+<span class="t-bar">│</span>   queries    <span class="t-dim">31</span> <span class="t-bar">│</span>                        <span class="t-bar">│</span>                                               <span class="t-bar">│</span>
+<span class="t-bar">│</span>                 <span class="t-bar">│</span>                        <span class="t-bar">│</span>  <span class="t-dim">BACKLINKS  7</span>                                 <span class="t-bar">│</span>
+<span class="t-bar">│</span> <span class="t-stage">STAGE</span>           <span class="t-bar">│</span>                        <span class="t-bar">│</span>    [[kv-cache]]                               <span class="t-bar">│</span>
+<span class="t-bar">│</span>  <span class="t-stage">cs-0193f2a</span>     <span class="t-bar">│</span>                        <span class="t-bar">│</span>    [[inference-optimization]]                 <span class="t-bar">│</span>
+<span class="t-bar">│</span>  <span class="t-stage">+3 ~7 R1</span>       <span class="t-bar">│</span>                        <span class="t-bar">│</span>    [[llama-cpp]]  +4 more                     <span class="t-bar">│</span>
+<span class="t-bar">├─────────────────┴────────────────────────┴───────────────────────────────────────────────┤</span>
+<span class="t-bar">└─ </span><span class="t-key">/</span><span class="t-dim"> find   </span><span class="t-key">a</span><span class="t-dim"> ask   </span><span class="t-key">s</span><span class="t-dim"> stage   </span><span class="t-key">l</span><span class="t-dim"> lint   </span><span class="t-key">L</span><span class="t-dim"> log   </span><span class="t-key">?</span><span class="t-dim"> help</span><span class="t-bar"> ─────────────────────────────────────┘</span></pre></div><div class="screen" id="scr-ask" hidden><pre class="term-pre"><span class="t-bar">┌─ </span><span class="t-title">ml-systems</span><span class="t-bar"> ────────────────────────────────────────────────── </span><span class="t-mode">ASK   agent:wiki-curator</span><span class="t-bar"> ─┐</span>
+<span class="t-bar">│</span>                                                                                          <span class="t-bar">│</span>
+<span class="t-bar">│</span><span class="t-key"> &gt; </span><span class="t-hi">ingest these three speculative decoding papers and file them</span>                           <span class="t-bar">│</span>
+<span class="t-bar">│</span>                                                                                          <span class="t-bar">│</span>
+<span class="t-bar">│</span><span class="t-dim">   * </span>vault.orient()                        <span class="t-dim">412 pages, 30 log entries</span>                      <span class="t-bar">│</span>
+<span class="t-bar">│</span><span class="t-dim">   * </span>wiki.search("speculative decoding")    <span class="t-dim">2 near hits, no exact page</span>                    <span class="t-bar">│</span>
+<span class="t-bar">│</span><span class="t-dim">   * </span>stage.open("Ingest 3 papers")           <span class="t-stage">cs-0193f2a</span>                                   <span class="t-bar">│</span>
+<span class="t-bar">│</span><span class="t-dim">   * </span>stage.ingest_source(arxiv:2211.17192)  <span class="t-dim">raw/papers/leviathan-2023.md</span>                  <span class="t-bar">│</span>
+<span class="t-bar">│</span><span class="t-dim">   * </span>stage.create_page(speculative-decoding) <span class="t-stage">staged</span>                                       <span class="t-bar">│</span>
+<span class="t-bar">│</span><span class="t-dim">   * </span>stage.rename_page(gpt4 -&gt; gpt-4)       <span class="t-stage">staged, +12 backlinks</span>                         <span class="t-bar">│</span>
+<span class="t-bar">│</span><span class="t-del">   x </span><span class="t-deny">Write(wiki/concepts/kv-cache.md)</span>       <span class="t-del">no such tool</span>                                  <span class="t-bar">│</span>
+<span class="t-bar">│</span><span class="t-dim">   * </span>stage.patch_page(kv-cache.md ## Related) <span class="t-stage">staged</span>                                      <span class="t-bar">│</span>
+<span class="t-bar">│</span>                                                                                          <span class="t-bar">│</span>
+<span class="t-bar">│</span>   Staged 11 operations in <span class="t-stage">cs-0193f2a</span>. No filesystem verbs are                            <span class="t-bar">│</span>
+<span class="t-bar">│</span>   exposed to the model, so nothing was written.                                          <span class="t-bar">│</span>
+<span class="t-bar">│</span>                                                                                          <span class="t-bar">│</span>
+<span class="t-bar">├──────────────────────────────────────────────────────────────────────────────────────────┤</span>
+<span class="t-bar">│</span><span class="t-stage"> STAGE  </span>+3 pages   ~7 edits   R1 rename            <span class="t-key">ctrl-r</span><span class="t-dim"> review</span>                          <span class="t-bar">│</span>
+<span class="t-bar">└─ </span><span class="t-key">ctrl-r</span><span class="t-dim"> review changeset   </span><span class="t-key">esc</span><span class="t-dim"> back to browse</span><span class="t-bar"> ───────────────────────────────────────────┘</span></pre></div><div class="screen" id="scr-lint" hidden><pre class="term-pre"><span class="t-bar">┌─ </span><span class="t-title">ml-systems</span><span class="t-bar"> ────────────────────────────────────────────────────────────────────── </span><span class="t-mode">LINT</span><span class="t-bar"> ─┐</span>
+<span class="t-bar">│</span><span class="t-dim"> 412 pages   89 sources   last full pass 2h ago</span>                                           <span class="t-bar">│</span>
+<span class="t-bar">├──────────────────────────────────────────────────────────────────────────────────────────┤</span>
+<span class="t-bar">│</span>  <span class="t-ok">ok   </span>orphan pages                              <span class="t-dim">0</span>                                        <span class="t-bar">│</span>
+<span class="t-bar">│</span>  <span class="t-ok">ok   </span>broken wikilinks                          <span class="t-dim">0</span>                                        <span class="t-bar">│</span>
+<span class="t-bar">│</span>  <span class="t-del">FAIL </span>index.md completeness                     <span class="t-dim">3 pages missing</span>                          <span class="t-bar">│</span>
+<span class="t-bar">│</span>  <span class="t-ok">ok   </span>frontmatter required fields               <span class="t-dim">412 / 412</span>                                <span class="t-bar">│</span>
+<span class="t-bar">│</span>  <span class="t-ok">ok   </span>tag taxonomy                              <span class="t-dim">18 in use, 18 declared</span>                   <span class="t-bar">│</span>
+<span class="t-bar">│</span>  <span class="t-stage">WARN </span>staleness  &gt; 90d since new source         <span class="t-dim">7 pages</span>                                  <span class="t-bar">│</span>
+<span class="t-bar">│</span>  <span class="t-del">FAIL </span>source drift  sha256 mismatch             <span class="t-dim">1 raw file changed on disk</span>               <span class="t-bar">│</span>
+<span class="t-bar">│</span>  <span class="t-ok">ok   </span>contradictions flagged                    <span class="t-dim">2 marked contested</span>                       <span class="t-bar">│</span>
+<span class="t-bar">│</span>  <span class="t-stage">WARN </span>confidence low or single-sourced          <span class="t-dim">14 pages</span>                                 <span class="t-bar">│</span>
+<span class="t-bar">│</span>  <span class="t-ok">ok   </span>page size  &lt; 200 lines                    <span class="t-dim">0 over</span>                                   <span class="t-bar">│</span>
+<span class="t-bar">│</span>  <span class="t-ok">ok   </span>log rotation                              <span class="t-dim">318 / 500 entries</span>                        <span class="t-bar">│</span>
+<span class="t-bar">├──────────────────────────────────────────────────────────────────────────────────────────┤</span>
+<span class="t-bar">│</span>  <span class="t-key">[f]</span> ask the agent to fix<span class="t-dim">      fixes arrive as a changeset, never as writes</span>              <span class="t-bar">│</span>
+<span class="t-bar">└─ </span><span class="t-key">f</span><span class="t-dim"> fix   </span><span class="t-key">enter</span><span class="t-dim"> show failures   </span><span class="t-key">r</span><span class="t-dim"> rerun</span><span class="t-bar"> ──────────────────────────────────────────────────┘</span></pre></div><div class="screen" id="scr-log" hidden><pre class="term-pre"><span class="t-bar">┌─ </span><span class="t-title">ml-systems</span><span class="t-bar"> ────────────────────────────────────────────────────── </span><span class="t-mode">LOG   journal.ndjson</span><span class="t-bar"> ─┐</span>
+<span class="t-bar">│</span><span class="t-dim"> filter </span><span class="t-hi">all</span><span class="t-dim">     2026-08-29     </span><span class="t-dim">318 entries</span>                                                <span class="t-bar">│</span>
+<span class="t-bar">├──────────────────────────────────────────────────────────────────────────────────────────┤</span>
+<span class="t-bar">│</span>  <span class="t-dim">14:19</span>  <span class="t-ok">commit   </span>cs-0193f2a   9 of 11 ops applied   by you                               <span class="t-bar">│</span>
+<span class="t-bar">│</span>  <span class="t-dim">14:18</span>  <span class="t-stage">dropped  </span>hunk h2 of patch_page(index.md)    by you                               <span class="t-bar">│</span>
+<span class="t-bar">│</span>  <span class="t-dim">14:17</span>  <span class="t-del">rejected </span>create_page(entities/nvidia.md)    by you                               <span class="t-bar">│</span>
+<span class="t-bar">│</span>            <span class="t-dim">reason</span>  passing mention only, below the 2-source threshold                    <span class="t-bar">│</span>
+<span class="t-bar">│</span>  <span class="t-dim">14:12</span>  <span class="t-deny">refused  </span>Write(...) - tool not offered      by engine                            <span class="t-bar">│</span>
+<span class="t-bar">│</span>  <span class="t-dim">14:02</span>  <span class="t-dim">opened   </span>cs-0193f2a   agent:wiki-curator                                         <span class="t-bar">│</span>
+<span class="t-bar">│</span>                                                                                          <span class="t-bar">│</span>
+<span class="t-bar">│</span>  <span class="t-dim">11:40</span>  <span class="t-stage">revert   </span>cs-0192b71 inverted into cs-0193a02                                     <span class="t-bar">│</span>
+<span class="t-bar">│</span>  <span class="t-dim">09:15</span>  <span class="t-ok">commit   </span>cs-0192b71   4 ops applied         by you                               <span class="t-bar">│</span>
+<span class="t-bar">│</span>                                                                                          <span class="t-bar">│</span>
+<span class="t-bar">│</span>  Rejections are permanent history. <span class="t-key">lw log --rejected</span> replays them.                       <span class="t-bar">│</span>
+<span class="t-bar">├──────────────────────────────────────────────────────────────────────────────────────────┤</span>
+<span class="t-bar">└─ </span><span class="t-key">r</span><span class="t-dim"> revert   </span><span class="t-key">d</span><span class="t-dim"> detail   </span><span class="t-key">/</span><span class="t-dim"> filter   </span><span class="t-key">a</span><span class="t-dim"> author</span><span class="t-bar"> ──────────────────────────────────────────────┘</span></pre></div></div>
+  </div>
+  <p class="cap">In <b>Ask</b>, watch line seven: the agent reached for <code class="mono">Write</code>
+  out of habit, was denied, and re-routed through <code class="mono">stage.patch_page</code>. In
+  <b>Log</b>, the entries you cannot get from git — what was proposed and <em>rejected</em>, and why.</p>
+</section>
+
+<section>
+  <div class="shead">
+    <div class="eyebrow">Why tools instead of a shell</div>
+    <h2>A wiki is a graph, not a folder</h2>
+    <p>Ordinary file commands are the wrong instrument for a linked knowledge base: they cannot see
+    the edges. Each tool below is transactional, validates against <code class="mono">SCHEMA.md</code>
+    before it stages anything, and produces a diff a human can read.</p>
+  </div>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Instead of</th><th>The tool</th><th>What the shell cannot know</th></tr></thead>
+    <tbody>
+      <tr><td><code class="shell">mv a.md b.md</code></td><td><code class="tool">stage.rename_page</code></td>
+        <td>That twelve pages link to <code>a</code>. The tool rewrites all of them and stages each rewrite separately.</td></tr>
+      <tr><td><code class="shell">cat &gt;&gt; page.md</code></td><td><code class="tool">stage.patch_page</code></td>
+        <td>Which section you meant. Patches are section-scoped (<code>## Related</code>), so they survive reformatting and diff cleanly.</td></tr>
+      <tr><td><code class="shell">touch new.md</code></td><td><code class="tool">stage.create_page</code></td>
+        <td>That the tag isn't in the taxonomy, the frontmatter is short a field, or the page has fewer than two outbound links. Rejected at proposal time.</td></tr>
+      <tr><td><code class="shell">rm old.md</code></td><td><code class="tool">stage.retract</code></td>
+        <td>That deletion is unrecoverable. Retraction leaves a tombstone and a reason, and the backlinks get fixed.</td></tr>
+      <tr><td><code class="shell">grep -r</code></td><td><code class="tool">wiki.search</code> + <code class="tool">wiki.neighbors</code></td>
+        <td>That <code>assisted-generation</code> already covers this. Graph lookup is what stops duplicate pages.</td></tr>
+      <tr><td><code class="shell">cat SCHEMA.md index.md&hellip;</code></td><td><code class="tool">vault.orient</code></td>
+        <td>Nothing — but making orientation one call means it can't be half-done. Schema, index and the last 30 log entries, always together.</td></tr>
+      <tr><td>&mdash; asking the model</td><td><code class="tool">wiki.lint</code></td>
+        <td>Eleven checks — orphans, broken links, index drift, sha256 source drift, stale pages, tag sprawl — computed in Go. The model only fixes what the engine reports.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section>
+  <div class="shead">
+    <div class="eyebrow">Ingest, end to end</div>
+    <h2>From a URL to a commit</h2>
+    <p>Four stages, and a human gate before the third one ends. <code class="mono">lw ingest &lt;url&gt; &amp;&amp; lw diff &amp;&amp; lw commit</code>
+    is the same pipeline without the TUI, so a nightly job can leave you a changeset to read over coffee.</p>
+  </div>
+  <div class="steps">
+    <div class="step"><span class="num">01</span><h4>Extract</h4>
+      <p>Docling turns the PDF, EPUB or page into markdown. It lands in <code class="mono">raw/</code>
+      with a source URL and a sha256 of the body — the hash is what makes re-ingest incremental and
+      drift detectable. PDFs arrive in v1.0.</p><span class="who">Go extractor</span></div>
+    <div class="step"><span class="num">02</span><h4>Compile</h4>
+      <p>The agent orients, searches for existing coverage, and decides what clears the two-source
+      page threshold. It writes pages, cross-references and provenance markers — into the buffer.</p>
+      <span class="who">agent loop</span></div>
+    <div class="step"><span class="num">03</span><h4>Review</h4>
+      <p>You read the diff. Keep the two new concept pages, drop the entity page for a company
+      mentioned once, accept eleven of twelve backlink rewrites. Each choice is journalled with a reason.</p>
+      <span class="who h">You &mdash; the gate</span></div>
+    <div class="step"><span class="num">04</span><h4>Commit</h4>
+      <p>Atomic apply, snapshot, journal record, reindex, and a line appended to
+      <code class="mono">log.md</code>. Lint must not regress. <code class="mono">lw revert</code>
+      stages the inverse for review rather than applying it.</p><span class="who">Go engine</span></div>
+  </div>
+</section>
+
+<section>
+  <div class="shead">
+    <div class="eyebrow">Three languages, each where it wins</div>
+    <h2>Stack</h2>
+  </div>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Layer</th><th>Built on</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr><td>TUI</td><td class="m">bubbletea v2, lipgloss v2, bubbles v2, glamour</td>
+        <td>The strongest TUI stack in any language, stable since Feb 2026. superfile and crush both ship on it.</td></tr>
+      <tr><td>Vault &amp; search</td><td class="m">goldmark + wikilink, in-memory inverted index</td>
+        <td>No SQLite, no FTS5, no database. A 400-page vault is ~2&nbsp;MB of text &mdash; it indexes in milliseconds and answers in microseconds.</td></tr>
+      <tr><td>Staging</td><td class="m">stdlib &mdash; sha256, zlib, ndjson</td>
+        <td>The content-addressed store and journal need nothing a standard library doesn't already have.</td></tr>
+      <tr><td>Agent</td><td class="m">OpenAI-compatible <code>/chat/completions</code> + SSE</td>
+        <td>~950 lines behind a Go interface. Point it at DeepSeek, vLLM, Groq or Ollama &mdash; anything that does tool calling.</td></tr>
+      <tr><td>Interop</td><td class="m">modelcontextprotocol/go-sdk</td>
+        <td><code>lw mcp</code> exposes the same tools over stdio, so Claude Code, Codex or letta can drive the vault too.</td></tr>
+      <tr><td>Borrowed, not forked</td><td class="m">superfile <code>file_preview</code>, <code>string_function</code>, <code>utils</code></td>
+        <td>Vendored under MIT with attribution. Forking the whole file manager would mean deleting more than we keep.</td></tr>
+    </tbody>
+  </table></div>
+  <p class="cap">All permissive licenses — MIT, BSD-3, Apache-2.0. Nothing copyleft, and we pass on
+  crush (FSL) and Marker (GPL + commercial restriction) for that reason.</p>
+</section>
+
+<section>
+  <div class="shead">
+    <div class="eyebrow">Build order</div>
+    <h2>Milestones</h2>
+    <p>The three highlighted rows have no UI and no model, which is exactly why they can be tested
+    exhaustively. Get them right and the rest is presentation &mdash; and note M5 depends only on M3,
+    so if the TUI slips, the command line still delivers the whole thesis.</p>
+  </div>
+  <div class="ms">
+    <div class="msrow"><span class="id">M0</span><span class="nm">Spec &amp; scaffold</span><span class="det">changeset schema frozen, golden fixture vaults, CI</span><span class="wk">1w</span></div>
+    <div class="msrow core"><span class="id">M1</span><span class="nm">Vault engine</span><span class="det">byte-stable round-trip, SQLite index, 11 lint checks</span><span class="wk">2w</span></div>
+    <div class="msrow core"><span class="id">M2</span><span class="nm">Staging engine</span><span class="det">CAS, journal, apply/revert, crash-safety, conflicts</span><span class="wk">2w</span></div>
+    <div class="msrow core"><span class="id">M3</span><span class="nm">Tool layer + MCP</span><span class="det">tool surface + conformance suite against a fake agent</span><span class="wk">1w</span></div>
+    <div class="msrow"><span class="id">M4</span><span class="nm">TUI</span><span class="det">browse and preview, then the review screen</span><span class="wk">3w</span></div>
+    <div class="msrow"><span class="id">M5</span><span class="nm">Agent loop + Ask</span><span class="det">streaming, tool dispatch, sessions, native chat pane</span><span class="wk">2w</span></div>
+    <div class="msrow"><span class="id">M6</span><span class="nm">Polish &amp; release</span><span class="det">themes, hotkeys, lw doctor, goreleaser / brew / nix</span><span class="wk">2w</span></div>
+  </div>
+</section>
+
+<section>
+  <div class="shead">
+    <div class="eyebrow">Settled</div>
+    <h2>Decisions, and what they cost</h2>
+    <p>Each of these closed a question. Two of them reversed an earlier call once the evidence came in.</p>
+  </div>
+  <div class="qs">
+    <div class="q"><span class="qn">01</span><div><h4>No letta-code &mdash; we own the loop</h4>
+      <p>Reversed. Embedded chat discards letta's TUI, its Docker image is no longer a supported surface,
+      archival memory would reintroduce the embedding provider we just designed away, and a tool-dispatch
+      regression sits on our hot path. The loop is ~950 lines; integrating letta was budgeted at two weeks.
+      It stays reachable behind a Go interface, and <code class="mono">lw mcp</code> still lets it drive the vault.</p></div></div>
+    <div class="q"><span class="qn">02</span><div><h4>The vault is the agent's memory</h4>
+      <p>No second store. Standing preferences live in <code class="mono">curator-memory.md</code>, which the
+      agent edits through <code class="mono">stage.patch_page</code> like any other page &mdash; so what it
+      learns arrives as a diff you approve, not as state you can't see.</p></div></div>
+    <div class="q"><span class="qn">03</span><div><h4>One session per changeset</h4>
+      <p>Opening a changeset opens a session; commit or reject closes it and archives the transcript beside
+      the ops. Tool calls that produced staged operations are never compacted away &mdash; they are the
+      audit trail. &ldquo;Why did it propose this?&rdquo; stays answerable months later.</p></div></div>
+    <div class="q"><span class="qn">04</span><div><h4>Word search, not FTS5</h4>
+      <p>An in-memory inverted index with BM25-lite ranking. The premise of the whole pattern is that a
+      well-compiled wiki needs less retrieval machinery than RAG does &mdash; so ship the simple thing,
+      measure, and add FTS5 or embeddings only where they demonstrably help.</p></div></div>
+    <div class="q"><span class="qn">05</span><div><h4>Deferred, not dropped</h4>
+      <p>The knowledge graph, PDF ingestion, FTS5 and semantic search, parallel changesets and the
+      multi-vault hub are specified in <code class="mono">PLAN-v1.md</code>; OCR and scanned documents in
+      <code class="mono">PLAN-v1.1.md</code>. Each records why it was deferred and what it plugs into.</p></div></div>
+  </div>
+</section>
+
+<footer>
+  <span>v0.1 proposal &mdash; awaiting approval to execute. Detail in <code class="mono">PLAN.md</code>,
+  roadmap in <code class="mono">PLAN-v1.md</code> and <code class="mono">PLAN-v1.1.md</code>.</span>
+  <span class="mono">2026-08-29</span>
+</footer>
+
+</div>
+
+<script>
+(function(){
+  var tabs = document.querySelectorAll('.tab');
+  tabs.forEach(function(t){
+    t.addEventListener('click', function(){
+      tabs.forEach(function(o){
+        o.classList.remove('is-on');
+        o.setAttribute('aria-selected','false');
+        document.getElementById('scr-' + o.dataset.target).hidden = true;
+      });
+      t.classList.add('is-on');
+      t.setAttribute('aria-selected','true');
+      document.getElementById('scr-' + t.dataset.target).hidden = false;
+    });
+  });
+})();
+</script>
