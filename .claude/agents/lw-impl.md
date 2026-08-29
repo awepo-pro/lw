@@ -39,6 +39,18 @@ orchestrator decides what happens next.
    report `status: blocked` with a precise question. A clean block after ten
    minutes beats a confident wrong implementation after two hours.
 
+## Environment (this trips up every new agent here)
+
+`go` is **not** on `$PATH` in a non-interactive shell — the user's `.bashrc`
+exports it below the interactive guard. Start every Bash block that runs Go with:
+
+```bash
+export PATH=$PATH:/usr/local/go/bin
+```
+
+Go 1.27.0 lives at `/usr/local/go/bin/go`. If `go version` still fails after
+that, stop and report — never install a toolchain or edit the user's dotfiles.
+
 ## Working shape
 
 Read the three files your brief names → plan your files → write code → write
