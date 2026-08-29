@@ -174,7 +174,36 @@ The `Agent` interface exists in v0.1 precisely so this stays cheap.
 
 ---
 
-## 8. Smaller items
+## 8. Lint: the `contradictions` check
+
+Hermes's `research-llm-wiki` lint suite — which `/PLAN.md` §2 takes as our
+model — includes a check v0.1 deliberately does not implement:
+
+> "Look for pages that share tags/entities but state different facts."
+
+The other thirteen Hermes/`PLAN.md` checks are pure functions of the vault:
+dates, hashes, link topology, filenames, line counts. This one is not. Deciding
+that two pages "state different facts" is a judgement, and v0.1 draws a hard
+line there — `/PLAN.md` §8 and `00-conventions.md` §5.5 both require
+`internal/lint` to be pure Go, with the model never computing lint results and
+only fixing what the engine reports. Implementing it in v0.1 would mean either
+faking it with a keyword heuristic that cries wolf, or letting the model author
+lint findings, which inverts the trust boundary the whole project exists to
+draw.
+
+It fits naturally in v1.0 instead, where the pieces already exist: with
+embeddings (§3) a contradiction candidate is a pair of high-similarity passages
+whose pages share tags, and the model's role is to *rank candidates the engine
+found* rather than to scan the vault. That keeps determinism where it belongs —
+the engine decides what is comparable, the model only judges the shortlist —
+and any finding still lands as a reviewable changeset, not a silent edit.
+
+Until then `fm-quality` (backbone §4, check 12) covers the deterministic half
+of the same intent: it surfaces `contested: true`, `confidence: low`, and
+single-sourced pages with no confidence set, so weak claims stay visible even
+though nothing is comparing them to each other.
+
+## 9. Smaller items
 
 | Item | Note |
 |---|---|

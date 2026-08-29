@@ -95,6 +95,12 @@ Each check is independently testable (`check_<id>.go`); the set is fixed at
 11. `Severity` is `error`, `warn`, or `info`; only `error` blocks `lw commit`
 (`/PLAN.md §7`, `/PLAN.md §10`).
 
+These are the 14 checks of MASTER §9 **D-V**. Checks 1–11 enforce `/PLAN.md`
+§6's mechanical conventions; 12–14 come from the Hermes suite `/PLAN.md` §2
+cites. Hermes's *contradictions* check is deliberately absent — it requires
+judgement, and `internal/lint` is pure Go (`/PLAN.md` §8); it is deferred to
+`/PLAN-v1.md` §8.
+
 | # | ID | Severity | Fires when |
 |---|---|---|---|
 | 1 | `fm-required` | error | frontmatter is missing, unparsable, or a required field is absent or the wrong type |
@@ -108,6 +114,9 @@ Each check is independently testable (`check_<id>.go`); the set is fixed at
 | 9 | `src-provenance` | warn | a page carrying `sources:` has no `^[raw/…]` provenance marker |
 | 10 | `index-sync` | error | `index.md` and the `wiki/` page set are not 1:1 (a missing line, or a line pointing nowhere) |
 | 11 | `size-split` | info | the body exceeds 200 lines — split candidate |
+| 12 | `fm-quality` | info | `confidence: low`, or `contested: true`, or the page cites exactly one source and sets no `confidence` |
+| 13 | `src-stale` | warn | the page's `updated` is more than 90 days earlier than the `ingested` date of a source it cites |
+| 14 | `log-rotate` | info | `log.md` exceeds 500 entries and should be rotated to `log-YYYY.md` |
 
 ## 6. The changeset buffer (`/PLAN.md §7`; schema in `changeset.schema.json`)
 

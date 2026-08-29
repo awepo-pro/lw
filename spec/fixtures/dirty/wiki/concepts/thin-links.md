@@ -4,7 +4,7 @@ created: 2026-08-09
 updated: 2026-08-10
 type: concept
 tags: [llm, transformers]
-confidence: medium
+confidence: low
 ---
 
 # Thin Links Page
