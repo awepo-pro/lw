@@ -1,0 +1,27 @@
+---
+title: GPT-4
+created: 2026-08-10
+updated: 2026-08-29
+type: entity
+tags: [llm, transformers]
+sources: [raw/papers/leviathan-2023.md]
+confidence: medium
+---
+
+# GPT-4
+
+GPT-4 is a large multimodal language model whose inference cost motivates much
+of the systems work on faster decoding, including speculative
+decoding.^[raw/papers/leviathan-2023.md]
+
+## Notes
+
+Curator preference: use the hyphenated vendor form `gpt-4`, never `gpt4`, per
+curator-memory.md.
+
+## Related
+
+- [[speculative-decoding]] — a technique used to reduce GPT-4's serving
+  latency.
+- [[flash-attention]] — a kernel-level optimization used in GPT-4-class
+  serving stacks.
