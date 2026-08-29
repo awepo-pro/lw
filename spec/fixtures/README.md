@@ -32,12 +32,12 @@ in `minimal/`, byte for byte.
 
 ## `dirty/`
 
-Deliberately broken on every one of the 11 `internal/lint` checks (backbone
-§4). `EXPECTED-LINT.md` is the exact, ordered golden the checks must
-reproduce. Exactly one page, `wiki/concepts/malformed.md`, is parse-broken on
-purpose (it never closes its frontmatter block, tripping `fm-required`); the
+Deliberately broken on every one of the 14 `internal/lint` checks (backbone
+§4, MASTER §9 D-V). `EXPECTED-LINT.md` is the exact, ordered golden the checks
+must reproduce — 16 findings. Exactly one page,
+`wiki/concepts/malformed.md`, is parse-broken on purpose (it never closes its frontmatter block, tripping `fm-required`); the
 vault still loads (backbone §2.8: a page that fails to parse is kept in a
-parse-error list, not fatal) so the other ten checks have something to run
+parse-error list, not fatal) so the other thirteen checks have something to run
 against.
 
 Consumed by: **S1-T5** (`internal/lint`), and indirectly by **S1-T1**–**T4**
