@@ -2,6 +2,7 @@ package lint
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -56,11 +57,32 @@ func (fmRequiredCheck) Run(ctx *Context) []Finding {
 	return findings
 }
 
+// fmRequiredDateFieldErrRE matches the field name and offending value out
+// of a wrapped Date.UnmarshalYAML failure. decodeFrontmatter (backbone
+// §2.2) wraps every field error as `frontmatter field "<key>": vault:
+// parse date "<value>": <cause>` (backbone §2.1's ParseDate), so both are
+// recoverable from the error text without hard-coding a field name —
+// "updated" works identically to "created".
+var fmRequiredDateFieldErrRE = regexp.MustCompile(`frontmatter field "([^"]+)": vault: parse date "([^"]*)"`)
+
 // parseErrorMessage turns the underlying ParsePage failure into a message
-// that states the fix, per backbone §4's Message contract. Every case here
-// traces back to a specific ParseFrontmatter failure mode (backbone §2.2).
+// that states the fix, per backbone §4's Message contract. Most cases
+// trace back to a specific ParseFrontmatter failure mode (backbone §2.2).
+//
+// OQ-7 (MASTER §9 D-AB): backbone §4's fm-dates "malformed" clause is
+// unreachable — a bad date value fails ParseDate inside
+// Date.UnmarshalYAML, so the whole page lands here instead of at
+// fm-dates. The generic "fix the YAML" fallback is then wrong twice over:
+// the YAML is fine and the date is not, and it does not say what to fix.
+// When the wrapped error names the offending field and value, this names
+// them instead; every other failure mode (no field identified) keeps the
+// existing generic messages, including malformed.md's "no closing" case,
+// which must stay byte-identical.
 func parseErrorMessage(err error) string {
 	msg := err.Error()
+	if m := fmRequiredDateFieldErrRE.FindStringSubmatch(msg); m != nil {
+		return fmt.Sprintf("%s %q is not a valid YYYY-MM-DD date; fix it", m[1], m[2])
+	}
 	switch {
 	case strings.Contains(msg, "no closing"):
 		return "frontmatter block never closes; add the closing --- delimiter or fix the YAML"

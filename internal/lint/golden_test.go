@@ -9,19 +9,6 @@ import (
 	"github.com/awepo-pro/lw/internal/vault"
 )
 
-// ownedChecks are the seven check IDs S1-T5a owns. Filtering a full Run's
-// findings down to these isolates exactly this subtask's rows even while
-// S1-T5b's seven checks are still the check_stubs_t5b.go no-ops.
-var ownedChecks = map[string]bool{
-	"fm-required":     true,
-	"fm-taxonomy":     true,
-	"fm-dates":        true,
-	"path-convention": true,
-	"link-broken":     true,
-	"link-min-out":    true,
-	"link-orphan":     true,
-}
-
 // openFixtureContext copies spec/fixtures/<name> into a private t.TempDir()
 // (00-conventions.md §6: spec/fixtures/** is ground truth, never written to
 // by a test — CopyFixture is the sanctioned way to reach it) and builds the
@@ -57,9 +44,8 @@ func TestMinimalIsClean(t *testing.T) {
 	}
 }
 
-// TestDirtyGolden asserts the findings lint.Run produces for this
-// subtask's seven checks, over spec/fixtures/dirty, equal exactly the seven
-// rows of EXPECTED-LINT.md whose check ID is one of them — same order
+// TestDirtyGolden asserts lint.Run over spec/fixtures/dirty reproduces all
+// 16 rows of EXPECTED-LINT.md exactly, across all 14 checks — same order
 // (already Path/Line/Check sorted by Run), same Path, Line, Severity and
 // Message. Comparison is done in memory against a hard-coded golden, never
 // through testutil's golden-file helper against a path under
@@ -69,14 +55,23 @@ func TestDirtyGolden(t *testing.T) {
 	ctx := openFixtureContext(t, "dirty")
 	report := lint.Run(ctx, nil)
 
-	var got []lint.Finding
-	for _, f := range report.Findings {
-		if ownedChecks[f.Check] {
-			got = append(got, f)
-		}
-	}
-
 	want := []lint.Finding{
+		{
+			Check: "index-sync", Path: "index.md", Line: 0, Severity: lint.SevError,
+			Message: "wiki/concepts/thin-links.md has no line in index.md; add one",
+		},
+		{
+			Check: "index-sync", Path: "index.md", Line: 14, Severity: lint.SevError,
+			Message: "entry [[nonexistent-catalog-entry]] points to a page that does not exist; remove it or create the page",
+		},
+		{
+			Check: "log-rotate", Path: "log.md", Line: 0, Severity: lint.SevInfo,
+			Message: "505 entries exceeds the 500-entry rotation threshold; rotate to log-2026.md",
+		},
+		{
+			Check: "src-integrity", Path: "raw/papers/drifted-source.md", Line: 0, Severity: lint.SevError,
+			Message: "body sha256 does not match frontmatter sha256; re-ingest to refresh the hash",
+		},
 		{
 			Check: "path-convention", Path: "wiki/concepts/KV_Cache.md", Line: 0, Severity: lint.SevWarn,
 			Message: "filename is not lowercase-hyphen.md; rename to kv-cache.md",
@@ -90,8 +85,24 @@ func TestDirtyGolden(t *testing.T) {
 			Message: "[[nonexistent-target]] resolves to nothing; fix the target or create the page",
 		},
 		{
+			Check: "size-split", Path: "wiki/concepts/long-page.md", Line: 0, Severity: lint.SevInfo,
+			Message: "body exceeds 200 lines; consider splitting into smaller pages",
+		},
+		{
 			Check: "fm-required", Path: "wiki/concepts/malformed.md", Line: 0, Severity: lint.SevError,
 			Message: "frontmatter block never closes; add the closing --- delimiter or fix the YAML",
+		},
+		{
+			Check: "src-integrity", Path: "wiki/concepts/missing-raw.md", Line: 0, Severity: lint.SevError,
+			Message: "sources entry raw/papers/nonexistent-source.md not found under raw/; ingest it or drop the citation",
+		},
+		{
+			Check: "src-provenance", Path: "wiki/concepts/no-provenance.md", Line: 0, Severity: lint.SevWarn,
+			Message: "cites raw/papers/valid-source.md but has no ^[raw/papers/valid-source.md] marker; add one or drop the source",
+		},
+		{
+			Check: "src-stale", Path: "wiki/concepts/no-provenance.md", Line: 0, Severity: lint.SevWarn,
+			Message: "updated 2026-01-10 is more than 90 days before raw/papers/valid-source.md was ingested 2026-08-12; review the page against its source",
 		},
 		{
 			Check: "link-orphan", Path: "wiki/concepts/orphan-page.md", Line: 0, Severity: lint.SevWarn,
@@ -102,22 +113,27 @@ func TestDirtyGolden(t *testing.T) {
 			Message: "tag `nonexistent-tag` is not in SCHEMA.md; add it to the taxonomy or retag",
 		},
 		{
+			Check: "fm-quality", Path: "wiki/concepts/thin-links.md", Line: 0, Severity: lint.SevInfo,
+			Message: "confidence is low; corroborate with another source or raise the confidence",
+		},
+		{
 			Check: "link-min-out", Path: "wiki/concepts/thin-links.md", Line: 0, Severity: lint.SevWarn,
 			Message: "only 1 outbound wikilink; add at least one more",
 		},
 	}
 
-	if len(got) != len(want) {
-		t.Fatalf("got %d findings for the seven owned checks, want %d\ngot:  %+v\nwant: %+v",
-			len(got), len(want), got, want)
+	if len(report.Findings) != len(want) {
+		t.Fatalf("lint.Run(dirty) produced %d findings, want %d\ngot:  %+v\nwant: %+v",
+			len(report.Findings), len(want), report.Findings, want)
 	}
 	for i := range want {
-		if got[i].Check != want[i].Check ||
-			got[i].Path != want[i].Path ||
-			got[i].Line != want[i].Line ||
-			got[i].Severity != want[i].Severity ||
-			got[i].Message != want[i].Message {
-			t.Errorf("row %d:\n got  %+v\n want %+v", i, got[i], want[i])
+		got := report.Findings[i]
+		if got.Check != want[i].Check ||
+			got.Path != want[i].Path ||
+			got.Line != want[i].Line ||
+			got.Severity != want[i].Severity ||
+			got.Message != want[i].Message {
+			t.Errorf("row %d:\n got  %+v\n want %+v", i, got, want[i])
 		}
 	}
 }
