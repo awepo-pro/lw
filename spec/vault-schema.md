@@ -89,10 +89,10 @@ Enforced by code, not by prompt:
 - The vault is a normal Obsidian vault by construction — no proprietary
   extension to Markdown or YAML.
 
-## 5. The 11 lint checks (backbone §4 `internal/lint`)
+## 5. The 14 lint checks (backbone §4 `internal/lint`)
 
 Each check is independently testable (`check_<id>.go`); the set is fixed at
-11. `Severity` is `error`, `warn`, or `info`; only `error` blocks `lw commit`
+14. `Severity` is `error`, `warn`, or `info`; only `error` blocks `lw commit`
 (`/PLAN.md §7`, `/PLAN.md §10`).
 
 These are the 14 checks of MASTER §9 **D-V**. Checks 1–11 enforce `/PLAN.md`

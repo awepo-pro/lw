@@ -4,6 +4,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -67,12 +68,34 @@ func run(args []string) int {
 
 // dispatch runs one verb and applies the error/exit convention: stderr
 // "lw: <verb>: <err>" and exit 1 on failure, no stack traces.
+//
+// Contract (backbone §13, MASTER §9 D-AC): a verb whose own stdout is the
+// result signals its exit code with *exitError instead of a bare error, so
+// its output is not followed by a spurious "lw: <verb>: ..." line. A bare
+// error keeps the original behaviour exactly.
 func dispatch(name string, fn func(args []string) error, args []string) int {
-	if err := fn(args); err != nil {
-		fmt.Fprintf(os.Stderr, "lw: %s: %v\n", name, err)
-		return 1
+	err := fn(args)
+	if err == nil {
+		return 0
 	}
-	return 0
+
+	var ee *exitError
+	if errors.As(err, &ee) {
+		return ee.code
+	}
+
+	fmt.Fprintf(os.Stderr, "lw: %s: %v\n", name, err)
+	return 1
+}
+
+// exitError lets a verb choose the process exit code and suppress the
+// "lw: <verb>: " prefix, for a verb whose own stdout is the result.
+type exitError struct{ code int }
+
+// Error implements the error interface. dispatch never prints this string —
+// it only reads code — but exitError must still satisfy error.
+func (e *exitError) Error() string {
+	return fmt.Sprintf("exit %d", e.code)
 }
 
 func usage(w io.Writer) {
