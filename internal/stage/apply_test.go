@@ -405,6 +405,99 @@ func TestRecoverNoCommits(t *testing.T) {
 	}
 }
 
+// TestRecoverReportsUnmovedChangeset pins backbone §5.4's Unmoved Contract
+// (MASTER §9 D-BP): step 9 journals commit_end and only then os.Renames
+// changesets/open/<id> into committed/, so a crash between those two
+// syscalls leaves a commit that is complete in every observable way while
+// the changeset directory never left open/. Interrupted stays false — the
+// last commit_begin does have a matching commit_end — so Unmoved is the
+// only place that state is reportable at all.
+//
+// The crash state is reproduced exactly as the orchestrator did: commit
+// normally, then recreate changesets/open/<id>/changeset.json from the
+// committed copy (never through the engine), reopen the engine, and call
+// Recover — a fresh process, the same way lw doctor would encounter it.
+func TestRecoverReportsUnmovedChangeset(t *testing.T) {
+	e, dir := newTestEngine(t)
+
+	cs, err := e.OpenChangeset("add a page", testAuthor)
+	if err != nil {
+		t.Fatalf("OpenChangeset: %v", err)
+	}
+	if _, err := e.Append(Op{
+		Kind:       OpCreatePage,
+		Path:       "wiki/concepts/new-page.md",
+		Content:    newConceptPageContent("New Page"),
+		Rationale:  "test",
+		Provenance: []string{"raw/papers/leviathan-2023.md"},
+	}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if _, err := e.Commit("add new-page"); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	t.Run("normal completed commit leaves Unmoved empty", func(t *testing.T) {
+		e2, err := OpenEngine(dir)
+		if err != nil {
+			t.Fatalf("OpenEngine: %v", err)
+		}
+		defer e2.Close()
+
+		report, err := e2.Recover()
+		if err != nil {
+			t.Fatalf("Recover: %v", err)
+		}
+		if report.Interrupted {
+			t.Errorf("Interrupted = true, want false")
+		}
+		if report.Unmoved != "" {
+			t.Errorf("Unmoved = %q, want \"\" after a fully completed commit", report.Unmoved)
+		}
+	})
+
+	t.Run("changeset still in open/ after a completed commit_end", func(t *testing.T) {
+		committedJSON := filepath.Join(dir, ".llmwiki", "changesets", "committed", cs.ID, "changeset.json")
+		b, err := os.ReadFile(committedJSON)
+		if err != nil {
+			t.Fatalf("read committed changeset.json: %v", err)
+		}
+
+		openDir := filepath.Join(dir, ".llmwiki", "changesets", "open", cs.ID)
+		if err := os.MkdirAll(openDir, 0o755); err != nil {
+			t.Fatalf("recreate open dir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(openDir, "changeset.json"), b, 0o644); err != nil {
+			t.Fatalf("recreate changeset.json: %v", err)
+		}
+
+		e2, err := OpenEngine(dir)
+		if err != nil {
+			t.Fatalf("OpenEngine: %v", err)
+		}
+		defer e2.Close()
+
+		report, err := e2.Recover()
+		if err != nil {
+			t.Fatalf("Recover: %v", err)
+		}
+		if report.Interrupted {
+			t.Errorf("Interrupted = true, want false — the last commit_begin has a matching commit_end")
+		}
+		if report.Unmoved != cs.ID {
+			t.Errorf("Unmoved = %q, want %q", report.Unmoved, cs.ID)
+		}
+		if report.Commit != "" || len(report.Applied) != 0 || len(report.Pending) != 0 || report.Fixable {
+			t.Errorf("Recover = %+v, want only Unmoved set", report)
+		}
+
+		// Recover only reports; it must never perform the move itself.
+		if _, err := os.Stat(openDir); err != nil {
+			t.Errorf("open dir %s no longer present after Recover (err=%v); Recover must never write to the vault", openDir, err)
+		}
+	})
+}
+
 // TestRetractLeavesTombstone pins backbone §5.4's retract-tombstone
 // Contract (MASTER §9 D-BL): the original frontmatter survives unchanged
 // except sources is dropped and retracted: <date> is added, the body

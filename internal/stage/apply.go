@@ -673,6 +673,7 @@ type RecoveryReport struct {
 	Applied     []string // target paths whose on-disk sha already equals the post-image
 	Pending     []string // target paths not yet written
 	Fixable     bool     // true iff Store.Has holds for every Pending path's post-image sha
+	Unmoved     string   // changeset id whose commit completed but which is still in changesets/open/ (D-BP)
 }
 
 // Recover inspects the journal for the most recent commit_begin and
@@ -686,6 +687,17 @@ type RecoveryReport struct {
 // projected post-image. Recover never writes to the vault — it only
 // reports.
 //
+// Contract — Unmoved (MASTER §9 D-BP): step 9 journals commit_end and then
+// os.Renames changesets/open/<id> to changesets/committed/<id>; a crash
+// between those two syscalls leaves a commit that is complete in every
+// observable way while the changeset never left open/. Interrupted stays
+// false in that case — the last commit_begin does have a matching
+// commit_end — so when the two are matched, Recover checks
+// changesets/open/<begin.Changeset>/ fresh on disk (never through any
+// cached engine state) and sets Unmoved to that changeset id when the
+// directory still exists; "" otherwise. Recover still does not perform
+// the move — lw doctor (S6-T1) does.
+//
 // Every disk read here is a fresh os.ReadFile/os.Lstat against the
 // filesystem, never through e.vault: a same-process Recover call, run
 // immediately after a simulated crash, must see exactly what Commit
@@ -696,7 +708,16 @@ func (e *Engine) Recover() (RecoveryReport, error) {
 	if err != nil {
 		return RecoveryReport{}, err
 	}
-	if begin == nil || resolved {
+	if begin == nil {
+		return RecoveryReport{}, nil
+	}
+	if resolved {
+		openPath := filepath.Join(e.changesetOpenDir(), begin.Changeset)
+		if _, statErr := os.Stat(openPath); statErr == nil {
+			return RecoveryReport{Unmoved: begin.Changeset}, nil
+		} else if !os.IsNotExist(statErr) {
+			return RecoveryReport{}, fmt.Errorf("stage: recover: stat %s: %w", openPath, statErr)
+		}
 		return RecoveryReport{}, nil
 	}
 
