@@ -123,7 +123,7 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["op", "path", "section", "before", "after", "hunks"],
+          "required": ["op", "path", "before", "after", "hunks"],
           "properties": {
             "id": { "$ref": "#/$defs/opId" },
             "op": { "const": "patch_page" },
@@ -142,7 +142,7 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["op", "from", "to", "cascade"],
+          "required": ["op", "from", "to"],
           "properties": {
             "id": { "$ref": "#/$defs/opId" },
             "op": { "const": "rename_page" },
@@ -151,8 +151,12 @@
             "cascade": {
               "type": "array",
               "items": { "$ref": "#/$defs/op" },
-              "minItems": 1,
-              "description": "Every inbound backlink must be covered; an incomplete cascade is rejected (backbone §5.5)."
+              "description": "Every inbound backlink must be covered; an incomplete cascade is rejected (backbone §5.5). May legally be empty or absent when a page has no inbound backlinks (MASTER §9 D-BD) — no minItems."
+            },
+            "source_shas": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Staleness anchor captured at Append time (backbone §5.3, MASTER §9 D-BC)."
             },
             "state": { "$ref": "#/$defs/opState" }
           }
@@ -170,6 +174,16 @@
               "minItems": 2
             },
             "to": { "$ref": "#/$defs/vaultPath" },
+            "cascade": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/op" },
+              "description": "Every inbound backlink to a merged page must be covered, same completeness rule as rename_page (backbone §5.5, MASTER §9 D-AK). May legally be empty or absent — no minItems (D-BD)."
+            },
+            "source_shas": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Staleness anchor captured at Append time (backbone §5.3, MASTER §9 D-BC)."
+            },
             "state": { "$ref": "#/$defs/opState" }
           }
         },
@@ -185,6 +199,11 @@
               "type": "array",
               "items": { "$ref": "#/$defs/vaultPath" },
               "minItems": 2
+            },
+            "source_shas": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Staleness anchor captured at Append time (backbone §5.3, MASTER §9 D-BC)."
             },
             "state": { "$ref": "#/$defs/opState" }
           }
@@ -236,11 +255,12 @@
         { "op": "rename_page", "from": "wiki/entities/gpt4.md",
           "to": "wiki/entities/gpt-4.md",
           "cascade": [
-            { "op": "patch_page", "path": "wiki/concepts/kv-cache.md",
-              "section": "## Related", "before": "sha256:aaaaaaaa", "after": "sha256:bbbbbbbb",
+            { "id": "op5", "op": "patch_page", "path": "wiki/concepts/kv-cache.md",
+              "before": "sha256:aaaaaaaa", "after": "sha256:bbbbbbbb",
               "hunks": [ { "id": "h1", "path": "wiki/concepts/kv-cache.md",
                 "-": ["- [[gpt4]] serves as a baseline for comparison."],
-                "+": ["- [[gpt-4]] serves as a baseline for comparison."] } ] }
+                "+": ["- [[gpt-4]] serves as a baseline for comparison."] } ],
+              "state": "proposed" }
           ] }
       ],
       "checks": { "schema": "pass", "lint": "pass", "orphans": 0, "broken_links": 0 }
