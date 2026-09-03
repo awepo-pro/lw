@@ -71,3 +71,28 @@ func nextCommitID(snapshotsDir string) (string, error) {
 	}
 	return fmt.Sprintf("%06d", highest+1), nil
 }
+
+// predecessorCommitID returns the six-digit commit id immediately before
+// commitID — "000002" -> "000001", and "000001" -> "000000", the baseline
+// Commit writes at step 4a (MASTER §9 D-BU).
+//
+// It is the arithmetic Revert needs to name snapshot(commitID-1) (backbone
+// §5.8) and lives here, beside nextCommitID, because commit-id arithmetic
+// is one concern in one file rather than two spellings in two.
+func predecessorCommitID(commitID string) (string, error) {
+	if !commitIDPattern.MatchString(commitID) {
+		return "", fmt.Errorf("stage: predecessor of %q: not a six-digit commit id", commitID)
+	}
+	n, err := strconv.Atoi(commitID)
+	if err != nil {
+		return "", fmt.Errorf("stage: predecessor of %q: %w", commitID, err)
+	}
+	if n == 0 {
+		return "", fmt.Errorf("stage: predecessor of %q: no commit precedes the baseline", commitID)
+	}
+	return fmt.Sprintf("%06d", n-1), nil
+}
+
+// commitIDPattern matches a bare six-digit commit id (no ".tree" suffix),
+// the form Commit returns and cmd/lw hands to Revert.
+var commitIDPattern = regexp.MustCompile(`^\d{6}$`)

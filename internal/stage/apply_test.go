@@ -722,3 +722,144 @@ func countLogEntries(content string) int {
 	}
 	return n
 }
+
+// TestCommitWritesBaselineSnapshot locks MASTER §9 D-BU (§10 OR-9): the
+// first Commit captures the PRE-commit tree as snapshots/000000.tree, so
+// that Revert("000001") — the one revert gate G2 runs — has the
+// predecessor backbone §5.8 tells it to diff against.
+//
+// Without the fix nothing ever writes 000000.tree (nextCommitID yields
+// "000001" on an empty snapshots/ and Commit's step 6 writes only its own
+// id), so Revert of the first commit has nothing to compare and the M2
+// thesis cannot be demonstrated end to end.
+func TestCommitWritesBaselineSnapshot(t *testing.T) {
+	e, dir := newTestEngine(t)
+	snapshotsDir := filepath.Join(dir, ".llmwiki", "snapshots")
+
+	// The tree as it stands before any commit — what 000000.tree must hold.
+	wantBaseline, err := e.buildSnapshot()
+	if err != nil {
+		t.Fatalf("buildSnapshot: %v", err)
+	}
+
+	newPath := "wiki/concepts/baseline-probe.md"
+	if _, err := e.OpenChangeset("baseline", testAuthor); err != nil {
+		t.Fatalf("OpenChangeset: %v", err)
+	}
+	if _, err := e.Append(Op{
+		Kind: OpCreatePage, Path: newPath,
+		Content:   newConceptPageContent("Baseline Probe"),
+		Rationale: "lock D-BU", Provenance: []string{"raw/baseline.md"},
+	}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	commitID, err := e.Commit("baseline")
+	if err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if commitID != "000001" {
+		t.Fatalf("commit id = %q, want 000001 — the baseline must not consume an id", commitID)
+	}
+
+	// 1. The baseline exists and is readable through the public wrapper.
+	got, err := e.Snapshot("000000")
+	if err != nil {
+		t.Fatalf("Snapshot(000000): %v — D-BU's baseline was not written", err)
+	}
+
+	// 2. It is the PRE-commit tree, byte for byte.
+	if len(got) != len(wantBaseline) {
+		t.Fatalf("baseline has %d entries, want %d", len(got), len(wantBaseline))
+	}
+	for p, sha := range wantBaseline {
+		if got[p] != sha {
+			t.Errorf("baseline[%q] = %q, want %q", p, got[p], sha)
+		}
+	}
+	if _, ok := got[newPath]; ok {
+		t.Errorf("baseline contains %q, but that page did not exist before the commit", newPath)
+	}
+
+	// 3. The delta against it is exactly this commit's own effect — which
+	//    is the whole point: Revert(000001) must not propose retracting the
+	//    pre-existing vault.
+	cur, err := e.Snapshot("000001")
+	if err != nil {
+		t.Fatalf("Snapshot(000001): %v", err)
+	}
+	var added []string
+	for p := range cur {
+		if _, ok := got[p]; !ok {
+			added = append(added, p)
+		}
+	}
+	if len(added) != 1 || added[0] != newPath {
+		t.Errorf("added paths = %v, want exactly [%s]", added, newPath)
+	}
+
+	// 4. A second commit still gets 000002, and must NOT rewrite the
+	//    baseline or its own predecessor's recorded snapshot.
+	before000001, err := os.ReadFile(filepath.Join(snapshotsDir, "000001.tree"))
+	if err != nil {
+		t.Fatalf("read 000001.tree: %v", err)
+	}
+	if _, err := e.OpenChangeset("second", testAuthor); err != nil {
+		t.Fatalf("OpenChangeset 2: %v", err)
+	}
+	if _, err := e.Append(Op{
+		Kind: OpCreatePage, Path: "wiki/concepts/baseline-probe-two.md",
+		Content:   newConceptPageContent("Baseline Probe Two"),
+		Rationale: "lock D-BU", Provenance: []string{"raw/baseline.md"},
+	}); err != nil {
+		t.Fatalf("Append 2: %v", err)
+	}
+	id2, err := e.Commit("second")
+	if err != nil {
+		t.Fatalf("Commit 2: %v", err)
+	}
+	if id2 != "000002" {
+		t.Fatalf("second commit id = %q, want 000002", id2)
+	}
+	after000001, err := os.ReadFile(filepath.Join(snapshotsDir, "000001.tree"))
+	if err != nil {
+		t.Fatalf("re-read 000001.tree: %v", err)
+	}
+	if string(before000001) != string(after000001) {
+		t.Error("the second commit rewrote snapshots/000001.tree — a recorded snapshot is history and must never be overwritten")
+	}
+}
+
+// TestPredecessorCommitID locks the arithmetic Revert names its
+// predecessor snapshot with (MASTER §9 D-BU).
+func TestPredecessorCommitID(t *testing.T) {
+	for _, tc := range []struct {
+		in      string
+		want    string
+		wantErr bool
+	}{
+		{in: "000002", want: "000001"},
+		{in: "000001", want: "000000"},
+		{in: "000042", want: "000041"},
+		{in: "000100", want: "000099"},
+		{in: "000000", wantErr: true},
+		{in: "1", wantErr: true},
+		{in: "", wantErr: true},
+		{in: "00001a", wantErr: true},
+		{in: "000001.tree", wantErr: true},
+	} {
+		got, err := predecessorCommitID(tc.in)
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("predecessorCommitID(%q) = %q, want an error", tc.in, got)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("predecessorCommitID(%q): %v", tc.in, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("predecessorCommitID(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}

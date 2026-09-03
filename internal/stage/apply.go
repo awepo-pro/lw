@@ -103,6 +103,31 @@ func (e *Engine) Commit(message string) (string, error) {
 		return "", err
 	}
 
+	// Step 4a. The baseline snapshot (MASTER §9 D-BU, §10 OR-9). Revert
+	// diffs snapshot(N) against snapshot(N-1) (backbone §5.8) — but the
+	// FIRST commit has no N-1: nextCommitID yields "000001" on an empty
+	// snapshots/ and nothing ever writes "000000.tree", so Revert("000001")
+	// — the one revert gate G2 runs — had no predecessor to diff against.
+	// Capturing the pre-commit tree here, BEFORE step 5 writes a byte,
+	// gives it one. Written only when absent, never overwriting: commit N's
+	// own snapshots/<N-1>.tree was taken at ITS step 6, before ITS step 8
+	// appended to log.md, and rewriting it here would silently rewrite that
+	// recorded history. In practice this fires exactly once per vault.
+	baselineID, err := predecessorCommitID(commitID)
+	if err != nil {
+		return "", fmt.Errorf("stage: commit: %w", err)
+	}
+	snapshotsDir := filepath.Join(e.llmwikiDir(), "snapshots")
+	if _, statErr := os.Stat(filepath.Join(snapshotsDir, baselineID+".tree")); os.IsNotExist(statErr) {
+		baseline, err := e.buildSnapshot()
+		if err != nil {
+			return "", fmt.Errorf("stage: commit: baseline snapshot: %w", err)
+		}
+		if err := WriteSnapshot(snapshotsDir, baselineID, baseline); err != nil {
+			return "", fmt.Errorf("stage: commit: baseline snapshot: %w", err)
+		}
+	}
+
 	// Step 5. Per-file write-temp/fsync/rename, in sorted path order.
 	// Disposal is per kind and never os.Remove.
 	if err := applyMaterialization(e.root, e.llmwikiDir(), commitID, m); err != nil {
