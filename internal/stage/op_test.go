@@ -1,6 +1,8 @@
 package stage
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 )
@@ -140,5 +142,64 @@ func TestApplyHunksAllDroppedIsIdentity(t *testing.T) {
 	got := string(applyHunks(before, hunks))
 	if got != string(before) {
 		t.Fatalf("applyHunks with every hunk dropped = %q, want the original content %q", got, before)
+	}
+}
+
+// TestCascadeExcludesItsOwnSources locks MASTER §9 D-BT. On
+// spec/fixtures/minimal, kv-cache.md and flash-attention.md link to each
+// other, so merging the pair used to cascade a link rewrite into each
+// SOURCE. A rewritten source lands in Commit's m.writes, and
+// applyMaterialization prefers a write over a move, so the source was
+// written in place instead of tombstoned: the merge silently did not
+// happen and both sources survived it.
+//
+// Added by the orchestrator at S2-T5 verification (§10 OR-8) because the
+// defect spanned two already-verified subtasks and had no coverage on
+// either side of it.
+func TestCascadeExcludesItsOwnSources(t *testing.T) {
+	e, dir := newTestEngine(t)
+	srcs := []string{"wiki/concepts/kv-cache.md", "wiki/concepts/flash-attention.md"}
+
+	// (1) The set the builder and validateCascade both derive.
+	for _, p := range cascadeLinkingPages(e.Vault(), srcs) {
+		for _, src := range srcs {
+			if p == src {
+				t.Errorf("cascadeLinkingPages included its own source %s", p)
+			}
+		}
+	}
+
+	// (2) The behaviour that set exists to produce: a committed merge
+	// removes every source from the vault and leaves it in tombstones/.
+	if _, err := e.OpenChangeset("merge sources that link to each other", testAuthor); err != nil {
+		t.Fatal(err)
+	}
+	to := "wiki/concepts/attention-memory.md"
+	if _, err := e.Append(Op{Kind: OpMergePages, Sources: srcs, To: to}); err != nil {
+		t.Fatalf("append merge_pages: %v", err)
+	}
+	if _, err := e.Append(Op{
+		Kind:       OpCreatePage,
+		Path:       to,
+		Content:    newConceptPageContent("Attention Memory"),
+		Rationale:  "merge of two mutually linking pages",
+		Provenance: []string{"raw/articles/kv-cache-explained.md"},
+	}); err != nil {
+		t.Fatalf("append create_page: %v", err)
+	}
+
+	commitID, err := e.Commit("merge")
+	if err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	for _, src := range srcs {
+		if _, err := os.Stat(filepath.Join(dir, src)); err == nil {
+			t.Errorf("merge source %s is still in the vault after commit", src)
+		}
+		tomb := filepath.Join(dir, ".llmwiki", "tombstones", commitID, filepath.FromSlash(src))
+		if _, err := os.Stat(tomb); err != nil {
+			t.Errorf("merge source %s was not tombstoned: %v", src, err)
+		}
 	}
 }

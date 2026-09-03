@@ -278,6 +278,18 @@ func cascadeLinkingPages(v *vault.Vault, froms []string) []string {
 		}
 	}
 
+	// A source is leaving the vault, so its OWN outbound links must not be
+	// rewritten. Rewriting one puts the source into Commit's m.writes, and
+	// applyMaterialization prefers a write over a move — so the source
+	// would be written in place instead of tombstoned and the merge would
+	// silently not happen. Reachable on spec/fixtures/minimal, where
+	// kv-cache.md and flash-attention.md link to each other (MASTER §9
+	// D-BT). validateCascade calls this same function, so builder and
+	// completeness rule stay one definition.
+	for f := range fromSet {
+		delete(set, f)
+	}
+
 	return sortedSet(set)
 }
 
