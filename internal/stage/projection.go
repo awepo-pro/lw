@@ -177,16 +177,28 @@ func (e *Engine) projectedTree(ops []Op) (map[string][]byte, error) {
 	return tree, nil
 }
 
-// computeChecks builds the fs.FS view of tree, opens it as a Vault (never
-// touching disk), lints it, and returns the four Checks fields per
-// backbone §5.3's Checks Contract.
-func computeChecks(tree map[string][]byte) (Checks, error) {
+// openProjection builds the fs.FS view of tree and opens it as a Vault,
+// never touching disk. The single seam computeChecks and ProjectedReport
+// share, so the tree a Checks verdict describes and the tree a lint.Report
+// counts can never drift apart (they are the same call).
+func openProjection(tree map[string][]byte) (*vault.Vault, error) {
 	mfs := make(fstest.MapFS, len(tree))
 	for p, b := range tree {
 		mfs[p] = &fstest.MapFile{Data: b, Mode: 0o644}
 	}
+	return vault.OpenFS(mfs)
+}
 
-	pv, err := vault.OpenFS(mfs)
+// lintProjection runs the 14 checks over an opened projection.
+func lintProjection(pv *vault.Vault) lint.Report {
+	return lint.Run(&lint.Context{Vault: pv, Index: index.Build(pv), Graph: pv.Graph()}, nil)
+}
+
+// computeChecks builds the fs.FS view of tree, opens it as a Vault (never
+// touching disk), lints it, and returns the four Checks fields per
+// backbone §5.3's Checks Contract.
+func computeChecks(tree map[string][]byte) (Checks, error) {
+	pv, err := openProjection(tree)
 	if err != nil {
 		return Checks{}, fmt.Errorf("stage: recompute checks: %w", err)
 	}
@@ -199,8 +211,7 @@ func computeChecks(tree map[string][]byte) (Checks, error) {
 		}
 	}
 
-	idx := index.Build(pv)
-	report := lint.Run(&lint.Context{Vault: pv, Index: idx, Graph: pv.Graph()}, nil)
+	report := lintProjection(pv)
 	lintResult := "pass"
 	if !report.Clean() {
 		lintResult = "fail"
@@ -212,6 +223,38 @@ func computeChecks(tree map[string][]byte) (Checks, error) {
 		Orphans:     len(pv.Graph().Orphans()),
 		BrokenLinks: len(pv.Graph().Broken()),
 	}, nil
+}
+
+// ProjectedReport returns the whole lint.Report of the open changeset's
+// projected tree — what `lw lint` would print if the changeset were
+// committed right now. ErrNoChangeset when none is open.
+//
+// Contract (backbone §5.4, MASTER §9 D-CC): this exists because
+// Changeset.Checks carries only Lint "pass"/"fail", while D-AG's
+// regression check is Report.Regresses(prev), which compares Errors
+// counts — so `lw commit` could not perform the check the CLI contract
+// names. Measured at wave-8 entry across create_page (clean and
+// dangling-link), rename_page, retract and split_page: this report equals
+// the post-commit report exactly, which is what makes it a sound
+// pre-commit predictor. That equality is only true after S2-T8 (C-65)
+// aligned the projection with what Commit actually writes.
+//
+// It takes no lock and writes nothing — like Diff, it only reads e.vault,
+// the working tree and the changeset already on disk.
+func (e *Engine) ProjectedReport() (lint.Report, error) {
+	c, err := e.currentOpen()
+	if err != nil {
+		return lint.Report{}, err
+	}
+	tree, err := e.projectedTree(c.Live())
+	if err != nil {
+		return lint.Report{}, err
+	}
+	pv, err := openProjection(tree)
+	if err != nil {
+		return lint.Report{}, fmt.Errorf("stage: projected report: %w", err)
+	}
+	return lintProjection(pv), nil
 }
 
 // recomputeChecks is the single code path OpenChangeset, Append, DropHunk,
