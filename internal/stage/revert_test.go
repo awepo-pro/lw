@@ -61,13 +61,17 @@ func lastRevertedSkipped(t *testing.T, e *Engine) []string {
 // assertSnapshotsMatchExcludingHistory asserts that got and want agree on
 // every path except log.md/log-<year>.md (D-BV, excluded from the revert
 // delta entirely and so irrelevant to a round-trip assertion) and every
-// path in allowExtra (a create_page's tombstone, D-BX, present in got with
-// different content than the pre-commit tree it is compared against,
-// which never had that path at all).
-func assertSnapshotsMatchExcludingHistory(t *testing.T, got, want Snapshot, allowExtra map[string]bool) {
+// path in allowDiffer, which is exempt in BOTH directions — present in got
+// but not in want, or present in both with different content. Two shapes
+// need it: a create_page's tombstone (D-BX), which the pre-commit tree
+// never had at all, and index.md after a create-revert (D-CA rule b),
+// which keeps the tombstoned page's line because a tombstone is still a
+// vault.Page. Every caller that exempts a path must assert its expected
+// content positively instead.
+func assertSnapshotsMatchExcludingHistory(t *testing.T, got, want Snapshot, allowDiffer map[string]bool) {
 	t.Helper()
 	for p, wantSHA := range want {
-		if revertHistoryPathPattern.MatchString(p) {
+		if revertHistoryPathPattern.MatchString(p) || allowDiffer[p] {
 			continue
 		}
 		gotSHA, ok := got[p]
@@ -80,7 +84,7 @@ func assertSnapshotsMatchExcludingHistory(t *testing.T, got, want Snapshot, allo
 		}
 	}
 	for p := range got {
-		if revertHistoryPathPattern.MatchString(p) || allowExtra[p] {
+		if revertHistoryPathPattern.MatchString(p) || allowDiffer[p] {
 			continue
 		}
 		if _, ok := want[p]; !ok {
@@ -157,7 +161,21 @@ func TestRevertRoundTripsTree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildSnapshot: %v", err)
 	}
-	assertSnapshotsMatchExcludingHistory(t, final, baseline, map[string]bool{newPath: true})
+	// index.md cannot round-trip a create-revert, and must not: the revert
+	// turns the created page into a tombstone, a tombstone is still a
+	// vault.Page, and MASTER §9 D-CA rule (b) is explicit that its index
+	// line therefore stays — removing it would CREATE an index-sync error.
+	// Same shape as the created path itself (C-59/D-BX): the product's
+	// deletion semantics, not a defect. Asserted positively just below.
+	assertSnapshotsMatchExcludingHistory(t, final, baseline, map[string]bool{newPath: true, "index.md": true})
+
+	idx, err := os.ReadFile(filepath.Join(dir, "index.md"))
+	if err != nil {
+		t.Fatalf("read index.md: %v", err)
+	}
+	if !strings.Contains(string(idx), "[[new-page]]") {
+		t.Errorf("index.md lost the reverted page's line; D-CA rule (b) keeps it:\n%s", idx)
+	}
 
 	tomb, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(newPath)))
 	if err != nil {
@@ -523,24 +541,31 @@ func TestRevertSplitPageDoesNotDropPaths(t *testing.T) {
 		}
 	}
 
-	// The source must come back as a create_page (D-BW: REMOVED, unpaired
-	// -> create_page), and each product must come back as a retract
-	// (D-BW: ADDED, unpaired, under wiki/ -> retract) — none of the three
-	// should have needed to be skipped in this scenario.
+	// The source must come back as a patch_page, and each product as a
+	// retract (D-BW: ADDED, unpaired, under wiki/ -> retract). None of the
+	// three should have needed to be skipped in this scenario.
+	//
+	// It was a create_page until S2-T8. D-CA rule (c) leaves a
+	// disambiguation stub at the split source instead of moving it out to
+	// tombstones/, so the path is CHANGED rather than REMOVED and
+	// buildRevertOps' generic CHANGED-that-is-a-vault.Page row handles it
+	// — restoring the exact pre-split bytes from the CAS instead of
+	// regenerating the page from scratch. Strictly stronger, and asserted
+	// as such below (§10 OR-10).
 	if containsString(skipped, source) || containsString(skipped, products[0]) || containsString(skipped, products[1]) {
 		t.Errorf("skipped = %v, want none of %s/%s/%s skipped for a plain split", skipped, source, products[0], products[1])
 	}
-	var gotCreate, gotRetracts int
+	var gotPatch, gotRetracts int
 	for _, op := range revertCS.Ops {
 		switch {
-		case op.Kind == OpCreatePage && op.Path == source:
-			gotCreate++
+		case op.Kind == OpPatchPage && op.Path == source:
+			gotPatch++
 		case op.Kind == OpRetract && containsString(products, op.Path):
 			gotRetracts++
 		}
 	}
-	if gotCreate != 1 {
-		t.Errorf("got %d create_page ops for %s, want 1", gotCreate, source)
+	if gotPatch != 1 {
+		t.Errorf("got %d patch_page ops for %s, want 1", gotPatch, source)
 	}
 	if gotRetracts != len(products) {
 		t.Errorf("got %d retract ops for the split's products, want %d", gotRetracts, len(products))

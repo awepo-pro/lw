@@ -71,6 +71,10 @@ func (e *Engine) Diff() (Diff, error) {
 		files = append(files, fds...)
 	}
 
+	if err := e.applyDerivedIndexDiff(&files, c.Live()); err != nil {
+		return Diff{}, err
+	}
+
 	sortFileDiffs(files)
 
 	d := Diff{Changeset: c.ID, Files: files}
@@ -82,6 +86,85 @@ func (e *Engine) Diff() (Diff, error) {
 		d.Removed += removed
 	}
 	return d, nil
+}
+
+// applyDerivedIndexDiff is S2-T8 rule (a)'s THIRD surface: the identical
+// derivation pass buildCommitMaterialization (apply.go) and projectedTree
+// (projection.go) already run, so what a reviewer sees here is what
+// Commit actually writes (/PLAN.md §1 — nothing lands without hunk-level
+// human review, and a review surface that misdescribes index.md is
+// exactly the C-65 defect class this repair closes on the third and last
+// place it could still hide). Mutates files in place.
+//
+// Seeding mirrors the other two passes exactly: from an existing
+// index.md FileDiff's New when a rename/merge cascade sub-op already
+// produced one (fileDiffsForOp's OpPatchPage case sets that from
+// e.postImage — the cascade's rewritten content), else from the working
+// tree via e.vault.Read directly, matching apply.go/projection.go's own
+// "a vault with no index.md at all derives nothing, not an error" rule
+// (haveIndex stays false and this contributes no entry at all).
+//
+// Contract (D-BQ): when an index.md FileDiff already exists, only its New
+// is replaced — OpID, Kind and Hunks are untouched, so a cascade's
+// persisted hunk ids never renumber. A brand new entry (no cascade wrote
+// one) carries no Hunks at all, the same shape retract/split_page/
+// rename_page/merge_pages already have (D-BR/D-BS): derived content that
+// does not round-trip through changeset.json carries none: Unified/
+// UnifiedFile compute what to render from ComputeHunks(Old, New) at
+// render time regardless (D-BQ). Its OpID is the first live create_page
+// that derived a line, so DropOp on that op drops its index.md line's
+// FileDiff attribution with it rather than leaving an orphaned entry
+// pointing at a dropped op.
+func (e *Engine) applyDerivedIndexDiff(files *[]FileDiff, live []Op) error {
+	creates := liveCreatePages(live)
+	if len(creates) == 0 {
+		return nil
+	}
+
+	var idxDiff *FileDiff
+	for i := range *files {
+		if (*files)[i].Path == "index.md" {
+			idxDiff = &(*files)[i]
+			break
+		}
+	}
+
+	var seed []byte
+	var oldContent string
+	haveIndex := false
+	switch {
+	case idxDiff != nil:
+		seed = []byte(idxDiff.New)
+		oldContent = idxDiff.Old
+		haveIndex = true
+	default:
+		if b, err := e.vault.Read("index.md"); err == nil {
+			seed = b
+			oldContent = string(b)
+			haveIndex = true
+		}
+	}
+	if !haveIndex {
+		return nil
+	}
+
+	derived, err := deriveIndex(seed, creates, e.postImage)
+	if err != nil {
+		return fmt.Errorf("stage: diff: derive index: %w", err)
+	}
+
+	if idxDiff != nil {
+		idxDiff.New = string(derived)
+		return nil
+	}
+	if string(derived) == oldContent {
+		return nil
+	}
+	*files = append(*files, FileDiff{
+		Path: "index.md", OpID: creates[0].ID, Kind: OpPatchPage,
+		Old: oldContent, New: string(derived),
+	})
+	return nil
 }
 
 // fileDiffsForOp returns the FileDiff entries op itself produces, per the
@@ -100,7 +183,7 @@ func (e *Engine) Diff() (Diff, error) {
 //	rename_page    2 — From, then To    From: working tree           From: ""
 //	                                    To: ""                       To: Vault.Page(From).Serialize()
 //	merge_pages    1 per Sources entry  working tree                 ""
-//	split_page     1 @ Path             working tree                 ""
+//	split_page     1 @ Path             working tree                 the stub Commit writes (splitStub, D-CB)
 //	retract        1 @ Path             working tree                 the tombstone (D-BR)
 //	add_link       1 marker @ To        ""                           ""
 //
@@ -193,9 +276,20 @@ func (e *Engine) fileDiffsForOp(op Op) ([]FileDiff, error) {
 	case OpSplitPage:
 		cascaded := cascadePathSet(op)
 		if !cascaded[op.Path] {
+			// New is the disambiguation stub Commit will actually leave in
+			// place at op.Path (S2-T8 rule (c), D-CB) — never "", which
+			// would show the reviewer a whole-file deletion for a path
+			// that still exists, page-shaped, after commit. Same call
+			// apply.go's planOp and projection.go's applyOp make; the
+			// retract arm above renders retractTombstone the same way
+			// (D-BR).
+			newContent := ""
+			if page, ok := e.vault.Page(op.Path); ok {
+				newContent = string(splitStub(page, op.Sources, e.now().UTC().Format("2006-01-02")))
+			}
 			out = append(out, FileDiff{
 				Path: op.Path, OpID: op.ID, Kind: op.Kind,
-				Old: e.workingTreeContent(op.Path), New: "", Stale: stale,
+				Old: e.workingTreeContent(op.Path), New: newContent, Stale: stale,
 			})
 		}
 

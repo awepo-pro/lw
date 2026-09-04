@@ -87,8 +87,17 @@ func (e *Engine) postImage(op Op) ([]byte, error) {
 // applyOp overrides tree's paths with op's projected effect, per the
 // backbone §5.4 per-kind projection table (MASTER §9 D-AZ), then recurses
 // into op.Cascade so every cascade sub-op's own rewrite is applied too.
-// No tombstone is synthesized here — that is Commit's job (a later wave)
-// and its content deliberately does not round-trip through changeset.json.
+//
+// retract and split_page project the SAME Commit-time-only page shape
+// Commit itself will write (retractTombstone / splitStub, both apply.go —
+// a call, not a second copy of the bytes), not a deletion (S2-T8 C-65,
+// D-CB step 3). Before this fix the projection deleted both paths outright
+// while apply.go's planOp wrote a page in place, so the review surface
+// reported Lint:fail / BrokenLinks>0 for a retract or split whose actual
+// commit was clean — measured three ways: a retract, a split, and a
+// revert-of-create. A path that no longer parses as a live page (should
+// not happen — ValidateOp requires it to exist at Append time) falls back
+// to the old delete-outright behavior rather than guessing at content.
 func (e *Engine) applyOp(tree map[string][]byte, op Op) error {
 	switch op.Kind {
 	case OpCreatePage, OpPatchPage, OpIngestSource:
@@ -103,7 +112,11 @@ func (e *Engine) applyOp(tree map[string][]byte, op Op) error {
 			tree[op.To] = p.Serialize()
 		}
 	case OpRetract:
-		delete(tree, op.Path)
+		if page, ok := e.vault.Page(op.Path); ok {
+			tree[op.Path] = retractTombstone(page, op.Rationale, e.now().UTC().Format("2006-01-02"))
+		} else {
+			delete(tree, op.Path)
+		}
 	case OpMergePages:
 		for _, src := range op.Sources {
 			delete(tree, src)
@@ -111,7 +124,11 @@ func (e *Engine) applyOp(tree map[string][]byte, op Op) error {
 		// To's content comes from a sibling patch_page/create_page op in
 		// the same changeset (D-AZ); nothing to project here directly.
 	case OpSplitPage:
-		delete(tree, op.Path)
+		if page, ok := e.vault.Page(op.Path); ok {
+			tree[op.Path] = splitStub(page, op.Sources, e.now().UTC().Format("2006-01-02"))
+		} else {
+			delete(tree, op.Path)
+		}
 		// Its products come from the sibling create_page ops D-AK mandates.
 	case OpAddLink:
 		// Content-free marker (D-AK); its edits are sibling patch_page ops.
@@ -127,6 +144,15 @@ func (e *Engine) applyOp(tree map[string][]byte, op Op) error {
 // projectedTree returns the whole-vault, in-memory projection: every *.md
 // file on disk, overridden by the post-image of every op in ops (backbone
 // §5.4, MASTER §9 D-AX point 2 — every live op, not just the newest one).
+//
+// After the override loop, the identical S2-T8 rule (a) derivation pass
+// buildCommitMaterialization runs at Commit time (apply.go) runs here too,
+// so the changeset's projected Checks and what Commit actually writes
+// never disagree (D-CB). walkWholeTree already seeded tree["index.md"]
+// from disk, and any cascade rewrite the loop above performed already
+// landed there — applyOp writes into tree in place — so the running seed
+// this derivation starts from is simply whatever tree currently holds. A
+// tree with no "index.md" entry at all derives nothing.
 func (e *Engine) projectedTree(ops []Op) (map[string][]byte, error) {
 	tree, err := walkWholeTree(e.root)
 	if err != nil {
@@ -137,6 +163,17 @@ func (e *Engine) projectedTree(ops []Op) (map[string][]byte, error) {
 			return nil, err
 		}
 	}
+
+	if creates := liveCreatePages(ops); len(creates) > 0 {
+		if running, ok := tree["index.md"]; ok {
+			updated, err := deriveIndex(running, creates, e.postImage)
+			if err != nil {
+				return nil, err
+			}
+			tree["index.md"] = updated
+		}
+	}
+
 	return tree, nil
 }
 

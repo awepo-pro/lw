@@ -264,6 +264,15 @@ type commitMaterialization struct {
 // every path Commit will act on. No file is written or moved yet — this
 // is the in-memory step that step 3's journal entry and step 4's CAS
 // storage both read from.
+//
+// After the per-op loop, one S2-T8 rule (a) derivation pass runs over the
+// whole live op set for every live create_page — never per op, which is
+// exactly what clobbers two whole-file writers of the same path (C-63,
+// derive.go's file header). Seeded from m.writes["index.md"] when a
+// cascade already rewrote it in the loop above, so a rename cascade's link
+// rewrite and a create's new line land in the same write; from the working
+// tree otherwise. A vault with no index.md at all derives nothing — not an
+// error.
 func (e *Engine) buildCommitMaterialization(live []Op, retractedDate string) (*commitMaterialization, error) {
 	m := &commitMaterialization{writes: map[string][]byte{}, moves: map[string][]byte{}}
 	for _, op := range live {
@@ -271,6 +280,23 @@ func (e *Engine) buildCommitMaterialization(live []Op, retractedDate string) (*c
 			return nil, err
 		}
 	}
+
+	if creates := liveCreatePages(live); len(creates) > 0 {
+		running, ok := m.writes["index.md"]
+		if !ok {
+			if b, err := e.vault.Read("index.md"); err == nil {
+				running, ok = b, true
+			}
+		}
+		if ok {
+			updated, err := deriveIndex(running, creates, e.postImage)
+			if err != nil {
+				return nil, fmt.Errorf("commit: derive index: %w", err)
+			}
+			m.writes["index.md"] = updated
+		}
+	}
+
 	return m, nil
 }
 
@@ -282,15 +308,19 @@ func (e *Engine) buildCommitMaterialization(live []Op, retractedDate string) (*c
 // retract's target is rewritten in place with a synthesized tombstone,
 // whose original pre-image is also captured (extraPreImages) so Revert
 // (S2-T6) has something to restore. A rename_page/merge_pages source is
-// moved, never written over. split_page's source carries the identical
-// "must be preserved, never left behind page-shaped" requirement (D-BN
-// step 4 groups it with rename/merge/retract when it names what must be
-// pre-imaged), but backbone §5.4 step 5's disposal enumeration is silent
-// on what step 5 itself does with it — see this subtask's report. Treated
-// the same as a rename/merge source (moved to tombstones/) rather than
-// left untouched in the vault, since leaving it behind, unchanged, would
-// contradict the whole point of the split — and moving it costs nothing
-// extra a merge disposal doesn't already pay.
+// moved, never written over.
+//
+// split_page's source is NOT moved to tombstones/ (superseding this
+// method's earlier, wave-4 treatment of it as rename/merge-shaped): S2-T8
+// rule (c) leaves a disambiguation stub in place instead, the same
+// written-in-place shape retract already has, so every inbound link to the
+// split source keeps resolving with no engine-authored guess at which
+// product it now means (derive.go's splitStub doc comment). Its original
+// pre-image is captured the same way retract's is, for Revert.
+//
+// retractedDate is also split_page's stub date (splitStub's splitDate):
+// one commit-time date, reused rather than re-read from the clock, for
+// both of Commit's own Op-synthesized page shapes.
 func (e *Engine) planOp(m *commitMaterialization, op Op, retractedDate string) error {
 	if op.State == StateDropped || op.State == StateRejected {
 		return nil
@@ -325,11 +355,12 @@ func (e *Engine) planOp(m *commitMaterialization, op Op, retractedDate string) e
 		// m.writes when that sibling op is planned.
 
 	case OpSplitPage:
-		content, ok := canonicalContent(e.vault, op.Path)
+		page, ok := e.vault.Page(op.Path)
 		if !ok {
 			return fmt.Errorf("commit: split_page: source %s is no longer readable", op.Path)
 		}
-		m.moves[op.Path] = content
+		m.extraPreImages = append(m.extraPreImages, page.Serialize())
+		m.writes[op.Path] = splitStub(page, op.Sources, retractedDate)
 		// Its resulting pages are sibling create_page ops (backbone §5.4
 		// D-AZ) and land in m.writes when those are planned.
 
@@ -829,19 +860,35 @@ func loadChangesetFile(path string) (*Changeset, error) {
 // recoverTarget is what Recover expects to eventually find at one
 // commit_begin-journaled path.
 //
-// Every op kind except retract already carries its expected sha directly
-// in changeset.json — After/SHA256 for a write, SourceSHAs for a moved
-// source — so Recover reads it from there rather than the live vault
-// (which may already reflect a partial step 5). A retract's tombstone is
-// synthesized only at Commit time and deliberately does not round-trip
-// through changeset.json (D-AZ); isRetract marks a target that must be
-// resolved by re-synthesizing it instead.
+// Every op kind except retract and split_page already carries its
+// expected sha directly in changeset.json — After/SHA256 for a write,
+// SourceSHAs for a moved source — so Recover reads it from there rather
+// than the live vault (which may already reflect a partial step 5). A
+// retract's tombstone, and (since this repair) a split_page's disambiguation
+// stub, are synthesized only at Commit time and deliberately do not
+// round-trip through changeset.json (D-AZ); isRetract/isSplit mark a
+// target that must be resolved by re-synthesizing it instead.
+//
+// Repair note (R1): a split_page source used to be move: true, mirroring
+// rename_page/merge_pages — correct through wave 6, wrong from S2-T8
+// onward, when Commit stopped moving it to tombstones/ and started writing
+// a stub in place (rule (c)). Under the old move:true handling,
+// resolveRecoverTarget's move branch reports "applied" only when the path
+// is ABSENT — which it never is again, so the source sat in Pending
+// forever after any interrupted split commit, and Fixable was computed
+// against the ORIGINAL page's sha (SourceSHAs[0]) rather than the stub
+// Commit actually needs to finish writing. Recover gates OpenChangeset in
+// the step-9 Unmoved window (D-BP), so a permanently-Pending, wrongly-
+// Fixable split is a vault that never fully recovers. Fixed by giving
+// split_page the identical isRetract-shaped treatment retract already had.
 type recoverTarget struct {
 	move      bool   // true: source moved out of the vault to tombstones/
-	sha       string // expected content sha; unused when isRetract
+	sha       string // expected content sha; unused when isRetract/isSplit
 	isRetract bool
 	rationale string // set only when isRetract
-	dateStr   string // set only when isRetract: the commit_begin event's own date
+	isSplit   bool
+	products  []string // set only when isSplit: op.Sources, for splitStub
+	dateStr   string   // set only when isRetract/isSplit: the commit_begin event's own date
 }
 
 // collectRecoverTargets walks op — and, recursively, every live entry of
@@ -871,9 +918,10 @@ func collectRecoverTargets(targets map[string]recoverTarget, op Op, dateStr stri
 			}
 		}
 	case OpSplitPage:
-		if len(op.SourceSHAs) > 0 {
-			targets[op.Path] = recoverTarget{move: true, sha: op.SourceSHAs[0]}
-		}
+		// In place, not moved (R1 repair note above): op.Sources is the
+		// same products list splitStub needs, already persisted on the
+		// changeset op, so no captured sha is required here at all.
+		targets[op.Path] = recoverTarget{isSplit: true, products: op.Sources, dateStr: dateStr}
 	case OpRetract:
 		targets[op.Path] = recoverTarget{isRetract: true, rationale: op.Rationale, dateStr: dateStr}
 	case OpAddLink:
@@ -905,11 +953,11 @@ func (e *Engine) resolveRecoverTarget(relPath string, t recoverTarget) (applied 
 	b, readErr := os.ReadFile(abs)
 	if readErr != nil {
 		if os.IsNotExist(readErr) {
-			if t.isRetract {
-				// A retract's target exists pre-commit (ValidateOp
-				// requires it) and this package never removes a vault
-				// file — its absence here is not a legal state. Report
-				// unresolvable rather than guess at a sha.
+			if t.isRetract || t.isSplit {
+				// A retract's or split_page's target exists pre-commit
+				// (ValidateOp requires it) and this package never removes
+				// a vault file — its absence here is not a legal state.
+				// Report unresolvable rather than guess at a sha.
 				return false, "", nil
 			}
 			return false, t.sha, nil
@@ -930,6 +978,22 @@ func (e *Engine) resolveRecoverTarget(relPath string, t recoverTarget) (applied 
 			return true, "", nil
 		}
 		expected := sha256Hex(retractTombstone(page, t.rationale, t.dateStr))
+		return sha256Hex(b) == expected, expected, nil
+	}
+
+	if t.isSplit {
+		page, parseErr := vault.ParsePage(relPath, b)
+		if parseErr != nil {
+			return false, "", nil
+		}
+		if page.FM.Extra["split"] != "" {
+			// Same reasoning as the isRetract branch above, for the same
+			// reason (the write is atomic): a page-shaped file at this
+			// path already carrying the stub's "split" marker key can
+			// only be the complete stub, never a partial one.
+			return true, "", nil
+		}
+		expected := sha256Hex(splitStub(page, t.products, t.dateStr))
 		return sha256Hex(b) == expected, expected, nil
 	}
 

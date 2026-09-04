@@ -97,15 +97,17 @@
 -  during verification.
 --- a/index.md
 +++ b/index.md
-@@ -3,7 +3,7 @@
+@@ -3,8 +3,9 @@
  ## Concepts
  
  - [[speculative-decoding]] — Drafting tokens with a small model and verifying them with the target model.
 -- [[kv-cache]] — Caching attention keys/values across decoding steps.
 +- [[kv-cache-v2]] — Caching attention keys/values across decoding steps.
  - [[flash-attention]] — Fused, memory-efficient attention kernel.
++- [[golden-new-page]] — Golden New Page
  
  ## Entities
+ 
 --- a/wiki/concepts/flash-attention.md
 +++ b/wiki/concepts/flash-attention.md
 @@ -16,7 +16,7 @@

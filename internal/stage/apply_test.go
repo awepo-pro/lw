@@ -390,6 +390,125 @@ func TestCrashAfterStep4MakesRetractFixable(t *testing.T) {
 	}
 }
 
+// TestCrashAfterStepMakesSplitPageRecoverable is R1's regression test.
+//
+// Before this repair, collectRecoverTargets treated a split_page source as
+// move: true — the same shape rename_page/merge_pages sources use — which
+// resolveRecoverTarget's move branch reports "applied" only when the path
+// is os.Lstat-absent. But S2-T8 rule (c) stopped moving a split source to
+// tombstones/ and started writing a disambiguation stub in place, so that
+// path is never absent again: an interrupted split commit left the source
+// permanently Pending, with Fixable computed against the ORIGINAL page's
+// sha (SourceSHAs[0]) rather than the stub Commit actually needs to finish
+// writing — a vault that never fully recovers, since Recover gates
+// OpenChangeset in the step-9 Unmoved window (D-BP).
+//
+// Proves the fix at two crash windows, the same fault-injection machinery
+// TestCrashAfterStep and TestCrashAfterStep4MakesRetractFixable use:
+//
+//   - after step 4 (before step 5 writes anything): the source still holds
+//     its ORIGINAL content, must be Pending, and — mirroring D-BN's point
+//     for retract — must ALREADY be Fixable, because step 4 stored the
+//     stub's bytes in the CAS before step 5 ever ran. Fixable here can only
+//     be true if it is being checked against the stub's sha, not the
+//     original page's (which was never the question — the original was
+//     already durable at Append time).
+//   - after step 5 (the stub is already on disk): the source must be
+//     Applied, not stuck in Pending — the exact "permanently Pending" bug
+//     this repair fixes. Before the fix this crash point looked identical
+//     to every other one: Lstat found the path present and reported
+//     applied=false regardless of what was actually on disk.
+func TestCrashAfterStepMakesSplitPageRecoverable(t *testing.T) {
+	const source = "wiki/concepts/kv-cache.md"
+	products := []string{"wiki/concepts/kv-cache-part-a.md", "wiki/concepts/kv-cache-part-b.md"}
+
+	for _, step := range []string{"4", "5"} {
+		t.Run(step, func(t *testing.T) {
+			e, dir := newTestEngine(t)
+
+			if _, err := e.OpenChangeset("split kv-cache", testAuthor); err != nil {
+				t.Fatalf("OpenChangeset: %v", err)
+			}
+			if _, err := e.Append(Op{Kind: OpSplitPage, Path: source, Sources: products}); err != nil {
+				t.Fatalf("Append split_page: %v", err)
+			}
+			for _, p := range products {
+				if _, err := e.Append(Op{
+					Kind:       OpCreatePage,
+					Path:       p,
+					Content:    newConceptPageContent("Part of KV Cache"),
+					Rationale:  "test",
+					Provenance: []string{"raw/papers/leviathan-2023.md"},
+				}); err != nil {
+					t.Fatalf("Append create_page(%s): %v", p, err)
+				}
+			}
+
+			injected := errors.New("simulated crash after step " + step)
+			e.faultAfter = func(s string) error {
+				if s == step {
+					return injected
+				}
+				return nil
+			}
+
+			if _, err := e.Commit("split kv-cache"); !errors.Is(err, injected) {
+				t.Fatalf("Commit: got %v, want it to wrap the injected fault", err)
+			}
+
+			report, err := e.Recover()
+			if err != nil {
+				t.Fatalf("Recover: %v", err)
+			}
+			if !report.Interrupted {
+				t.Fatal("Recover: Interrupted = false, want true")
+			}
+
+			b, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(source)))
+			if err != nil {
+				t.Fatalf("read %s: %v", source, err)
+			}
+
+			switch step {
+			case "4":
+				if !strings.Contains(string(b), "kv_cache_hit_rate") {
+					t.Fatalf("%s was written before step 5 ran (crash-after-4 should leave the ORIGINAL content in place)", source)
+				}
+				if !containsString(report.Pending, source) {
+					t.Fatalf("Pending = %v, want it to contain %s", report.Pending, source)
+				}
+				if !report.Fixable {
+					t.Fatal("Fixable = false, want true — step 4 already stored the stub's bytes in the CAS (D-BN), same as retract")
+				}
+
+				// Fixable must be true FOR THE RIGHT REASON: the CAS
+				// holds the STUB's sha specifically (splitStub of the
+				// still-original page b, which is what resolveRecoverTarget
+				// re-derives and checks), not merely true because some
+				// other, unrelated sha happens to already be stored.
+				page, err := vault.ParsePage(source, b)
+				if err != nil {
+					t.Fatalf("parse %s: %v", source, err)
+				}
+				wantSHA := sha256Hex(splitStub(page, products, e.now().UTC().Format("2006-01-02")))
+				if !e.store.Has(wantSHA) {
+					t.Fatalf("CAS does not hold %s, the stub's own sha — Fixable cannot legitimately be true against it", wantSHA)
+				}
+			case "5":
+				if !strings.Contains(string(b), "> **Split.**") {
+					t.Fatalf("%s does not hold the stub after step 5", source)
+				}
+				if containsString(report.Pending, source) {
+					t.Fatalf("Pending = %v, want it to NOT contain %s — the stub is already on disk, this is the permanently-Pending bug", report.Pending, source)
+				}
+				if !containsString(report.Applied, source) {
+					t.Fatalf("Applied = %v, want it to contain %s", report.Applied, source)
+				}
+			}
+		})
+	}
+}
+
 // TestRecoverNoCommits proves the zero-history case: a vault that has
 // never committed anything reports a non-interrupted, all-zero
 // RecoveryReport.

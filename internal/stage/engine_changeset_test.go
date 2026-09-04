@@ -159,13 +159,21 @@ func TestChecksReflectAllLiveOps(t *testing.T) {
 	}
 }
 
-// TestProjectionIncludesRootFiles pins C-29/D-AX: an op that desyncs
-// index.md (a new page never added to it) must make Checks.Lint "fail" —
-// the projection must include index.md at all, or index-sync's finding
-// would never fire and Checks.Lint would stay "pass" on real drift.
+// TestProjectionIncludesRootFiles pins C-29/D-AX: the projected tree must
+// contain the four vault-root files, or the two lint checks that read them
+// (index-sync, log-rotate) return nil on the failed Read and Checks.Lint
+// stays "pass" on real drift.
+//
+// Its original detector — a create_page that desyncs index.md — is gone:
+// MASTER §9 D-CA/D-CB make a create derive its own index line, so after
+// S2-T8 no single op can desync index.md at all. That is the point of
+// D-CA, not a regression, so the detector was re-pointed rather than the
+// expectation flipped: flipping it to "pass" would leave a test that
+// still passes with index.md omitted from the projection entirely, which
+// is exactly the failure this test exists to catch (§10 OR-10).
 func TestProjectionIncludesRootFiles(t *testing.T) {
-	e, _ := newTestEngine(t)
-	if _, err := e.OpenChangeset("desync index.md", testAuthor); err != nil {
+	e, dir := newTestEngine(t)
+	if _, err := e.OpenChangeset("projection includes root files", testAuthor); err != nil {
 		t.Fatalf("OpenChangeset: %v", err)
 	}
 
@@ -183,8 +191,42 @@ func TestProjectionIncludesRootFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Current: %v", err)
 	}
-	if c.Checks.Lint != "fail" {
-		t.Fatalf("Checks.Lint = %q, want %q (index-sync should fire on the new, unlisted page)", c.Checks.Lint, "fail")
+
+	tree, err := e.projectedTree(c.Live())
+	if err != nil {
+		t.Fatalf("projectedTree: %v", err)
+	}
+	for _, root := range []string{"index.md", "SCHEMA.md", "log.md", "curator-memory.md"} {
+		if _, ok := tree[root]; !ok {
+			t.Errorf("projected tree is missing the vault-root file %s", root)
+		}
+	}
+
+	// D-CA: the create derives its own index line, so the projection is
+	// clean — and it must report that honestly.
+	if c.Checks.Lint != "pass" {
+		t.Fatalf("Checks.Lint = %q, want %q (D-CA derives the created page's index line)", c.Checks.Lint, "pass")
+	}
+
+	// The load-bearing half: index.md really is read THROUGH the
+	// projection, so drift the engine did not cause still fires.
+	idx := filepath.Join(dir, "index.md")
+	b, err := os.ReadFile(idx)
+	if err != nil {
+		t.Fatalf("read index.md: %v", err)
+	}
+	if err := os.WriteFile(idx, append(b, []byte("- [[ghost-page]] — points at nothing.\n")...), 0o644); err != nil {
+		t.Fatalf("write index.md: %v", err)
+	}
+	if err := e.Vault().Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	checks, err := e.recomputeChecks(c)
+	if err != nil {
+		t.Fatalf("recomputeChecks: %v", err)
+	}
+	if checks.Lint != "fail" {
+		t.Fatalf("Checks.Lint = %q after breaking index.md on disk, want %q — index-sync never saw index.md through the projection", checks.Lint, "fail")
 	}
 }
 
