@@ -33,7 +33,22 @@ type Engine struct {
 	rand       io.Reader               // injected; id entropy
 	nextOp     int                     // op<N> counter, incl. cascade sub-ops
 	faultAfter func(step string) error // test-only; nil in production
+	forceNext  bool                    // next Commit overrode a lint regression (D-AG)
 }
+
+// ForceNextCommit marks the next Commit as one that overrode a lint
+// regression refusal, so its commit_end event carries "forced":true
+// alongside the counts (backbone §5.7, MASTER §9 D-AG).
+//
+// Contract (MASTER §9 D-CD): Commit consumes and clears the flag before
+// it can fail, so a refused or failed commit can never leak it into a
+// later one. It exists because the regression gate itself lives in
+// cmd/lw — Engine.Commit performs no lint comparison and its §5.4
+// signature is frozen — while the event that must record the override is
+// written inside Commit. Without this seam the CLI can only append a
+// SECOND commit_end, which makes the journal state that one commit ended
+// twice.
+func (e *Engine) ForceNextCommit() { e.forceNext = true }
 
 // ErrNoChangeset, ErrOpenChangeset, ErrStale and ErrValidation are the
 // sentinels backbone §5.4 defines for the Engine's changeset lifecycle.

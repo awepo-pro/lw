@@ -1,0 +1,11 @@
+[
+  {
+    "op": "create_page",
+    "path": "wiki/concepts/paged-attention.md",
+    "rationale": "document paged attention, a KV-cache block-management technique referenced by the ingested source",
+    "provenance": [
+      "raw/articles/kv-cache-explained.md"
+    ],
+    "content": "---\ntitle: Paged Attention\ncreated: 2026-08-30\nupdated: 2026-08-30\ntype: concept\ntags: [inference, memory]\nsources: [raw/articles/kv-cache-explained.md]\nconfidence: medium\n---\n\n# Paged Attention\n\nPaged attention manages the [[kv-cache]] in fixed-size blocks, similar to how\nan operating system pages virtual memory, which lets a serving system share\nand evict cache blocks across concurrent requests.^[raw/articles/kv-cache-explained.md]\n\n## Related\n\n- [[kv-cache]] — the memory structure paged attention manages in blocks.\n- [[flash-attention]] — a fused kernel commonly combined with paged attention.\n"
+  }
+]

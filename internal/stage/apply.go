@@ -39,6 +39,12 @@ const logRotateThreshold = 500
 // following backbone §5.4's ten steps in order, and returns the new
 // commit's id.
 func (e *Engine) Commit(message string) (string, error) {
+	// Consume the D-AG force flag first, before any step can fail, so a
+	// refused or errored commit never leaks it into a later one
+	// (MASTER §9 D-CD).
+	forced := e.forceNext
+	e.forceNext = false
+
 	// Step 1.
 	unlock, err := AcquireLock(e.llmwikiDir())
 	if err != nil {
@@ -179,7 +185,7 @@ func (e *Engine) Commit(message string) (string, error) {
 	// check (D-BO: Commit computes it itself, over the vault reloaded in
 	// step 7), then the changeset moves from open/ to committed/ — the
 	// move nothing in this package ever performs via a delete.
-	data, err := commitEndData(e.vaultLintContext())
+	data, err := commitEndData(e.vaultLintContext(), forced)
 	if err != nil {
 		return "", fmt.Errorf("stage: commit: %w", err)
 	}
@@ -705,13 +711,17 @@ func (e *Engine) vaultLintContext() *lint.Context {
 }
 
 // commitEndData runs lint.Run over ctx and returns commit_end's Data
-// payload: {"lint_errors":N,"lint_warns":M} (backbone §5.7 D-AG).
-func commitEndData(ctx *lint.Context) (json.RawMessage, error) {
+// payload: {"lint_errors":N,"lint_warns":M}, plus "forced":true when this
+// commit overrode a lint-regression refusal (backbone §5.7 D-AG,
+// MASTER §9 D-CD). forced carries omitempty, so an ordinary commit's
+// payload is byte-identical to what every earlier wave wrote.
+func commitEndData(ctx *lint.Context, forced bool) (json.RawMessage, error) {
 	report := lint.Run(ctx, nil)
 	b, err := json.Marshal(struct {
-		LintErrors int `json:"lint_errors"`
-		LintWarns  int `json:"lint_warns"`
-	}{report.Errors, report.Warns})
+		LintErrors int  `json:"lint_errors"`
+		LintWarns  int  `json:"lint_warns"`
+		Forced     bool `json:"forced,omitempty"`
+	}{report.Errors, report.Warns, forced})
 	if err != nil {
 		return nil, fmt.Errorf("marshal commit_end data: %w", err)
 	}
