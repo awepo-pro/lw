@@ -1,0 +1,142 @@
+--- /dev/null
++++ b/wiki/concepts/golden-new-page.md
+@@ -0,0 +1,12 @@
++---
++title: Golden New Page
++created: 2026-08-29
++updated: 2026-08-29
++type: concept
++tags: [inference]
++confidence: medium
++---
++
++# Golden New Page
++
++See [[kv-cache]] and [[gpt-4]] for background.
+--- /dev/null
++++ b/wiki/concepts/kv-cache-v2.md
+@@ -0,0 +1,38 @@
++---
++title: KV Cache
++created: 2026-08-20
++updated: 2026-08-29
++type: concept
++tags: [inference, memory]
++sources: [raw/articles/kv-cache-explained.md]
++confidence: high
++---
++
++# KV Cache
++
++The key/value cache stores per-layer attention projections from previous
++decoding steps so each new token only attends to cached keys and values
++instead of recomputing them.^[raw/articles/kv-cache-explained.md]
++
++## Why it matters
++
++Without caching, generating token n would repeat O(n) work already done for
++earlier tokens. Caching turns that into a constant amount of new work per
++step, at the cost of memory that grows with sequence length.
++
++## Example
++
++A cache-hit log line looks like the block below. The `##`-looking line inside
++it is plain text, not a heading, because it sits inside a fenced code block.
++
++```text
++## this is not a heading, just log text
++kv_cache_hit_rate: 0.94
++```
++
++## Related
++
++- [[flash-attention]] — a kernel design that reduces the memory-bandwidth cost
++  of reading the cache.
++- [[speculative-decoding]] — both the draft and target model read the cache
++  during verification.
+--- a/wiki/concepts/kv-cache.md
++++ /dev/null
+@@ -1,38 +0,0 @@
+----
+-title: KV Cache
+-created: 2026-08-20
+-updated: 2026-08-29
+-type: concept
+-tags: [inference, memory]
+-sources: [raw/articles/kv-cache-explained.md]
+-confidence: high
+----
+-
+-# KV Cache
+-
+-The key/value cache stores per-layer attention projections from previous
+-decoding steps so each new token only attends to cached keys and values
+-instead of recomputing them.^[raw/articles/kv-cache-explained.md]
+-
+-## Why it matters
+-
+-Without caching, generating token n would repeat O(n) work already done for
+-earlier tokens. Caching turns that into a constant amount of new work per
+-step, at the cost of memory that grows with sequence length.
+-
+-## Example
+-
+-A cache-hit log line looks like the block below. The `##`-looking line inside
+-it is plain text, not a heading, because it sits inside a fenced code block.
+-
+-```text
+-## this is not a heading, just log text
+-kv_cache_hit_rate: 0.94
+-```
+-
+-## Related
+-
+-- [[flash-attention]] — a kernel design that reduces the memory-bandwidth cost
+-  of reading the cache.
+-- [[speculative-decoding]] — both the draft and target model read the cache
+-  during verification.
+--- a/index.md
++++ b/index.md
+@@ -3,8 +3,9 @@
+ ## Concepts
+ 
+ - [[speculative-decoding]] — Drafting tokens with a small model and verifying them with the target model.
+-- [[kv-cache]] — Caching attention keys/values across decoding steps.
++- [[kv-cache-v2]] — Caching attention keys/values across decoding steps.
+ - [[flash-attention]] — Fused, memory-efficient attention kernel.
++- [[golden-new-page]] — Golden New Page
+ 
+ ## Entities
+ 
+--- a/wiki/concepts/flash-attention.md
++++ b/wiki/concepts/flash-attention.md
+@@ -16,7 +16,7 @@
+ 
+ ## Why it matters
+ 
+-- Reduces memory-bandwidth traffic, which dominates attention's runtime cost.
++- Reduces memory-bandwidth traffic, the dominant cost of naive attention.
+ - Produces numerically identical results to standard attention.
+ - Pairs naturally with KV-cache reuse during incremental decoding.
+ 
+--- a/wiki/concepts/flash-attention.md
++++ b/wiki/concepts/flash-attention.md
+@@ -22,6 +22,6 @@
+ 
+ ## Related
+ 
+-- [[kv-cache]] — the cache that flash-attention-style kernels read efficiently.
++- [[kv-cache-v2]] — the cache that flash-attention-style kernels read efficiently.
+ - [[gpt-4]] — a production model whose serving stack relies on fused attention
+   kernels like this one.
+--- a/wiki/concepts/speculative-decoding.md
++++ b/wiki/concepts/speculative-decoding.md
+@@ -23,7 +23,7 @@
+ 
+ ## Related
+ 
+-- [[kv-cache]] — both the draft and target model need fast cache access during
++- [[kv-cache-v2]] — both the draft and target model need fast cache access during
+   verification.
+ - [[GPT-4]] — a production model where inference latency motivates techniques
+   like this one.

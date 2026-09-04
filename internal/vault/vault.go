@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"path/filepath"
+	"path"
 	"sort"
 	"strings"
 )
@@ -13,7 +13,8 @@ import (
 // Vault is a loaded wiki: its schema, every parsed page under wiki/, every
 // parsed raw source under raw/, and the wikilink graph built over the pages.
 type Vault struct {
-	root        string
+	root        string // original argument to Open; "" for an FS-backed vault
+	fsys        fs.FS
 	schema      *Schema
 	pages       map[string]*Page
 	rawSources  map[string]*RawSource
@@ -55,15 +56,39 @@ var (
 // Contract (backbone §2.8): a page or raw source that fails to parse is not
 // fatal — it is collected in ParseErrors() instead. SCHEMA.md itself must
 // parse; a vault with no taxonomy cannot validate anything (backbone §2.6).
+//
+// Open is a thin wrapper over OpenFS(os.DirFS(root)) that additionally
+// records root so Root() can return it. os.DirFS is a live view of the
+// directory, not a snapshot, so a later Reload sees anything written to
+// root in the meantime.
 func Open(root string) (*Vault, error) {
-	v := &Vault{root: root}
+	v, err := OpenFS(os.DirFS(root))
+	if err != nil {
+		return nil, err
+	}
+	v.root = root
+	return v, nil
+}
+
+// OpenFS loads the vault stored in fsys — reading SCHEMA.md and every *.md
+// under wiki/ and raw/ — the same as Open, but over any fs.FS rather than
+// only the local disk.
+//
+// Contract (backbone §2.8, MASTER §9 D-AD): this is what lets
+// stage.Engine.Append materialize a projected in-memory vault — pages and
+// raw sources overridden by an op's post-image content — and lint it
+// without writing anything to disk (backbone §5.4). Root() returns "" for
+// a vault opened this way, since there is no directory string to report.
+func OpenFS(fsys fs.FS) (*Vault, error) {
+	v := &Vault{fsys: fsys}
 	if err := v.Reload(); err != nil {
 		return nil, err
 	}
 	return v, nil
 }
 
-// Root returns the vault's root directory, exactly as passed to Open.
+// Root returns the vault's root directory, exactly as passed to Open, or ""
+// for a vault loaded with OpenFS.
 func (v *Vault) Root() string {
 	return v.root
 }
@@ -125,13 +150,13 @@ func (v *Vault) Graph() *Graph {
 // Contract (backbone §2.8): rejects any path that is absolute, contains
 // "..", or resolves outside root, returning ErrOutsideVault.
 func (v *Vault) Read(path string) ([]byte, error) {
-	abs, err := v.resolvePath(path)
+	p, err := v.resolvePath(path)
 	if err != nil {
 		return nil, err
 	}
-	b, err := os.ReadFile(abs)
+	b, err := fs.ReadFile(v.fsys, p)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return nil, fmt.Errorf("vault: read %s: %w", path, ErrNotFound)
 		}
 		return nil, fmt.Errorf("vault: read %s: %w", path, err)
@@ -139,21 +164,24 @@ func (v *Vault) Read(path string) ([]byte, error) {
 	return b, nil
 }
 
-// Exists reports whether the given vault-relative path exists on disk. A
-// path that would escape the vault root reports false rather than erroring.
+// Exists reports whether the given vault-relative path exists. A path that
+// would escape the vault root reports false rather than erroring.
 func (v *Vault) Exists(path string) bool {
-	abs, err := v.resolvePath(path)
+	p, err := v.resolvePath(path)
 	if err != nil {
 		return false
 	}
-	_, err = os.Stat(abs)
+	_, err = fs.Stat(v.fsys, p)
 	return err == nil
 }
 
-// Reload re-reads SCHEMA.md and every *.md under wiki/ and raw/ from disk,
-// replacing the vault's in-memory state.
+// Reload re-reads SCHEMA.md and every *.md under wiki/ and raw/ from v's
+// underlying fs.FS, replacing the vault's in-memory state. For a
+// disk-backed vault (opened via Open), that FS is a live view of the
+// directory, not a snapshot, so Reload sees anything written there since
+// the last load.
 func (v *Vault) Reload() error {
-	schemaBytes, err := os.ReadFile(filepath.Join(v.root, "SCHEMA.md"))
+	schemaBytes, err := fs.ReadFile(v.fsys, "SCHEMA.md")
 	if err != nil {
 		return fmt.Errorf("vault: read SCHEMA.md: %w", err)
 	}
@@ -162,11 +190,11 @@ func (v *Vault) Reload() error {
 		return fmt.Errorf("vault: parse SCHEMA.md: %w", err)
 	}
 
-	pages, pageErrs, err := loadPages(v.root)
+	pages, pageErrs, err := loadPages(v.fsys)
 	if err != nil {
 		return err
 	}
-	rawSources, rawErrs, err := loadRawSources(v.root)
+	rawSources, rawErrs, err := loadRawSources(v.fsys)
 	if err != nil {
 		return err
 	}
@@ -182,10 +210,10 @@ func (v *Vault) Reload() error {
 	return nil
 }
 
-// loadPages walks root/wiki for *.md files and parses each as a Page,
+// loadPages walks fsys's wiki/ for *.md files and parses each as a Page,
 // collecting failures as ParseErrors rather than aborting.
-func loadPages(root string) (map[string]*Page, []ParseError, error) {
-	rels, err := walkMarkdown(root, "wiki")
+func loadPages(fsys fs.FS) (map[string]*Page, []ParseError, error) {
+	rels, err := walkMarkdown(fsys, "wiki")
 	if err != nil {
 		return nil, nil, err
 	}
@@ -193,7 +221,7 @@ func loadPages(root string) (map[string]*Page, []ParseError, error) {
 	pages := make(map[string]*Page, len(rels))
 	var errs []ParseError
 	for _, rel := range rels {
-		b, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
+		b, err := fs.ReadFile(fsys, rel)
 		if err != nil {
 			return nil, nil, fmt.Errorf("vault: read %s: %w", rel, err)
 		}
@@ -207,10 +235,10 @@ func loadPages(root string) (map[string]*Page, []ParseError, error) {
 	return pages, errs, nil
 }
 
-// loadRawSources walks root/raw for *.md files and parses each as a
+// loadRawSources walks fsys's raw/ for *.md files and parses each as a
 // RawSource, collecting failures as ParseErrors rather than aborting.
-func loadRawSources(root string) (map[string]*RawSource, []ParseError, error) {
-	rels, err := walkMarkdown(root, "raw")
+func loadRawSources(fsys fs.FS) (map[string]*RawSource, []ParseError, error) {
+	rels, err := walkMarkdown(fsys, "raw")
 	if err != nil {
 		return nil, nil, err
 	}
@@ -218,7 +246,7 @@ func loadRawSources(root string) (map[string]*RawSource, []ParseError, error) {
 	sources := make(map[string]*RawSource, len(rels))
 	var errs []ParseError
 	for _, rel := range rels {
-		b, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
+		b, err := fs.ReadFile(fsys, rel)
 		if err != nil {
 			return nil, nil, fmt.Errorf("vault: read %s: %w", rel, err)
 		}
@@ -233,70 +261,73 @@ func loadRawSources(root string) (map[string]*RawSource, []ParseError, error) {
 }
 
 // walkMarkdown returns the vault-relative, slash-separated paths of every
-// *.md file under root/subdir, sorted. A missing subdir yields no paths and
-// no error — a fresh vault may not have any raw sources yet.
-func walkMarkdown(root, subdir string) ([]string, error) {
-	dir := filepath.Join(root, subdir)
-	info, err := os.Stat(dir)
+// *.md file under fsys's subdir, sorted. A missing subdir yields no paths
+// and no error — a fresh vault may not have any raw sources yet.
+func walkMarkdown(fsys fs.FS, subdir string) ([]string, error) {
+	info, err := fs.Stat(fsys, subdir)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("vault: stat %s: %w", dir, err)
+		return nil, fmt.Errorf("vault: stat %s: %w", subdir, err)
 	}
 	if !info.IsDir() {
-		return nil, fmt.Errorf("vault: %s is not a directory", dir)
+		return nil, fmt.Errorf("vault: %s is not a directory", subdir)
 	}
 
 	var rels []string
-	err = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+	err = fs.WalkDir(fsys, subdir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.IsDir() || !strings.HasSuffix(d.Name(), ".md") {
 			return nil
 		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			return fmt.Errorf("vault: rel %s: %w", path, err)
-		}
-		rels = append(rels, filepath.ToSlash(rel))
+		rels = append(rels, path)
 		return nil
 	})
 	if err != nil {
-		return nil, fmt.Errorf("vault: walk %s: %w", dir, err)
+		return nil, fmt.Errorf("vault: walk %s: %w", subdir, err)
 	}
 	sort.Strings(rels)
 	return rels, nil
 }
 
-// resolvePath validates path per Read's contract and returns its absolute
-// filesystem location.
-func (v *Vault) resolvePath(path string) (string, error) {
-	if path == "" {
+// resolvePath validates p per Read's contract and returns the fs.FS-relative
+// path to use against v.fsys.
+//
+// Contract (backbone §2.8, MASTER §9 D-AP): the rejection conditions are
+// exactly the three frozen ones — empty, absolute, or containing a ".."
+// segment — each carrying ErrOutsideVault. There is no fourth. A path that is
+// merely non-canonical without escaping ("./x", "a/./b", "a//b", "a/") is
+// NORMALIZED with path.Clean, not refused: that is what the pre-fs.FS
+// implementation did via filepath.Join, and §2.8 promises no other reason to
+// reject. Strictness about canonical spelling belongs in §5.5 ValidateOp,
+// which governs the paths an agent proposes; the vault's own read path stays
+// permissive, exactly as it was before OpenFS.
+//
+// Cleaning after the ".." check (never before) keeps "a/../../b" rejected on
+// the literal segment rather than resolved into something that merely looks
+// in-bounds. path.Clean of a non-empty, non-absolute, ".."-free path always
+// satisfies fs.ValidPath, so v.fsys never sees a malformed name; the final
+// check is defence in depth and is expected to be unreachable.
+func (v *Vault) resolvePath(p string) (string, error) {
+	if p == "" {
 		return "", fmt.Errorf("vault: empty path: %w", ErrOutsideVault)
 	}
-	if filepath.IsAbs(path) || strings.HasPrefix(filepath.ToSlash(path), "/") {
-		return "", fmt.Errorf("vault: path %q is absolute: %w", path, ErrOutsideVault)
+	if strings.HasPrefix(p, "/") {
+		return "", fmt.Errorf("vault: path %q is absolute: %w", p, ErrOutsideVault)
 	}
-	for _, part := range strings.Split(filepath.ToSlash(path), "/") {
+	for _, part := range strings.Split(p, "/") {
 		if part == ".." {
-			return "", fmt.Errorf("vault: path %q contains \"..\": %w", path, ErrOutsideVault)
+			return "", fmt.Errorf("vault: path %q contains \"..\": %w", p, ErrOutsideVault)
 		}
 	}
-
-	root, err := filepath.Abs(v.root)
-	if err != nil {
-		return "", fmt.Errorf("vault: resolve root: %w", err)
+	clean := path.Clean(p)
+	if !fs.ValidPath(clean) {
+		return "", fmt.Errorf("vault: path %q is not a valid vault path: %w", p, ErrOutsideVault)
 	}
-	abs := filepath.Join(root, filepath.FromSlash(path))
-
-	// filepath.Join already cleans ".." segments; this is defense in depth
-	// in case a future path form slips past the split-based check above.
-	if abs != root && !strings.HasPrefix(abs, root+string(filepath.Separator)) {
-		return "", fmt.Errorf("vault: path %q escapes vault root: %w", path, ErrOutsideVault)
-	}
-	return abs, nil
+	return clean, nil
 }
 
 // sortedKeys returns m's keys in ascending order, for deterministic

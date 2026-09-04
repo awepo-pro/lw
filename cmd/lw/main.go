@@ -34,6 +34,7 @@ var verbs = []verb{
 	{"mcp", cmdMCP},
 	{"doctor", cmdDoctor},
 	{"tui", cmdTUI},
+	{"stage", cmdStage},
 }
 
 func main() {
