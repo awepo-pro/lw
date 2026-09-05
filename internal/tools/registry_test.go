@@ -31,10 +31,20 @@ func minimalRegistry(t *testing.T) *Registry {
 	return NewRegistry(newTestDeps(t, dir))
 }
 
-// wantToolNames is every tool this subtask registers, already in the sorted
+// wantToolNames is every tool the registry exposes, already in the sorted
 // order List() must produce.
 var wantToolNames = []string{
 	"raw.get",
+	"stage.add_link",
+	"stage.close",
+	"stage.create_page",
+	"stage.ingest_source",
+	"stage.merge_pages",
+	"stage.open",
+	"stage.patch_page",
+	"stage.rename_page",
+	"stage.retract",
+	"stage.split_page",
 	"vault.orient",
 	"wiki.backlinks",
 	"wiki.get",
@@ -47,8 +57,8 @@ func TestRegistryListCountAndOrder(t *testing.T) {
 	reg := minimalRegistry(t)
 	list := reg.List()
 
-	if len(list) != 7 {
-		t.Fatalf("List() returned %d tools, want 7", len(list))
+	if len(list) != 17 {
+		t.Fatalf("List() returned %d tools, want 17", len(list))
 	}
 
 	var got []string

@@ -68,6 +68,9 @@ func NewRegistry(d Deps) *Registry {
 	for _, t := range readTools(d) {
 		r.tools[t.Name] = t
 	}
+	for _, t := range stageTools(d) {
+		r.tools[t.Name] = t
+	}
 	return r
 }
 
