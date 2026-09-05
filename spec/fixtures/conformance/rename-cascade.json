@@ -1,0 +1,19 @@
+{
+  "name": "rename-cascade",
+  "steps": [
+    {"tool": "stage.open", "args": {"intent": "create a review marker and rename a linked page"}},
+    {"tool": "stage.create_page", "args": {"path": "wiki/concepts/conformance-marker.md", "title": "Conformance Marker", "type": "concept", "tags": ["inference"], "sources": ["raw/papers/leviathan-2023.md"], "confidence": "low", "contested": false, "body": "# Conformance Marker\n\nSee [[kv-cache]] and [[gpt-4]].", "rationale": "exercise create before rename"}},
+    {"tool": "stage.rename_page", "args": {"from": "wiki/concepts/flash-attention.md", "to": "wiki/concepts/flash-attention-v2.md", "rationale": "canonical spelling"}},
+    {"tool": "stage.close", "args": {}}
+  ],
+  "golden": [
+    "opened changeset <id> for \"create a review marker and rename a linked page\"",
+    "proposed <id> (create_page)",
+    "proposed <id> (rename_page)",
+    "changeset <id>\nintent: create a review marker and rename a linked page\noperations: 2\nby kind:\n- create_page: 1\n- rename_page: 1\nfiles touched: 6\n- index.md\n- wiki/concepts/conformance-marker.md\n- wiki/concepts/flash-attention-v2.md\n- wiki/concepts/flash-attention.md\n- wiki/concepts/kv-cache.md\n- wiki/entities/gpt-4.md\nchecks: schema=pass lint=pass orphans=1 broken_links=0"
+  ],
+  "commit_message": "rename flash attention",
+  "expect_paths": ["wiki/concepts/flash-attention-v2.md", "wiki/concepts/conformance-marker.md"],
+  "expect_errors": 0,
+  "expect_cascade_hunks": 3
+}
