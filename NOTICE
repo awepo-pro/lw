@@ -1,0 +1,131 @@
+llmwiki (lw) — third-party notices
+===================================
+
+This file names the open-source software lw is built on, credits the
+project's design inspiration, and reproduces the one licence text this
+project's terms require to be reproduced in full (see below for why only
+one is).
+
+-------------------------------------------------------------------------
+Design credit: yorukot/superfile — patterns only, NO CODE IS VENDORED
+-------------------------------------------------------------------------
+
+lw's TUI takes design inspiration from yorukot/superfile
+(https://github.com/yorukot/superfile), commit
+b72f550bc6e75913f48eb49fdd258e1a2df2fe88, licensed MIT.
+
+To state this plainly, because it matters: NO SOURCE CODE FROM SUPERFILE IS
+COPIED, ADAPTED, OR VENDORED ANYWHERE IN THIS REPOSITORY. There is no
+`third_party/` directory and no superfile package appears in go.mod. What
+lw's own, independently written Go code borrows is three *patterns*:
+
+  1. the three-pane sidebar / browser / preview panel layout
+     (internal/ui and its screen sub-packages);
+  2. a flat, superfile-style `key = value` theme.toml — adapted here with
+     paired "<name>_light" / "<name>_dark" keys per colour, because
+     lipgloss v2 resolves colour by calling a LightDarkFunc at style-build
+     time (charm.land/lipgloss/v2's lipgloss.LightDark) rather than by
+     shipping one theme file per background polarity the way superfile
+     does;
+  3. a flat `key_name = ["stroke", ...]` hotkeys.toml, mapping one named
+     action to a list of keystrokes.
+
+An earlier design (/PLAN.md D1) called for vendoring three of superfile's
+Go packages (pkg/file_preview, pkg/string_function, pkg/utils) under
+third_party/. That plan was measured against yorukot/superfile@b72f550
+before any code was written and reversed: those three packages pull in
+twelve modules outside this project's dependency allowlist — including
+stretchr/testify, which the allowlist bans outright, and a second TOML
+library where this project already standardises on BurntSushi/toml — for
+functionality (an image thumbnailer; a lipgloss v1 Canvas/Layer workaround
+that lipgloss v2 already ships natively) this project does not use. See
+the build's MASTER §9 decision D-CK.
+
+Because only superfile's *patterns* are credited and no superfile source
+ships in this repository, reproducing its full licence text here is not
+strictly required by the MIT licence's terms (which apply to copies of the
+Software, not to independently written code inspired by its design) — it
+is done anyway, in full, so the credit above is backed by the actual grant
+it refers to:
+
+    MIT License
+
+    Copyright (c) 2024 - Yorukot
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software and associated documentation files (the
+    "Software"), to deal in the Software without restriction, including
+    without limitation the rights to use, copy, modify, merge, publish,
+    distribute, sublicense, and/or sell copies of the Software, and to
+    permit persons to whom the Software is furnished to do so, subject to
+    the following conditions:
+
+    The above copyright notice and this permission notice shall be included
+    in all copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+    OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+    MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+    IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+    CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+    TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+    SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+-------------------------------------------------------------------------
+Go module dependencies (from go.mod)
+-------------------------------------------------------------------------
+
+Every module lw actually depends on, direct and indirect, exactly as
+declared in this module's go.mod. The licence column is the SPDX short
+identifier read from each module's own LICENSE/COPYING file, as vendored
+into the local module cache by `go mod download`; the full text of each is
+distributed with that module (under
+`$(go env GOMODCACHE)/<module>@<version>/LICENSE*`) and is not reproduced
+here, to keep this file to the one licence this project's own design
+credit puts a reproduction obligation on.
+
+Direct:
+  charm.land/bubbles/v2                   v2.2.1                              MIT
+  charm.land/bubbletea/v2                 v2.0.9                              MIT
+  charm.land/glamour/v2                   v2.0.1                              MIT
+  charm.land/lipgloss/v2                  v2.0.6                              MIT
+  github.com/BurntSushi/toml              v1.6.0                              MIT
+  github.com/modelcontextprotocol/go-sdk  v1.7.0                              Apache-2.0 (transitioning from MIT; see module LICENSE)
+  github.com/yuin/goldmark                v1.8.5                              MIT
+  go.abhg.dev/goldmark/wikilink           v0.6.0                              BSD-3-Clause
+  golang.org/x/net                        v0.58.0                             BSD-3-Clause
+  gopkg.in/yaml.v3                        v3.0.1                              MIT and Apache-2.0 (dual, per file)
+
+Indirect (pulled in transitively by the direct dependencies above):
+  github.com/alecthomas/chroma/v2         v2.20.0                             MIT
+  github.com/aymerick/douceur             v0.2.0                              MIT
+  github.com/charmbracelet/colorprofile   v0.4.3                              MIT
+  github.com/charmbracelet/ultraviolet    v0.0.0-20260811164956-006e29f97886  MIT
+  github.com/charmbracelet/x/ansi         v0.11.8                             MIT
+  github.com/charmbracelet/x/exp/slice    v0.0.0-20250327172914-2fdc97757edf  MIT
+  github.com/charmbracelet/x/term         v0.2.2                              MIT
+  github.com/charmbracelet/x/termios      v0.1.1                              MIT
+  github.com/charmbracelet/x/windows      v0.2.2                              MIT
+  github.com/clipperhouse/displaywidth    v0.11.0                             MIT
+  github.com/clipperhouse/uax29/v2        v2.7.0                              MIT
+  github.com/dlclark/regexp2              v1.11.5                             MIT
+  github.com/google/jsonschema-go         v0.4.3                              MIT
+  github.com/gorilla/css                  v1.0.1                              BSD-3-Clause
+  github.com/lucasb-eyer/go-colorful      v1.4.1                              MIT
+  github.com/mattn/go-runewidth           v0.0.27                             MIT
+  github.com/microcosm-cc/bluemonday      v1.0.27                             BSD-3-Clause
+  github.com/muesli/cancelreader          v0.2.2                              MIT
+  github.com/rivo/uniseg                  v0.4.7                              MIT
+  github.com/segmentio/asm                v1.1.3                              MIT
+  github.com/segmentio/encoding           v0.5.4                              MIT
+  github.com/xo/terminfo                  v0.0.0-20220910002029-abceb7e1c41e  MIT
+  github.com/yosida95/uritemplate/v3      v3.0.2                              BSD-3-Clause
+  github.com/yuin/goldmark-emoji          v1.0.6                              MIT
+  golang.org/x/oauth2                     v0.35.0                             BSD-3-Clause
+  golang.org/x/sync                       v0.22.0                             BSD-3-Clause
+  golang.org/x/sys                        v0.47.0                             BSD-3-Clause
+  golang.org/x/text                       v0.41.0                             BSD-3-Clause
+  golang.org/x/time                       v0.15.0                             BSD-3-Clause
+
+None of the above is modified from its published form; lw links against
+each as an ordinary Go module dependency declared in go.mod/go.sum.
