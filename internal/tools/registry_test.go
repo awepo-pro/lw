@@ -75,6 +75,16 @@ func TestRegistryListCountAndOrder(t *testing.T) {
 	}
 }
 
+// TestToolCount is the small gate-facing assertion used by Stage 3's
+// verification command. Keep the name stable so the shell gate cannot
+// silently run zero tests after a registry edit.
+func TestToolCount(t *testing.T) {
+	reg := minimalRegistry(t)
+	if got := len(reg.List()); got != 17 {
+		t.Fatalf("registry exposes %d tools, want 17", got)
+	}
+}
+
 func TestRegistryGet(t *testing.T) {
 	reg := minimalRegistry(t)
 
