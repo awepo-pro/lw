@@ -237,29 +237,46 @@ func (e *Engine) buildRevertOps(commitID string, prev, cur Snapshot, renames []r
 	// is not a vault.Page and a paired rename's own cascade already covers
 	// it (index.md, curator-memory.md, or a linking page the rename
 	// rewrote) -> dropped from the delta, since that cascade repairs it for
-	// free. CHANGED, path is not a vault.Page and NOTHING covers it — a
-	// merge_pages or split_page whose added/removed sides never share a
-	// sha, so no rename pairing ever fires (C-58: no op kind can address a
-	// vault-root file such as index.md at all) -> skipped, not dropped:
-	// repair-1 fix. The un-fixed code silently dropped this case too,
-	// which is exactly what MASTER §9 D-BY/D-BZ forbid — a review surface
-	// that misdescribes what will land is the one defect /PLAN.md §1
-	// cannot ship. TestRevertMergeReportsUncoveredPaths pins this and was
-	// proved to fail against the pre-fix code.
+	// free. CHANGED, path is not a vault.Page, uncovered, but is an OQ-9
+	// allow-listed root file (curator-memory.md, phase 1 — S4-T0) -> also
+	// patch_page, exactly like the vault.Page case above but built from
+	// the raw bytes (canonicalContent's v.Page-miss fallback), since a
+	// root file has no Serialize() to call. CHANGED, path is not a
+	// vault.Page, uncovered, and not allow-listed either — a merge_pages
+	// or split_page whose added/removed sides never share a sha, so no
+	// rename pairing ever fires (C-58: before OQ-9, no op kind could
+	// address a vault-root file such as index.md at all) -> skipped, not
+	// dropped: repair-1 fix. The un-fixed code silently dropped this case
+	// too, which is exactly what MASTER §9 D-BY/D-BZ forbid — a review
+	// surface that misdescribes what will land is the one defect
+	// /PLAN.md §1 cannot ship. TestRevertMergeReportsUncoveredPaths pins
+	// this and was proved to fail against the pre-fix code.
 	for _, p := range changed {
 		if covered[p] {
 			continue
 		}
 		page, ok := e.vault.Page(p)
+		var oldBody string
 		if !ok {
-			skipped = append(skipped, p)
-			continue
+			if !isPatchableRootFile(p) {
+				skipped = append(skipped, p)
+				continue
+			}
+			raw, rok := canonicalContent(e.vault, p)
+			if !rok {
+				skipped = append(skipped, p)
+				continue
+			}
+			oldBody = string(raw)
+		} else {
+			oldBody = string(page.Serialize())
 		}
+
 		content, gerr := e.store.Get(prev[p])
 		if gerr != nil {
 			return nil, nil, fmt.Errorf("read predecessor content for %s: %w", p, gerr)
 		}
-		hunks := ComputeHunks(string(page.Serialize()), string(content))
+		hunks := ComputeHunks(oldBody, string(content))
 		for i := range hunks {
 			hunks[i].Path = p
 		}

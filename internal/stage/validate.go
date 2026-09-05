@@ -74,7 +74,29 @@ func validateHunks(hunks []Hunk) error {
 // malformation named there, plus every key the schema's per-kind required
 // set demands but no bullet names (MASTER §9 D-BH). Failures wrap
 // ErrValidation.
+//
+// A patch_page whose Path is an EXACT, case-sensitive match for one of
+// OQ-9's four named vault-root files is dispatched to validatePatchPage
+// here, before the generic path-shape gate below (S4-T0 repair-1,
+// secondary fix; rootfile.go's isKnownRootFile). Without this,
+// SCHEMA.md never reaches validatePatchPage's non-Page branch through
+// this public entry point at all: vaultPathFilenameRE requires lowercase
+// and SCHEMA.md is not, so requireValidPath rejects it first with an
+// unrelated "not a vault-relative... path" message, and OQ-9's
+// SCHEMA.md-specific "it is the rules the validator reads" refusal
+// becomes unreachable except by calling validatePatchPage directly (as
+// rootfile_test.go's TestPatchRootFileRefusesLogAndSchema already does).
+// This is a narrow, enumerable four-name switch, checked by exact string
+// equality — it does not loosen validVaultPath or vaultPathFilenameRE for
+// any other path any op kind could ever name.
 func ValidateOp(op Op, v *vault.Vault, s *vault.Schema) error {
+	if op.Kind == OpPatchPage && isKnownRootFile(op.Path) {
+		if err := validateHunks(op.Hunks); err != nil {
+			return err
+		}
+		return validatePatchPage(op, v, s)
+	}
+
 	if op.Path != "" {
 		if err := requireValidPath("path", op.Path); err != nil {
 			return err
@@ -176,7 +198,15 @@ func validateCreatePage(op Op, v *vault.Vault, s *vault.Schema) error {
 	if wantDir == "" || path.Dir(op.Path) != wantDir {
 		return fmt.Errorf("%w: create_page: %s is under %s but type %s belongs under %s", ErrValidation, op.Path, path.Dir(op.Path), page.FM.Type, wantDir)
 	}
-	return nil
+
+	// OQ-9 L2's mirror direction (S4-T0 repair-1): op is well-formed;
+	// refuse if its index.md derivation collides with a live root-file
+	// patch_page already open in this same changeset. index.md is not
+	// allow-listed in phase 1 (TestPatchRootFileRefusesIndexInPhase1), so
+	// this never fires end-to-end yet — it is unit-tested directly
+	// (TestOneWriterGuardReverseOrderCreateDerivation) so S4-T7 only has
+	// to add "index.md" to patchableRootFiles.
+	return checkNewWriterOneWriter(v, op)
 }
 
 // basenameCollision returns an existing page whose basename equals p's —
@@ -217,7 +247,13 @@ func basenameCollision(v *vault.Vault, p string) (string, bool) {
 func validatePatchPage(op Op, v *vault.Vault, s *vault.Schema) error {
 	page, ok := v.Page(op.Path)
 	if !ok {
-		return fmt.Errorf("%w: patch_page: %s does not exist", ErrValidation, op.Path)
+		// op.Path is not a vault.Page: either an OQ-9 allow-listed
+		// vault-root bookkeeping file (curator-memory.md in this phase;
+		// index.md, log.md and SCHEMA.md are read by the vault — §2.8 —
+		// but carry no page/frontmatter structure) or a path that plain
+		// does not exist. rootfile.go (S4-T0) routes the former through
+		// OQ-9's allow-list instead of a bare "does not exist".
+		return validateNonPagePatch(op, v)
 	}
 	if op.Section != "" {
 		if _, ok := page.Section(op.Section); !ok {
@@ -264,7 +300,7 @@ func validateRenamePage(op Op, v *vault.Vault, s *vault.Schema) error {
 	if v.Exists(op.To) {
 		return fmt.Errorf("%w: rename_page: destination %s already exists", ErrValidation, op.To)
 	}
-	return validateCascade(op.Cascade, v, s, []string{op.From})
+	return validateCascade(op.Cascade, v, s, []string{op.From}, op)
 }
 
 // validateMergePages enforces: Sources lists >= 2 existing pages, To is
@@ -283,14 +319,21 @@ func validateMergePages(op Op, v *vault.Vault, s *vault.Schema) error {
 	if op.To == "" {
 		return fmt.Errorf("%w: merge_pages: to is required", ErrValidation)
 	}
-	return validateCascade(op.Cascade, v, s, op.Sources)
+	return validateCascade(op.Cascade, v, s, op.Sources, op)
 }
 
 // validateCascade checks cascade covers every page cascadeLinkingPages
 // expects for froms (backbone §5.5's completeness rule, MASTER §9 D-AM,
 // D-BE, D-BD — a cascade may legally be empty when the expected set is)
-// and that every entry it does carry is a well-formed patch_page rewrite.
-func validateCascade(cascade []Op, v *vault.Vault, s *vault.Schema, froms []string) error {
+// and that every entry it does carry is a well-formed patch_page rewrite,
+// then — OQ-9 L2's mirror direction, S4-T0 repair-1 — refuses writer (the
+// full rename_page/merge_pages op cascade belongs to) if its cascade
+// collides with a live root-file patch_page already open in this same
+// changeset. This is the tighter seam than hooking validateRenamePage and
+// validateMergePages separately: both funnel every cascade through here,
+// so the mirror check is wired once rather than duplicated at both call
+// sites.
+func validateCascade(cascade []Op, v *vault.Vault, s *vault.Schema, froms []string, writer Op) error {
 	expected := cascadeLinkingPages(v, froms)
 	have := map[string]bool{}
 	for _, sub := range cascade {
@@ -318,7 +361,8 @@ func validateCascade(cascade []Op, v *vault.Vault, s *vault.Schema, froms []stri
 			return err
 		}
 	}
-	return nil
+
+	return checkNewWriterOneWriter(v, writer)
 }
 
 // validateSplitPage enforces: Path exists; Sources lists the >= 2

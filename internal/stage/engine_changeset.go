@@ -372,6 +372,19 @@ func (e *Engine) Append(op Op) (string, error) {
 		return "", err
 	}
 
+	// OQ-9 L2's mirror direction, closed for real (S4-T0 repair-2): cv is a
+	// rootless fstest.MapFS projection (cascadeBase, openProjection)
+	// whenever the changeset already carries another live op — precisely
+	// when a root-file collision can exist — so validateCascade's own
+	// checkNewWriterOneWriter(cv, ...) call reads an empty Root() there and
+	// cannot see the on-disk changeset. e.vault is always the real,
+	// disk-backed vault, so this repeats the same check against it.
+	if op.Kind == OpRenamePage || op.Kind == OpMergePages {
+		if err := checkNewWriterOneWriter(e.vault, op); err != nil {
+			return "", err
+		}
+	}
+
 	if err := e.storeOpContent(&op); err != nil {
 		return "", fmt.Errorf("stage: append: %w", err)
 	}
@@ -455,6 +468,69 @@ func (e *Engine) DropHunk(opID, hunkID string) error {
 	return e.journal.Append(Event{
 		TS:        e.now().UTC(),
 		Kind:      EvHunkDropped,
+		Changeset: c.ID,
+		Op:        opID,
+		Hunk:      hunkID,
+		Actor:     c.Author,
+		Paths:     opTouches(*op),
+	})
+}
+
+// UndropHunk clears the Dropped flag on hunk hunkID of op opID, recomputes
+// that op's projected content from Before plus its now-live hunks, stores
+// it, overwrites Op.After with the resulting sha, recomputes Checks,
+// persists, and journals hunk_undropped.
+//
+// Contract (backbone §5.4, MASTER §9 D-CL): the exact inverse of DropHunk,
+// mirrored line for line — see that method's contract for why each step
+// exists. Undropping a hunk that is already live (Dropped already false)
+// is a no-op that succeeds: the review screen's "y" is pressed on every
+// hunk it walks past, including ones never dropped, and it must not error
+// just because the reviewer agreed with the default — recomputing an
+// already-live hunk's content reproduces the same After sha, so nothing
+// observable changes. An unknown op or hunk id is still an error, worded
+// exactly as DropHunk's.
+func (e *Engine) UndropHunk(opID, hunkID string) error {
+	c, err := e.currentOpen()
+	if err != nil {
+		return err
+	}
+
+	op, ok := c.Op(opID)
+	if !ok {
+		return fmt.Errorf("stage: undrop hunk: no such op %q", opID)
+	}
+
+	var hunk *Hunk
+	for i := range op.Hunks {
+		if op.Hunks[i].ID == hunkID {
+			hunk = &op.Hunks[i]
+			break
+		}
+	}
+	if hunk == nil {
+		return fmt.Errorf("stage: undrop hunk: op %s has no hunk %q", opID, hunkID)
+	}
+	hunk.Dropped = false
+
+	before, err := e.store.Get(op.Before)
+	if err != nil {
+		return fmt.Errorf("stage: undrop hunk: %w", err)
+	}
+	newContent := applyHunks(before, op.Hunks)
+	sha, err := e.store.Put(newContent)
+	if err != nil {
+		return fmt.Errorf("stage: undrop hunk: %w", err)
+	}
+	op.After = sha
+
+	if err := e.persistAfterMutation(c); err != nil {
+		return err
+	}
+
+	return e.journal.Append(Event{
+		TS:        e.now().UTC(),
+		Kind:      EvHunkUndropped,
 		Changeset: c.ID,
 		Op:        opID,
 		Hunk:      hunkID,
