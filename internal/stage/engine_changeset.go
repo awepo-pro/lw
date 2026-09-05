@@ -12,15 +12,41 @@ import (
 	"github.com/awepo-pro/lw/internal/vault"
 )
 
-// changesetOpenDir and changesetRejectedDir return two of the three
-// changeset destinations under e.llmwikiDir()/changesets — the third,
-// "committed", belongs to Commit (a later wave).
+// changesetOpenDir, changesetRejectedDir and changesetCommittedDir return
+// the three changeset destinations under e.llmwikiDir()/changesets.
+// changesetCommittedDir moved here from apply.go's own inline
+// filepath.Join (S3-T0, MASTER §9 D-CI) so changesetIDTaken below and
+// Commit's own pre-move existence guard share one path helper instead of
+// two spellings of the same join.
 func (e *Engine) changesetOpenDir() string {
 	return filepath.Join(e.llmwikiDir(), "changesets", "open")
 }
 
 func (e *Engine) changesetRejectedDir() string {
 	return filepath.Join(e.llmwikiDir(), "changesets", "rejected")
+}
+
+func (e *Engine) changesetCommittedDir() string {
+	return filepath.Join(e.llmwikiDir(), "changesets", "committed")
+}
+
+// maxIDAttempts bounds OpenChangeset's retry loop for drawing a free
+// changeset id (MASTER §9 D-CI).
+const maxIDAttempts = 8
+
+// changesetIDTaken reports whether id already names a directory under
+// changesets/open/ or changesets/committed/ (MASTER §9 D-CI). A Stat error
+// other than "not exist" is returned, never swallowed: an unreadable
+// committed/ directory must not be reported as "free".
+func (e *Engine) changesetIDTaken(id string) (bool, error) {
+	for _, dir := range []string{e.changesetOpenDir(), e.changesetCommittedDir()} {
+		if _, err := os.Stat(filepath.Join(dir, id)); err == nil {
+			return true, nil
+		} else if !os.IsNotExist(err) {
+			return false, fmt.Errorf("stage: changeset id taken: %w", err)
+		}
+	}
+	return false, nil
 }
 
 // writeChangesetJSON persists c to dir/changeset.json, atomically (temp +
@@ -87,9 +113,38 @@ func (e *Engine) OpenChangeset(intent string, a Author) (*Changeset, error) {
 		return nil, ErrOpenChangeset
 	}
 
-	id, err := newChangesetID(e.now(), e.rand)
-	if err != nil {
-		return nil, fmt.Errorf("stage: open changeset: %w", err)
+	// D-CI: an id names a directory, so it must be free in BOTH
+	// changesets/open/ and changesets/committed/ before it is used.
+	// Drawing again is cheap and the check is two Stats, so a collision is
+	// resolved here — the only point in a changeset's life where nothing
+	// has happened yet and a different id costs nothing. Commit's own
+	// guard (D-CI part B2, apply.go step 2a) is the backstop, not the
+	// mechanism.
+	//
+	// With a fixed clock AND a fixed reader (as some tests deliberately
+	// use), every attempt yields the same candidate and the loop
+	// legitimately exhausts — that is correct behaviour, not a bug to
+	// paper over by reseeding. e.rand in production is crypto/rand.Reader,
+	// which does vary, so a real collision resolves on the very next
+	// attempt.
+	var id string
+	for attempt := 0; ; attempt++ {
+		candidate, err := newChangesetID(e.now(), e.rand)
+		if err != nil {
+			return nil, fmt.Errorf("stage: open changeset: %w", err)
+		}
+		taken, err := e.changesetIDTaken(candidate)
+		if err != nil {
+			return nil, fmt.Errorf("stage: open changeset: %w", err)
+		}
+		if !taken {
+			id = candidate
+			break
+		}
+		if attempt+1 >= maxIDAttempts {
+			return nil, fmt.Errorf("stage: open changeset: could not draw a free id in %d attempts: %w",
+				maxIDAttempts, ErrIDExhausted)
+		}
 	}
 
 	c := &Changeset{

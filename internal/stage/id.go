@@ -14,14 +14,24 @@ import (
 	"time"
 )
 
-// changesetIDPattern is what every newChangesetID output must match.
-var changesetIDPattern = regexp.MustCompile(`^cs-[0-9a-f]{7}$`)
+// changesetIDPattern is what every changeset id on disk must match.
+//
+// Two widths are legal, deliberately (MASTER §9 D-CI):
+//   - 16 hex — what newChangesetID emits today, 64 bits.
+//   - 7 hex  — what it emitted before D-CI, 28 bits. Ids already on disk in
+//     changesets/committed/ and in journal records must keep validating
+//     forever; the vault is the user's, and a format change must never
+//     orphan history it already wrote.
+var changesetIDPattern = regexp.MustCompile(`^cs-([0-9a-f]{7}|[0-9a-f]{16})$`)
 
-// newChangesetID returns a new changeset id: "cs-" followed by the first 7
-// hex characters of sha256(now formatted as RFC3339Nano, followed by 8
-// bytes read from r) (MASTER §9 D-H). now and r are injected — never
-// time.Now() or a package rand source (00-conventions.md §3) — so callers'
-// tests can fix the clock and the entropy source and get a reproducible id.
+// newChangesetID returns a new changeset id: "cs-" followed by the first 16
+// hex characters (64 bits) of sha256(now formatted as RFC3339Nano, followed
+// by 8 bytes read from r) (MASTER §9 D-CI, superseding D-H's 7-character
+// width — widened because 28 bits collides in practice at vault sizes the
+// product must support; see .dev-notes/issues/OQ-11-changeset-id-collision).
+// now and r are injected — never time.Now() or a package rand source
+// (00-conventions.md §3) — so callers' tests can fix the clock and the
+// entropy source and get a reproducible id.
 func newChangesetID(now time.Time, r io.Reader) (string, error) {
 	entropy := make([]byte, 8)
 	if _, err := io.ReadFull(r, entropy); err != nil {
@@ -33,7 +43,7 @@ func newChangesetID(now time.Time, r io.Reader) (string, error) {
 	h.Write(entropy)
 	sum := hex.EncodeToString(h.Sum(nil))
 
-	return "cs-" + sum[:7], nil
+	return "cs-" + sum[:16], nil // was sum[:7] — 28 bits (MASTER §9 D-CI)
 }
 
 // treeFilePattern matches a snapshot file name, e.g. "000042.tree".
