@@ -8,17 +8,45 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/awepo-pro/lw/internal/vault"
 )
 
-// changesetOpenDir and changesetRejectedDir return two of the three
-// changeset destinations under e.llmwikiDir()/changesets — the third,
-// "committed", belongs to Commit (a later wave).
+// changesetOpenDir, changesetRejectedDir and changesetCommittedDir return
+// the three changeset destinations under e.llmwikiDir()/changesets.
+// changesetCommittedDir moved here from apply.go's own inline
+// filepath.Join (S3-T0, MASTER §9 D-CI) so changesetIDTaken below and
+// Commit's own pre-move existence guard share one path helper instead of
+// two spellings of the same join.
 func (e *Engine) changesetOpenDir() string {
 	return filepath.Join(e.llmwikiDir(), "changesets", "open")
 }
 
 func (e *Engine) changesetRejectedDir() string {
 	return filepath.Join(e.llmwikiDir(), "changesets", "rejected")
+}
+
+func (e *Engine) changesetCommittedDir() string {
+	return filepath.Join(e.llmwikiDir(), "changesets", "committed")
+}
+
+// maxIDAttempts bounds OpenChangeset's retry loop for drawing a free
+// changeset id (MASTER §9 D-CI).
+const maxIDAttempts = 8
+
+// changesetIDTaken reports whether id already names a directory under
+// changesets/open/ or changesets/committed/ (MASTER §9 D-CI). A Stat error
+// other than "not exist" is returned, never swallowed: an unreadable
+// committed/ directory must not be reported as "free".
+func (e *Engine) changesetIDTaken(id string) (bool, error) {
+	for _, dir := range []string{e.changesetOpenDir(), e.changesetCommittedDir()} {
+		if _, err := os.Stat(filepath.Join(dir, id)); err == nil {
+			return true, nil
+		} else if !os.IsNotExist(err) {
+			return false, fmt.Errorf("stage: changeset id taken: %w", err)
+		}
+	}
+	return false, nil
 }
 
 // writeChangesetJSON persists c to dir/changeset.json, atomically (temp +
@@ -85,9 +113,38 @@ func (e *Engine) OpenChangeset(intent string, a Author) (*Changeset, error) {
 		return nil, ErrOpenChangeset
 	}
 
-	id, err := newChangesetID(e.now(), e.rand)
-	if err != nil {
-		return nil, fmt.Errorf("stage: open changeset: %w", err)
+	// D-CI: an id names a directory, so it must be free in BOTH
+	// changesets/open/ and changesets/committed/ before it is used.
+	// Drawing again is cheap and the check is two Stats, so a collision is
+	// resolved here — the only point in a changeset's life where nothing
+	// has happened yet and a different id costs nothing. Commit's own
+	// guard (D-CI part B2, apply.go step 2a) is the backstop, not the
+	// mechanism.
+	//
+	// With a fixed clock AND a fixed reader (as some tests deliberately
+	// use), every attempt yields the same candidate and the loop
+	// legitimately exhausts — that is correct behaviour, not a bug to
+	// paper over by reseeding. e.rand in production is crypto/rand.Reader,
+	// which does vary, so a real collision resolves on the very next
+	// attempt.
+	var id string
+	for attempt := 0; ; attempt++ {
+		candidate, err := newChangesetID(e.now(), e.rand)
+		if err != nil {
+			return nil, fmt.Errorf("stage: open changeset: %w", err)
+		}
+		taken, err := e.changesetIDTaken(candidate)
+		if err != nil {
+			return nil, fmt.Errorf("stage: open changeset: %w", err)
+		}
+		if !taken {
+			id = candidate
+			break
+		}
+		if attempt+1 >= maxIDAttempts {
+			return nil, fmt.Errorf("stage: open changeset: could not draw a free id in %d attempts: %w",
+				maxIDAttempts, ErrIDExhausted)
+		}
 	}
 
 	c := &Changeset{
@@ -279,22 +336,39 @@ func (e *Engine) Append(op Op) (string, error) {
 		return "", err
 	}
 
+	// cv is the vault this op's cascade is built and validated against.
+	// For a cascade-less kind, and for the first op of any changeset, it
+	// is the working tree — byte-for-byte the pre-OR-13 behaviour.
+	cv := e.vault
 	switch op.Kind {
-	case OpRenamePage:
-		cascade, err := buildCascade(e.vault, []string{op.From}, op.To)
-		if err != nil {
+	case OpRenamePage, OpMergePages:
+		froms := []string{op.From}
+		if op.Kind == OpMergePages {
+			froms = op.Sources
+		}
+		// Chaining off another op's output is not supported: Commit
+		// materializes a rename from the working tree, so a source that
+		// only exists in the projection has no pre-image to move.
+		// Refuse it here, explicitly, rather than let the projected-tree
+		// validation below accept a shape Commit cannot honour.
+		for _, f := range froms {
+			if f != "" && !e.vault.Exists(f) {
+				return "", fmt.Errorf("%w: %s: source %s does not exist in the working tree; commit the op that produces it first", ErrValidation, op.Kind, f)
+			}
+		}
+
+		var err error
+		if cv, err = e.cascadeBase(c.Live()); err != nil {
 			return "", fmt.Errorf("stage: append: %w", err)
 		}
-		op.Cascade = cascade
-	case OpMergePages:
-		cascade, err := buildCascade(e.vault, op.Sources, op.To)
+		cascade, err := buildCascade(cv, froms, op.To)
 		if err != nil {
 			return "", fmt.Errorf("stage: append: %w", err)
 		}
 		op.Cascade = cascade
 	}
 
-	if err := ValidateOp(op, e.vault, e.vault.Schema()); err != nil {
+	if err := ValidateOp(op, cv, cv.Schema()); err != nil {
 		return "", err
 	}
 
@@ -417,9 +491,80 @@ func (e *Engine) DropOp(opID string) error {
 	})
 }
 
+// cascadeBase returns the vault a cascade must be built — and later
+// re-checked — against: base's ops projected over a fresh read of the
+// working tree (MASTER §10 OR-13, closing OQ-10).
+//
+// Contract: an empty base returns e.vault itself, not an equivalent copy,
+// so the overwhelmingly common single-op changeset takes exactly the code
+// path it took before OR-13. It shares projectedTree with recomputeChecks,
+// Diff and ProjectedReport deliberately — the wave-7 lesson (C-65, C-69)
+// is that every surface describing what a commit will write must be the
+// same call, or they drift.
+func (e *Engine) cascadeBase(base []Op) (*vault.Vault, error) {
+	if len(base) == 0 {
+		return e.vault, nil
+	}
+	tree, err := e.projectedTree(base)
+	if err != nil {
+		return nil, err
+	}
+	return openProjection(tree)
+}
+
+// liveBefore returns the ops at indices < i that Live() would keep — the
+// op set the cascade of ops[i] was built against when it was appended.
+//
+// Dropping an earlier op therefore changes a later op's base, and the
+// cascade sub-ops built on top of it go StateStale on the next check.
+// That is the intended behaviour and the reason the drop path re-runs it:
+// a cascade post-image computed over an op that no longer applies would
+// otherwise reintroduce that op's rewrite at commit time.
+func liveBefore(ops []Op, i int) []Op {
+	var out []Op
+	for _, op := range ops[:i] {
+		if op.State == StateDropped || op.State == StateRejected {
+			continue
+		}
+		out = append(out, op)
+	}
+	return out
+}
+
+// refreshCascadeStates re-checks every live op's cascade sub-ops against
+// the tree that op will actually apply to, flipping them StateStale where
+// the base they were built on no longer holds.
+//
+// It deliberately never touches a TOP-LEVEL op's State: working-tree
+// staleness is Refresh's job and its anchor is captureSourceSHAs' hash of
+// the working tree, which dropping a sibling op does not change.
+func (e *Engine) refreshCascadeStates(c *Changeset) error {
+	for i := range c.Ops {
+		op := &c.Ops[i]
+		if len(op.Cascade) == 0 {
+			continue
+		}
+		if op.State == StateDropped || op.State == StateRejected {
+			continue
+		}
+		base, err := e.cascadeBase(liveBefore(c.Ops, i))
+		if err != nil {
+			return err
+		}
+		for j := range op.Cascade {
+			refreshOp(&op.Cascade[j], base, base)
+		}
+	}
+	return nil
+}
+
 // persistAfterMutation recomputes c.Checks and persists c to disk — the
 // shared tail of DropHunk and DropOp.
 func (e *Engine) persistAfterMutation(c *Changeset) error {
+	if err := e.refreshCascadeStates(c); err != nil {
+		return fmt.Errorf("stage: recheck cascades: %w", err)
+	}
+
 	checks, err := e.recomputeChecks(c)
 	if err != nil {
 		return fmt.Errorf("stage: recompute checks: %w", err)
@@ -446,7 +591,11 @@ func (e *Engine) Refresh() error {
 	}
 
 	for i := range c.Ops {
-		refreshOp(&c.Ops[i], e.vault)
+		base, err := e.cascadeBase(liveBefore(c.Ops, i))
+		if err != nil {
+			return fmt.Errorf("stage: refresh: %w", err)
+		}
+		refreshOp(&c.Ops[i], e.vault, base)
 	}
 
 	if err := writeChangesetJSON(filepath.Join(e.changesetOpenDir(), c.ID), c); err != nil {

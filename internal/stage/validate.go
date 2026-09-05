@@ -151,6 +151,10 @@ func validateCreatePage(op Op, v *vault.Vault, s *vault.Schema) error {
 	if v.Exists(op.Path) {
 		return fmt.Errorf("%w: create_page: %s already exists", ErrValidation, op.Path)
 	}
+	if other, ok := basenameCollision(v, op.Path); ok {
+		return fmt.Errorf("%w: create_page: %s collides with the existing %s: both answer the bare wikilink [[%s]], which makes it ambiguous and resolve to nothing everywhere in the vault. Give the page a distinct name",
+			ErrValidation, op.Path, other, strings.TrimSuffix(path.Base(op.Path), ".md"))
+	}
 	if op.Rationale == "" {
 		return fmt.Errorf("%w: create_page: rationale is required", ErrValidation)
 	}
@@ -173,6 +177,35 @@ func validateCreatePage(op Op, v *vault.Vault, s *vault.Schema) error {
 		return fmt.Errorf("%w: create_page: %s is under %s but type %s belongs under %s", ErrValidation, op.Path, path.Dir(op.Path), page.FM.Type, wantDir)
 	}
 	return nil
+}
+
+// basenameCollision returns an existing page whose basename equals p's —
+// case-insensitively, ".md" stripped — which is exactly the condition that
+// makes vault.Resolve's bare-basename step ambiguous (backbone §2.9).
+//
+// Ambiguity there resolves to NOTHING rather than to a wrong answer, so a
+// second wiki/entities/kv-cache.md beside wiki/concepts/kv-cache.md does
+// not merely shadow the original: every [[kv-cache]] anywhere in the vault
+// stops resolving. Measured on the minimal fixture at 5 lint errors for a
+// single such create.
+//
+// Pre-existing behaviour of Resolve, not of this package (MASTER §11,
+// carried out of S2-T7). It is caught here, at proposal time, because the
+// alternative is a reviewer working backwards to the cause from five
+// broken-link errors in unrelated files — and because S3-T2 hands the
+// proposing job to a model, for which a validation message it can act on
+// is the whole error convention (backbone §6).
+func basenameCollision(v *vault.Vault, p string) (string, bool) {
+	want := strings.ToLower(strings.TrimSuffix(path.Base(p), ".md"))
+	for _, pg := range v.Pages() {
+		if pg.Path == p {
+			continue
+		}
+		if strings.ToLower(strings.TrimSuffix(path.Base(pg.Path), ".md")) == want {
+			return pg.Path, true
+		}
+	}
+	return "", false
 }
 
 // validatePatchPage enforces: path exists; the named section exists

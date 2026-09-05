@@ -54,6 +54,11 @@ func (e *Engine) ForceNextCommit() { e.forceNext = true }
 // sentinels backbone §5.4 defines for the Engine's changeset lifecycle.
 // Declared here — alongside the struct that names them in doc comments
 // elsewhere in the package — so no later wave invents its own.
+//
+// ErrIDCollision and ErrIDExhausted (MASTER §9 D-CI, S3-T0) join them here
+// for the same reason: OpenChangeset's B1 defence and Commit's B2 backstop
+// live in engine_changeset.go and apply.go respectively, but every
+// sentinel the package exports is declared in this one file.
 var (
 	// ErrNoChangeset is returned by Current when no changeset is open.
 	ErrNoChangeset = errors.New("stage: no open changeset")
@@ -64,6 +69,12 @@ var (
 	// ErrValidation is returned by ValidateOp/Append when an op fails
 	// validation.
 	ErrValidation = errors.New("stage: op failed validation")
+	// ErrIDCollision is returned by Commit when the changeset's id already
+	// names a committed changeset (D-CI).
+	ErrIDCollision = errors.New("stage: changeset id already committed")
+	// ErrIDExhausted is returned by OpenChangeset when it could not draw a
+	// free changeset id (D-CI).
+	ErrIDExhausted = errors.New("stage: could not draw a free changeset id")
 )
 
 // llmwikiDir returns the absolute path to e.root's .llmwiki directory

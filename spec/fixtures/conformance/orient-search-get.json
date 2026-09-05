@@ -1,0 +1,20 @@
+{
+  "name": "orient-search-get",
+  "steps": [
+    {"tool": "stage.open", "args": {"intent": "read the vault before review"}},
+    {"tool": "vault.orient", "args": {}},
+    {"tool": "wiki.search", "args": {"q": "cache"}},
+    {"tool": "wiki.get", "args": {"page": "kv-cache", "section": "## Related"}},
+    {"tool": "stage.close", "args": {}}
+  ],
+  "golden": [
+    "opened changeset <id> for \"read the vault before review\"",
+    "# Orientation\n\n## SCHEMA.md\n\n# SCHEMA\n\n## Domain\n\nml-systems — concepts, entities and comparisons related to efficient training\nand inference of large language models.\n\n## Tags\n\n- `inference` — running a trained model to produce outputs.\n- `decoding` — strategies for generating tokens one step at a time.\n- `memory` — memory usage and caching during model execution.\n- `attention` — attention mechanisms and their computational cost.\n- `kernels` — low-level, hardware-specific implementations of an operation.\n- `llm` — large language models as a category of entity.\n- `transformers` — the transformer architecture and its variants.\n- `quantization` — reducing numerical precision to save memory or compute.\n- `hardware` — accelerators and hardware constraints relevant to ML systems.\n- `latency` — end-to-end or per-token response time.\n- `throughput` — requests or tokens processed per unit of time.\n- `training` — fitting model parameters, as opposed to inference.\n\n## Conventions\n\n- Filenames are lowercase-hyphen.md.\n- Every page carries at least two outbound [[wikilinks]].\n- Claims drawn from a raw source carry a `^[raw/...]` provenance marker.\n- Pages over 200 lines are split candidates.\n\n## index.md\n\n# Index\n\n## Concepts\n\n- [[speculative-decoding]] — Drafting tokens with a small model and verifying them with the target model.\n- [[kv-cache]] — Caching attention keys/values across decoding steps.\n- [[flash-attention]] — Fused, memory-efficient attention kernel.\n\n## Entities\n\n- [[gpt-4]] — OpenAI's GPT-4 model.\n\n## curator-memory.md\n\n## Page thresholds\n- Do not create pages for individual benchmark numbers. (2026-08-14, after I rejected 4 such pages.)\n\n## Naming\n- Prefer the hyphenated vendor form: `gpt-4`, not `gpt4`. (2026-08-29)\n\n## log.md (last 30 lines)\n\n# Log\n\n- 2026-08-10T09:00:00Z create_page wiki/entities/gpt-4.md\n- 2026-08-20T10:00:00Z ingest_source raw/articles/kv-cache-explained.md\n- 2026-08-20T10:05:00Z create_page wiki/concepts/kv-cache.md\n- 2026-08-22T11:00:00Z create_page wiki/concepts/flash-attention.md\n- 2026-08-25T12:00:00Z ingest_source raw/papers/leviathan-2023.md\n- 2026-08-25T12:10:00Z create_page wiki/concepts/speculative-decoding.md\n",
+    "3 result(s) for \"cache\":\n1. wiki/concepts/kv-cache.md — KV Cache\n   # KV Cache The key/value cache stores per-layer attention projections from previous decoding steps so each new token only attends to cached keys and values instead of recomputing them.^[raw/articles…\n2. wiki/concepts/flash-attention.md — FlashAttention\n   …nstead tiling the computation to keep intermediate values in fast on-chip memory.^[raw/articles/kv-cache-explained.md] ## Why it matters - Reduces memory-bandwidth traffic, which dominates attenti…\n3. wiki/concepts/speculative-decoding.md — Speculative Decoding\n   …led itself, resampling the first rejected token from a corrected distribution. ## Related - [[kv-cache]] — both the draft and target model need fast cache access during verification. - [[GPT-4]]…",
+    "## Related\n\n- [[flash-attention]] — a kernel design that reduces the memory-bandwidth cost\n  of reading the cache.\n- [[speculative-decoding]] — both the draft and target model read the cache\n  during verification.\n",
+    "changeset <id>\nintent: read the vault before review\noperations: 0\nfiles touched: 0\nchecks: schema=pass lint=pass orphans=0 broken_links=0"
+  ],
+  "commit_message": "read-only review",
+  "expect_paths": [],
+  "expect_errors": 0
+}

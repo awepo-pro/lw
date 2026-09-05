@@ -1,6 +1,8 @@
 package stage
 
 import (
+	"bytes"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"os"
@@ -580,6 +582,181 @@ func TestCurrentNoChangeset(t *testing.T) {
 	e, _ := newTestEngine(t)
 	if _, err := e.Current(); !errors.Is(err, ErrNoChangeset) {
 		t.Fatalf("Current on a fresh engine: got %v, want ErrNoChangeset", err)
+	}
+}
+
+// firstFixedThenRandomReader returns a fixed byte sequence on its first
+// Read call, then delegates to crypto/rand for every call after — modelling
+// e.rand's real production behaviour (crypto/rand.Reader, which always
+// varies) while still letting a test predict exactly what OpenChangeset's
+// FIRST draw will be, so it can seed a collision for that one draw and
+// prove the retry loop moves past it (MASTER §9 D-CI, Part B1).
+type firstFixedThenRandomReader struct {
+	first []byte
+	done  bool
+}
+
+func (r *firstFixedThenRandomReader) Read(p []byte) (int, error) {
+	if !r.done {
+		r.done = true
+		return copy(p, r.first), nil
+	}
+	return rand.Reader.Read(p)
+}
+
+// fixedRepeatingReader always yields the same fixed byte sequence, on every
+// call, indefinitely — unlike bytes.Reader, which is exhausted after one
+// read of its underlying slice. It models a truly fixed entropy source
+// under test, the shape TestOpenChangesetExhaustsOnAFixedSource needs to
+// make every one of OpenChangeset's retry attempts draw the identical
+// candidate (MASTER §9 D-CI, Part B1's documented exhaustion behaviour).
+type fixedRepeatingReader struct{ b []byte }
+
+func (r fixedRepeatingReader) Read(p []byte) (int, error) {
+	return copy(p, r.b), nil
+}
+
+// TestOpenChangesetSkipsATakenID pins MASTER §9 D-CI Part B1: when the id
+// OpenChangeset's first draw would produce already names a directory under
+// changesets/committed/, OpenChangeset must draw again rather than reuse
+// it — returning a DIFFERENT id, not ErrOpenChangeset or the taken one.
+func TestOpenChangesetSkipsATakenID(t *testing.T) {
+	e, dir := newTestEngine(t)
+	fixedEntropy := []byte{1, 2, 3, 4, 5, 6, 7, 8}
+
+	// The id a fixed clock and this fixed entropy stream will produce —
+	// i.e. exactly what OpenChangeset's first attempt draws once e.rand is
+	// set to a reader whose first Read returns fixedEntropy.
+	predicted, err := newChangesetID(e.now(), bytes.NewReader(fixedEntropy))
+	if err != nil {
+		t.Fatalf("newChangesetID (predicting the first draw): %v", err)
+	}
+
+	// Seed changesets/committed/<predicted> so the first draw collides.
+	collidingDir := filepath.Join(dir, ".llmwiki", "changesets", "committed", predicted)
+	if err := os.MkdirAll(collidingDir, 0o755); err != nil {
+		t.Fatalf("seed colliding committed dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(collidingDir, "changeset.json"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("seed colliding changeset.json: %v", err)
+	}
+
+	// After the first (colliding) draw, every further draw uses real
+	// entropy — modelling e.rand in production, which does vary.
+	e.rand = &firstFixedThenRandomReader{first: fixedEntropy}
+
+	c, err := e.OpenChangeset("skip a taken id", testAuthor)
+	if err != nil {
+		t.Fatalf("OpenChangeset: %v", err)
+	}
+	if c.ID == predicted {
+		t.Fatalf("OpenChangeset reused the taken id %s instead of drawing again", c.ID)
+	}
+}
+
+// TestOpenChangesetExhaustsOnAFixedSource pins MASTER §9 D-CI Part B1's
+// documented exhaustion behaviour: under a fixed clock AND a fixed reader,
+// every attempt yields the identical candidate, so if that candidate is
+// already taken the retry loop must exhaust with ErrIDExhausted rather than
+// silently reusing it or looping forever. This is correct behaviour, not a
+// flake to paper over by reseeding (02-solution.md §3b).
+func TestOpenChangesetExhaustsOnAFixedSource(t *testing.T) {
+	e, dir := newTestEngine(t)
+	fixedEntropy := []byte{9, 9, 9, 9, 9, 9, 9, 9}
+
+	predicted, err := newChangesetID(e.now(), fixedRepeatingReader{b: fixedEntropy})
+	if err != nil {
+		t.Fatalf("newChangesetID (predicting every draw): %v", err)
+	}
+
+	collidingDir := filepath.Join(dir, ".llmwiki", "changesets", "committed", predicted)
+	if err := os.MkdirAll(collidingDir, 0o755); err != nil {
+		t.Fatalf("seed colliding committed dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(collidingDir, "changeset.json"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("seed colliding changeset.json: %v", err)
+	}
+
+	e.rand = fixedRepeatingReader{b: fixedEntropy}
+
+	if _, err := e.OpenChangeset("exhaust on a fixed source", testAuthor); !errors.Is(err, ErrIDExhausted) {
+		t.Fatalf("OpenChangeset with every draw colliding = %v, want ErrIDExhausted", err)
+	}
+
+	// The changeset must not have been persisted anywhere: a failed draw
+	// leaves changesets/open/ exactly as OpenChangeset found it (empty).
+	entries, err := os.ReadDir(filepath.Join(dir, ".llmwiki", "changesets", "open"))
+	if err != nil {
+		t.Fatalf("read changesets/open/: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("changesets/open/ has %d entries after an exhausted OpenChangeset, want 0", len(entries))
+	}
+}
+
+// TestOldWidthIDsStillLoad pins MASTER §9 D-CI Part C: a changeset written
+// with the legacy 7-hex id (D-H's pre-2026-09 width) must keep working
+// forever — changesetIDPattern still matches it, its changeset.json still
+// round-trips through plain JSON, the journal (what cmd/lw's cmdLog
+// actually formats — never changeset.json directly) still reports it, and
+// D-CI's own collision machinery does not choke on an old-width neighbour.
+func TestOldWidthIDsStillLoad(t *testing.T) {
+	e, dir := newTestEngine(t)
+	const oldID = "cs-0193f2a"
+
+	if !changesetIDPattern.MatchString(oldID) {
+		t.Fatalf("changesetIDPattern rejects the legacy 7-hex id %q", oldID)
+	}
+
+	old := &Changeset{
+		ID:       oldID,
+		Intent:   "pre-D-CI changeset",
+		Author:   testAuthor,
+		OpenedAt: e.now().UTC(),
+		Ops:      []Op{},
+		Checks:   Checks{Schema: "pass", Lint: "pass"},
+	}
+	committedDir := filepath.Join(dir, ".llmwiki", "changesets", "committed", oldID)
+	if err := writeChangesetJSON(committedDir, old); err != nil {
+		t.Fatalf("seed legacy changeset: %v", err)
+	}
+
+	b, err := os.ReadFile(filepath.Join(committedDir, "changeset.json"))
+	if err != nil {
+		t.Fatalf("read legacy changeset.json: %v", err)
+	}
+	var loaded Changeset
+	if err := json.Unmarshal(b, &loaded); err != nil {
+		t.Fatalf("unmarshal legacy changeset.json: %v", err)
+	}
+	if loaded.ID != oldID {
+		t.Fatalf("loaded.ID = %q, want %q", loaded.ID, oldID)
+	}
+
+	// lw log (cmd/lw's cmdLog) formats stage.Event, never changeset.json —
+	// so the artifact that must actually round-trip the legacy id is the
+	// journal record, not the file above.
+	if err := e.journal.Append(Event{
+		TS:        e.now().UTC(),
+		Kind:      EvChangesetOpened,
+		Changeset: oldID,
+		Actor:     testAuthor,
+		Message:   "legacy changeset",
+	}); err != nil {
+		t.Fatalf("journal legacy event: %v", err)
+	}
+	events, err := e.Journal().Query(Filter{Changeset: oldID})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(events) != 1 || events[0].Changeset != oldID {
+		t.Fatalf("journal query for legacy id = %+v, want exactly one event naming %s", events, oldID)
+	}
+
+	// D-CI's collision machinery must not choke on an old-width neighbour:
+	// opening a fresh (16-hex) changeset beside it must still succeed.
+	if _, err := e.OpenChangeset("fresh changeset beside a legacy one", testAuthor); err != nil {
+		t.Fatalf("OpenChangeset beside a legacy 7-hex committed changeset: %v", err)
 	}
 }
 

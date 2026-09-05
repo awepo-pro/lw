@@ -131,7 +131,20 @@ func canonicalSHA(v *vault.Vault, p string) (string, bool) {
 //
 // It only ever flips State to StateStale — Hunks and their Dropped flags
 // are left exactly as last computed (D-AJ).
-func refreshOp(op *Op, v *vault.Vault) {
+//
+// Two vaults, not one (MASTER §10 OR-13, closing OQ-10). A top-level op's
+// staleness anchor is the WORKING TREE — that is what captureSourceSHAs
+// hashed and what "the tree changed under this proposal" means — so those
+// rules read v. A cascade sub-op's Before is the sha of the tree the op it
+// belongs to will actually apply to, which since OR-13 is the projection
+// of the changeset's preceding live ops, not the working tree; those rules
+// read cascadeV. For the first op of a changeset the two are the same
+// vault, which is why every single-op changeset behaves exactly as before.
+//
+// cascadeV is still derived from a fresh read of the working tree (see
+// projectedTree), so an external edit to a file no preceding op touched
+// still registers as staleness through it.
+func refreshOp(op *Op, v, cascadeV *vault.Vault) {
 	if op.State == StateDropped || op.State == StateRejected {
 		return
 	}
@@ -159,7 +172,7 @@ func refreshOp(op *Op, v *vault.Vault) {
 	}
 
 	for i := range op.Cascade {
-		refreshOp(&op.Cascade[i], v)
+		refreshOp(&op.Cascade[i], cascadeV, cascadeV)
 	}
 }
 

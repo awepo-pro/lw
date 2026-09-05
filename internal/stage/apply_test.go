@@ -982,3 +982,92 @@ func TestPredecessorCommitID(t *testing.T) {
 		}
 	}
 }
+
+// TestCommitRefusesAnAlreadyCommittedID pins MASTER §9 D-CI Part B2, the
+// Commit backstop at step 2a: if something creates
+// changesets/committed/<id> for the currently open changeset's own id
+// AFTER OpenChangeset already drew it — the residual collision B1 cannot
+// retroactively prevent — Commit must refuse with ErrIDCollision before
+// step 3's commit_begin and before step 5 writes a single byte, and it
+// must release the lock it took at step 1 rather than leak it.
+func TestCommitRefusesAnAlreadyCommittedID(t *testing.T) {
+	e, dir := newTestEngine(t)
+
+	c, err := e.OpenChangeset("collide at commit", testAuthor)
+	if err != nil {
+		t.Fatalf("OpenChangeset: %v", err)
+	}
+
+	const path = "wiki/concepts/collision-page.md"
+	content := newConceptPageContent("Collision Page")
+	if _, err := e.Append(Op{
+		Kind:       OpCreatePage,
+		Path:       path,
+		Content:    content,
+		Rationale:  "test",
+		Provenance: []string{"raw/papers/leviathan-2023.md"},
+	}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	// Simulate the residual collision: changesets/committed/<c.ID> now
+	// exists, even though OpenChangeset's own B1 defence found it free at
+	// draw time (e.g. two processes racing on the same clock+entropy).
+	collidingDir := filepath.Join(dir, ".llmwiki", "changesets", "committed", c.ID)
+	if err := os.MkdirAll(collidingDir, 0o755); err != nil {
+		t.Fatalf("seed colliding committed dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(collidingDir, "changeset.json"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("seed colliding changeset.json: %v", err)
+	}
+
+	logBefore, _ := os.ReadFile(filepath.Join(dir, "log.md"))
+	snapshotsDir := filepath.Join(dir, ".llmwiki", "snapshots")
+	entriesBefore, err := os.ReadDir(snapshotsDir)
+	if err != nil {
+		t.Fatalf("read snapshots/ before Commit: %v", err)
+	}
+
+	if _, err := e.Commit("attempt a colliding commit"); !errors.Is(err, ErrIDCollision) {
+		t.Fatalf("Commit = %v, want ErrIDCollision", err)
+	}
+
+	// The vault must be byte-unchanged: the target page was never written
+	// (step 5 never ran), log.md was never appended to (step 8 never ran),
+	// and no snapshot was written (step 4a/6 never ran).
+	if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(path))); !os.IsNotExist(err) {
+		t.Fatalf("Commit wrote the target page despite refusing before step 5 (stat err = %v)", err)
+	}
+	logAfter, _ := os.ReadFile(filepath.Join(dir, "log.md"))
+	if string(logAfter) != string(logBefore) {
+		t.Fatalf("log.md changed despite the pre-mutation refusal:\nbefore: %q\nafter:  %q", logBefore, logAfter)
+	}
+	entriesAfter, err := os.ReadDir(snapshotsDir)
+	if err != nil {
+		t.Fatalf("read snapshots/ after Commit: %v", err)
+	}
+	if len(entriesAfter) != len(entriesBefore) {
+		t.Fatalf("a snapshot was written despite the pre-mutation refusal: before=%d after=%d", len(entriesBefore), len(entriesAfter))
+	}
+
+	// No commit_begin was journalled — the whole point of placing the
+	// guard before step 3, not at step 9 where the collision used to
+	// surface.
+	events, err := e.Journal().Query(Filter{Kinds: []EventKind{EvCommitBegin}})
+	if err != nil {
+		t.Fatalf("Journal().Query: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("commit_begin was journalled despite the pre-mutation refusal: %+v", events)
+	}
+
+	// The lock taken at step 1 must have been released, not leaked: a
+	// fresh AcquireLock on the same vault must succeed.
+	release, err := AcquireLock(e.llmwikiDir())
+	if err != nil {
+		t.Fatalf("AcquireLock after Commit returned ErrIDCollision: %v (the lock was leaked)", err)
+	}
+	if err := release(); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+}

@@ -9,8 +9,8 @@
   "properties": {
     "id": {
       "type": "string",
-      "pattern": "^cs-[0-9a-f]{7}$",
-      "description": "MASTER §9 D-H changeset id, e.g. cs-0193f2a."
+      "pattern": "^cs-([0-9a-f]{7}|[0-9a-f]{16})$",
+      "description": "MASTER §9 D-CI changeset id, 16 hex (64-bit). The 7-hex form is D-H's pre-2026-09 width and stays legal so vaults written before D-CI keep validating."
     },
     "intent": {
       "type": "string",

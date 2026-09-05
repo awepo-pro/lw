@@ -65,6 +65,23 @@ func (e *Engine) Commit(message string) (string, error) {
 		return "", ErrStale
 	}
 
+	// Step 2a (D-CI). The commit target must not already exist, checked
+	// here — under the lock, before step 3 journals commit_begin and
+	// before step 5 writes a byte of the vault. Step 9 renames
+	// changesets/open/<id> -> changesets/committed/<id> AFTER commit_end
+	// is journalled, and rename(2) onto a non-empty directory returns
+	// ENOTEMPTY, so a collision discovered there leaves history claiming a
+	// commit that did not land and the changeset wedged in open/ — D-BP's
+	// brick. Discovering it here costs one Stat and aborts while the vault
+	// is still untouched.
+	if taken, err := e.committedIDTaken(c.ID); err != nil {
+		e.Close()
+		return "", fmt.Errorf("stage: commit: %w", err)
+	} else if taken {
+		e.Close()
+		return "", fmt.Errorf("stage: commit: changeset %s is already committed: %w", c.ID, ErrIDCollision)
+	}
+
 	now := e.now().UTC()
 	commitID, err := nextCommitID(filepath.Join(e.llmwikiDir(), "snapshots"))
 	if err != nil {
@@ -200,7 +217,7 @@ func (e *Engine) Commit(message string) (string, error) {
 	}); err != nil {
 		return "", fmt.Errorf("stage: commit: %w", err)
 	}
-	committedDir := filepath.Join(e.llmwikiDir(), "changesets", "committed")
+	committedDir := e.changesetCommittedDir()
 	if err := os.MkdirAll(committedDir, 0o755); err != nil {
 		return "", fmt.Errorf("stage: commit: %w", err)
 	}
@@ -231,6 +248,20 @@ func (e *Engine) checkFault(step string) error {
 		return nil
 	}
 	return e.faultAfter(step)
+}
+
+// committedIDTaken reports whether id already names a directory under
+// changesets/committed/ (MASTER §9 D-CI, part B2 — Commit's own backstop
+// at step 2a). Unlike changesetIDTaken it does not also check
+// changesets/open/: the id under test here is always the currently open
+// changeset's own id, which by definition already exists there.
+func (e *Engine) committedIDTaken(id string) (bool, error) {
+	if _, err := os.Stat(filepath.Join(e.changesetCommittedDir(), id)); err == nil {
+		return true, nil
+	} else if !os.IsNotExist(err) {
+		return false, fmt.Errorf("stage: committed id taken: %w", err)
+	}
+	return false, nil
 }
 
 // hasStaleOp reports whether any live op in ops — or, recursively, any

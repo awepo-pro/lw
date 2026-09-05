@@ -121,7 +121,14 @@
  
 --- a/wiki/concepts/flash-attention.md
 +++ b/wiki/concepts/flash-attention.md
-@@ -22,6 +22,6 @@
+@@ -16,12 +16,12 @@
+ 
+ ## Why it matters
+ 
+-- Reduces memory-bandwidth traffic, which dominates attention's runtime cost.
++- Reduces memory-bandwidth traffic, the dominant cost of naive attention.
+ - Produces numerically identical results to standard attention.
+ - Pairs naturally with KV-cache reuse during incremental decoding.
  
  ## Related
  
@@ -129,6 +136,21 @@
 +- [[kv-cache-v2]] — the cache that flash-attention-style kernels read efficiently.
  - [[gpt-4]] — a production model whose serving stack relies on fused attention
    kernels like this one.
+--- /dev/null
++++ b/wiki/concepts/golden-new-page.md
+@@ -0,0 +1,12 @@
++---
++title: Golden New Page
++created: 2026-08-29
++updated: 2026-08-29
++type: concept
++tags: [inference]
++confidence: medium
++---
++
++# Golden New Page
++
++See [[kv-cache-v2]] and [[gpt-4]] for background.
 --- a/wiki/concepts/speculative-decoding.md
 +++ b/wiki/concepts/speculative-decoding.md
 @@ -23,7 +23,7 @@

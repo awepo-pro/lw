@@ -1,0 +1,20 @@
+{
+  "name": "rejection",
+  "steps": [
+    {"tool": "stage.open", "args": {"intent": "demonstrate proposal validation"}},
+    {"tool": "stage.create_page", "args": {"path": "wiki/concepts/rejected-taxonomy.md", "title": "Rejected Taxonomy", "type": "concept", "tags": ["not-a-tag"], "sources": ["raw/papers/leviathan-2023.md"], "confidence": "medium", "contested": false, "body": "# Rejected Taxonomy\n\nSee [[kv-cache]] and [[gpt-4]].", "rationale": "should fail taxonomy"}},
+    {"tool": "stage.create_page", "args": {"path": "wiki/concepts/rejected-links.md", "title": "Rejected Links", "type": "concept", "tags": ["inference"], "sources": ["raw/papers/leviathan-2023.md"], "confidence": "medium", "contested": false, "body": "# Rejected Links\n\nSee [[kv-cache]].", "rationale": "should fail outbound link count"}},
+    {"tool": "stage.add_link", "args": {"from": "wiki/concepts/kv-cache.md", "to": "wiki/concepts/does-not-exist.md", "context": "should fail broken endpoint"}},
+    {"tool": "stage.close", "args": {}}
+  ],
+  "golden": [
+    "opened changeset <id> for \"demonstrate proposal validation\"",
+    "stage.create_page: stage: op failed validation: create_page: vault: frontmatter: tag \"not-a-tag\" is not in SCHEMA.md's taxonomy; add it to the taxonomy or retag",
+    "stage.create_page: stage: op failed validation: create_page: wiki/concepts/rejected-links.md has fewer than 2 outbound wikilinks",
+    "to page \"wiki/concepts/does-not-exist.md\" was not found",
+    "changeset <id>\nintent: demonstrate proposal validation\noperations: 0\nfiles touched: 0\nchecks: schema=pass lint=pass orphans=0 broken_links=0"
+  ],
+  "commit_message": "validation-only review",
+  "expect_paths": [],
+  "expect_errors": 3
+}

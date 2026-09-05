@@ -10,7 +10,7 @@ require (
 	charm.land/glamour/v2 v2.0.1
 	charm.land/lipgloss/v2 v2.0.6
 	github.com/BurntSushi/toml v1.6.0
-	github.com/modelcontextprotocol/go-sdk v1.7.0-pre.3
+	github.com/modelcontextprotocol/go-sdk v1.7.0
 	github.com/yuin/goldmark v1.8.5
 	go.abhg.dev/goldmark/wikilink v0.6.0
 	golang.org/x/net v0.58.0
