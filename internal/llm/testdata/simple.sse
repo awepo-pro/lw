@@ -1,0 +1,5 @@
+data: {"id":"chatcmpl-5","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-5","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]

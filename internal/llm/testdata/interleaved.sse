@@ -1,0 +1,11 @@
+data: {"id":"chatcmpl-2","choices":[{"index":0,"delta":{"role":"assistant","content":"Checking sources..."},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-2","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_a","type":"function","function":{"name":"wiki.search","arguments":""}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-2","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"q\":\"kv cache\"}"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-2","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"call_b","type":"function","function":{"name":"wiki.get","arguments":"{\"page\":\"kv-cache\"}"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-2","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
