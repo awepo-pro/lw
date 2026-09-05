@@ -1,9 +1,84 @@
 package main
 
-import "errors"
+import (
+	"flag"
+	"fmt"
+	"os"
 
-// cmdTUI will launch the terminal UI. It also runs when lw is invoked with
-// no subcommand at all.
+	tea "charm.land/bubbletea/v2"
+
+	"github.com/awepo-pro/lw/internal/stage"
+	"github.com/awepo-pro/lw/internal/ui"
+)
+
+// cmdTUI opens the interactive terminal UI (backbone §12/§13; s4-tui.md
+// S4-T2): the shell from internal/ui, wired to a real stage.Engine, theme
+// and key bindings. main.go dispatches here both for the explicit `lw tui`
+// verb and as the default action when lw is invoked with no subcommand at
+// all — that dispatch row has been in main.go's verbs slice since S0-T1 and
+// is never added a second time (D-R, C-86).
 func cmdTUI(args []string) error {
-	return errors.New("not implemented yet")
+	fs := flag.NewFlagSet("tui", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	vaultPath := fs.String("vault", "", "vault root (default: nearest ancestor directory containing SCHEMA.md)")
+	if err := fs.Parse(args); err != nil {
+		return &exitError{code: 2}
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "lw tui: unexpected argument %q\n", fs.Arg(0))
+		return &exitError{code: 2}
+	}
+
+	root, err := findVaultRoot(*vaultPath)
+	if err != nil {
+		return err
+	}
+
+	engine, err := stage.OpenEngine(root)
+	if err != nil {
+		return fmt.Errorf("open vault %s: %w", root, err)
+	}
+	defer engine.Close()
+
+	theme, err := ui.LoadTheme("")
+	if err != nil {
+		return fmt.Errorf("load theme: %w", err)
+	}
+	keys, err := ui.LoadKeys()
+	if err != nil {
+		return fmt.Errorf("load keys: %w", err)
+	}
+
+	app := ui.NewApp(ui.Options{
+		Deps: ui.Deps{
+			Engine: engine,
+			// Agent stays nil until S5 wires a real agent.Agent (backbone
+			// §12, s4-tui.md S4-T2 item 5): Deps.Agent is an interface, and
+			// a nil interface value is exactly what "not built yet" means.
+			Theme: theme,
+			Keys:  keys,
+		},
+		// Panes is empty on purpose: the shell never constructs a screen
+		// and never imports one (backbone §12; s4-tui.md S4-T2 items 1-2),
+		// and at this subtask none of the internal/ui/<screen> packages
+		// exist yet — S4's wave 3 builds them, each in its own package, in
+		// this same worktree afterwards. cmd_tui.go is the one place that
+		// wires a screen's New(d ui.Deps) ui.Pane into the map above once
+		// it exists; nothing else in this file needs to change to do that.
+		Panes: map[ui.Screen]ui.Pane{},
+		Start: ui.ScreenBrowse,
+	})
+
+	p := tea.NewProgram(app)
+	// Kill restores the terminal unconditionally, so a panic inside
+	// Update/View — or Run returning early on its own panic recovery —
+	// can never leave the terminal in raw mode (s4-tui.md S4-T2 item 5).
+	defer p.Kill()
+
+	if _, err := p.Run(); err != nil {
+		// Bare error: main prints "lw: tui: <err>" (MASTER §9 D-Q). Naming
+		// the verb again here produced "lw: tui: tui: ...".
+		return err
+	}
+	return nil
 }
