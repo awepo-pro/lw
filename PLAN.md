@@ -1,6 +1,6 @@
 # llmwiki — a TUI + toolchain for LLM-compiled knowledge vaults
 
-**Status:** proposal, awaiting approval to execute
+**Status:** implementation in progress; Stage 3 of 7
 **Version:** v0.1 — the build described here
 **Date:** 2026-08-29
 **Binary:** `lw`
@@ -123,8 +123,10 @@ This is the load-bearing part of the design.
    guarantee than a permission profile, since it cannot be misconfigured.
 2. The agent's only mutation verbs are `stage.*`. They do not touch the working tree.
    They append validated operations to the open changeset in `.llmwiki/`.
-3. Only the review screen (or `lw commit`) applies a changeset. Apply is atomic:
-   write-temp + rename, then snapshot, journal record, reindex.
+3. Only the review screen (or `lw commit`) applies a changeset. Each file update
+   uses temp-file + rename; the journal and recovery path provide crash
+   consistency across the multi-file operation, since POSIX cannot make all
+   vault-file renames one atomic transaction.
 4. Every proposal is journalled when it is *made*, then tagged `accepted`, `rejected` or
    `dropped` at review time. Rejections are permanent history.
 5. `raw/` is write-once. `stage.ingest_source` is the only writer, and only for paths
@@ -262,7 +264,7 @@ pages >200 lines flagged as split candidates; tags outside the taxonomy rejected
 | `stage` | validate → append op → recompute checks |
 | `diff` | three-way render: working tree · staged · last snapshot |
 | `hunk split/drop` | reviewer drops individual hunks; the op is rewritten, checks rerun |
-| `commit` | atomic apply (temp+rename), snapshot, journal record, reindex, append to `log.md` |
+| `commit` | journaled multi-file apply (temp+rename per file), snapshot, reindex, append to `log.md` |
 | `revert <id>` | compute inverse ops from snapshots, open them as a *new* changeset for review |
 | `log` | journal query: by author, outcome, page, date |
 
@@ -336,7 +338,7 @@ Panel model borrowed from superfile; content entirely ours.
    `A` accept all, `X` reject the changeset, `C` commit. Stale ops flagged amber.
 3. **Ask** — native chat pane (D10). Token deltas stream in; tool calls render as
    collapsible lines; any `stage.*` call badges the STAGE panel live. `Ctrl-R` → review.
-4. **Lint** — the 11 checks as a live checklist; `f` asks the agent to fix a failure,
+4. **Lint** — the 14 checks as a live checklist; `f` asks the agent to fix a failure,
    which produces a changeset — so even repairs go through review.
 5. **Log** — journal viewer. Filter `accepted | rejected | agent | human`. `r` reverts a
    commit into a new reviewable changeset.
@@ -468,7 +470,7 @@ llmwiki/
 ├── internal/
 │   ├── vault/                  frontmatter, wikilinks, canonical serializer
 │   ├── index/                  inverted word index, incremental rebuild
-│   ├── lint/                   the 11 checks, each independently testable
+│   ├── lint/                   the 14 checks, each independently testable
 │   ├── stage/                  CAS, journal, changeset, apply/revert
 │   ├── tools/                  the tool surface (§8) — one definition, two consumers
 │   ├── mcp/                    MCP server binding over internal/tools
@@ -503,7 +505,7 @@ All permissive. No SQLite, no Node, no Python, no database. **Six direct depende
 | # | Deliverable | Est. | Done when |
 |---|---|---|---|
 | **M0** | Spec & scaffold | 1w | `changeset.schema.json` frozen; golden fixture vaults; Go module + CI |
-| **M1** | Vault engine | 2w | Parse/serialize round-trips byte-stable on fixtures; word index; all 11 lint checks; `lw lint`, `lw status` |
+| **M1** | Vault engine | 2w | Parse/serialize round-trips byte-stable on fixtures; word index; all 14 lint checks; `lw lint`, `lw status` |
 | **M2** | Staging engine | 2w | CAS + journal + apply/revert; `lw diff/commit/log/revert` work with **no UI and no LLM**; crash-safety and conflict tests pass |
 | **M3** | Tool layer + MCP | 1w | Tool surface over `internal/tools`; conformance suite driven by a scripted fake agent; MCP server verified against a real client |
 | **M4** | TUI | 3w | Browse + preview, then the review screen with hunk selection. Ship review before anything else |
