@@ -7,14 +7,23 @@
 // specification this file exists to satisfy; this comment only orients
 // the code, it does not restate the decision.
 //
-// Phase 1 (this subtask, S4-T0) populates patchableRootFiles with exactly
-// one entry, curator-memory.md — the one root file with no automatic
-// writer (OQ-9 §7's measurement table: derivation never touches it, and a
-// cascade touches it only when it happens to wikilink a renamed page).
-// Phase 2 (S4-T7, after the review screen ships) adds index.md by
-// appending one more entry to that slice and nothing else in this file —
-// that is the entire point of building L1/L2/L4 generally, now, against
-// the file where a bug is cheap.
+// Phase 1 (S4-T0) populated patchableRootFiles with exactly one entry,
+// curator-memory.md — the one root file with no automatic writer (OQ-9
+// §7's measurement table: derivation never touches it, and a cascade
+// touches it only when it happens to wikilink a renamed page). Phase 2
+// (this subtask, S4-T7, after the review screen shipped) adds index.md by
+// appending one more entry to that slice and changing nothing else about
+// L1/L2/L4 — that was the entire point of building them generally, in
+// phase 1, against the file where a bug was cheap.
+//
+// Phase 2 also splits one predicate that was quietly answering two
+// different questions (D-CW, s4-tui.md C-110): isPatchableRootFile asks
+// "may an op PROPOSE a patch_page against this path" (OQ-9's allow-list —
+// index.md: yes, now); isRevertableRootFile asks "can Revert RECONSTRUCT
+// this path's previous content from a stored CAS blob" (index.md: no —
+// derive.go computes its bytes on every commit but never stores them
+// keyed by the sha a snapshot records, so there is nothing in the CAS for
+// a revert to read back). See isRevertableRootFile's own doc comment.
 package stage
 
 import (
@@ -37,8 +46,7 @@ import (
 // literal "curator-memory.md" string.
 var patchableRootFiles = []string{
 	"curator-memory.md",
-	// "index.md" — added at S4-T7, OQ-9 phase 2 (waits on S4-T3's review
-	// screen so a human can see a proposed index edit before it lands).
+	"index.md", // S4-T7, OQ-9 phase 2 — added after S4-T3's review screen shipped.
 }
 
 // forbiddenRootFiles are vault-root files a patch_page may never target,
@@ -49,16 +57,70 @@ var forbiddenRootFiles = map[string]string{
 	"SCHEMA.md": "SCHEMA.md is the rules the validator itself reads (frontmatter schema, tag taxonomy); patch_page cannot be used to rewrite the rules it is being checked against",
 }
 
+// revertableRootFiles is patchableRootFiles narrowed to the subset
+// buildRevertOps (revert.go) can actually reconstruct from a stored CAS
+// blob — a different question from "may a patch_page target this path"
+// (D-CW, s4-tui.md C-110).
+//
+// A root file's bytes only ever reach the CAS by being someone's
+// post-image write in storeCommitMaterialization (apply.go): a direct
+// patch_page's Content (op.go's storeOpContent, and Commit's own
+// per-op postImage write), OR a cascade sub-op's post-image when a
+// rename/merge rewrites it. index.md has a THIRD writer neither of those
+// covers — create_page's index derivation (deriveIndex,
+// buildCommitMaterialization) computes its post-commit content straight
+// into the commit's materialized tree. That path DOES store the new
+// post-image (m.writes["index.md"] is stored like any other write), but
+// the vault's very first index.md — whatever shipped in the vault before
+// any commit ever ran a derivation over it — was never itself the
+// product of a stored write, so a revert reaching back past the first
+// commit that changed it (or the genesis snapshot itself) can hit a sha
+// with no corresponding blob. Distinguishing "this specific historical
+// sha happens to have been stored" from "this path's bytes are
+// mechanically guaranteed to be stored" is not worth the complexity for
+// one root file with two writers, so index.md is excluded from this set
+// entirely and left to buildRevertOps' honest "skipped, not dropped" path
+// — exactly its pre-S4-T7 behaviour. curator-memory.md has no automatic
+// writer at all (OQ-9 §7's measurement table), so every sha it has ever
+// carried came from an explicit patch_page whose pre-image
+// storeOpContent stored — always reconstructable.
+var revertableRootFiles = []string{
+	"curator-memory.md",
+}
+
 // futureRootFiles are root files OQ-9 will allow-list in a later phase —
 // refused now with a message that says so, never "forbidden forever" and
-// never a bare "does not exist" (OQ-9 §9 phase 1 table).
-var futureRootFiles = map[string]string{
-	"index.md": "index.md patches are not enabled in this phase — OQ-9 phase 2 (S4-T7) adds it once the review screen (S4-T3) ships, so a human can see a proposed index edit before it lands; this is not a permanent refusal",
-}
+// never a bare "does not exist" (OQ-9 §9 phase 1 table). Empty as of
+// phase 2 (S4-T7): OQ-9 §9 defines exactly two phases, and both have now
+// shipped (curator-memory.md in phase 1, index.md here) — kept, rather
+// than deleted, as the one place a future phase 3 entry would go, and so
+// isKnownRootFile's three-way check (allow-listed / forbidden / future)
+// does not need a fourth "phase not started yet" case invented later.
+var futureRootFiles = map[string]string{}
 
 // isPatchableRootFile reports whether p is on the OQ-9 allow-list.
 func isPatchableRootFile(p string) bool {
 	for _, f := range patchableRootFiles {
+		if f == p {
+			return true
+		}
+	}
+	return false
+}
+
+// isRevertableRootFile reports whether p is a root file buildRevertOps
+// (revert.go) may rebuild as an inverse patch_page from a stored CAS
+// blob — a strictly narrower question than isPatchableRootFile (D-CW,
+// s4-tui.md C-110). An agent MAY propose a patch_page against every
+// entry in patchableRootFiles; revert can only RECONSTRUCT the ones with
+// no automatic writer computing their bytes out-of-band, i.e. those in
+// revertableRootFiles. index.md fails this (create_page's index
+// derivation writes it without every historical sha being guaranteed
+// stored — see revertableRootFiles' doc comment); curator-memory.md
+// passes (no automatic writer at all, so every byte it has ever held
+// came from a stored patch_page pre/post-image).
+func isRevertableRootFile(p string) bool {
+	for _, f := range revertableRootFiles {
 		if f == p {
 			return true
 		}

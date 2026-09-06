@@ -166,27 +166,90 @@ func TestPatchRootFileRefusesLogAndSchema(t *testing.T) {
 	})
 }
 
-// TestPatchRootFileRefusesIndexInPhase1 pins OQ-9 phase 1's scope: index.md
-// is refused with a message saying it is not YET enabled, not that it is
-// forbidden forever — S4-T7 adds it after the review screen ships.
-func TestPatchRootFileRefusesIndexInPhase1(t *testing.T) {
-	v := newTestVault(t)
-	before, ok := canonicalSHA(v, "index.md")
-	if !ok {
-		t.Fatal("canonicalSHA(index.md): not found")
-	}
-	op := Op{Kind: OpPatchPage, Path: "index.md", Before: before, Content: []byte("tampered\n")}
-	err := ValidateOp(op, v, v.Schema())
-	wantValidationError(t, err)
-	if strings.Contains(err.Error(), "does not exist") {
-		t.Fatalf("index.md refusal = %q, must not be a bare \"does not exist\"", err)
-	}
-	if strings.Contains(err.Error(), "forever") {
-		t.Fatalf("index.md refusal = %q, must not read as forbidden forever", err)
-	}
-	if !strings.Contains(err.Error(), "not enabled") && !strings.Contains(err.Error(), "phase 2") {
-		t.Fatalf("index.md refusal = %q, want it to say it is not yet enabled in this phase", err)
-	}
+// TestPatchRootFileAllowsIndexInPhase2 supersedes phase 1's
+// TestPatchRootFileRefusesIndexInPhase1 (S4-T7, OQ-9 phase 2: index.md
+// joins the allow-list once the review screen — S4-T3 — has shipped).
+// Renamed rather than deleted, since it pins the same file's scope from
+// the other side now: index.md is ACCEPTED by validateNonPagePatch (both
+// through the public ValidateOp entry point and directly), while log.md
+// and SCHEMA.md are still refused for OQ-9 §9's original reasons —
+// neither of which this phase touches.
+func TestPatchRootFileAllowsIndexInPhase2(t *testing.T) {
+	t.Run("index.md is accepted via ValidateOp, not refused", func(t *testing.T) {
+		v := newTestVault(t)
+		before, ok := canonicalSHA(v, "index.md")
+		if !ok {
+			t.Fatal("canonicalSHA(index.md): not found")
+		}
+		orig, err := v.Read("index.md")
+		if err != nil {
+			t.Fatalf("v.Read(index.md): %v", err)
+		}
+		op := Op{
+			Kind:    OpPatchPage,
+			Path:    "index.md",
+			Before:  before,
+			Content: append(append([]byte(nil), orig...), []byte("\n## Notes\n- A manually added note.\n")...),
+		}
+		if err := ValidateOp(op, v, v.Schema()); err != nil {
+			t.Fatalf("ValidateOp(index.md) = %v, want nil — OQ-9 phase 2 allow-lists it", err)
+		}
+	})
+
+	t.Run("index.md is accepted via validateNonPagePatch directly", func(t *testing.T) {
+		v := newTestVault(t)
+		before, ok := canonicalSHA(v, "index.md")
+		if !ok {
+			t.Fatal("canonicalSHA(index.md): not found")
+		}
+		orig, err := v.Read("index.md")
+		if err != nil {
+			t.Fatalf("v.Read(index.md): %v", err)
+		}
+		op := Op{
+			Kind:    OpPatchPage,
+			Path:    "index.md",
+			Before:  before,
+			Content: append(append([]byte(nil), orig...), []byte("\n## Notes\n- A manually added note.\n")...),
+		}
+		if err := validateNonPagePatch(op, v); err != nil {
+			t.Fatalf("validateNonPagePatch(index.md) = %v, want nil — OQ-9 phase 2 allow-lists it", err)
+		}
+	})
+
+	t.Run("log.md is still refused, saying why", func(t *testing.T) {
+		v := newTestVault(t)
+		before, ok := canonicalSHA(v, "log.md")
+		if !ok {
+			t.Fatal("canonicalSHA(log.md): not found")
+		}
+		op := Op{Kind: OpPatchPage, Path: "log.md", Before: before, Content: []byte("tampered\n")}
+		err := ValidateOp(op, v, v.Schema())
+		wantValidationError(t, err)
+		if strings.Contains(err.Error(), "does not exist") {
+			t.Fatalf("log.md refusal = %q, must not be a bare \"does not exist\"", err)
+		}
+		if !strings.Contains(err.Error(), "append-only") {
+			t.Fatalf("log.md refusal = %q, want it to say why (append-only / rotates)", err)
+		}
+	})
+
+	t.Run("SCHEMA.md is still refused via validatePatchPage, saying why", func(t *testing.T) {
+		v := newTestVault(t)
+		before, ok := canonicalSHA(v, "SCHEMA.md")
+		if !ok {
+			t.Fatal("canonicalSHA(SCHEMA.md): not found")
+		}
+		op := Op{Kind: OpPatchPage, Path: "SCHEMA.md", Before: before, Content: []byte("tampered\n")}
+		err := validatePatchPage(op, v, v.Schema())
+		wantValidationError(t, err)
+		if strings.Contains(err.Error(), "does not exist") {
+			t.Fatalf("SCHEMA.md refusal = %q, must not be a bare \"does not exist\"", err)
+		}
+		if !strings.Contains(err.Error(), "rules") {
+			t.Fatalf("SCHEMA.md refusal = %q, want it to say why (it is the rules the validator reads)", err)
+		}
+	})
 }
 
 // TestPatchRootFileRefusesSection pins OQ-9's L4: op.Section set on a
