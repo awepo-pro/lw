@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Fallback Title Nobody Should See</title>
+  <style>body { font-family: sans-serif; }</style>
+  <script>console.log("tracking pixel");</script>
+</head>
+<body>
+  <nav>
+    <a href="/">Home</a> <a href="/about">About</a>
+  </nav>
+  <header>
+    <h1>KV Cache, Explained Again</h1>
+  </header>
+  <article>
+    <p>
+      During autoregressive decoding, a transformer recomputes attention over
+      all previous tokens at every step unless it <strong>caches</strong> the
+      key and value projections it already computed.
+    </p>
+    <h2>Why it matters</h2>
+    <p>
+      See the <a href="https://example.org/attention">original paper</a> for
+      the full derivation. The cache trades <em>memory</em> for <code>O(1)</code>
+      per-step compute.
+    </p>
+    <blockquote>
+      <p>Memory is cheaper than recomputation, most of the time.</p>
+    </blockquote>
+    <h2>Trade-offs</h2>
+    <ul>
+      <li>Memory grows linearly with sequence length.</li>
+      <li>Quantizing the cache recovers some of that budget.
+        <ul>
+          <li>int8 halves it again.</li>
+          <li>Grouped-query attention shrinks it before it is even cached.</li>
+        </ul>
+      </li>
+    </ul>
+    <table>
+      <tr><th>Precision</th><th>Bytes/token</th></tr>
+      <tr><td>fp16</td><td>2</td></tr>
+      <tr><td>int8</td><td>1</td></tr>
+    </table>
+  </article>
+  <aside>Related: attention, transformers.</aside>
+  <footer>&copy; 2026 Example Wiki</footer>
+</body>
+</html>

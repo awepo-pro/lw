@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><title>Ignored Title</title></head>
+<body>
+  <h1>Panel: Scaling Inference</h1>
+  <p>Moderator: Let's start with the obvious question — where does the time go?</p>
+  <ol>
+    <li>Loading weights from disk.</li>
+    <li>The prefill pass over the prompt.</li>
+    <li>Decoding, one token at a time.</li>
+  </ol>
+  <p>Panelist: Decoding dominates for long generations. That is <a href="https://example.org/kv-cache">where the KV cache comes in</a>.</p>
+  <h2>Q&amp;A</h2>
+  <blockquote>
+    <p>Q: Does batching help decoding?</p>
+    <p>A: Yes, as long as you are not memory-bound on the cache itself.</p>
+  </blockquote>
+  <script>var analytics = true;</script>
+  <nav>Skip to: intro, panel, qa.</nav>
+</body>
+</html>

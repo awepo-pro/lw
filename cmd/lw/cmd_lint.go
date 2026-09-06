@@ -1,8 +1,8 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -10,8 +10,11 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/awepo-pro/lw/internal/agent"
+	"github.com/awepo-pro/lw/internal/config"
 	"github.com/awepo-pro/lw/internal/index"
 	"github.com/awepo-pro/lw/internal/lint"
+	"github.com/awepo-pro/lw/internal/stage"
 	"github.com/awepo-pro/lw/internal/vault"
 )
 
@@ -29,7 +32,7 @@ func cmdLint(args []string) error {
 	vaultPath := fs.String("vault", "", "vault root (default: nearest ancestor directory containing SCHEMA.md)")
 	checksFlag := fs.String("checks", "", "comma-separated check IDs to run (default: all)")
 	jsonOut := fs.Bool("json", false, "emit the report as indented JSON instead of one line per finding")
-	fix := fs.Bool("fix", false, "not implemented in v0.1 — accepted so the flag parses, then refused")
+	fix := fs.Bool("fix", false, "hand the findings to the agent and stage its proposed repairs (still requires review)")
 	if err := fs.Parse(args); err != nil {
 		return &exitError{code: 2}
 	}
@@ -38,10 +41,12 @@ func cmdLint(args []string) error {
 		return &exitError{code: 2}
 	}
 
-	// --fix is refused bare (not via exitError): the user should see the
-	// "lw: lint: " prefix main.go adds, per this subtask's brief.
+	// --fix hands the engine's findings to the agent and lets it propose
+	// repairs; the result still stages, same as any other agent turn
+	// (/PLAN.md §9.4) — it returns here rather than falling into the
+	// read-only report built below.
 	if *fix {
-		return errors.New("--fix requires the agent (available in v0.1 after M5)")
+		return runLintFix(*vaultPath, *checksFlag)
 	}
 
 	root, err := findVaultRoot(*vaultPath)
@@ -81,6 +86,99 @@ func cmdLint(args []string) error {
 		return &exitError{code: 1}
 	}
 	return nil
+}
+
+// runLintFix implements `lw lint --fix`: it runs the lint checks, and —
+// unless the vault is already clean — hands every finding to the agent
+// and asks it to propose a repair for each through the same stage.* tools
+// any other agent turn uses. The model never computes lint results itself
+// (00-conventions.md §5); it only reads what lint.Run already reported.
+// The result still stages: even an automated repair goes through
+// hunk-level human review before it lands (/PLAN.md §9.4), so this leaves
+// an open changeset and commits nothing, exactly like `lw ingest`.
+func runLintFix(vaultPath, checksFlag string) error {
+	root, err := findVaultRoot(vaultPath)
+	if err != nil {
+		return err
+	}
+
+	e, err := stage.OpenEngine(root)
+	if err != nil {
+		return fmt.Errorf("open engine: %w", err)
+	}
+	defer e.Close()
+
+	ctx := &lint.Context{
+		Vault: e.Vault(),
+		Index: e.Index(),
+		Graph: e.Vault().Graph(),
+	}
+	var only []string
+	if checksFlag != "" {
+		only = strings.Split(checksFlag, ",")
+	}
+	report := lint.Run(ctx, only)
+	if len(report.Findings) == 0 {
+		fmt.Println("clean")
+		return nil
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
+	// Construct the agent before opening a changeset, same as cmdIngest:
+	// a bad or missing API key must fail with nothing opened.
+	sessions := agent.NewFileSessions(e.Vault().Root())
+	ag, err := newAgent(e, cfg, sessions)
+	if err != nil {
+		return fmt.Errorf("construct agent: %w", err)
+	}
+
+	cs, err := e.OpenChangeset(lintFixIntent(report), stage.Author{Kind: "agent", Model: cfg.LLM.Model})
+	if err != nil {
+		return fmt.Errorf("open changeset: %w", err)
+	}
+	sess, err := sessions.Create(cs.ID)
+	if err != nil {
+		return fmt.Errorf("create session: %w", err)
+	}
+
+	sendErr := runAgentTurn(context.Background(), ag, sess.ID, buildLintFixMessage(report), os.Stdout)
+
+	final, curErr := e.Current()
+	if curErr != nil {
+		if sendErr != nil {
+			return fmt.Errorf("agent turn: %w (and reading back the changeset failed: %v)", sendErr, curErr)
+		}
+		return fmt.Errorf("read back changeset %s: %w", cs.ID, curErr)
+	}
+
+	fmt.Println()
+	printChangesetSummary(os.Stdout, final)
+
+	if sendErr != nil {
+		return fmt.Errorf("agent turn: %w", sendErr)
+	}
+	return nil
+}
+
+// lintFixIntent builds a changeset intent line describing what --fix is
+// repairing.
+func lintFixIntent(report lint.Report) string {
+	return fmt.Sprintf("lint --fix: repair %d finding(s)", len(report.Findings))
+}
+
+// buildLintFixMessage hands the agent every finding lint.Run reported and
+// asks it to propose a repair for each through the stage.* tools.
+func buildLintFixMessage(report lint.Report) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "The vault's lint check reported %d finding(s). Propose a repair for each one using the stage.* tools (a patch, a rename, a link, whatever fits), stating your rationale. When you are done, call stage.close to summarize the proposed changeset.\n\n", len(report.Findings))
+	for _, f := range report.Findings {
+		fmt.Fprintf(&b, "- %s:%d: %s: %s (%s)\n", f.Path, f.Line, f.Severity, f.Message, f.Check)
+	}
+	return b.String()
 }
 
 // printLintReport writes one line per finding, in report.Findings order
