@@ -112,6 +112,16 @@ func (m *Model) Update(msg tea.Msg) (ui.Pane, tea.Cmd) {
 		m.reload()
 		return m, nil
 
+	case ui.OpenPathMsg:
+		// C-108/D-CU: Lint's `enter` landing on the right page. selectPath
+		// already does exactly what this needs — force every ancestor
+		// directory open, then move the cursor onto msg.Path if it is in
+		// the tree — and its own no-op-when-absent behavior (a bool return,
+		// never a panic) is exactly the contract this handler must have
+		// for a path the vault no longer holds.
+		m.selectPath(msg.Path)
+		return m, nil
+
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}

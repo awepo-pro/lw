@@ -9,6 +9,11 @@ import (
 
 	"github.com/awepo-pro/lw/internal/stage"
 	"github.com/awepo-pro/lw/internal/ui"
+	"github.com/awepo-pro/lw/internal/ui/ask"
+	"github.com/awepo-pro/lw/internal/ui/browse"
+	"github.com/awepo-pro/lw/internal/ui/lintview"
+	"github.com/awepo-pro/lw/internal/ui/logview"
+	"github.com/awepo-pro/lw/internal/ui/review"
 )
 
 // cmdTUI opens the interactive terminal UI (backbone §12/§13; s4-tui.md
@@ -49,25 +54,16 @@ func cmdTUI(args []string) error {
 		return fmt.Errorf("load keys: %w", err)
 	}
 
-	app := ui.NewApp(ui.Options{
-		Deps: ui.Deps{
-			Engine: engine,
-			// Agent stays nil until S5 wires a real agent.Agent (backbone
-			// §12, s4-tui.md S4-T2 item 5): Deps.Agent is an interface, and
-			// a nil interface value is exactly what "not built yet" means.
-			Theme: theme,
-			Keys:  keys,
-		},
-		// Panes is empty on purpose: the shell never constructs a screen
-		// and never imports one (backbone §12; s4-tui.md S4-T2 items 1-2),
-		// and at this subtask none of the internal/ui/<screen> packages
-		// exist yet — S4's wave 3 builds them, each in its own package, in
-		// this same worktree afterwards. cmd_tui.go is the one place that
-		// wires a screen's New(d ui.Deps) ui.Pane into the map above once
-		// it exists; nothing else in this file needs to change to do that.
-		Panes: map[ui.Screen]ui.Pane{},
-		Start: ui.ScreenBrowse,
-	})
+	deps := ui.Deps{
+		Engine: engine,
+		// Agent stays nil until S5 wires a real agent.Agent (backbone §12,
+		// s4-tui.md S4-T2 item 5): Deps.Agent is an interface, and a nil
+		// interface value is exactly what "not built yet" means.
+		Theme: theme,
+		Keys:  keys,
+	}
+
+	app := ui.NewApp(buildTUIOptions(deps))
 
 	p := tea.NewProgram(app)
 	// Kill restores the terminal unconditionally, so a panic inside
@@ -81,4 +77,30 @@ func cmdTUI(args []string) error {
 		return err
 	}
 	return nil
+}
+
+// buildTUIOptions assembles the ui.Options ui.NewApp is built from: the
+// five screens constructed from one ui.Deps and injected into Options.Panes
+// under their Screen key (backbone §12; s4-tui.md S4-T8, C-103), with
+// Options.Start pinned to ui.ScreenReview — /PLAN.md §13 says ship review
+// first and §9 calls it the reason this project exists.
+//
+// cmd/lw is the only package allowed to import a screen: internal/ui itself
+// never imports review/browse/ask/lintview/logview, which is what let wave
+// 3 build all five as independent, parallel packages (00-conventions.md §1
+// rule 5a). Split out of cmdTUI so a test can inspect the wiring directly
+// without invoking tea.Program.Run(), which never returns when its input
+// reaches EOF (C-83) — headless tests drive Update/View, never Run.
+func buildTUIOptions(d ui.Deps) ui.Options {
+	return ui.Options{
+		Deps: d,
+		Panes: map[ui.Screen]ui.Pane{
+			ui.ScreenBrowse: browse.New(d),
+			ui.ScreenReview: review.New(d),
+			ui.ScreenAsk:    ask.New(d),
+			ui.ScreenLint:   lintview.New(d),
+			ui.ScreenLog:    logview.New(d),
+		},
+		Start: ui.ScreenReview,
+	}
 }

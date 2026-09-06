@@ -424,3 +424,60 @@ func TestVaultReloadedMsgRebuildsTree(t *testing.T) {
 		t.Fatalf("tree after VaultReloadedMsg does not contain the new page: %v", allPaths(m2.tree))
 	}
 }
+
+// TestOpenPathMsgSelectsAndExpandsAncestors is C-108/D-CU's Browse-side
+// half: the shell delivers ui.OpenPathMsg to this pane so Lint's `enter`
+// lands on the right page (s4-tui.md S4-T8). The ancestor directory is
+// collapsed first, so the test also proves the handler expands it rather
+// than merely matching a node already visible.
+func TestOpenPathMsgSelectsAndExpandsAncestors(t *testing.T) {
+	d, engine := newTestDeps(t, "minimal")
+	defer engine.Close()
+
+	p := New(d)
+	m := p.(*Model)
+	m.expanded["wiki/concepts"] = false
+	m.refreshVisible()
+	for _, n := range m.visible {
+		if n.Path == "wiki/concepts/kv-cache.md" {
+			t.Fatal("kv-cache.md unexpectedly visible while its parent is collapsed")
+		}
+	}
+
+	next, cmd := m.Update(ui.OpenPathMsg{Path: "wiki/concepts/kv-cache.md"})
+	if cmd != nil {
+		t.Fatalf("Update(OpenPathMsg) returned a non-nil Cmd: %v", cmd())
+	}
+	m2 := next.(*Model)
+
+	if !m2.expanded["wiki/concepts"] {
+		t.Fatal("wiki/concepts was not expanded after OpenPathMsg")
+	}
+	n := m2.selectedNode()
+	if n == nil || n.Path != "wiki/concepts/kv-cache.md" {
+		t.Fatalf("selectedNode() after OpenPathMsg = %+v, want wiki/concepts/kv-cache.md", n)
+	}
+}
+
+// TestOpenPathMsgUnknownPathIsNoOp: a path the vault does not hold (a stale
+// finding, or one from before a revert) must leave the tree cursor exactly
+// where it was, never panic.
+func TestOpenPathMsgUnknownPathIsNoOp(t *testing.T) {
+	d, engine := newTestDeps(t, "minimal")
+	defer engine.Close()
+
+	p := New(d)
+	m := p.(*Model)
+	if !m.selectPath("wiki/concepts/kv-cache.md") {
+		t.Fatal("selectPath: wiki/concepts/kv-cache.md not found in tree")
+	}
+	before := m.selectedNode().Path
+
+	next, _ := m.Update(ui.OpenPathMsg{Path: "wiki/concepts/does-not-exist.md"})
+	m2 := next.(*Model)
+
+	got := m2.selectedNode()
+	if got == nil || got.Path != before {
+		t.Fatalf("selectedNode() after OpenPathMsg(unknown path) = %+v, want unchanged %q", got, before)
+	}
+}

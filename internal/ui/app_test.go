@@ -205,6 +205,127 @@ func TestVaultCountsFromRealEngine(t *testing.T) {
 	}
 }
 
+// TestStageChangedMsgReachesInactivePane is the C-106/TD-4 regression test:
+// App.propagate used to deliver only to the active pane, so a screen the
+// user was not looking at silently missed StageChangedMsg. Review starts
+// active; Browse must still see the message.
+func TestStageChangedMsgReachesInactivePane(t *testing.T) {
+	browse := &fakePane{name: "browse"}
+	review := &fakePane{name: "review"}
+
+	a := NewApp(Options{
+		Deps: testDeps(t),
+		Panes: map[Screen]Pane{
+			ScreenBrowse: browse,
+			ScreenReview: review,
+		},
+		Start: ScreenReview,
+	})
+
+	m, _ := a.Update(StageChangedMsg{ChangesetID: "cs-inactive-pane", Ops: 1})
+	a = m.(*App)
+
+	if browse.updates != 1 {
+		t.Fatalf("browse.updates = %d, want 1 (inactive panes must still see StageChangedMsg)", browse.updates)
+	}
+	if _, ok := browse.lastMsg.(StageChangedMsg); !ok {
+		t.Fatalf("browse.lastMsg = %#v (%T), want StageChangedMsg", browse.lastMsg, browse.lastMsg)
+	}
+	if review.updates != 1 {
+		t.Fatalf("review.updates = %d, want 1 (it is also active)", review.updates)
+	}
+}
+
+// TestBroadcastMessagesReachEveryPane rounds out C-106/TD-4 for the other
+// three messages the fix names: VaultReloadedMsg, tea.WindowSizeMsg and
+// tea.BackgroundColorMsg must all reach a pane that is not on screen.
+func TestBroadcastMessagesReachEveryPane(t *testing.T) {
+	msgs := []tea.Msg{
+		VaultReloadedMsg{},
+		tea.WindowSizeMsg{Width: 100, Height: 30},
+		tea.BackgroundColorMsg{},
+	}
+	for _, msg := range msgs {
+		t.Run(fmt.Sprintf("%T", msg), func(t *testing.T) {
+			browse := &fakePane{name: "browse"}
+			review := &fakePane{name: "review"}
+
+			a := NewApp(Options{
+				Deps: testDeps(t),
+				Panes: map[Screen]Pane{
+					ScreenBrowse: browse,
+					ScreenReview: review,
+				},
+				Start: ScreenReview,
+			})
+
+			a.Update(msg)
+
+			if browse.updates != 1 {
+				t.Errorf("browse (inactive).updates = %d, want 1", browse.updates)
+			}
+			if review.updates != 1 {
+				t.Errorf("review (active).updates = %d, want 1", review.updates)
+			}
+		})
+	}
+}
+
+// TestOpenPathMsgSwitchesToBrowseAndDelivers is C-108/D-CU's contract:
+// App.Update must switch to Browse and deliver the same OpenPathMsg to the
+// Browse pane specifically — not through the active-pane path — so Lint's
+// `enter` lands on the right page. S4-T5 emits OpenPathMsg and
+// SwitchScreenMsg{ScreenBrowse} together through tea.Batch, which delivers
+// the two resulting messages as separate Update calls in an unspecified
+// order, so both interleavings are exercised here.
+func TestOpenPathMsgSwitchesToBrowseAndDelivers(t *testing.T) {
+	for _, order := range []string{"open-then-switch", "switch-then-open"} {
+		t.Run(order, func(t *testing.T) {
+			browse := &fakePane{name: "browse"}
+			review := &fakePane{name: "review"}
+
+			a := NewApp(Options{
+				Deps: testDeps(t),
+				Panes: map[Screen]Pane{
+					ScreenBrowse: browse,
+					ScreenReview: review,
+				},
+				Start: ScreenReview,
+			})
+
+			openMsg := OpenPathMsg{Path: "wiki/concepts/kv-cache.md"}
+			switchMsg := SwitchScreenMsg{To: ScreenBrowse}
+
+			var m tea.Model
+			if order == "open-then-switch" {
+				m, _ = a.Update(openMsg)
+				a = m.(*App)
+				m, _ = a.Update(switchMsg)
+				a = m.(*App)
+			} else {
+				m, _ = a.Update(switchMsg)
+				a = m.(*App)
+				m, _ = a.Update(openMsg)
+				a = m.(*App)
+			}
+
+			if got := a.order[a.cur]; got != ScreenBrowse {
+				t.Fatalf("active screen = %v, want ScreenBrowse", got)
+			}
+			if browse.updates == 0 {
+				t.Fatal("browse pane never received an Update")
+			}
+			gotMsg, ok := browse.lastMsg.(OpenPathMsg)
+			if !ok {
+				t.Fatalf("browse pane's last message = %#v (%T), want OpenPathMsg", browse.lastMsg, browse.lastMsg)
+			}
+			if gotMsg.Path != openMsg.Path {
+				t.Fatalf("browse received OpenPathMsg{Path: %q}, want %q", gotMsg.Path, openMsg.Path)
+			}
+		})
+	}
+}
+
 func TestKeyPropagatesToUnfocusedNotFocusedPane(t *testing.T) {
 	browse := &fakePane{name: "browse"}
 	review := &fakePane{name: "review"}
