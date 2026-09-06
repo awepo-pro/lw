@@ -79,3 +79,18 @@ type VaultReloadedMsg struct{}
 type SwitchScreenMsg struct {
 	To Screen
 }
+
+// OpenPathMsg asks the shell to switch to Browse and select a vault-relative
+// path — Lint's `enter` on a finding ("jump to the page in Browse",
+// /PLAN.md §9) is the case it exists for.
+//
+// It is separate from SwitchScreenMsg because that message carries only a
+// Screen, and a screen switch that cannot say *where* to land makes the jump
+// a no-op. Declared by the orchestrator before wave 3's batch B, since the
+// shell's message vocabulary is not a screen's to invent (MASTER §8 rule 3,
+// C-108/D-CU). The shell's handling — switch, then deliver this to the Browse
+// pane — and Browse's handler both land in S4-T8, wave 4; until then a screen
+// may emit it and nothing acts on it.
+type OpenPathMsg struct {
+	Path string // vault-relative, slash-separated, e.g. "wiki/concepts/kv-cache.md"
+}
