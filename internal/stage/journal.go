@@ -26,6 +26,7 @@ const (
 	EvOpAccepted        EventKind = "op_accepted"
 	EvOpDropped         EventKind = "op_dropped"
 	EvHunkDropped       EventKind = "hunk_dropped"
+	EvHunkUndropped     EventKind = "hunk_undropped" // UndropHunk (MASTER §9 D-CL, S4-T0)
 	EvCommitBegin       EventKind = "commit_begin"
 	EvCommitEnd         EventKind = "commit_end"
 	EvChangesetRejected EventKind = "changeset_rejected"

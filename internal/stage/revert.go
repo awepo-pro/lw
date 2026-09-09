@@ -237,29 +237,56 @@ func (e *Engine) buildRevertOps(commitID string, prev, cur Snapshot, renames []r
 	// is not a vault.Page and a paired rename's own cascade already covers
 	// it (index.md, curator-memory.md, or a linking page the rename
 	// rewrote) -> dropped from the delta, since that cascade repairs it for
-	// free. CHANGED, path is not a vault.Page and NOTHING covers it — a
-	// merge_pages or split_page whose added/removed sides never share a
-	// sha, so no rename pairing ever fires (C-58: no op kind can address a
-	// vault-root file such as index.md at all) -> skipped, not dropped:
-	// repair-1 fix. The un-fixed code silently dropped this case too,
-	// which is exactly what MASTER §9 D-BY/D-BZ forbid — a review surface
-	// that misdescribes what will land is the one defect /PLAN.md §1
-	// cannot ship. TestRevertMergeReportsUncoveredPaths pins this and was
-	// proved to fail against the pre-fix code.
+	// free. CHANGED, path is not a vault.Page, uncovered, but is
+	// RECONSTRUCTABLE from CAS (isRevertableRootFile, not
+	// isPatchableRootFile — D-CW, s4-tui.md C-110: "may a patch_page target
+	// this path" and "can revert rebuild this path's previous content from
+	// a stored blob" are different questions once index.md joins the
+	// allow-list in OQ-9 phase 2 (S4-T7), because index.md's bytes are
+	// computed by derive.go's index derivation rather than always being
+	// someone's explicitly stored pre-image the way curator-memory.md's
+	// always are) -> also patch_page, exactly like the vault.Page case
+	// above but built from the raw bytes (canonicalContent's v.Page-miss
+	// fallback), since a root file has no Serialize() to call. CHANGED,
+	// path is not a vault.Page, uncovered, and NOT reconstructable — either
+	// not allow-listed at all (a merge_pages or split_page whose
+	// added/removed sides never share a sha, so no rename pairing ever
+	// fires: C-58, before OQ-9 no op kind could address a vault-root file
+	// at all), or allow-listed but not revertable (index.md, OQ-9 phase 2
+	// — its content is derived, not stored as a discrete pre-image, so
+	// e.store.Get below has nothing to read for a sha that predates the
+	// first commit to ever write it) -> skipped, not dropped: repair-1's
+	// original fix, still honest under phase 2. The un-fixed code silently
+	// dropped this case too, which is exactly what MASTER §9 D-BY/D-BZ
+	// forbid — a review surface that misdescribes what will land is the
+	// one defect /PLAN.md §1 cannot ship. TestRevertMergeReportsUncoveredPaths
+	// pins this and was proved to fail against the pre-fix code.
 	for _, p := range changed {
 		if covered[p] {
 			continue
 		}
 		page, ok := e.vault.Page(p)
+		var oldBody string
 		if !ok {
-			skipped = append(skipped, p)
-			continue
+			if !isRevertableRootFile(p) {
+				skipped = append(skipped, p)
+				continue
+			}
+			raw, rok := canonicalContent(e.vault, p)
+			if !rok {
+				skipped = append(skipped, p)
+				continue
+			}
+			oldBody = string(raw)
+		} else {
+			oldBody = string(page.Serialize())
 		}
+
 		content, gerr := e.store.Get(prev[p])
 		if gerr != nil {
 			return nil, nil, fmt.Errorf("read predecessor content for %s: %w", p, gerr)
 		}
-		hunks := ComputeHunks(string(page.Serialize()), string(content))
+		hunks := ComputeHunks(oldBody, string(content))
 		for i := range hunks {
 			hunks[i].Path = p
 		}
