@@ -2,7 +2,9 @@ package e2e
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -10,9 +12,26 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/awepo-pro/lw/internal/testutil"
 )
+
+// lwDeadline bounds one lw subprocess in the smoke and fault scenarios. It is
+// a generous ceiling for the slowest verb those scenarios drive (an ingest
+// that talks to the fake LLM twice), far above anything a healthy run needs,
+// yet short enough that a fault server which stalls instead of refusing
+// cannot hang the test binary. The stress run does not inherit it:
+// runLWTimed derives each step's kill ceiling from that step's own budget,
+// because a step inside a 120s budget killed at 60s would be misreported as
+// a hang instead of measured against the budget it is there to enforce.
+const lwDeadline = 60 * time.Second
+
+// stressSlack is the headroom runLWTimed adds on top of a step's budget
+// before it kills the subprocess. A budget is the point a step is judged
+// against, so the kill must land past it, not at it: the breach is then
+// reported by the budget comparison instead of being pre-empted as exit -1.
+const stressSlack = 30 * time.Second
 
 // fakeAPIKey is the literal api_key every harness config carries. It resolves
 // as a literal (config.ResolveAPIKey's default branch, config.go:159-174), so
@@ -140,15 +159,31 @@ type lwResult struct {
 // runLW execs the built lw binary with args under e's minimal environment
 // and returns its exit code and output. It fails the test if the process
 // could not be started at all; a non-zero exit is a result, not an error,
-// because the fault-path scenarios assert on exactly that.
+// because the fault-path scenarios assert on exactly that. A subprocess that
+// does not exit within lwDeadline is killed and surfaces as the failed run
+// result code -1 with a note on its stderr, so the scenario's own assertion
+// reports the hang instead of the whole test binary hanging inside it.
 func runLW(t *testing.T, e *env, args ...string) lwResult {
+	t.Helper()
+	return runLWWithDeadline(t, e, lwDeadline, args...)
+}
+
+// runLWWithDeadline is runLW with the kill ceiling spelled out: lwDeadline
+// for every scenario that does not override it, budget+stressSlack for the
+// stress steps whose budgets reach past the smoke ceiling. The timeout note
+// names the deadline that actually fired, so a killed stress step is
+// distinguishable from a killed smoke one in the log.
+func runLWWithDeadline(t *testing.T, e *env, deadline time.Duration, args ...string) lwResult {
 	t.Helper()
 
 	if lwBin == "" {
 		t.Fatal("e2e: lw binary was not built")
 	}
 
-	cmd := exec.Command(lwBin, args...)
+	ctx, cancel := context.WithTimeout(context.Background(), deadline)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, lwBin, args...)
 	cmd.Dir = e.work
 	cmd.Env = e.environ()
 
@@ -161,10 +196,15 @@ func runLW(t *testing.T, e *env, args ...string) lwResult {
 	code := 0
 	if err != nil {
 		var ee *exec.ExitError
-		if !errors.As(err, &ee) {
+		if errors.As(err, &ee) {
+			code = ee.ExitCode()
+		} else if ctx.Err() == nil {
 			t.Fatalf("e2e: run lw %s: %v", strings.Join(args, " "), err)
 		}
-		code = ee.ExitCode()
+		if ctx.Err() != nil {
+			code = -1
+			fmt.Fprintf(&stderr, "e2e: lw %s did not exit within %s (%v)\n", strings.Join(args, " "), deadline, ctx.Err())
+		}
 	}
 
 	return lwResult{
@@ -238,10 +278,19 @@ func harnessConfigIsolated(t *testing.T) {
 
 	res := runLW(t, e, "ingest", "--vault", vault, "--kind", "article", src)
 
-	if res.Code == 0 {
-		t.Fatalf("lw ingest against a closed port: exit 0, want non-zero\n%s", res.Output)
+	// Exit 1 exactly: cmdIngest returns a bare error here, so dispatch — not
+	// the verb — chose the code, and it always chooses 1.
+	if res.Code != 1 {
+		t.Fatalf("lw ingest against a closed port: exit %d, want 1\n%s", res.Code, res.Output)
 	}
-	if !strings.Contains(res.Output, addr) {
+
+	// Either the endpoint address (the ordinary refusal) or the client's own
+	// status error satisfies this: closedPort releases its port before lw
+	// dials it, and that small window occasionally lets another listener
+	// answer instead. A status error from whatever took the port is still a
+	// failure delivered by the configured endpoint, which is the property
+	// under test.
+	if !strings.Contains(res.Output, addr) && !strings.Contains(res.Output, "llm: unexpected status") {
 		t.Errorf("lw ingest against a closed port: output does not name the endpoint %s\n%s", addr, res.Output)
 	}
 	if strings.Contains(res.Output, "DEEPSEEK_API_KEY") {
@@ -264,3 +313,9 @@ func harnessConfigIsolated(t *testing.T) {
 // <intent> (N op(s), ..." — and captures N, so a scenario can assert an open
 // changeset carries at least one op.
 var openOpsRE = regexp.MustCompile(`open changeset \S+: .*\((\d+) op\(s\)`)
+
+// openIntentRE captures the intent of that same line — the text between
+// "open changeset <id>: " and the op count — for scenarios that must show
+// *what* is open, not merely that something is. openOpsRE keeps its op-count
+// group position unchanged, since fakellm_test.go indexes it.
+var openIntentRE = regexp.MustCompile(`open changeset \S+: (.*?) \(\d+ op\(s\)`)
