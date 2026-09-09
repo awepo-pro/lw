@@ -1,8 +1,10 @@
 // cmd_doctor.go implements `lw doctor` (backbone §13, stage S6-T1): a
 // read-only health check over a vault's index, object store, journal,
 // interrupted applies, lock, configuration and provider. Every failure it
-// prints names the fix. Doctor only diagnoses — the two repairs it performs
-// are the ones the stage file sanctions, --unlock and --rebuild-index.
+// prints names the fix. Doctor only diagnoses — the three repairs it
+// performs are the ones the stage files sanction: --unlock and
+// --rebuild-index (S6-T1), and --discard-changeset (TD-7), which moves a
+// stuck open changeset to changesets/rejected/ without deleting anything.
 package main
 
 import (
@@ -46,6 +48,9 @@ const (
 	indexRel     = stateDirName + "/" + indexFileName
 	journalRel   = stateDirName + "/" + journalFileName
 	lockRel      = stateDirName + "/" + lockFileName
+
+	openChangesetsRel     = stateDirName + "/changesets/open"
+	rejectedChangesetsRel = stateDirName + "/changesets/rejected"
 )
 
 // doctorProbeTimeout bounds the provider probe: a hung endpoint must not
@@ -88,11 +93,19 @@ type doctorCheck struct {
 }
 
 // doctorReport is the whole run: the vault it inspected, the repairs the
-// --unlock/--rebuild-index flags performed, and one entry per check.
+// --unlock/--rebuild-index/--discard-changeset flags performed, and one
+// entry per check.
 type doctorReport struct {
 	Vault   string
 	Actions []string
 	Checks  []doctorCheck
+
+	// discardNothing records that --discard-changeset was asked for and
+	// found no open changeset to discard. cmdDoctor exits 1 on it, so a
+	// scripted caller can tell "discarded" from "there was nothing there" —
+	// the same distinction --unlock does not need, because removing a lock
+	// that is not held is what removing a lock means.
+	discardNothing bool
 }
 
 // failed reports whether any check failed; a skipped check is not a failure
@@ -184,6 +197,7 @@ func cmdDoctor(args []string) error {
 	vaultPath := fs.String("vault", "", "vault root (default: nearest ancestor directory containing SCHEMA.md)")
 	unlock := fs.Bool("unlock", false, "remove a stale lock before checking")
 	rebuild := fs.Bool("rebuild-index", false, "rebuild the search index from the vault before checking")
+	discard := fs.Bool("discard-changeset", false, "move the open changeset to changesets/rejected/ before checking (never deleted)")
 	asJSON := fs.Bool("json", false, "emit machine-readable JSON instead of text")
 	if err := fs.Parse(args); err != nil {
 		return &exitError{code: 2}
@@ -199,9 +213,10 @@ func cmdDoctor(args []string) error {
 	}
 
 	rep := runDoctor(context.Background(), root, doctorOptions{
-		unlock:       *unlock,
-		rebuildIndex: *rebuild,
-		probe:        true,
+		unlock:           *unlock,
+		rebuildIndex:     *rebuild,
+		discardChangeset: *discard,
+		probe:            true,
 	})
 
 	if *asJSON {
@@ -211,6 +226,12 @@ func cmdDoctor(args []string) error {
 	} else {
 		rep.writeText(os.Stdout)
 	}
+	if rep.discardNothing {
+		// TD-7: a caller asking to clear a stuck changeset has to be able to
+		// tell "cleared" from "there was nothing to clear", so an empty
+		// changesets/open is exit 1 even though every check passed.
+		return &exitError{code: 1}
+	}
 	if rep.failed() {
 		return &exitError{code: 1}
 	}
@@ -219,9 +240,10 @@ func cmdDoctor(args []string) error {
 
 // doctorOptions are the parts of the command line runDoctor acts on.
 type doctorOptions struct {
-	unlock       bool // remove a stale lock (stage.BreakLock) before checking
-	rebuildIndex bool // rebuild and save the index before checking
-	probe        bool // run the provider check (false in tests)
+	unlock           bool // remove a stale lock (stage.BreakLock) before checking
+	rebuildIndex     bool // rebuild and save the index before checking
+	discardChangeset bool // move the open changeset to changesets/rejected before checking
+	probe            bool // run the provider check (false in tests)
 }
 
 // runDoctor performs the repairs the flags ask for, then runs every check in
@@ -267,8 +289,16 @@ func runDoctor(ctx context.Context, root string, o doctorOptions) doctorReport {
 			Detail: fmt.Sprintf("%s could not be opened: %v", stateRel, err),
 			Remedy: "check the permissions on " + stateRel + "; lw creates it on first use",
 		})
+		if o.discardChangeset {
+			rep.Actions = append(rep.Actions, fmt.Sprintf("discard failed: %s could not be opened: %v", stateRel, err))
+		}
 	} else {
 		defer e.Close()
+		if o.discardChangeset {
+			res := discardChangeset(e, root)
+			rep.Actions = append(rep.Actions, res.line)
+			rep.discardNothing = res.nothing
+		}
 		rep.Checks = append(rep.Checks,
 			checkObjects(root, e),
 			checkJournal(root),
@@ -283,6 +313,95 @@ func runDoctor(ctx context.Context, root string, o doctorOptions) doctorReport {
 		rep.Checks = append(rep.Checks, checkProvider(ctx, cfg))
 	}
 	return rep
+}
+
+// discardReason is the message every --discard-changeset rejection is
+// journalled with, so `lw log --rejected` says why the changeset moved.
+const discardReason = "discarded by lw doctor --discard-changeset"
+
+// discardResult is what one --discard-changeset run did: the action line the
+// report prints, and whether there was nothing there to discard.
+type discardResult struct {
+	line    string
+	nothing bool
+}
+
+// discardChangeset is the --discard-changeset repair (TD-7): the open
+// changeset moves to changesets/rejected/ — never deleted — so a stuck
+// changeset stops refusing every future one while staying inspectable, with
+// its ops and its session transcript travelling with it.
+//
+// Engine.Reject is the path to take whenever it can: it renames the whole
+// directory and journals changeset_rejected against the changeset's own
+// author. It cannot see a directory whose changeset.json is missing or
+// unreadable — the shape the C-118 session-create race fabricates, which
+// until now was the one stuck state no verb could clear — so on a read
+// failure the directory is renamed here instead, exactly as §5.4's Reject
+// renames it, with the same rejection event journalled through the engine's
+// own journal against the human actor this verb runs as. Nothing is ever
+// deleted, and nothing under the vault working tree is touched: a changeset
+// that cannot be read has applied nothing.
+func discardChangeset(e *stage.Engine, root string) discardResult {
+	cs, err := e.Current()
+	switch {
+	case err == nil:
+		if rejErr := e.Reject(discardReason); rejErr != nil {
+			return discardResult{line: "discard failed: " + rejErr.Error()}
+		}
+		return discardResult{line: fmt.Sprintf("discarded open changeset %s (%s -> %s)",
+			cs.ID, openChangesetsRel, rejectedChangesetsRel)}
+
+	case errors.Is(err, stage.ErrNoChangeset):
+		return discardResult{line: "no open changeset: nothing to discard", nothing: true}
+
+	default:
+		id, movErr := discardUnreadable(root)
+		if movErr != nil {
+			return discardResult{line: fmt.Sprintf("discard failed: the open changeset cannot be read (%v) and could not be moved: %v", err, movErr)}
+		}
+		if jErr := e.Journal().Append(stage.Event{
+			TS:        time.Now().UTC(),
+			Kind:      stage.EvChangesetRejected,
+			Changeset: id,
+			Actor:     stage.Author{Kind: "human"}, // the curator who ran lw doctor
+			Message:   discardReason + " (the changeset could not be read)",
+		}); jErr != nil {
+			return discardResult{line: fmt.Sprintf("discard failed: %s moved to %s but journalling it did not: %v", id, rejectedChangesetsRel, jErr)}
+		}
+		return discardResult{line: fmt.Sprintf("discarded unreadable open changeset %s (%s -> %s); it had no readable changeset.json",
+			id, openChangesetsRel, rejectedChangesetsRel)}
+	}
+}
+
+// discardUnreadable renames the one changeset directory under
+// changesets/open/ into changesets/rejected/, and returns its id. It is the
+// half of Reject that needs no changeset.json; anything richer than exactly
+// one directory there is refused rather than guessed at, and reported for a
+// human to look at.
+func discardUnreadable(root string) (string, error) {
+	openDir := filepath.Join(root, stateDirName, "changesets", "open")
+	entries, err := os.ReadDir(openDir)
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", openChangesetsRel, err)
+	}
+	var ids []string
+	for _, ent := range entries {
+		if ent.IsDir() {
+			ids = append(ids, ent.Name())
+		}
+	}
+	if len(ids) != 1 {
+		return "", fmt.Errorf("want exactly one changeset directory under %s, found %d", openChangesetsRel, len(ids))
+	}
+	id := ids[0]
+	dst := filepath.Join(root, stateDirName, "changesets", "rejected", id)
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return "", fmt.Errorf("create %s: %w", rejectedChangesetsRel, err)
+	}
+	if err := os.Rename(filepath.Join(openDir, id), dst); err != nil {
+		return "", fmt.Errorf("move %s/%s: %w", openChangesetsRel, id, err)
+	}
+	return id, nil
 }
 
 // rebuildIndex rebuilds the search index from the vault and saves it — the

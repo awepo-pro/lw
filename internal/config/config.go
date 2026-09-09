@@ -108,6 +108,23 @@ func fromShadow(s shadowConfig) *Config {
 // Load reads <ConfigDir()>/config.toml. A missing config file is not an
 // error: it returns Default(), so a fresh install works before `lw init`
 // has ever run.
+//
+// A file that IS present is merged over Default() rather than read alone.
+// This is the fix for a measured defect: a hand-written file naming one key
+// came back with every other field zeroed, which sent MaxToolRounds 0 and
+// MaxTokens 0 into the agent loop (the hard stop /PLAN.md §11.2 calls the
+// defence against a runaway agent) and made `lw config set` save an
+// `api_key = ""` over the user's credential reference.
+//
+// The merge is per key, and "the file wins" includes an explicit zero: the
+// distinction between a key the file OMITS (keep lw's default) and one it
+// SETS to a zero value (keep the zero) is readable from BurntSushi's
+// MetaData.IsDefined, so both are honoured. No field's zero value is a
+// working setting — max_tokens 0 and 0 tool rounds produce dead requests,
+// an empty api_key is no credentials — so a file can only ever ask lw for
+// something that cannot work, and it stays the user's word to have done so.
+// fromShadow is still what decodes the bytes; it is kept because the shadow
+// shape, not Config, is what the file format is.
 func Load() (*Config, error) {
 	path := filepath.Join(ConfigDir(), configFileName)
 	b, err := os.ReadFile(path)
@@ -118,10 +135,44 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("config: read %s: %w", path, err)
 	}
 	var s shadowConfig
-	if _, err := toml.Decode(string(b), &s); err != nil {
+	md, err := toml.Decode(string(b), &s)
+	if err != nil {
 		return nil, fmt.Errorf("config: parse %s: %w", path, err)
 	}
-	return fromShadow(s), nil
+	return mergeOverDefault(Default(), fromShadow(s), md), nil
+}
+
+// mergeOverDefault copies onto def every field md reports as present in the
+// decoded file, and returns def. Keys the file names win; keys it omits
+// keep whatever def already holds. The key paths are the shadow shape's —
+// Limits lives at ("llm","limits", …), because that is where the file's
+// [llm.limits] table lands (C-96).
+func mergeOverDefault(def, file *Config, md toml.MetaData) *Config {
+	if md.IsDefined("llm", "base_url") {
+		def.LLM.BaseURL = file.LLM.BaseURL
+	}
+	if md.IsDefined("llm", "model") {
+		def.LLM.Model = file.LLM.Model
+	}
+	if md.IsDefined("llm", "api_key") {
+		def.LLM.APIKey = file.LLM.APIKey
+	}
+	if md.IsDefined("llm", "temperature") {
+		def.LLM.Temperature = file.LLM.Temperature
+	}
+	if md.IsDefined("llm", "max_tokens") {
+		def.LLM.MaxTokens = file.LLM.MaxTokens
+	}
+	if md.IsDefined("llm", "limits", "max_tool_rounds") {
+		def.Limits.MaxToolRounds = file.Limits.MaxToolRounds
+	}
+	if md.IsDefined("llm", "limits", "context_tokens") {
+		def.Limits.ContextTokens = file.Limits.ContextTokens
+	}
+	if md.IsDefined("theme") {
+		def.Theme = file.Theme
+	}
+	return def
 }
 
 // Save writes c to <ConfigDir()>/config.toml with 0600 permissions,

@@ -297,3 +297,151 @@ func TestDefault(t *testing.T) {
 		t.Errorf("ContextTokens = %d, want 96000", d.Limits.ContextTokens)
 	}
 }
+
+// writeConfig writes a config.toml into the config directory the test has
+// already pointed XDG_CONFIG_HOME at, so a test can name the file it wants
+// Load to read without repeating the lw/ path join.
+func writeConfig(t *testing.T, dir, contents string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(dir, "lw"), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "lw", "config.toml"), []byte(contents), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+}
+
+// TestLoadMergesDefaultsBehindPartialFile is the fix this subtask exists
+// for: a hand-written file naming one key must not zero every other field.
+// The measured defect sent MaxToolRounds 0 and MaxTokens 0 into the agent
+// loop and made `lw config set` write `api_key = ""` over the credential
+// reference.
+func TestLoadMergesDefaultsBehindPartialFile(t *testing.T) {
+	dir := withConfigDir(t)
+	writeConfig(t, dir, `[llm]
+model = "custom-model"
+`)
+
+	got, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	def := Default()
+
+	if got.LLM.Model != "custom-model" {
+		t.Errorf("Model = %q, want the file's custom-model", got.LLM.Model)
+	}
+	if got.LLM.BaseURL != def.LLM.BaseURL {
+		t.Errorf("BaseURL = %q, want the default %q for a key the file omits", got.LLM.BaseURL, def.LLM.BaseURL)
+	}
+	if got.LLM.APIKey != def.LLM.APIKey {
+		t.Errorf("APIKey = %q, want the default %q, not an empty reference", got.LLM.APIKey, def.LLM.APIKey)
+	}
+	if got.LLM.Temperature != def.LLM.Temperature {
+		t.Errorf("Temperature = %v, want the default %v", got.LLM.Temperature, def.LLM.Temperature)
+	}
+	if got.LLM.MaxTokens != def.LLM.MaxTokens {
+		t.Errorf("MaxTokens = %d, want the default %d, not 0", got.LLM.MaxTokens, def.LLM.MaxTokens)
+	}
+	if got.Limits != def.Limits {
+		t.Errorf("Limits = %+v, want the defaults %+v — 0 tool rounds is a runaway agent", got.Limits, def.Limits)
+	}
+	if got.Theme != def.Theme {
+		t.Errorf("Theme = %q, want the default %q", got.Theme, def.Theme)
+	}
+}
+
+// TestLoadPartialNestedLimits pins the C-96 wire format through the merge:
+// [llm] plus a nested [llm.limits] is the shape /PLAN.md §11.2 documents,
+// so a file that sets one limit and omits the other must land the one it
+// set and keep lw's default for the other.
+func TestLoadPartialNestedLimits(t *testing.T) {
+	dir := withConfigDir(t)
+	writeConfig(t, dir, `[llm]
+model = "custom-model"
+
+[llm.limits]
+max_tool_rounds = 7
+`)
+
+	got, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.Limits.MaxToolRounds != 7 {
+		t.Errorf("Limits.MaxToolRounds = %d, want the file's 7", got.Limits.MaxToolRounds)
+	}
+	if got.Limits.ContextTokens != 96000 {
+		t.Errorf("Limits.ContextTokens = %d, want the default 96000, not 0", got.Limits.ContextTokens)
+	}
+	if got.LLM.Model != "custom-model" {
+		t.Errorf("Model = %q, want custom-model", got.LLM.Model)
+	}
+	if got.LLM.APIKey != "env:DEEPSEEK_API_KEY" {
+		t.Errorf("APIKey = %q, want the default reference", got.LLM.APIKey)
+	}
+}
+
+// TestLoadFileWinsOnExplicitZero pins the other half of the merge: a key
+// the file SETS is kept even when it is a zero value. BurntSushi's
+// MetaData distinguishes "omitted" from "explicitly zero", and merging the
+// two into one would make an explicit setting impossible to express.
+func TestLoadFileWinsOnExplicitZero(t *testing.T) {
+	dir := withConfigDir(t)
+	writeConfig(t, dir, `[llm]
+model        = "custom-model"
+api_key      = ""
+temperature  = 0.0
+max_tokens   = 0
+
+[llm.limits]
+max_tool_rounds = 0
+context_tokens  = 0
+`)
+
+	got, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.LLM.APIKey != "" {
+		t.Errorf("APIKey = %q, want the empty string the file states", got.LLM.APIKey)
+	}
+	if got.LLM.Temperature != 0 {
+		t.Errorf("Temperature = %v, want the explicit 0", got.LLM.Temperature)
+	}
+	if got.LLM.MaxTokens != 0 {
+		t.Errorf("MaxTokens = %d, want the explicit 0", got.LLM.MaxTokens)
+	}
+	if got.Limits.MaxToolRounds != 0 || got.Limits.ContextTokens != 0 {
+		t.Errorf("Limits = %+v, want the explicit zeros the file states", got.Limits)
+	}
+	if got.LLM.BaseURL != "https://api.deepseek.com/v1" || got.LLM.Model != "custom-model" {
+		t.Errorf("BaseURL %q / Model %q, want the default base_url behind the file's model", got.LLM.BaseURL, got.LLM.Model)
+	}
+}
+
+// TestLoadMergeRoundTripsThroughSave: what Load resolves is what Save
+// writes, so a partial file materialized by one `lw config set` reads back
+// exactly as it was written — the defaults included.
+func TestLoadMergeRoundTripsThroughSave(t *testing.T) {
+	dir := withConfigDir(t)
+	writeConfig(t, dir, `[llm]
+model = "custom-model"
+`)
+
+	got, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := got.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	again, err := Load()
+	if err != nil {
+		t.Fatalf("Load after Save: %v", err)
+	}
+	if *again != *got {
+		t.Fatalf("round trip mismatch:\n got  %+v\n want %+v", *again, *got)
+	}
+}

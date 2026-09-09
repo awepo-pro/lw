@@ -196,3 +196,87 @@ func (p *recordingPane) Update(msg tea.Msg) (ui.Pane, tea.Cmd) {
 func (p *recordingPane) View(w, h int) string { return "" }
 func (p *recordingPane) Title() string        { return "Review" }
 func (p *recordingPane) Help() []key.Binding  { return nil }
+
+// foreignMsg is a message no pane knows: it stands in for a screen's own
+// internal message arriving at the shell, which the fan-out set must not
+// name.
+type foreignMsg struct{}
+
+// countingPane wraps a real pane and counts the Updates it is offered, so a
+// test can tell "the shell routed this to the pane" from "the pane ignored
+// it" — ask ignores what it does not recognise, so its scrollback cannot
+// tell the two apart.
+type countingPane struct {
+	ui.Pane
+	updates int
+}
+
+func (p *countingPane) Update(msg tea.Msg) (ui.Pane, tea.Cmd) {
+	p.updates++
+	next, cmd := p.Pane.Update(msg)
+	p.Pane = next
+	return p, cmd
+}
+
+// TestShellRoutesPumpMessagesByNameAndNothingElse is the S6 wrap-up's
+// tightening, asserted against the real ask pane: the three named pump
+// messages reach an off-screen ask pane (C-117), and an unnamed message —
+// the temporary key/no-key fan-out used to broadcast every one of those —
+// does not.
+func TestShellRoutesPumpMessagesByNameAndNothingElse(t *testing.T) {
+	theme, err := ui.LoadTheme("")
+	if err != nil {
+		t.Fatalf("LoadTheme: %v", err)
+	}
+	keys, err := ui.LoadKeys()
+	if err != nil {
+		t.Fatalf("LoadKeys: %v", err)
+	}
+	deps := ui.Deps{Theme: theme, Keys: keys}
+
+	ch := make(chan agent.Event, 1)
+	ch <- agent.TextDelta{Text: "one"}
+	defer close(ch)
+
+	askPane := &countingPane{Pane: ask.New(deps)}
+	onScreen := &recordingPane{}
+	app := ui.NewApp(ui.Options{
+		Deps: deps,
+		Panes: map[ui.Screen]ui.Pane{
+			ui.ScreenReview: onScreen,
+			ui.ScreenAsk:    askPane,
+		},
+		Start: ui.ScreenReview, // ask is off screen throughout
+	})
+	app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	// The resize is in the fan-out set, so it is the baseline ask starts
+	// from; every assertion below is a delta against it.
+	base := askPane.updates
+
+	app.Update(foreignMsg{})
+	if got := askPane.updates; got != base {
+		t.Fatalf("ask was offered an unnamed message (updates %d, baseline %d), want 0 — only the named fan-out set leaves the active pane", got, base)
+	}
+
+	app.Update(ask.StreamMsg{Ch: ch})
+	if got := askPane.updates; got != base+1 {
+		t.Fatalf("ask saw %d update(s) after StreamMsg (baseline %d), want one more", got, base)
+	}
+
+	app.Update(ask.EventMsg{Ev: agent.TextDelta{Text: "one"}})
+	if got := askPane.updates; got != base+2 {
+		t.Fatalf("ask saw %d update(s) after EventMsg (baseline %d), want two more", got, base)
+	}
+
+	app.Update(ask.StreamClosedMsg{})
+	if got := askPane.updates; got != base+3 {
+		t.Fatalf("ask saw %d update(s) after StreamClosedMsg (baseline %d), want three more", got, base)
+	}
+
+	// The screen the user was on also saw them — the fan-out is a broadcast
+	// to every pane, not a redirect to the off-screen one.
+	if onScreen.updates < 3 {
+		t.Errorf("active pane saw %d update(s), want at least the three pump messages", onScreen.updates)
+	}
+}

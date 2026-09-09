@@ -9,6 +9,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -206,12 +207,11 @@ context_tokens  = 4096
 }
 
 // TestConfigShowPartialFile pins what a hand-written file that sets one key
-// shows. config.Load does not merge defaults into a partial file: the fields
-// it omits come back as zero values, and this display prints what the process
-// sees rather than a second, prettier resolution. Reported to the
-// orchestrator at S6-T3 — if internal/config.Load learns to merge defaults,
-// the remaining rows become "(default)" with default values and no change is
-// needed here.
+// shows. config.Load merges lw's defaults behind the file (S6 wrap-up), so
+// the keys the file omits resolve to their built-in values and are labelled
+// "(default)" — exactly the outcome the S6-T3 report predicted. What the
+// display must never do is print a zero for a field the file never
+// mentioned: 0 tool rounds is the runaway-agent defence switched off.
 func TestConfigShowPartialFile(t *testing.T) {
 	dir := configTestEnv(t)
 	writeConfigFile(t, dir, `[llm]
@@ -226,8 +226,15 @@ model = "custom-model"
 		t.Errorf("stdout does not say the config file was loaded:\n%s", stdout)
 	}
 	wantRow(t, stdout, "llm.model", "custom-model", "(file)")
-	wantRow(t, stdout, "llm.base_url")
-	wantRow(t, stdout, "llm.limits.max_tool_rounds")
+	def := config.Default()
+	wantRow(t, stdout, "llm.base_url", def.LLM.BaseURL, "(default)")
+	wantRow(t, stdout, "llm.max_tokens", strconv.Itoa(def.LLM.MaxTokens), "(default)")
+	wantRow(t, stdout, "llm.limits.max_tool_rounds", strconv.Itoa(def.Limits.MaxToolRounds), "(default)")
+	wantRow(t, stdout, "llm.limits.context_tokens", strconv.Itoa(def.Limits.ContextTokens), "(default)")
+	wantRow(t, stdout, "llm.api_key", def.LLM.APIKey, "(default)")
+	if strings.Contains(stdout, " = 0 ") {
+		t.Errorf("stdout shows a zeroed limit for a key the file omits:\n%s", stdout)
+	}
 }
 
 // TestConfigDisplayCoversEverySettableKey pins the two lists to each other:
@@ -638,10 +645,10 @@ func TestConfigUsageErrors(t *testing.T) {
 }
 
 // TestConfigSetMaterializesDefaultsOnPartialFile pins the write path against
-// the damage a partial file would otherwise take. config.Load returns the
-// file's values and nothing else, so saving that verbatim would write an
-// empty api_key and zero limits over a file that simply did not mention them.
-// `lw config set` writes the defaults those silences stand for instead.
+// the damage a partial file could otherwise take. config.Load merges the
+// defaults behind the file, so the Config a set loads is already complete and
+// saving it writes the defaults the file's silences stood for — never an
+// empty api_key or a zero limit over a file that simply did not mention them.
 func TestConfigSetMaterializesDefaultsOnPartialFile(t *testing.T) {
 	dir := configTestEnv(t)
 	path := writeConfigFile(t, dir, `[llm]

@@ -24,6 +24,16 @@ import (
 	"github.com/awepo-pro/lw/internal/ui"
 )
 
+// The pump's three message types are declared in internal/ui/pane.go and
+// aliased here (D-DA's move, S6 wrap-up). They used to live in this package,
+// but the shell has to route them by name — an ask pane left off screen
+// mid-turn must keep draining its stream, and a shell that cannot name a
+// type cannot route it except by broadcasting everything, which is the
+// fail-open fan-out D-DA accepted only as a stopgap. Type aliases keep this
+// package's own API, tests and callers exactly as they were: ask.StreamMsg
+// and ui.StreamMsg are the same type, and neither the pane's Update nor an
+// external caller's `ask.StreamMsg{Ch: ch}` can tell the move happened.
+//
 // StreamMsg hands the pane the channel to consume for one turn (repair-1,
 // S4-T6: a caller holding only the ui.Pane New returns has no way to reach
 // the unexported field Listen's re-arm depends on, so the exported
@@ -32,16 +42,16 @@ import (
 // the same call an external caller could have made itself, except now the
 // pane keeps making it after every event, which is the whole point:
 // nothing outside this package ever reads from the channel directly.
-type StreamMsg struct{ Ch <-chan agent.Event }
+type StreamMsg = ui.StreamMsg
 
 // EventMsg carries one agent.Event pulled off the channel Listen is
 // reading (s4-tui.md S4-T6 pinned item 2). Update applies it to the
 // scrollback and re-arms Listen for the next one.
-type EventMsg struct{ Ev agent.Event }
+type EventMsg = ui.EventMsg
 
 // StreamClosedMsg reports that the channel Listen was reading has closed
 // — the turn's event source is gone, so Update stops re-arming.
-type StreamClosedMsg struct{}
+type StreamClosedMsg = ui.StreamClosedMsg
 
 // sessionClosedMsg reports the outcome of archiving the session a turn ran
 // under, after the changeset it belonged to was committed or rejected

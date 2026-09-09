@@ -545,6 +545,159 @@ func TestDoctorJSON(t *testing.T) {
 	})
 }
 
+// TestDoctorDiscardChangeset covers TD-7's --discard-changeset: a stuck open
+// changeset moves to changesets/rejected/ — never deleted — and stops
+// refusing every future changeset. Three shapes matter: a changeset Engine
+// can read (the ordinary `lw ingest` one), the C-118 fabrication
+// (changesets/open/<id>/ holding only session.ndjson, which until now no
+// verb could clear), and an empty changesets/open.
+func TestDoctorDiscardChangeset(t *testing.T) {
+	doctorTestEnv(t)
+
+	t.Run("discards an open changeset", func(t *testing.T) {
+		root := testutil.CopyFixture(t, "minimal")
+		e := openEngine(t, root)
+		cs, err := e.OpenChangeset("ingest under review", stage.Author{Kind: "human"})
+		if err != nil {
+			t.Fatalf("OpenChangeset: %v", err)
+		}
+		if err := e.Close(); err != nil {
+			t.Fatalf("close: %v", err)
+		}
+
+		stdout, _, code := captureRun(t, func() int {
+			return run([]string{"doctor", "--vault", root, "--discard-changeset"})
+		})
+		if code != 0 {
+			t.Fatalf("exit code = %d, want 0; stdout=%q", code, stdout)
+		}
+		if !strings.Contains(stdout, "discarded open changeset "+cs.ID) ||
+			!strings.Contains(stdout, rejectedChangesetsRel) {
+			t.Errorf("stdout = %q, want it to say what was discarded and where it went", stdout)
+		}
+
+		// The whole directory moved, session transcript and all.
+		if _, err := os.Stat(filepath.Join(root, stateDirName, "changesets", "rejected", cs.ID, "changeset.json")); err != nil {
+			t.Errorf("changeset.json did not travel with the move: %v", err)
+		}
+		entries, err := os.ReadDir(filepath.Join(root, stateDirName, "changesets", "open"))
+		if err != nil {
+			t.Fatalf("read open: %v", err)
+		}
+		if len(entries) != 0 {
+			t.Errorf("%d entr(ies) left under %s, want none", len(entries), openChangesetsRel)
+		}
+
+		// The cure is the point: a changeset can be opened again.
+		fresh := openEngine(t, root)
+		if _, err := fresh.OpenChangeset("after the discard", stage.Author{Kind: "human"}); err != nil {
+			t.Errorf("OpenChangeset after the discard: %v", err)
+		}
+	})
+
+	t.Run("clears the C-118 fabricated directory", func(t *testing.T) {
+		root := testutil.CopyFixture(t, "minimal")
+		id := seedUnreadableChangeset(t, root)
+
+		// What the engine sees before the discard: a changeset it cannot read.
+		stuck := openEngine(t, root)
+		if _, err := stuck.Current(); err == nil {
+			t.Fatal("Current succeeded on the fabricated directory, want a read failure")
+		} else if !strings.Contains(err.Error(), "changeset.json") {
+			t.Errorf("Current error = %v, want it to name the unreadable changeset.json", err)
+		}
+		stuck.Close()
+
+		stdout, _, code := captureRun(t, func() int {
+			return run([]string{"doctor", "--vault", root, "--discard-changeset"})
+		})
+		if code != 0 {
+			t.Fatalf("exit code = %d, want 0; stdout=%q", code, stdout)
+		}
+		if !strings.Contains(stdout, id) || !strings.Contains(stdout, rejectedChangesetsRel) {
+			t.Errorf("stdout = %q, want it to name %s and its destination", stdout, id)
+		}
+		if _, err := os.Stat(filepath.Join(root, stateDirName, "changesets", "rejected", id, "session.ndjson")); err != nil {
+			t.Errorf("session.ndjson did not travel with the move: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(root, stateDirName, "changesets", "open", id)); !os.IsNotExist(err) {
+			t.Errorf("fabricated directory still under %s (err=%v)", openChangesetsRel, err)
+		}
+
+		// And the rejection is in the audit trail, not just on disk.
+		e := openEngine(t, root)
+		events, err := e.Journal().Query(stage.Filter{Kinds: []stage.EventKind{stage.EvChangesetRejected}, Limit: 1})
+		if err != nil {
+			t.Fatalf("query journal: %v", err)
+		}
+		if len(events) != 1 || events[0].Changeset != id {
+			t.Fatalf("journalled %+v, want one changeset_rejected for %s", events, id)
+		}
+		if !strings.Contains(events[0].Message, discardReason) {
+			t.Errorf("journal message = %q, want it to carry %q", events[0].Message, discardReason)
+		}
+
+		// A fresh ingest is no longer refused.
+		if _, err := e.OpenChangeset("after the discard", stage.Author{Kind: "human"}); err != nil {
+			t.Errorf("OpenChangeset after the discard: %v", err)
+		}
+	})
+
+	t.Run("no open changeset exits 1", func(t *testing.T) {
+		root := testutil.CopyFixture(t, "minimal")
+
+		stdout, _, code := captureRun(t, func() int {
+			return run([]string{"doctor", "--vault", root, "--discard-changeset"})
+		})
+		if code != 1 {
+			t.Fatalf("exit code = %d, want 1 — there was nothing to discard; stdout=%q", code, stdout)
+		}
+		if !strings.Contains(stdout, "no open changeset") {
+			t.Errorf("stdout = %q, want it to say there was no open changeset", stdout)
+		}
+	})
+
+	t.Run("without the flag nothing is discarded", func(t *testing.T) {
+		root := testutil.CopyFixture(t, "minimal")
+		e := openEngine(t, root)
+		cs, err := e.OpenChangeset("stays open", stage.Author{Kind: "human"})
+		if err != nil {
+			t.Fatalf("OpenChangeset: %v", err)
+		}
+		e.Close()
+
+		stdout, _, code := captureRun(t, func() int {
+			return run([]string{"doctor", "--vault", root})
+		})
+		if code != 0 {
+			t.Fatalf("exit code = %d, want 0; stdout=%q", code, stdout)
+		}
+		if strings.Contains(stdout, "discarded open changeset") || strings.Contains(stdout, "discarded unreadable") {
+			t.Errorf("stdout = %q, want no discard without the flag", stdout)
+		}
+		if _, err := os.Stat(filepath.Join(root, stateDirName, "changesets", "open", cs.ID)); err != nil {
+			t.Errorf("open changeset disturbed by a plain doctor run: %v", err)
+		}
+	})
+}
+
+// seedUnreadableChangeset fabricates the C-118 shape: a directory under
+// changesets/open/ holding a session.ndjson and no changeset.json, which is
+// what turn-start Sessions.Create leaves behind when the changeset it was
+// created for vanished between Engine.Current and Create.
+func seedUnreadableChangeset(t *testing.T, root string) string {
+	t.Helper()
+	id := "cs-fabricate0001"
+	dir := filepath.Join(root, stateDirName, "changesets", "open", id)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "session.ndjson"), nil, 0o644); err != nil {
+		t.Fatalf("write session.ndjson: %v", err)
+	}
+	return id
+}
+
 func TestDoctorUsage(t *testing.T) {
 	doctorTestEnv(t)
 

@@ -9,6 +9,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	lipgloss "charm.land/lipgloss/v2"
 
+	"github.com/awepo-pro/lw/internal/agent"
 	"github.com/awepo-pro/lw/internal/stage"
 	"github.com/awepo-pro/lw/internal/testutil"
 )
@@ -351,16 +352,19 @@ func TestKeyPropagatesToUnfocusedNotFocusedPane(t *testing.T) {
 }
 
 // shellLocalMsg stands in for the messages that reach App.Update's default
-// branch from a pane's tea.Cmd results. It cannot be one of the shell's own
-// types — those all have cases of their own — and a test cannot name a
-// screen package's type without importing it, which the shell never does.
+// branch from a pane's tea.Cmd results — the messages the shell neither acts
+// on nor names in its fan-out set. It cannot be one of the shell's own types
+// (those all have cases of their own) and a test cannot name a screen
+// package's type without importing it, which the shell never does.
 type shellLocalMsg struct{ tag string }
 
-// TestNonKeyMessagesReachEveryPane is the routing half of C-117/D-DA: the
-// default branch used to send everything to the active pane only, which
-// starved a background pump on an off-screen pane. Non-key messages now fan
-// out; a key event is still the active pane's alone.
-func TestNonKeyMessagesReachEveryPane(t *testing.T) {
+// TestUnnamedMessagesStayWithTheActivePane is the C-117/D-DA routing rule
+// after the S6 tightening: only the named fan-out set reaches an off-screen
+// pane. An unnamed message — here a stand-in for a screen's own internal
+// message, such as review's loadedMsg or ask's sessionClosedMsg — goes to
+// the active pane alone, the way it did before the temporary key/no-key
+// split broadcast everything that was not a key.
+func TestUnnamedMessagesStayWithTheActivePane(t *testing.T) {
 	browse := &fakePane{name: "browse"}
 	review := &fakePane{name: "review"}
 
@@ -373,17 +377,17 @@ func TestNonKeyMessagesReachEveryPane(t *testing.T) {
 		Start: ScreenReview,
 	})
 
-	m, _ := a.Update(shellLocalMsg{tag: "pump"})
+	m, _ := a.Update(shellLocalMsg{tag: "a pane's own message"})
 	a = m.(*App)
 
-	if browse.updates != 1 {
-		t.Errorf("browse (inactive).updates = %d, want 1", browse.updates)
-	}
-	if _, ok := browse.lastMsg.(shellLocalMsg); !ok {
-		t.Fatalf("browse.lastMsg = %#v (%T), want shellLocalMsg", browse.lastMsg, browse.lastMsg)
+	if browse.updates != 0 {
+		t.Errorf("browse (inactive).updates = %d, want 0 — an unnamed message is not fanned out", browse.updates)
 	}
 	if review.updates != 1 {
 		t.Errorf("review (active).updates = %d, want 1", review.updates)
+	}
+	if _, ok := review.lastMsg.(shellLocalMsg); !ok {
+		t.Fatalf("review.lastMsg = %#v (%T), want shellLocalMsg", review.lastMsg, review.lastMsg)
 	}
 
 	// A key event, including a key *release* (C-80: v2 has both, and both
@@ -394,8 +398,58 @@ func TestNonKeyMessagesReachEveryPane(t *testing.T) {
 	if review.updates != 2 {
 		t.Errorf("review (active).updates = %d, want 2 after the key release", review.updates)
 	}
-	if browse.updates != 1 {
-		t.Errorf("browse (inactive).updates = %d, want 1 (keys never fan out)", browse.updates)
+	if browse.updates != 0 {
+		t.Errorf("browse (inactive).updates = %d, want 0 (keys never fan out)", browse.updates)
+	}
+}
+
+// TestAskPumpMessagesReachEveryPane pins the fan-out set by name: the three
+// ask pump messages (pane.go, declared there so the shell can route them
+// without importing a screen package) must reach an inactive pane, which is
+// the whole of C-117/D-DA — a turn that keeps streaming behind a screen
+// switch, with its pump re-armed by the pane that owns it.
+func TestAskPumpMessagesReachEveryPane(t *testing.T) {
+	events := []agent.Event{
+		agent.TextDelta{Text: "in flight"},
+		agent.ToolCallEv{ID: "t1", Name: "wiki.search", Args: `{}`},
+	}
+	ch := make(chan agent.Event, len(events)+1)
+	for _, ev := range events {
+		ch <- ev
+	}
+	defer close(ch)
+
+	msgs := []tea.Msg{
+		StreamMsg{Ch: ch},
+		EventMsg{Ev: events[0]},
+		StreamClosedMsg{},
+	}
+	for _, msg := range msgs {
+		t.Run(fmt.Sprintf("%T", msg), func(t *testing.T) {
+			browse := &fakePane{name: "browse"}
+			review := &fakePane{name: "review"}
+
+			a := NewApp(Options{
+				Deps: testDeps(t),
+				Panes: map[Screen]Pane{
+					ScreenBrowse: browse,
+					ScreenReview: review,
+				},
+				Start: ScreenReview, // the ask pane is not even injected here
+			})
+
+			a.Update(msg)
+
+			if browse.updates != 1 {
+				t.Errorf("browse (inactive).updates = %d, want 1", browse.updates)
+			}
+			if _, ok := browse.lastMsg.(tea.Msg); !ok || browse.lastMsg == nil {
+				t.Fatalf("browse.lastMsg = %#v, want the routed message", browse.lastMsg)
+			}
+			if review.updates != 1 {
+				t.Errorf("review (active).updates = %d, want 1", review.updates)
+			}
+		})
 	}
 }
 

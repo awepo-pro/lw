@@ -47,13 +47,9 @@ func cmdTUI(args []string) error {
 	}
 	defer engine.Close()
 
-	theme, err := ui.LoadTheme("")
+	theme, keys, err := tuiTheme()
 	if err != nil {
-		return fmt.Errorf("load theme: %w", err)
-	}
-	keys, err := ui.LoadKeys()
-	if err != nil {
-		return fmt.Errorf("load keys: %w", err)
+		return err
 	}
 
 	// The Ask pane drives a real agent.Agent; every other screen needs none
@@ -88,6 +84,60 @@ func cmdTUI(args []string) error {
 		return err
 	}
 	return nil
+}
+
+// loadTUITheme and loadTUIKeys are the seams tuiTheme goes through, for the
+// same reason tuiAgent is a function and newAgent a var (cmd_ingest.go): a
+// test has to prove the config's theme name reaches ui.LoadTheme without
+// driving tea.Program.Run, which never returns once its input reaches EOF
+// (C-83). Swapped in a test, restored on cleanup.
+var (
+	loadTUITheme = ui.LoadTheme
+	loadTUIKeys  = ui.LoadKeys
+)
+
+// tuiTheme resolves the theme and the key bindings the shell is built from.
+//
+// The theme name comes from config.toml's `theme` key (backbone §12's "name
+// comes from config.toml"), so a curator who wrote `theme = "nord"` gets
+// nord and not whatever `LoadTheme("")` happens to fall back to. Reading the
+// config is tolerant, exactly as the agent path below is: a malformed or
+// unreadable config.toml is reported to stderr and the compiled-in default
+// theme is used, because a broken theme setting must never cost the user the
+// whole TUI.
+//
+// Every warning either LoadTheme or LoadKeys collected — an unknown key in
+// theme.toml or hotkeys.toml, an unrecognised theme name with no file behind
+// it — is printed once to stderr before the TUI starts. A typo in a hand-
+// written file must not be silent: the pane it would have styled just
+// renders with the default, and without this the only symptom is a theme
+// that "does not work".
+func tuiTheme() (ui.Theme, ui.KeyMap, error) {
+	name := ""
+	if cfg, err := config.Load(); err != nil {
+		fmt.Fprintf(os.Stderr, "lw tui: %v\n", err)
+	} else {
+		name = cfg.Theme
+	}
+
+	theme, err := loadTUITheme(name)
+	if err != nil {
+		return ui.Theme{}, ui.KeyMap{}, fmt.Errorf("load theme: %w", err)
+	}
+	keys, err := loadTUIKeys()
+	if err != nil {
+		return ui.Theme{}, ui.KeyMap{}, fmt.Errorf("load keys: %w", err)
+	}
+
+	seen := make(map[string]bool, len(theme.Warnings)+len(keys.Warnings))
+	for _, w := range append(append([]string{}, theme.Warnings...), keys.Warnings...) {
+		if seen[w] {
+			continue
+		}
+		seen[w] = true
+		fmt.Fprintf(os.Stderr, "lw tui: warning: %s\n", w)
+	}
+	return theme, keys, nil
 }
 
 // tuiAgent constructs the agent.Agent the Ask pane drives: the config, the

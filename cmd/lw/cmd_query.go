@@ -21,9 +21,12 @@ import (
 // *stage.Engine the loop's own context needs (backbone §9's C-104 pinned
 // instruction: "assemble the deps exactly as cmd_mcp.go does", which rules
 // out handing the registry a different, crippled Engine). The hard
-// guarantee cmdQuery actually enforces is structural, below: any
-// changeset that exists when the turn ends is rejected before cmdQuery
-// returns, so "no changeset" holds regardless of what the model attempts.
+// guarantee cmdQuery actually enforces is structural, below: any changeset
+// the turn opened — one open at the end that was not open at the start — is
+// rejected before cmdQuery returns, so "this turn opened nothing" holds
+// regardless of what the model attempts. A changeset already open before
+// `lw query` ran is the curator's own review in progress and is left
+// untouched (C-116).
 const queryPromptPrefix = "Answer the following question about the vault, citing the wiki pages you draw from by path. This is a read-only query: do not open a changeset or propose any change.\n\nQuestion: "
 
 // cmdQuery asks the curator agent a one-shot, read-only question over the
@@ -69,16 +72,32 @@ func cmdQuery(args []string) error {
 		return fmt.Errorf("create session: %w", err)
 	}
 
+	// C-116: snapshot the open changeset BEFORE the turn. The guard below can
+	// only enforce query's invariant against a changeset this turn opened,
+	// and the only way it can tell that one from a changeset that was already
+	// open is to have looked before it started. `lw ingest` leaves a
+	// changeset open for human review as a matter of course, so "a changeset
+	// is open" is a normal state of a vault a curator queries mid-review —
+	// and rejecting it on the way out silently demoted live work to
+	// changesets/rejected/ (C-116, found live at G5).
+	priorID, priorOpen := "", false
+	if cs, err := e.Current(); err == nil {
+		priorID, priorOpen = cs.ID, true
+	}
+
 	sendErr := runAgentTurn(context.Background(), ag, sess.ID, queryPromptPrefix+question, os.Stdout)
 	fmt.Println()
 
 	// Enforce "no changeset" structurally: if the model called stage.open
-	// (or any tool that opens one implicitly) despite the prompt above,
-	// reject it immediately rather than leaving query's one invariant
-	// dependent on the model's good behaviour. dispatch already prefixes
-	// every returned error with "lw: query: ", so nothing here repeats
-	// that prefix itself.
-	if cs, curErr := e.Current(); curErr == nil {
+	// (or any tool that opens one implicitly) despite the prompt above, the
+	// changeset open at the end of the turn is not the one open at its start,
+	// and it is rejected immediately rather than leaving query's one
+	// invariant dependent on the model's good behaviour. A changeset with the
+	// same id before and after was already open — the turn's own tools cannot
+	// close one (stage.close only summarizes) — so it is left exactly as the
+	// turn found it. dispatch already prefixes every returned error with
+	// "lw: query: ", so nothing here repeats that prefix itself.
+	if cs, curErr := e.Current(); curErr == nil && (!priorOpen || cs.ID != priorID) {
 		reason := "lw query must not stage changes; the agent attempted to during a read-only turn"
 		if rejErr := e.Reject(reason); rejErr != nil {
 			return fmt.Errorf("reject unexpected changeset %s: %w", cs.ID, rejErr)

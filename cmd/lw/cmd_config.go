@@ -266,9 +266,9 @@ type configRow struct {
 
 // configRows renders cfg in configFields order. A row is marked "(file)"
 // when its value differs from config.Default()'s and "(default)" when it does
-// not — the one provenance test internal/config's flat API supports, since
-// Load returns the file's values and nothing else (a file that omits a field
-// does not get the default back; see the report on this subtask).
+// not. config.Load merges the defaults behind the file, so a value the file
+// omits resolves to lw's built-in and is labelled accordingly — the marker
+// says which value is in force, not which lines the file happens to carry.
 func configRows(cfg, def *config.Config) []configRow {
 	rows := make([]configRow, 0, len(configFields))
 	for _, f := range configFields {
@@ -327,47 +327,14 @@ func runConfigShow(w io.Writer) error {
 	return nil
 }
 
-// withDefaults overlays cfg onto config.Default(): a field left at its zero
-// value takes the built-in default, and the result is what `lw config set`
-// writes. config.Load returns the file's values and nothing else — a file
-// that omits llm.api_key comes back with an empty one, and saving that
-// verbatim would write the empty key and zero limits to disk, stripping the
-// user's credentials the first time they changed an unrelated setting.
-// Materializing a complete file is what a first `set` on a fresh install
-// already does, so the semantic is not new; this only extends it to a file a
-// hand wrote.
-//
-// The cost is that a field cannot be set to its zero value on purpose: an
-// explicit temperature of 0, or an empty base_url, read as "unset" and take
-// the default. No zero value is a working setting for any of these fields —
-// max_tokens 0 and 0 tool rounds produce dead requests, and an empty key is
-// no credentials — so nothing workable is lost.
-func withDefaults(cfg *config.Config) *config.Config {
-	def := config.Default()
-	merged := *cfg
-	if merged.LLM.BaseURL == "" {
-		merged.LLM.BaseURL = def.LLM.BaseURL
-	}
-	if merged.LLM.Model == "" {
-		merged.LLM.Model = def.LLM.Model
-	}
-	if merged.LLM.APIKey == "" {
-		merged.LLM.APIKey = def.LLM.APIKey
-	}
-	if merged.LLM.Temperature == 0 {
-		merged.LLM.Temperature = def.LLM.Temperature
-	}
-	if merged.LLM.MaxTokens == 0 {
-		merged.LLM.MaxTokens = def.LLM.MaxTokens
-	}
-	if merged.Limits.MaxToolRounds == 0 {
-		merged.Limits.MaxToolRounds = def.Limits.MaxToolRounds
-	}
-	if merged.Limits.ContextTokens == 0 {
-		merged.Limits.ContextTokens = def.Limits.ContextTokens
-	}
-	return &merged
-}
+// withDefaults was deleted when internal/config.Load learned to merge
+// config.Default() behind the file (S6 wrap-up): the merge happens at load
+// time now, on every key the file omits, so a loaded Config is already
+// complete and saving it writes the defaults a hand-written file implied
+// rather than the zeros it never mentioned. The trade-off that helper
+// carried — an explicit zero in the file read as "unset" and silently took
+// the default — is gone with it: Load can tell "omitted" from "explicitly
+// zero" (BurntSushi's MetaData), so the file's word is kept either way.
 
 // runConfigSet validates the key, coerces and applies the value, then saves
 // the whole config — load, mutate, save, the only path internal/config
@@ -390,7 +357,7 @@ func runConfigSet(key, value string) error {
 		fmt.Fprintf(os.Stderr, "lw config: %v\n", err)
 		return &exitError{code: 2}
 	}
-	if err := withDefaults(cfg).Save(); err != nil {
+	if err := cfg.Save(); err != nil {
 		return err
 	}
 
