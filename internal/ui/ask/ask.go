@@ -1,13 +1,18 @@
 // ask.go implements the ask screen itself (backbone §12 ui.Pane;
 // s4-tui.md S4-T6): an input box plus a scrollback, driven by whatever
-// <-chan agent.Event a StreamMsg (stream.go) hands the pane. This subtask
-// wires that channel to a scripted fake only (ask_test.go,
-// ask_external_test.go) — there is no LLM client and no real Agent, and
-// Deps.Agent is nil until S5-T5 wires one (backbone §12, D-CN); this pane
-// never calls it.
+// <-chan agent.Event a StreamMsg (stream.go) hands the pane.
+//
+// Since S5-T5 the pane also starts those turns: when ui.Deps.Agent is
+// non-nil, submitting a question launches one real agent turn (backbone
+// §9, C-105) whose events reach this pane through the same pump as any
+// scripted stream. When Deps.Agent is nil — the config did not load, say —
+// submitting refuses with a visible status line instead of dying, and
+// browse/review/lint/log keep working without a provider (s5-agent-loop.md
+// S5-T5).
 package ask
 
 import (
+	"context"
 	"strings"
 
 	"charm.land/bubbles/v2/key"
@@ -37,6 +42,14 @@ type Model struct {
 	turnActive bool
 
 	input string // the box's current, unsent text
+
+	// sessionID is the changeset id the running (or most recent) turn ran
+	// under — a session is keyed by its changeset (backbone §9, C-102) —
+	// and "" when no turn of this pane's has a session to close. It is what
+	// changesetGone archives when the changeset is committed or rejected.
+	sessionID string
+	// cancel aborts the running turn's context; nil until startTurn runs.
+	cancel context.CancelFunc
 
 	ch <-chan agent.Event // installed by StreamMsg; nil = no stream to re-arm
 }
@@ -73,8 +86,9 @@ func (m *Model) Help() []key.Binding {
 func (m *Model) Init() tea.Cmd { return nil }
 
 // Update handles the shell's background-colour broadcast, this screen's
-// keymap, and the event pump's own three messages (backbone §12 C-80:
-// matches tea.KeyPressMsg, never tea.KeyMsg).
+// keymap, the event pump's own messages, the session-closed outcome and the
+// shell's ui.StageChangedMsg broadcast (backbone §12 C-80: matches
+// tea.KeyPressMsg, never tea.KeyMsg).
 func (m *Model) Update(msg tea.Msg) (ui.Pane, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.BackgroundColorMsg:
@@ -97,7 +111,29 @@ func (m *Model) Update(msg tea.Msg) (ui.Pane, tea.Cmd) {
 	case StreamClosedMsg:
 		m.ch = nil
 		m.turnActive = false
+		// The turn is over either way, so its context has nothing left to
+		// cancel; releasing it here (rather than waiting for a later
+		// changesetGone) is what keeps one turn's cancel from being mistaken
+		// for the next turn's.
+		if m.cancel != nil {
+			m.cancel()
+			m.cancel = nil
+		}
 		return m, nil
+
+	case sessionClosedMsg:
+		if msg.err != nil {
+			m.appendStatus("closing the session failed: " + msg.err.Error())
+		}
+		return m, nil
+
+	case ui.StageChangedMsg:
+		// Broadcast by the shell to every pane. The populated form is the
+		// pane's own StageEv coming back (or review reporting a change); the
+		// empty form is how review says "no changeset is open any more" —
+		// Commit and Reject both emit it — and that is when this pane's
+		// session has to close (backbone §9; s5-agent-loop.md S5-T5).
+		return m, m.changesetGone(msg.ChangesetID)
 
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
@@ -121,10 +157,9 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (ui.Pane, tea.Cmd) {
 		return m, nil
 	case "enter":
 		if m.input != "" {
-			m.submitInput()
-		} else {
-			m.toggleSelectedExpand()
+			return m, m.submitInput()
 		}
+		m.toggleSelectedExpand()
 		return m, nil
 	case "backspace":
 		m.deleteInputRune()
@@ -139,14 +174,74 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (ui.Pane, tea.Cmd) {
 	return m, nil
 }
 
-// submitInput appends the typed text as a kindUser scrollback entry and
-// clears the box. It never calls Deps.Agent — that is S5-T5's wiring
-// (backbone §12, D-CN); this subtask's only event source is whatever
-// channel Listen is reading.
-func (m *Model) submitInput() {
-	m.entries = append(m.entries, entry{kind: kindUser, text: m.input})
+// submitInput handles enter on a non-empty input box: it echoes the typed
+// text into the scrollback, clears the box, and — when there is an agent to
+// answer and a session to answer in — starts one real agent turn. The turn
+// itself runs in startTurn's goroutine and reaches this pane only as
+// tea.Cmds, so Update returns immediately no matter how long the model
+// takes (backbone §9, C-105; s5-agent-loop.md S5-T5 "never block Update").
+//
+// Three conditions refuse the submit instead, each as a visible status line
+// rather than a dead input or a silent drop:
+//
+//   - a turn is already running. Refused, NOT queued — the documented
+//     choice: a queued question would fire at the agent mid-turn, and the
+//     answer that comes back could not be attributed to either question.
+//     The typed text stays in the box so nothing the curator wrote is lost.
+//   - Deps.Agent is nil. The config did not load, so there is no provider;
+//     ask says so and every other screen carries on (S5-T5's degrade
+//     requirement).
+//   - no changeset is open. A session is keyed by its changeset (backbone
+//     §9, C-102) and Loop.Send resolves that session before it does
+//     anything else, so a turn with no open changeset has nowhere to run.
+//
+// The engine read this performs — Engine.Current, one small directory scan
+// plus one small JSON file — is bounded and local, the same order of work
+// review's own commit path already does in Update.
+func (m *Model) submitInput() tea.Cmd {
+	msg := m.input
+
+	if m.turnActive {
+		m.appendStatus("a turn is already running — submit refused, not queued")
+		return nil
+	}
+
+	if m.deps.Agent == nil {
+		m.echoUser(msg)
+		m.appendStatus("no agent is configured (config did not load) — ask is off; browse, review, lint and log still work")
+		return nil
+	}
+
+	sessionID := ""
+	if m.deps.Engine != nil {
+		if cs, err := m.deps.Engine.Current(); err == nil {
+			sessionID = cs.ID
+		}
+	}
+	if sessionID == "" {
+		m.echoUser(msg)
+		m.appendStatus("no open changeset — a turn needs one to run in; stage or ingest something first")
+		return nil
+	}
+
+	m.echoUser(msg)
+	m.turnActive = true
+	m.sessionID = sessionID
+	return m.startTurn(sessionID, msg)
+}
+
+// echoUser appends text as a kindUser scrollback entry and clears the input
+// box — the submit path's one shared "the curator said this" step.
+func (m *Model) echoUser(text string) {
+	m.entries = append(m.entries, entry{kind: kindUser, text: text})
 	m.input = ""
-	m.turnActive = false
+}
+
+// appendStatus appends one kindStatus line: a pane-local notice (a refused
+// submit, a failed Close) rather than a turn boundary, which endTurn and
+// endTurnError own.
+func (m *Model) appendStatus(text string) {
+	m.entries = append(m.entries, entry{kind: kindStatus, text: text})
 }
 
 // deleteInputRune removes the last rune of the input box, if any.
@@ -201,6 +296,8 @@ func (m *Model) renderEntry(e entry, selected bool, w int) []string {
 		return renderPrefixed("assistant: ", e.text, w, m.theme.Base)
 	case kindStatus:
 		return []string{m.theme.Muted.Render(fitLine("— "+e.text+" —", w))}
+	case kindError:
+		return renderPrefixed("error: ", e.text, w, m.theme.Bad)
 	case kindTool:
 		return renderToolEntry(m.theme, e.tool, selected, w)
 	}

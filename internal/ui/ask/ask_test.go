@@ -328,8 +328,10 @@ func TestToolCallExpandToggle(t *testing.T) {
 }
 
 // TestInputTypingSubmitAndBackspace exercises the input box's own local
-// echo: typing, backspace and submit — none of which ever touches
-// Deps.Agent (nil in this subtask, backbone §12 D-CN).
+// echo: typing, backspace and submit. Deps.Agent is nil here, so the submit
+// degrades (S5-T5): the question is still echoed into the scrollback and a
+// visible status line explains that ask is off — the input box never goes
+// dead.
 func TestInputTypingSubmitAndBackspace(t *testing.T) {
 	d := newTestDeps(t)
 	var pane ui.Pane = New(d)
@@ -348,13 +350,25 @@ func TestInputTypingSubmitAndBackspace(t *testing.T) {
 		t.Fatalf("input after backspace = %q, want %q", m.input, "h")
 	}
 
-	pane, _ = pane.Update(specialKey(tea.KeyEnter, 0))
+	pane, cmd := pane.Update(specialKey(tea.KeyEnter, 0))
 	m = pane.(*Model)
+	if cmd != nil {
+		t.Fatalf("submit with no agent produced a command (%#v), want nil", cmd)
+	}
 	if m.input != "" {
 		t.Fatalf("input after enter = %q, want empty", m.input)
 	}
-	if len(m.entries) != 1 || m.entries[0].kind != kindUser || m.entries[0].text != "h" {
-		t.Fatalf("entries = %#v, want one kindUser entry \"h\"", m.entries)
+	if len(m.entries) != 2 {
+		t.Fatalf("entries = %#v, want a user echo plus a status line", m.entries)
+	}
+	if m.entries[0].kind != kindUser || m.entries[0].text != "h" {
+		t.Fatalf("entries[0] = %#v, want kindUser \"h\"", m.entries[0])
+	}
+	if m.entries[1].kind != kindStatus {
+		t.Fatalf("entries[1] = %#v, want a kindStatus degrade notice", m.entries[1])
+	}
+	if !strings.Contains(m.View(80, 10), "no agent") {
+		t.Fatalf("view does not show the nil-agent status line:\n%s", m.View(80, 10))
 	}
 }
 

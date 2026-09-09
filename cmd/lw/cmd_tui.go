@@ -7,6 +7,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/awepo-pro/lw/internal/agent"
+	"github.com/awepo-pro/lw/internal/config"
 	"github.com/awepo-pro/lw/internal/stage"
 	"github.com/awepo-pro/lw/internal/ui"
 	"github.com/awepo-pro/lw/internal/ui/ask"
@@ -54,13 +56,22 @@ func cmdTUI(args []string) error {
 		return fmt.Errorf("load keys: %w", err)
 	}
 
+	// The Ask pane drives a real agent.Agent; every other screen needs none
+	// (backbone §12; s5-agent-loop.md S5-T5). So a config or provider
+	// failure degrades the ask pane, not the TUI: lw still opens, and
+	// review/browse/lint/log stay fully usable with no provider at all.
+	// tuiAgent reports why it could not build one, and that reason goes to
+	// stderr the way every other verb's diagnostics do.
+	ag, agErr := tuiAgent(engine)
+	if agErr != nil {
+		fmt.Fprintf(os.Stderr, "lw tui: ask disabled: %v\n", agErr)
+	}
+
 	deps := ui.Deps{
 		Engine: engine,
-		// Agent stays nil until S5 wires a real agent.Agent (backbone §12,
-		// s4-tui.md S4-T2 item 5): Deps.Agent is an interface, and a nil
-		// interface value is exactly what "not built yet" means.
-		Theme: theme,
-		Keys:  keys,
+		Agent:  ag, // nil when tuiAgent failed; the ask pane says so
+		Theme:  theme,
+		Keys:   keys,
 	}
 
 	app := ui.NewApp(buildTUIOptions(deps))
@@ -77,6 +88,24 @@ func cmdTUI(args []string) error {
 		return err
 	}
 	return nil
+}
+
+// tuiAgent constructs the agent.Agent the Ask pane drives: the config, the
+// package-level newAgent seam, and the file-backed session store that keeps
+// a turn's transcript beside its changeset (backbone §9, C-102 — never an
+// ephemeral store, since review's Commit and Reject move the very directory
+// that session lives in, and the transcript has to move with it).
+//
+// It is a function rather than inline code so a test can prove both halves
+// of the contract — wired and degraded — without driving tea.Program.Run
+// (C-83); newAgent is a package-level var for exactly that reason
+// (cmd_ingest.go).
+func tuiAgent(e *stage.Engine) (agent.Agent, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return nil, fmt.Errorf("load config: %w", err)
+	}
+	return newAgent(e, cfg, agent.NewFileSessions(e.Vault().Root()))
 }
 
 // buildTUIOptions assembles the ui.Options ui.NewApp is built from: the
