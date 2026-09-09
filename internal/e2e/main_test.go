@@ -22,10 +22,25 @@ import (
 // instead of a confusing "no such file").
 var lwBin string
 
-// goTool is the absolute go toolchain path. It is deliberately not resolved
-// from PATH: no tool-invoked shell in this repo has go on it (CLAUDE.md), so
-// lookup-by-name would silently fail.
-var goTool = filepath.Join("/usr/local/go/bin", "go")
+// e2eVersion is the version stamped into the binary under test. It must track
+// the Makefile's VERSION (Makefile:2) — same value, same -X target — so the
+// suite and `make build` produce byte-identical `lw --version` output.
+const e2eVersion = "0.1.0-dev"
+
+// goTool is the absolute go toolchain path, resolved once at init: LookPath
+// first, then GOROOT/bin/go. The old literal /usr/local/go/bin/go was this
+// repo's tool-shell fallback — no tool-invoked shell here has go on PATH
+// (CLAUDE.md), so lookup-by-name used to be a guaranteed miss — but it
+// hardcoded one machine's install. GOROOT is always set for a real go
+// binary, and bin/go under it is the same toolchain that is running these
+// tests, so the binary built for the suite is built by the toolchain under
+// test wherever the suite runs.
+var goTool = func() string {
+	if p, err := exec.LookPath("go"); err == nil {
+		return p
+	}
+	return filepath.Join(runtime.GOROOT(), "bin", "go")
+}()
 
 // TestMain builds ./cmd/lw once, points lwBin at it, and runs the package.
 func TestMain(m *testing.M) {
@@ -51,7 +66,13 @@ func runMain(m *testing.M) int {
 	defer os.RemoveAll(tmp)
 
 	bin := filepath.Join(tmp, "lw")
-	build := exec.Command(goTool, "build", "-o", bin, "./cmd/lw")
+	// e2eVersion must track the Makefile's VERSION (Makefile:2): stamping here
+	// is how the suite exercises the same -ldflags "-X main.version=..." path
+	// `make build` takes, and the frozen `lw 0.1.0-dev` assertions in
+	// harness_test.go and coldstart_test.go depend on the two staying equal.
+	build := exec.Command(goTool, "build",
+		"-ldflags", "-X main.version="+e2eVersion,
+		"-o", bin, "./cmd/lw")
 	build.Dir = root
 	if out, err := build.CombinedOutput(); err != nil {
 		fmt.Fprintf(os.Stderr, "e2e: build ./cmd/lw: %v\n%s", err, out)

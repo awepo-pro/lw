@@ -284,6 +284,14 @@ func BenchmarkStageCommit(b *testing.B) {
 				if id == "" {
 					b.Fatalf("stage bench: Commit returned an empty changeset id")
 				}
+
+				// Closed outside the timer, as BenchmarkStageProjectedReport
+				// closes its engine: symmetry keeps the two benchmarks'
+				// scaffolding identical, and the unlock plus index flush belong
+				// to no iteration's measurement.
+				if err := e.Close(); err != nil {
+					b.Fatalf("stage bench: Close: %v", err)
+				}
 			}
 		})
 	}

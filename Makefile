@@ -23,8 +23,11 @@ check: lint test
 smoke:
 	go test ./internal/e2e/ -count=1 -v
 
+# -p 1 runs the four packages one at a time: each generates its own scale
+# fixture vaults, and a sibling's generation landing inside another's timed
+# window would show up as noise in the ns/op columns.
 bench:
-	go test ./internal/index ./internal/stage ./internal/lint ./internal/vault -run '^$$' -bench . -benchmem -benchtime=$(BENCHTIME)
+	go test ./internal/index ./internal/stage ./internal/lint ./internal/vault -run '^$$' -bench . -benchmem -benchtime=$(BENCHTIME) -p 1
 
 stress-scale:
 	LW_STRESS_SCALE=1 go test ./internal/e2e/ -run TestStressScale -count=1 -v -timeout 20m
