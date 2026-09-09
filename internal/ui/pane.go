@@ -47,9 +47,13 @@ type Pane interface {
 // Deps is what a screen (and the shell itself) is handed at construction.
 type Deps struct {
 	Engine *stage.Engine
-	Agent  agent.Agent // nil until S5 wires a real agent.Agent (backbone §12)
-	Theme  Theme
-	Keys   KeyMap
+	// Agent is the agent.Agent the Ask pane drives. nil is a supported
+	// state, not a stub: cmd/lw builds it only when the provider config
+	// resolves, and a nil here means Ask reports why it cannot answer while
+	// every other screen works untouched (backbone §12; S5-T5).
+	Agent agent.Agent
+	Theme Theme
+	Keys  KeyMap
 }
 
 // Options configures NewApp. Panes is injected by cmd/lw; the shell never

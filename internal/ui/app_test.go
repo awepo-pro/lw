@@ -349,3 +349,151 @@ func TestKeyPropagatesToUnfocusedNotFocusedPane(t *testing.T) {
 		t.Errorf("review.updates = %d, want 0 (it is not focused)", review.updates)
 	}
 }
+
+// shellLocalMsg stands in for the messages that reach App.Update's default
+// branch from a pane's tea.Cmd results. It cannot be one of the shell's own
+// types — those all have cases of their own — and a test cannot name a
+// screen package's type without importing it, which the shell never does.
+type shellLocalMsg struct{ tag string }
+
+// TestNonKeyMessagesReachEveryPane is the routing half of C-117/D-DA: the
+// default branch used to send everything to the active pane only, which
+// starved a background pump on an off-screen pane. Non-key messages now fan
+// out; a key event is still the active pane's alone.
+func TestNonKeyMessagesReachEveryPane(t *testing.T) {
+	browse := &fakePane{name: "browse"}
+	review := &fakePane{name: "review"}
+
+	a := NewApp(Options{
+		Deps: testDeps(t),
+		Panes: map[Screen]Pane{
+			ScreenBrowse: browse,
+			ScreenReview: review,
+		},
+		Start: ScreenReview,
+	})
+
+	m, _ := a.Update(shellLocalMsg{tag: "pump"})
+	a = m.(*App)
+
+	if browse.updates != 1 {
+		t.Errorf("browse (inactive).updates = %d, want 1", browse.updates)
+	}
+	if _, ok := browse.lastMsg.(shellLocalMsg); !ok {
+		t.Fatalf("browse.lastMsg = %#v (%T), want shellLocalMsg", browse.lastMsg, browse.lastMsg)
+	}
+	if review.updates != 1 {
+		t.Errorf("review (active).updates = %d, want 1", review.updates)
+	}
+
+	// A key event, including a key *release* (C-80: v2 has both, and both
+	// satisfy the tea.KeyMsg interface the guard matches), stays with the
+	// active pane: an off-screen pane must never be able to eat one.
+	m, _ = a.Update(tea.KeyReleaseMsg(tea.Key{Code: 'q', Text: "q"}))
+	a = m.(*App)
+	if review.updates != 2 {
+		t.Errorf("review (active).updates = %d, want 2 after the key release", review.updates)
+	}
+	if browse.updates != 1 {
+		t.Errorf("browse (inactive).updates = %d, want 1 (keys never fan out)", browse.updates)
+	}
+}
+
+// TestShellRendersEveryBuiltInTheme is the headless stand-in for "start the
+// TUI with each theme" (C-83: Program.Run never returns in a test): each
+// built-in theme drives a real frame at two terminal sizes, and every line
+// of it must be renderable and no wider than the terminal it was drawn for.
+func TestShellRendersEveryBuiltInTheme(t *testing.T) {
+	for _, name := range []string{"default", "dark", "light", "nord"} {
+		for _, sz := range []tea.WindowSizeMsg{{Width: 80, Height: 24}, {Width: 200, Height: 50}} {
+			t.Run(fmt.Sprintf("%s/%dx%d", name, sz.Width, sz.Height), func(t *testing.T) {
+				setConfigDir(t)
+				theme, err := LoadTheme(name)
+				if err != nil {
+					t.Fatalf("LoadTheme(%q): %v", name, err)
+				}
+				deps := Deps{Theme: theme, Keys: defaultKeyMap()}
+
+				a := NewApp(Options{
+					Deps:  deps,
+					Panes: map[Screen]Pane{ScreenBrowse: &fakePane{name: "browse"}},
+					Start: ScreenBrowse,
+				})
+				m, _ := a.Update(sz)
+				a = m.(*App)
+
+				view := a.View()
+				if view.Content == "" {
+					t.Fatal("View().Content is empty")
+				}
+				for i, line := range strings.Split(view.Content, "\n") {
+					if w := lipgloss.Width(line); w > sz.Width {
+						t.Errorf("line %d is %d columns wide, want <= %d: %q", i, w, sz.Width, line)
+					}
+				}
+			})
+		}
+	}
+}
+
+// TestShellDispatchesReboundKeysToActivePane closes S6-T4's loop on
+// hotkeys.toml: a KeyMap loaded from a file that rebinds j/k to n/p reaches
+// the shell, the shell still answers its own keys, and the rebound ones
+// arrive at the active pane as ordinary keypresses — which is what a screen
+// matches its bindings against.
+func TestShellDispatchesReboundKeysToActivePane(t *testing.T) {
+	configDir := setConfigDir(t)
+	writeConfigFile(t, configDir, "hotkeys.toml", `
+move_down = ["n"]
+move_up = ["p"]
+`)
+
+	keys, err := LoadKeys()
+	if err != nil {
+		t.Fatalf("LoadKeys: %v", err)
+	}
+	deps := testDeps(t)
+	deps.Keys = keys
+
+	pane := &fakePane{name: "browse"}
+	a := NewApp(Options{Deps: deps, Panes: map[Screen]Pane{ScreenBrowse: pane}, Start: ScreenBrowse})
+	m, _ := a.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	a = m.(*App)
+
+	for _, want := range []string{"n", "p", "j", "k"} {
+		m, _ := a.Update(tea.KeyPressMsg{Code: rune(want[0]), Text: want})
+		a = m.(*App)
+		if pane.lastMsg == nil {
+			t.Fatalf("shell swallowed %q; the active pane never saw it", want)
+		}
+		got, ok := pane.lastMsg.(tea.KeyPressMsg)
+		if !ok {
+			t.Fatalf("pane.lastMsg = %#v (%T), want tea.KeyPressMsg", pane.lastMsg, pane.lastMsg)
+		}
+		if got.String() != want {
+			t.Fatalf("pane got key %q, want %q", got.String(), want)
+		}
+		if key.Matches(got, keys.Quit) || key.Matches(got, keys.NextPane) {
+			t.Fatalf("%q matched a shell key after the rebind", want)
+		}
+	}
+
+	// The shell's own keys are untouched by a move-key rebind: tab still
+	// cycles and q still quits.
+	m, cmd := a.Update(tea.KeyPressMsg{Code: 'q', Text: "q"})
+	a = m.(*App)
+	if cmd == nil {
+		t.Fatal("Update(q) returned a nil Cmd; the rebind disturbed the shell keys")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("Update(q) produced %T, want tea.QuitMsg", cmd())
+	}
+	m, cmd = a.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	a = m.(*App)
+	if cmd != nil {
+		t.Fatalf("Update(tab) returned a non-nil Cmd (%v), want nil", cmd)
+	}
+	if a.order[a.cur] == ScreenBrowse {
+		t.Fatal("tab did not cycle the active screen")
+	}
+}

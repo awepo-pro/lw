@@ -140,12 +140,33 @@ func (a *App) Init() tea.Cmd {
 // forwards everything else — including keys the shell does not bind itself
 // — to the active pane.
 //
-// Fan-out (backbone §12, s4-tui.md S4-T8, C-106/TD-4): StageChangedMsg,
-// VaultReloadedMsg, tea.WindowSizeMsg and tea.BackgroundColorMsg go to
-// every injected pane via propagateAll, since a pane that is off-screen
-// still needs to know the vault or terminal changed under it. Every other
-// message — tea.KeyPressMsg above all — stays on the active pane only via
-// propagate: a keypress belongs to whichever screen the user is looking at.
+// Fan-out (backbone §12, s4-tui.md S4-T8, C-106/TD-4, C-117/D-DA): a
+// message that is not a key event goes to every injected pane via
+// propagateAll, since a pane that is off-screen still has to keep up with
+// the world — the vault or terminal changed under it, and, the case that
+// motivated the rule, a background pump has to keep draining. Ask's event
+// pump is exactly that: StreamMsg, EventMsg and StreamClosedMsg
+// (internal/ui/ask/stream.go) arrive as ordinary tea.Cmd results, so a
+// mid-turn ctrl+r used to starve the pane — scrollback frozen, pump never
+// re-armed, and past ask's 64-event buffer Agent.Send blocked with the pane
+// stuck turnActive. Broadcasting is safe because only ask consumes those
+// three types, and every screen's Update ignores what it does not
+// recognise; no screen package's internal message is readable by another
+// package, so a fan-out cannot be misinterpreted.
+//
+// Key events stay on the active pane only, via propagate: a keypress
+// belongs to whichever screen the user is looking at, and an off-screen
+// pane must never be able to eat one. The guard tests the tea.KeyMsg
+// *interface*, not tea.KeyPressMsg, so a key-release message cannot leak to
+// an inactive pane either (C-80: v2 has both, and both satisfy tea.KeyMsg).
+//
+// The four shell messages the fan-out began with — StageChangedMsg,
+// VaultReloadedMsg, tea.WindowSizeMsg, tea.BackgroundColorMsg — keep their
+// explicit cases below, because the shell also acts on them itself. The
+// ask pump's three types cannot be listed as cases here at all: the shell
+// never imports a screen package (backbone §12), so it cannot name a type
+// declared in one. The key/no-key split is the same rule expressed without
+// that import.
 func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -192,7 +213,14 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.deliverTo(ScreenBrowse, msg)
 
 	default:
-		return a, a.propagate(msg)
+		// C-117/D-DA: see Update's doc comment. A key event — and only a
+		// key event — stays with the active pane; everything else is
+		// broadcast, so a background pump keeps running behind a screen
+		// switch.
+		if _, isKey := msg.(tea.KeyMsg); isKey {
+			return a, a.propagate(msg)
+		}
+		return a, a.propagateAll(msg)
 	}
 }
 
@@ -216,9 +244,12 @@ func (a *App) propagate(msg tea.Msg) tea.Cmd {
 }
 
 // propagateAll forwards msg to every injected pane's Update, active or not
-// (backbone §12, s4-tui.md S4-T8, C-106/TD-4) — used for the messages a
-// pane must never miss regardless of which screen is on top: StageChangedMsg,
-// VaultReloadedMsg, tea.WindowSizeMsg and tea.BackgroundColorMsg. Iterates
+// (backbone §12, s4-tui.md S4-T8, C-106/TD-4, C-117/D-DA) — used for every
+// message a pane must never miss regardless of which screen is on top: the
+// shell's own StageChangedMsg, VaultReloadedMsg, tea.WindowSizeMsg and
+// tea.BackgroundColorMsg, and — since the key/no-key split in Update — any
+// other non-key message, which in practice means the ask screen's stream
+// pump (ask.StreamMsg, ask.EventMsg, ask.StreamClosedMsg). Iterates
 // a.order, a fixed slice, rather than ranging a.panes directly, so which
 // pane's Update runs first stays deterministic even though no pane's
 // returned Cmd depends on that order (00-conventions.md §3).
