@@ -14,7 +14,7 @@
     "proposed <id> (create_page)",
     "proposed <id> (create_page)",
     "proposed bidirectional link between wiki/concepts/kv-cache.md and wiki/entities/gpt-4.md (2 page patches)",
-    "changeset <id>\nintent: ingest a source and add two concept pages\noperations: 6\nby kind:\n- add_link: 1\n- create_page: 2\n- ingest_source: 1\n- patch_page: 2\nfiles touched: 5\n- raw/article/conformance-source.md\n- wiki/concepts/conformance-alpha.md\n- wiki/concepts/conformance-beta.md\n- wiki/concepts/kv-cache.md\n- wiki/entities/gpt-4.md\nchecks: schema=pass lint=fail orphans=2 broken_links=0"
+    "changeset <id>\nintent: ingest a source and add two concept pages\noperations: 6\nby kind:\n- add_link: 1\n- create_page: 2\n- ingest_source: 1\n- patch_page: 2\nfiles touched: 5\n- raw/article/conformance-source.md\n- wiki/concepts/conformance-alpha.md\n- wiki/concepts/conformance-beta.md\n- wiki/concepts/kv-cache.md\n- wiki/entities/gpt-4.md\nchecks: schema=pass lint=pass orphans=2 broken_links=0"
   ],
   "commit_message": "ingest and create pages",
   "expect_paths": ["raw/article/conformance-source.md", "wiki/concepts/conformance-alpha.md", "wiki/concepts/conformance-beta.md"],
