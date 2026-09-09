@@ -102,6 +102,25 @@ func (l *Loop) Send(ctx context.Context, sessionID, msg string, out chan<- Event
 // round (msgs plus whatever this round appended) and whether this round
 // produced at least one tool call — the signal Send uses to decide whether
 // to loop again.
+//
+// Contract — replaying reasoning_content (backbone §9, C-114/C-115/D-CZ). A
+// thinking-mode provider's reasoning deltas (llm.Chunk.Reasoning) accumulate
+// in roundReasoning exactly as text accumulates in roundText, and are
+// attached to EVERY assistant llm.Message the round produces — the text
+// flush below and each tool-call message dispatchToolCall (or its error
+// path, correctable) builds, not only the first. An orchestrator wire probe
+// against the live provider (C-115) measured that attaching it to only the
+// first or only the last assistant message of a round still 400s; only
+// repeating the same string on every assistant message of the round is
+// accepted — the provider emits parallel tool calls, so one round routinely
+// produces several assistant messages, all of which need it. roundReasoning
+// is therefore read, never reset, for the rest of the round: it is a local
+// variable that goes out of scope when runRound returns, so the next round's
+// call starts a fresh builder — "reset" happens for free at the round
+// boundary, never mid-round. It is never emitted as an Event (backbone §9's
+// event set is frozen) and never written to a Record (recordToMessage
+// renders history as text and never rebuilds a structured tool-call message,
+// so no later turn needs it back).
 func (l *Loop) runRound(ctx context.Context, sessionID string, msgs []llm.Message, badCalls *int, out chan<- Event) ([]llm.Message, bool, error) {
 	ch, err := l.client.Stream(ctx, llm.Request{Messages: msgs, Tools: l.tools.Definitions()})
 	if err != nil {
@@ -109,12 +128,16 @@ func (l *Loop) runRound(ctx context.Context, sessionID string, msgs []llm.Messag
 	}
 
 	var roundText strings.Builder
+	var roundReasoning strings.Builder
 	toolCalled := false
 
 	// flush folds any text accumulated so far this round into an
 	// assistant Record and llm.Message, in the position it arrived —
 	// before the tool call that interrupted it, or at the round's end if
-	// none did (backbone §9 item 3: "each assistant text turn").
+	// none did (backbone §9 item 3: "each assistant text turn"). It reads
+	// roundReasoning's current value without resetting it (C-115): a tool
+	// call flushed alongside earlier text still needs the same reasoning
+	// on its own assistant message.
 	flush := func() error {
 		if roundText.Len() == 0 {
 			return nil
@@ -125,7 +148,7 @@ func (l *Loop) runRound(ctx context.Context, sessionID string, msgs []llm.Messag
 		if err := l.sessions.Append(sessionID, rec); err != nil {
 			return fmt.Errorf("agent: append assistant record: %w", err)
 		}
-		msgs = append(msgs, llm.Message{Role: "assistant", Content: text})
+		msgs = append(msgs, llm.Message{Role: "assistant", Content: text, ReasoningContent: roundReasoning.String()})
 		return nil
 	}
 
@@ -141,6 +164,9 @@ func (l *Loop) runRound(ctx context.Context, sessionID string, msgs []llm.Messag
 			if chunk.Err != nil {
 				return nil, false, l.fail(ctx, out, fmt.Errorf("agent: stream: %w", chunk.Err))
 			}
+			if chunk.Reasoning != "" {
+				roundReasoning.WriteString(chunk.Reasoning)
+			}
 			if chunk.Text != "" {
 				if !l.send(ctx, out, TextDelta{Text: chunk.Text}) {
 					return nil, false, ctx.Err()
@@ -153,7 +179,11 @@ func (l *Loop) runRound(ctx context.Context, sessionID string, msgs []llm.Messag
 				}
 				toolCalled = true
 
-				extra, stop, tErr := l.dispatchToolCall(ctx, sessionID, *chunk.ToolCall, badCalls, out)
+				// Every tool-call assistant message in the round carries the
+				// round's full reasoning so far (C-115) — roundReasoning is
+				// read, not reset, so a second parallel tool call in this
+				// same round gets it too.
+				extra, stop, tErr := l.dispatchToolCall(ctx, sessionID, *chunk.ToolCall, roundReasoning.String(), badCalls, out)
 				if stop {
 					return nil, false, tErr
 				}
@@ -174,7 +204,16 @@ func (l *Loop) runRound(ctx context.Context, sessionID string, msgs []llm.Messag
 // aborts immediately. On success it appends the assistant/tool message
 // pair for the next round, emits ToolResEv (and StageEv when applicable),
 // records the turn, and resets badCalls to 0.
-func (l *Loop) dispatchToolCall(ctx context.Context, sessionID string, tc llm.ToolCall, badCalls *int, out chan<- Event) (extra []llm.Message, stop bool, err error) {
+//
+// reasoning is runRound's accumulated Chunk.Reasoning for the round so far,
+// passed in rather than patched on afterwards (backbone §9, C-114/C-115/
+// D-CZ): this is the assistant message that carries the tool call, and it
+// gets the round's full reasoning every time, not only on a round's first
+// tool call — a live wire probe (C-115) showed a provider rejects the
+// follow-up request unless every assistant message of the round repeats the
+// same reasoning string, since the provider can emit several parallel tool
+// calls in one round.
+func (l *Loop) dispatchToolCall(ctx context.Context, sessionID string, tc llm.ToolCall, reasoning string, badCalls *int, out chan<- Event) (extra []llm.Message, stop bool, err error) {
 	// The provider echoes tc.Function.Name back to us in wire spelling —
 	// underscores, never dots (backbone §6/§7's amendment, D-CY/C-112),
 	// since Registry.Definitions advertised it that way. Canonicalize once,
@@ -192,13 +231,13 @@ func (l *Loop) dispatchToolCall(ctx context.Context, sessionID string, tc llm.To
 		args = "{}" // legal for a no-argument tool (backbone §9 item 7)
 	}
 	if perr := json.Unmarshal([]byte(args), &map[string]any{}); perr != nil {
-		return l.correctable(ctx, sessionID, tc, canonical, fmt.Errorf("malformed tool arguments: %w", perr), badCalls, out)
+		return l.correctable(ctx, sessionID, tc, canonical, reasoning, fmt.Errorf("malformed tool arguments: %w", perr), badCalls, out)
 	}
 
 	res, callErr := l.tools.Call(ctx, canonical, json.RawMessage(args))
 	if callErr != nil {
 		if errors.Is(callErr, tools.ErrUnknownTool) {
-			return l.correctable(ctx, sessionID, tc, canonical, callErr, badCalls, out)
+			return l.correctable(ctx, sessionID, tc, canonical, reasoning, callErr, badCalls, out)
 		}
 		return nil, true, l.fail(ctx, out, fmt.Errorf("agent: call %s: %w", canonical, callErr))
 	}
@@ -226,7 +265,7 @@ func (l *Loop) dispatchToolCall(ctx context.Context, sessionID string, tc llm.To
 	}
 
 	return []llm.Message{
-		{Role: "assistant", ToolCalls: []llm.ToolCall{tc}},
+		{Role: "assistant", ReasoningContent: reasoning, ToolCalls: []llm.ToolCall{tc}},
 		{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: res.Content},
 	}, false, nil
 }
@@ -237,8 +276,11 @@ func (l *Loop) dispatchToolCall(ctx context.Context, sessionID string, tc llm.To
 // maxConsecutiveBadCalls in a row. canonical is dispatchToolCall's
 // already-canonicalized tc.Function.Name (D-CY), passed through rather
 // than recomputed so both call sites — before and after the registry
-// lookup — agree on one spelling for the ToolResEv this emits.
-func (l *Loop) correctable(ctx context.Context, sessionID string, tc llm.ToolCall, canonical string, cause error, badCalls *int, out chan<- Event) ([]llm.Message, bool, error) {
+// lookup — agree on one spelling for the ToolResEv this emits. reasoning is
+// dispatchToolCall's own reasoning parameter, threaded through so the
+// error-path assistant message carries it exactly like the success path
+// (backbone §9, C-114/C-115/D-CZ) — never patched on after the fact.
+func (l *Loop) correctable(ctx context.Context, sessionID string, tc llm.ToolCall, canonical string, reasoning string, cause error, badCalls *int, out chan<- Event) ([]llm.Message, bool, error) {
 	*badCalls++
 	content := cause.Error()
 
@@ -256,7 +298,7 @@ func (l *Loop) correctable(ctx context.Context, sessionID string, tc llm.ToolCal
 	}
 
 	return []llm.Message{
-		{Role: "assistant", ToolCalls: []llm.ToolCall{tc}},
+		{Role: "assistant", ReasoningContent: reasoning, ToolCalls: []llm.ToolCall{tc}},
 		{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: content},
 	}, false, nil
 }

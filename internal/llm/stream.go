@@ -56,8 +56,12 @@ type wireChoice struct {
 }
 
 type wireDelta struct {
-	Content   string              `json:"content,omitempty"`
-	ToolCalls []wireToolCallDelta `json:"tool_calls,omitempty"`
+	Content string `json:"content,omitempty"`
+	// ReasoningContent is a thinking-mode provider's reasoning fragment,
+	// alongside Content (C-114/D-CZ). consumeStream surfaces it as
+	// Chunk.Reasoning exactly as Content becomes Chunk.Text.
+	ReasoningContent string              `json:"reasoning_content,omitempty"`
+	ToolCalls        []wireToolCallDelta `json:"tool_calls,omitempty"`
 }
 
 // wireToolCallDelta is one fragment of one tool call, identified by Index.
@@ -173,6 +177,15 @@ func consumeStream(ctx context.Context, body io.ReadCloser, out chan<- Chunk) {
 			continue
 		}
 		choice := wc.Choices[0]
+
+		// A thinking-mode provider sends reasoning before content on the
+		// same delta, so emit the reasoning fragment first (C-114/D-CZ) —
+		// the consumer decides which assistant turn it belongs to.
+		if choice.Delta.ReasoningContent != "" {
+			if !emit(Chunk{Reasoning: choice.Delta.ReasoningContent}) {
+				return
+			}
+		}
 
 		if choice.Delta.Content != "" {
 			if !emit(Chunk{Text: choice.Delta.Content}) {

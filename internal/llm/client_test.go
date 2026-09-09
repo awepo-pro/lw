@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -69,6 +70,36 @@ func TestBuildRequestBody(t *testing.T) {
 	}
 	if wr.Tools[0].Function.Name != "wiki.search" {
 		t.Errorf("Tools[0].Function.Name = %q, want wiki.search", wr.Tools[0].Function.Name)
+	}
+}
+
+// TestBuildRequestBodyIncludesReasoningContent is a supplementary proof,
+// alongside the agent package's wire-body test, that Message.ReasoningContent
+// reaches the actual marshalled JSON body under the exact
+// "reasoning_content" key (C-114/D-CZ) — buildRequestBody passes []Message
+// straight through wireRequest.Messages, so this is the client's own wire
+// shape, not a struct-level stand-in for it.
+func TestBuildRequestBodyIncludesReasoningContent(t *testing.T) {
+	c := New(Config{BaseURL: "http://example.com", Model: "test-model"})
+	req := Request{
+		Messages: []Message{
+			{Role: "assistant", ReasoningContent: "because the cache is warm", ToolCalls: []ToolCall{{ID: "call_1", Type: "function"}}},
+		},
+	}
+	b, err := c.buildRequestBody(req)
+	if err != nil {
+		t.Fatalf("buildRequestBody: %v", err)
+	}
+	if !bytes.Contains(b, []byte(`"reasoning_content":"because the cache is warm"`)) {
+		t.Fatalf("wire body = %s, want it to contain the reasoning_content field", b)
+	}
+
+	var wr wireRequest
+	if err := json.Unmarshal(b, &wr); err != nil {
+		t.Fatalf("decode wire body: %v", err)
+	}
+	if len(wr.Messages) != 1 || wr.Messages[0].ReasoningContent != "because the cache is warm" {
+		t.Errorf("decoded Messages = %+v, want ReasoningContent to round-trip", wr.Messages)
 	}
 }
 

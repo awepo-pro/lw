@@ -1,7 +1,10 @@
 package agent
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
 	"regexp"
 	"testing"
 
@@ -110,5 +113,58 @@ func TestDispatchCanonicalizesWireToolName(t *testing.T) {
 				t.Errorf("outbound llm.Request.Tools name %q does not match %s", def.Name, wireNameRE)
 			}
 		}
+	}
+}
+
+// TestReasoningContentReachesWireBody is S5-T7's wire-body test (C-114/D-CZ):
+// a struct-level assertion on Message.ReasoningContent would pass even if
+// its json tag were wrong or missing entirely — the C-101 repair used this
+// same discipline for MaxTokens — so this actually marshals the assistant
+// message runRound/dispatchToolCall built for round 2 and greps the bytes
+// for the literal "reasoning_content" key and value.
+func TestReasoningContentReachesWireBody(t *testing.T) {
+	const reasoning = "Let me think about it."
+	rounds := [][]llm.Chunk{
+		{
+			{Reasoning: "Let me "},
+			{Reasoning: "think about it."},
+			toolCallChunk("call-1", "stage.close", ""),
+			{Finish: "tool_calls"},
+		},
+		{
+			{Text: "done"},
+			{Finish: "stop"},
+		},
+	}
+	l, fx, fake := newTestLoop(t, rounds, LoopConfig{})
+
+	out := make(chan Event, 64)
+	if err := l.Send(context.Background(), fx.csID, "trigger reasoning replay", out); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	drain(out)
+
+	reqs := fake.Requests()
+	if len(reqs) != 2 {
+		t.Fatalf("Stream called %d times, want exactly 2", len(reqs))
+	}
+
+	var found bool
+	want := []byte(fmt.Sprintf(`"reasoning_content":%q`, reasoning))
+	for _, m := range reqs[1].Messages {
+		if m.Role != "assistant" || len(m.ToolCalls) == 0 {
+			continue
+		}
+		b, err := json.Marshal(m)
+		if err != nil {
+			t.Fatalf("marshal assistant message: %v", err)
+		}
+		if !bytes.Contains(b, want) {
+			t.Fatalf("marshalled assistant message = %s, want it to contain %s", b, want)
+		}
+		found = true
+	}
+	if !found {
+		t.Fatalf("round 2 request carried no assistant tool-call message: %+v", reqs[1].Messages)
 	}
 }

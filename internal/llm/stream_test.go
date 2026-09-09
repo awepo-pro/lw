@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -116,6 +117,74 @@ func TestStreamAssemblesSplitToolArgs(t *testing.T) {
 	// bare ToolDef shape.
 	if sent.Model != "test-model" || !sent.Stream {
 		t.Errorf("sent request = %+v, want model=test-model stream=true", sent)
+	}
+}
+
+// TestStreamReasoningContentSplitAcrossChunks is the S5-T7 regression test
+// for C-114: a thinking-mode provider splits reasoning_content across
+// several chunks, ahead of content and a tool call, on one stream. It
+// asserts the Chunk.Reasoning fragments arrive in order and concatenate to
+// the whole reasoning, and that Text/ToolCall behaviour is unchanged —
+// exactly one complete tool call with valid JSON arguments.
+func TestStreamReasoningContentSplitAcrossChunks(t *testing.T) {
+	srv := sseServer(t, loadFixture(t, "reasoning_split.sse"), nil)
+	defer srv.Close()
+
+	c := New(Config{BaseURL: srv.URL, Model: "test-model"})
+	ch, err := c.Stream(context.Background(), Request{
+		Messages: []Message{{Role: "user", Content: "look this up"}},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	chunks := collect(t, ch)
+
+	var reasoning strings.Builder
+	var sawText bool
+	var toolCalls []ToolCall
+	for _, c := range chunks {
+		if c.Err != nil {
+			t.Fatalf("unexpected error chunk: %v", c.Err)
+		}
+		if c.Reasoning != "" {
+			reasoning.WriteString(c.Reasoning)
+		}
+		if c.Text == "Checking sources..." {
+			sawText = true
+		}
+		if c.ToolCall != nil {
+			toolCalls = append(toolCalls, *c.ToolCall)
+		}
+	}
+
+	const wantReasoning = "Let me think about this carefully."
+	if got := reasoning.String(); got != wantReasoning {
+		t.Errorf("concatenated Reasoning fragments = %q, want %q", got, wantReasoning)
+	}
+	if !sawText {
+		t.Errorf("chunks = %+v, want the Text delta unchanged alongside reasoning", chunks)
+	}
+	if len(toolCalls) != 1 {
+		t.Fatalf("got %d tool calls, want exactly 1: %+v", len(toolCalls), toolCalls)
+	}
+	got := toolCalls[0]
+	if got.Function.Name != "wiki.search" {
+		t.Errorf("Function.Name = %q, want wiki.search", got.Function.Name)
+	}
+	const wantArgs = `{"q":"kv cache"}`
+	if got.Function.Arguments != wantArgs {
+		t.Errorf("Function.Arguments = %q, want %q", got.Function.Arguments, wantArgs)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(got.Function.Arguments), &parsed); err != nil {
+		t.Errorf("tool call arguments are not valid JSON: %v", err)
+	}
+
+	// The first chunk must be the reasoning fragment, not the text — a
+	// thinking-mode provider sends reasoning before content on the wire.
+	if chunks[0].Reasoning != "Let me think" {
+		t.Errorf("chunks[0] = %+v, want the first reasoning fragment first", chunks[0])
 	}
 }
 

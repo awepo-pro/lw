@@ -21,11 +21,16 @@ type Config struct {
 // OpenAI-compatible wire format expects it — Request marshals a []Message
 // straight through, no separate wire type needed (backbone §8).
 type Message struct {
-	Role       string     `json:"role"` // system|user|assistant|tool
-	Content    string     `json:"content,omitempty"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
-	Name       string     `json:"name,omitempty"`
+	Role    string `json:"role"` // system|user|assistant|tool
+	Content string `json:"content,omitempty"`
+	// ReasoningContent carries a thinking-mode provider's own reasoning back
+	// to it on the assistant turn it produced (C-114/D-CZ, amended
+	// 2026-09-09). deepseek-v4-flash rejects a follow-up request that omits
+	// it, so the client must round-trip it rather than discard it.
+	ReasoningContent string     `json:"reasoning_content,omitempty"`
+	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID       string     `json:"tool_call_id,omitempty"`
+	Name             string     `json:"name,omitempty"`
 }
 
 // ToolCall is one function call the model asked for, always complete:
@@ -64,8 +69,13 @@ type Request struct {
 // closes its channel after the last Chunk on every exit path, and never
 // sends a ToolCall that is not fully assembled (backbone §8).
 type Chunk struct {
-	Text     string    // incremental text delta
-	ToolCall *ToolCall // emitted once, complete, when a tool call finishes assembling
-	Finish   string    // "stop" | "tool_calls" | "length" | ""
-	Err      error
+	Text string // incremental text delta
+	// Reasoning is an incremental reasoning_content delta, exactly like
+	// Text — a fragment, not the whole thing. Stream buffers nothing; the
+	// consumer accumulates fragments and decides which assistant turn the
+	// whole reasoning belongs to (C-114/D-CZ).
+	Reasoning string
+	ToolCall  *ToolCall // emitted once, complete, when a tool call finishes assembling
+	Finish    string    // "stop" | "tool_calls" | "length" | ""
+	Err       error
 }

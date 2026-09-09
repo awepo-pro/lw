@@ -443,6 +443,187 @@ func TestToolErrorDoesNotAbort(t *testing.T) {
 	}
 }
 
+// TestLoopReplaysReasoningOnRoundTwo is the S5-T7 regression test for
+// C-114: no prior test in this suite ever ran a second round against a
+// thinking-mode provider, which is exactly what hid the defect — round 1
+// discarded the model's own reasoning, and round 2's request never carried
+// it back, so a real thinking provider rejects it with a 400. Round 1
+// scripts reasoning deltas immediately followed by a tool call with no
+// preceding text, so dispatchToolCall — not flush — is the one that must
+// attach the accumulated reasoning to the assistant message it builds; this
+// asserts that message reaches round 2's actual llm.Request.
+func TestLoopReplaysReasoningOnRoundTwo(t *testing.T) {
+	const wantReasoning = "Let me think about it."
+	rounds := [][]llm.Chunk{
+		{
+			{Reasoning: "Let me "},
+			{Reasoning: "think about it."},
+			toolCallChunk("call-1", "stage.close", ""),
+			{Finish: "tool_calls"},
+		},
+		{
+			{Text: "done"},
+			{Finish: "stop"},
+		},
+	}
+	l, fx, fake := newTestLoop(t, rounds, LoopConfig{})
+
+	out := make(chan Event, 64)
+	if err := l.Send(context.Background(), fx.csID, "trigger reasoning replay", out); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	drain(out)
+
+	reqs := fake.Requests()
+	if len(reqs) != 2 {
+		t.Fatalf("Stream called %d times, want exactly 2 (a second round must actually run)", len(reqs))
+	}
+
+	var found bool
+	for _, m := range reqs[1].Messages {
+		if m.Role == "assistant" && len(m.ToolCalls) > 0 {
+			found = true
+			if m.ToolCalls[0].ID != "call-1" {
+				continue
+			}
+			if m.ReasoningContent != wantReasoning {
+				t.Errorf("round 2's assistant tool-call message ReasoningContent = %q, want %q", m.ReasoningContent, wantReasoning)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("round 2 request carried no assistant tool-call message: %+v", reqs[1].Messages)
+	}
+}
+
+// TestLoopReasoningOnEveryAssistantMessageInRound is the reset test the
+// stage file requires, corrected by C-115: a live wire probe against the
+// real provider showed that attaching a round's reasoning to only its first
+// assistant message (the rule frozen at dispatch) still 400s — the provider
+// accepts a follow-up request only when EVERY assistant message of the
+// round repeats the same reasoning string, because it can emit several
+// parallel tool calls in one round. This round produces three: a text
+// flush and two tool-call messages, all three from the one accumulated
+// roundReasoning builder — assert all three carry it, unchanged.
+func TestLoopReasoningOnEveryAssistantMessageInRound(t *testing.T) {
+	const reasoning = "shared reasoning for the whole round"
+	rounds := [][]llm.Chunk{
+		{
+			{Reasoning: reasoning},
+			{Text: "here's what I found"},
+			toolCallChunk("call-1", "stage.close", ""),
+			toolCallChunk("call-2", "stage.close", ""),
+			{Finish: "tool_calls"},
+		},
+		{
+			{Text: "done"},
+			{Finish: "stop"},
+		},
+	}
+	l, fx, fake := newTestLoop(t, rounds, LoopConfig{})
+
+	out := make(chan Event, 64)
+	if err := l.Send(context.Background(), fx.csID, "one round, three assistant messages", out); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	drain(out)
+
+	reqs := fake.Requests()
+	if len(reqs) != 2 {
+		t.Fatalf("Stream called %d times, want exactly 2", len(reqs))
+	}
+
+	var textMsg *llm.Message
+	var toolCallMsgs []llm.Message
+	for i := range reqs[1].Messages {
+		m := reqs[1].Messages[i]
+		if m.Role != "assistant" {
+			continue
+		}
+		switch {
+		case len(m.ToolCalls) > 0:
+			toolCallMsgs = append(toolCallMsgs, m)
+		case m.Content == "here's what I found":
+			textMsg = &reqs[1].Messages[i]
+		}
+	}
+	if textMsg == nil {
+		t.Fatalf("no text-flush assistant message found in round 2's request: %+v", reqs[1].Messages)
+	}
+	if textMsg.ReasoningContent != reasoning {
+		t.Errorf("text-flush assistant message ReasoningContent = %q, want %q", textMsg.ReasoningContent, reasoning)
+	}
+	if len(toolCallMsgs) != 2 {
+		t.Fatalf("got %d assistant tool-call messages, want 2: %+v", len(toolCallMsgs), toolCallMsgs)
+	}
+	for i, m := range toolCallMsgs {
+		if m.ReasoningContent != reasoning {
+			t.Errorf("tool-call assistant message %d ReasoningContent = %q, want %q (every assistant message in the round must carry it, C-115)", i, m.ReasoningContent, reasoning)
+		}
+	}
+}
+
+// TestLoopReasoningDoesNotLeakAcrossRounds proves the other half of C-115:
+// roundReasoning resets when the NEXT ROUND starts, not mid-round — round
+// 1's reasoning must never appear on round 2's assistant message, and vice
+// versa, even though by round 3's request both messages sit side by side in
+// the same history.
+func TestLoopReasoningDoesNotLeakAcrossRounds(t *testing.T) {
+	const round1Reasoning = "round one reasoning"
+	const round2Reasoning = "round two reasoning"
+	rounds := [][]llm.Chunk{
+		{
+			{Reasoning: round1Reasoning},
+			toolCallChunk("call-1", "stage.close", ""),
+			{Finish: "tool_calls"},
+		},
+		{
+			{Reasoning: round2Reasoning},
+			toolCallChunk("call-2", "stage.close", ""),
+			{Finish: "tool_calls"},
+		},
+		{
+			{Text: "done"},
+			{Finish: "stop"},
+		},
+	}
+	l, fx, fake := newTestLoop(t, rounds, LoopConfig{})
+
+	out := make(chan Event, 64)
+	if err := l.Send(context.Background(), fx.csID, "three rounds, isolated reasoning", out); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	drain(out)
+
+	reqs := fake.Requests()
+	if len(reqs) != 3 {
+		t.Fatalf("Stream called %d times, want exactly 3", len(reqs))
+	}
+
+	var msg1, msg2 *llm.Message
+	for i := range reqs[2].Messages {
+		m := reqs[2].Messages[i]
+		if m.Role != "assistant" || len(m.ToolCalls) == 0 {
+			continue
+		}
+		switch m.ToolCalls[0].ID {
+		case "call-1":
+			msg1 = &reqs[2].Messages[i]
+		case "call-2":
+			msg2 = &reqs[2].Messages[i]
+		}
+	}
+	if msg1 == nil || msg2 == nil {
+		t.Fatalf("round 3's request is missing one of round 1/2's tool-call messages: %+v", reqs[2].Messages)
+	}
+	if msg1.ReasoningContent != round1Reasoning {
+		t.Errorf("round 1's assistant message ReasoningContent = %q, want %q (its own round's reasoning)", msg1.ReasoningContent, round1Reasoning)
+	}
+	if msg2.ReasoningContent != round2Reasoning {
+		t.Errorf("round 2's assistant message ReasoningContent = %q, want %q (its own round's reasoning, not round 1's)", msg2.ReasoningContent, round2Reasoning)
+	}
+}
+
 // TestContextCancel is one of the five PASS-by-name tests. Canceling ctx
 // partway through a round must return promptly, close out, and leak no
 // goroutine — asserted here by waiting, with a timeout, for both Send and
