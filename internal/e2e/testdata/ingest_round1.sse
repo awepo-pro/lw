@@ -1,0 +1,11 @@
+data: {"id":"chatcmpl-e2e-1","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-e2e-1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_e2e","type":"function","function":{"name":"stage_create_page","arguments":"{\"path\":\"wiki/concepts/e2e-round-trip.md\",\"title\":\"E2E Round "}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-e2e-1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"Trip\",\"type\":\"concept\",\"tags\":[\"inference\",\"memory\"],"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-e2e-1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"sources\":[\"raw/articles/e2e-round-trip.md\"],\"confidence\":\"high\",\"contested\":false,\"body\":\"A page the e2e harness proposes through the real lw binary.\\n\\n## Related\\n\\n- [[note-0000]] - a seeded scale note.\\n- [[note-0001]] - another seeded scale note.\\n\",\"rationale\":\"Proves the harness drives a real validated stage.create_page end to end.\"}"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-e2e-1","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
