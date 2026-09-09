@@ -212,7 +212,34 @@ func TestCmdIngestExtractErrorOpensNoChangeset(t *testing.T) {
 	}
 }
 
-func TestCmdIngestAgentErrorStillLeavesPartialChangesetOpen(t *testing.T) {
+// countChangesets returns how many entries sit under
+// <root>/.llmwiki/changesets/<state> — one of "open", "committed" or
+// "rejected" — used to pin C-113's fix: a failed ingest must reject what it
+// opened rather than leave it stuck.
+func countChangesets(t *testing.T, root, state string) int {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(root, ".llmwiki", "changesets", state))
+	if err != nil {
+		t.Fatalf("read changesets/%s: %v", state, err)
+	}
+	n := 0
+	for _, e := range entries {
+		if e.IsDir() {
+			n++
+		}
+	}
+	return n
+}
+
+// TestCmdIngestAgentErrorRejectsChangeset is S5-T6's regression test for
+// C-113: G5's live run measured cmdIngest opening its changeset before the
+// agent turn and never rolling it back, so a mid-turn failure left an
+// orphan in changesets/open/ that bricked every subsequent `lw ingest`
+// with "stage: a changeset is already open" (there is no CLI verb to clear
+// one — TD-7). A failed turn must instead land the attempt in
+// changesets/rejected/ — never delete it — leaving zero open and exactly
+// one rejected changeset behind.
+func TestCmdIngestAgentErrorRejectsChangeset(t *testing.T) {
 	root := testutil.CopyFixture(t, "minimal")
 
 	localSrc := filepath.Join(t.TempDir(), "note.md")
@@ -235,16 +262,26 @@ func TestCmdIngestAgentErrorStillLeavesPartialChangesetOpen(t *testing.T) {
 		t.Fatalf("stderr = %q, want it to contain the agent's error", stderr)
 	}
 
+	if got := countChangesets(t, root, "open"); got != 0 {
+		t.Errorf("open changesets = %d, want 0 (the failed attempt must be rejected, not left open)", got)
+	}
+	if got := countChangesets(t, root, "rejected"); got != 1 {
+		t.Errorf("rejected changesets = %d, want exactly 1", got)
+	}
+	if got := countChangesets(t, root, "committed"); got != 0 {
+		t.Errorf("committed changesets = %d, want 0 (ingest never commits)", got)
+	}
+
+	// A second ingest attempt must not be bricked by the first's failure —
+	// exactly the symptom C-113 measured live: "stage: a changeset is
+	// already open" on retry.
 	e, err := stage.OpenEngine(root)
 	if err != nil {
 		t.Fatalf("OpenEngine: %v", err)
 	}
 	defer e.Close()
-	// The changeset opened before the agent turn failed is still left
-	// open — this subtask never rejects or commits on the caller's
-	// behalf; that is the review screen's job.
-	if _, err := e.Current(); err != nil {
-		t.Fatalf("Current: %v, want the changeset opened before the failure to still be open", err)
+	if _, err := e.Current(); err == nil {
+		t.Fatal("Current: want no open changeset after the rejection, got one")
 	}
 }
 

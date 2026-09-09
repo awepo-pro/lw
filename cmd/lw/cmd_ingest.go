@@ -177,7 +177,7 @@ func cmdIngest(args []string) error {
 	}
 	sess, err := sessions.Create(cs.ID)
 	if err != nil {
-		return fmt.Errorf("create session: %w", err)
+		return rejectAndReturn(e, fmt.Errorf("create session: %w", err))
 	}
 
 	sendErr := runAgentTurn(ctx, ag, sess.ID, buildIngestMessage(items), os.Stdout)
@@ -185,18 +185,33 @@ func cmdIngest(args []string) error {
 	final, curErr := e.Current()
 	if curErr != nil {
 		if sendErr != nil {
-			return fmt.Errorf("agent turn: %w (and reading back the changeset failed: %v)", sendErr, curErr)
+			return rejectAndReturn(e, fmt.Errorf("agent turn: %w (and reading back the changeset failed: %v)", sendErr, curErr))
 		}
-		return fmt.Errorf("read back changeset %s: %w", cs.ID, curErr)
+		return rejectAndReturn(e, fmt.Errorf("read back changeset %s: %w", cs.ID, curErr))
+	}
+
+	if sendErr != nil {
+		return rejectAndReturn(e, fmt.Errorf("agent turn: %w", sendErr))
 	}
 
 	fmt.Println()
 	printChangesetSummary(os.Stdout, final)
-
-	if sendErr != nil {
-		return fmt.Errorf("agent turn: %w", sendErr)
-	}
 	return nil
+}
+
+// rejectAndReturn rolls back the changeset e currently has open when a
+// later step of cmdIngest fails — agent error, a read-back failure, or a
+// session-creation failure — so a failed ingest never leaves one stuck in
+// changesets/open/ (C-113): Engine.Reject moves it to
+// changesets/rejected/, never deletes it, keeping the failed attempt in
+// the audit trail. It must not mask origErr: a Reject failure is reported
+// alongside it, never in its place, so a human sees the real cause of the
+// failure and, separately, that the rollback itself needs attention.
+func rejectAndReturn(e *stage.Engine, origErr error) error {
+	if rerr := e.Reject(origErr.Error()); rerr != nil {
+		return fmt.Errorf("%w (and rejecting the changeset failed: %v)", origErr, rerr)
+	}
+	return origErr
 }
 
 // ingestItem is one extracted source, staged locally and described to the

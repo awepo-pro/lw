@@ -123,12 +123,18 @@ func (r *Registry) Call(ctx context.Context, name string, args json.RawMessage) 
 
 // Definitions converts every registered Tool (sorted by Name, via List) into
 // the wire shape a chat-completions request advertises.
+//
+// Contract (backbone §6/§7's amendment, D-CY/C-112): the outbound Name is
+// WireName(t.Name), not the canonical dotted spelling — every
+// OpenAI-compatible endpoint rejects a dot in tools[*].function.name. The
+// registry's own map keys, List and Call all keep the canonical name;
+// only this outbound translation changes.
 func (r *Registry) Definitions() []llm.ToolDef {
 	list := r.List()
 	out := make([]llm.ToolDef, 0, len(list))
 	for _, t := range list {
 		out = append(out, llm.ToolDef{
-			Name:        t.Name,
+			Name:        WireName(t.Name),
 			Description: t.Description,
 			Parameters:  t.Schema,
 		})

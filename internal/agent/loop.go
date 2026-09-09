@@ -175,7 +175,15 @@ func (l *Loop) runRound(ctx context.Context, sessionID string, msgs []llm.Messag
 // pair for the next round, emits ToolResEv (and StageEv when applicable),
 // records the turn, and resets badCalls to 0.
 func (l *Loop) dispatchToolCall(ctx context.Context, sessionID string, tc llm.ToolCall, badCalls *int, out chan<- Event) (extra []llm.Message, stop bool, err error) {
-	if !l.send(ctx, out, ToolCallEv{ID: tc.ID, Name: tc.Function.Name, Args: tc.Function.Arguments}) {
+	// The provider echoes tc.Function.Name back to us in wire spelling —
+	// underscores, never dots (backbone §6/§7's amendment, D-CY/C-112),
+	// since Registry.Definitions advertised it that way. Canonicalize once,
+	// here, and use canonical for everything below except the tool-result
+	// message sent back to the provider, which must keep its own spelling
+	// to match the tool_call_id/name pair it gave us.
+	canonical := tools.CanonicalName(tc.Function.Name)
+
+	if !l.send(ctx, out, ToolCallEv{ID: tc.ID, Name: canonical, Args: tc.Function.Arguments}) {
 		return nil, true, ctx.Err()
 	}
 
@@ -184,24 +192,24 @@ func (l *Loop) dispatchToolCall(ctx context.Context, sessionID string, tc llm.To
 		args = "{}" // legal for a no-argument tool (backbone §9 item 7)
 	}
 	if perr := json.Unmarshal([]byte(args), &map[string]any{}); perr != nil {
-		return l.correctable(ctx, sessionID, tc, fmt.Errorf("malformed tool arguments: %w", perr), badCalls, out)
+		return l.correctable(ctx, sessionID, tc, canonical, fmt.Errorf("malformed tool arguments: %w", perr), badCalls, out)
 	}
 
-	res, callErr := l.tools.Call(ctx, tc.Function.Name, json.RawMessage(args))
+	res, callErr := l.tools.Call(ctx, canonical, json.RawMessage(args))
 	if callErr != nil {
 		if errors.Is(callErr, tools.ErrUnknownTool) {
-			return l.correctable(ctx, sessionID, tc, callErr, badCalls, out)
+			return l.correctable(ctx, sessionID, tc, canonical, callErr, badCalls, out)
 		}
-		return nil, true, l.fail(ctx, out, fmt.Errorf("agent: call %s: %w", tc.Function.Name, callErr))
+		return nil, true, l.fail(ctx, out, fmt.Errorf("agent: call %s: %w", canonical, callErr))
 	}
 	*badCalls = 0 // a dispatched call, whatever its result, resets the retry budget
 
-	if !l.send(ctx, out, ToolResEv{ID: tc.ID, Name: tc.Function.Name, Content: res.Content, IsError: res.IsError}) {
+	if !l.send(ctx, out, ToolResEv{ID: tc.ID, Name: canonical, Content: res.Content, IsError: res.IsError}) {
 		return nil, true, ctx.Err()
 	}
 
 	staged := false
-	if !res.IsError && strings.HasPrefix(tc.Function.Name, "stage.") {
+	if !res.IsError && strings.HasPrefix(canonical, "stage.") {
 		ev, ferr := l.stageEvent()
 		if ferr != nil {
 			return nil, true, l.fail(ctx, out, fmt.Errorf("agent: read current changeset: %w", ferr))
@@ -212,7 +220,7 @@ func (l *Loop) dispatchToolCall(ctx context.Context, sessionID string, tc llm.To
 		staged = true
 	}
 
-	rec := Record{TS: time.Now().UTC(), Role: "tool", Tool: tc.Function.Name, Args: args, Result: res.Content, Staged: staged}
+	rec := Record{TS: time.Now().UTC(), Role: "tool", Tool: canonical, Args: args, Result: res.Content, Staged: staged}
 	if aerr := l.sessions.Append(sessionID, rec); aerr != nil {
 		return nil, true, l.fail(ctx, out, fmt.Errorf("agent: append tool record: %w", aerr))
 	}
@@ -226,22 +234,25 @@ func (l *Loop) dispatchToolCall(ctx context.Context, sessionID string, tc llm.To
 // correctable feeds cause back to the model as an IsError tool result — the
 // shared handling for malformed JSON (item 7) and an unknown tool name
 // (item 8, D-CT) — and aborts the turn once badCalls reaches
-// maxConsecutiveBadCalls in a row.
-func (l *Loop) correctable(ctx context.Context, sessionID string, tc llm.ToolCall, cause error, badCalls *int, out chan<- Event) ([]llm.Message, bool, error) {
+// maxConsecutiveBadCalls in a row. canonical is dispatchToolCall's
+// already-canonicalized tc.Function.Name (D-CY), passed through rather
+// than recomputed so both call sites — before and after the registry
+// lookup — agree on one spelling for the ToolResEv this emits.
+func (l *Loop) correctable(ctx context.Context, sessionID string, tc llm.ToolCall, canonical string, cause error, badCalls *int, out chan<- Event) ([]llm.Message, bool, error) {
 	*badCalls++
 	content := cause.Error()
 
-	if !l.send(ctx, out, ToolResEv{ID: tc.ID, Name: tc.Function.Name, Content: content, IsError: true}) {
+	if !l.send(ctx, out, ToolResEv{ID: tc.ID, Name: canonical, Content: content, IsError: true}) {
 		return nil, true, ctx.Err()
 	}
 
-	rec := Record{TS: time.Now().UTC(), Role: "tool", Tool: tc.Function.Name, Args: tc.Function.Arguments, Result: content}
+	rec := Record{TS: time.Now().UTC(), Role: "tool", Tool: canonical, Args: tc.Function.Arguments, Result: content}
 	if aerr := l.sessions.Append(sessionID, rec); aerr != nil {
 		return nil, true, l.fail(ctx, out, fmt.Errorf("agent: append tool record: %w", aerr))
 	}
 
 	if *badCalls >= maxConsecutiveBadCalls {
-		return nil, true, l.fail(ctx, out, fmt.Errorf("agent: tool %s: two consecutive unusable calls: %w", tc.Function.Name, cause))
+		return nil, true, l.fail(ctx, out, fmt.Errorf("agent: tool %s: two consecutive unusable calls: %w", canonical, cause))
 	}
 
 	return []llm.Message{

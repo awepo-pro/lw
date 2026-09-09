@@ -225,6 +225,10 @@ func TestValidationFailureIsNilErrorIsError(t *testing.T) {
 	}
 }
 
+// TestDefinitionsMatchList pins D-CY (S5-T6, C-112): Definitions() emits
+// the wire spelling of each Name, not the canonical dotted one — the
+// registry's own List keeps the canonical names, and only the outbound
+// llm.ToolDef translates.
 func TestDefinitionsMatchList(t *testing.T) {
 	reg := minimalRegistry(t)
 	list := reg.List()
@@ -234,14 +238,30 @@ func TestDefinitionsMatchList(t *testing.T) {
 		t.Fatalf("Definitions() returned %d, List() returned %d", len(defs), len(list))
 	}
 	for i, d := range defs {
-		if d.Name != list[i].Name {
-			t.Errorf("Definitions()[%d].Name = %q, want %q", i, d.Name, list[i].Name)
+		if d.Name != WireName(list[i].Name) {
+			t.Errorf("Definitions()[%d].Name = %q, want wire name %q (canonical %q)", i, d.Name, WireName(list[i].Name), list[i].Name)
 		}
 		if d.Description != list[i].Description {
-			t.Errorf("Definitions()[%d].Description mismatch for %q", i, d.Name)
+			t.Errorf("Definitions()[%d].Description mismatch for %q", i, list[i].Name)
 		}
 		if string(d.Parameters) != string(list[i].Schema) {
-			t.Errorf("Definitions()[%d].Parameters mismatch for %q", i, d.Name)
+			t.Errorf("Definitions()[%d].Parameters mismatch for %q", i, list[i].Name)
+		}
+	}
+}
+
+// TestDefinitionsNamesAreWireSafe is the test whose absence cost G5
+// (S5-T6, C-112): every OpenAI-compatible endpoint enforces
+// '^[a-zA-Z0-9_-]+$' on tools[*].function.name, and a dotted canonical
+// name like "stage.create_page" is rejected with HTTP 400 before
+// generation. This drives the real registry, not a hand-built list, so a
+// future 18th tool with a name Definitions forgets to translate fails
+// here too.
+func TestDefinitionsNamesAreWireSafe(t *testing.T) {
+	reg := minimalRegistry(t)
+	for _, d := range reg.Definitions() {
+		if !wireNameRE.MatchString(d.Name) {
+			t.Errorf("Definitions() name %q does not match %s", d.Name, wireNameRE)
 		}
 	}
 }
