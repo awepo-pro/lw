@@ -114,7 +114,8 @@ commands:
   query "..."                  ask the curator agent a question
   lint [--fix]                 run the lint checks
   mcp                          run the MCP server over stdio
-  doctor [--unlock]            check vault and lock health
+  doctor [--unlock] [--rebuild-index] [--discard-changeset] [--json]
+                               check vault and lock health
   tui                          launch the terminal UI (default with no command)
 
 flags:

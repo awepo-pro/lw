@@ -18,8 +18,12 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/awepo-pro/lw/internal/agent"
+	"github.com/awepo-pro/lw/internal/stage"
+	"github.com/awepo-pro/lw/internal/testutil"
 	"github.com/awepo-pro/lw/internal/ui"
 	"github.com/awepo-pro/lw/internal/ui/ask"
+	"github.com/awepo-pro/lw/internal/ui/logview"
+	"github.com/awepo-pro/lw/internal/ui/review"
 )
 
 // driveShell executes cmd against app, expanding any tea.BatchMsg into its
@@ -278,5 +282,111 @@ func TestShellRoutesPumpMessagesByNameAndNothingElse(t *testing.T) {
 	// to every pane, not a redirect to the off-screen one.
 	if onScreen.updates < 3 {
 		t.Errorf("active pane saw %d update(s), want at least the three pump messages", onScreen.updates)
+	}
+}
+
+// seedCommittedChangeset drives engine through one committed create_page, so
+// Log has a commit_end row carrying a commit id to revert.
+func seedCommittedChangeset(t *testing.T, engine *stage.Engine) {
+	t.Helper()
+	if _, err := engine.OpenChangeset("add a page", stage.Author{Kind: "agent", Model: "test-model"}); err != nil {
+		t.Fatalf("OpenChangeset: %v", err)
+	}
+	if _, err := engine.Append(stage.Op{
+		Kind: stage.OpCreatePage,
+		Path: "wiki/concepts/seed-page.md",
+		Content: []byte("---\n" +
+			"title: Seed Page\n" +
+			"created: 2026-08-29\n" +
+			"updated: 2026-08-29\n" +
+			"type: concept\n" +
+			"tags: [inference]\n" +
+			"confidence: medium\n" +
+			"---\n" +
+			"\n# Seed Page\n\n" +
+			"See [[kv-cache]] and [[gpt-4]] for background.\n"),
+		Rationale:  "test seed",
+		Provenance: []string{"raw/papers/leviathan-2023.md"},
+	}); err != nil {
+		t.Fatalf("Append create_page: %v", err)
+	}
+	if _, err := engine.Commit("add a page"); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+}
+
+// TestRevertOnLogLandsReviewShowingTheRevertedChangeset is the S6
+// producer-routing fix against the real screens, over a real engine. `r` on
+// Log reverts a commit and jumps to Review; Review, off screen, answers the
+// broadcast StageChangedMsg with its own loadCmd. Before the envelope that
+// load's result went to Log — the pane that happened to be active — and was
+// dropped, so the jump landed on a Review pane still rendering its empty
+// state. This drives the same hand-off the runtime does (Update/View, never
+// Program.Run — C-83) and asserts what the user would have seen.
+func TestRevertOnLogLandsReviewShowingTheRevertedChangeset(t *testing.T) {
+	root := testutil.CopyFixture(t, "minimal")
+	engine, err := stage.OpenEngine(root)
+	if err != nil {
+		t.Fatalf("OpenEngine: %v", err)
+	}
+	t.Cleanup(func() { engine.Close() })
+	seedCommittedChangeset(t, engine)
+
+	theme, err := ui.LoadTheme("")
+	if err != nil {
+		t.Fatalf("LoadTheme: %v", err)
+	}
+	keys, err := ui.LoadKeys()
+	if err != nil {
+		t.Fatalf("LoadKeys: %v", err)
+	}
+	deps := ui.Deps{Theme: theme, Keys: keys, Engine: engine}
+
+	reviewPane := review.New(deps)
+	logPane := logview.New(deps)
+	app := ui.NewApp(ui.Options{
+		Deps: deps,
+		Panes: map[ui.Screen]ui.Pane{
+			ui.ScreenLog:    logPane,
+			ui.ScreenReview: reviewPane,
+		},
+		Start: ui.ScreenLog,
+	})
+	app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	var seen []tea.Msg
+	driveShell(t, app, app.Init(), &seen, 64)
+
+	// Nothing is open after the commit, so Review starts at its empty state.
+	if before := reviewPane.View(100, 24); !strings.Contains(before, "nothing staged") {
+		t.Fatalf("review should start at its empty state with no changeset open:\n%s", before)
+	}
+
+	// `r` on the selected row — the cursor starts on the newest event, which
+	// is the commit_end the seed just wrote.
+	_, cmd := app.Update(tea.KeyPressMsg{Code: 'r', Text: "r"})
+	driveShell(t, app, cmd, &seen, 64)
+
+	after := reviewPane.View(100, 24)
+	if strings.Contains(after, "nothing staged") {
+		t.Fatalf("review still shows its empty state after the jump; its own load result never reached it:\n%s", after)
+	}
+	if !strings.Contains(after, "seed-page") {
+		t.Fatalf("review does not show the reverted op after the jump:\n%s", after)
+	}
+
+	// The shell renders whichever pane is active, so the frame a user sees
+	// after the jump is review's, not the log's.
+	if frame := app.View().Content; strings.Contains(frame, "nothing staged") {
+		t.Fatalf("the shell is showing review's empty state after the jump:\n%s", frame)
+	}
+
+	// And the log pane heard its own query reload: the reverted event is in
+	// its journal view, not dropped on the active pane either.
+	cur, err := engine.Current()
+	if err != nil {
+		t.Fatalf("Current after revert: %v", err)
+	}
+	if cur.ID == "" {
+		t.Fatal("no changeset is open after the revert; the jump had nothing to show")
 	}
 }

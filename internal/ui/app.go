@@ -123,12 +123,19 @@ func (a *App) refreshStage() {
 // Init returns tea.RequestBackgroundColor so the shell learns the
 // terminal's real polarity (backbone §12, C-81), batched with every
 // injected pane's own Init.
+//
+// A pane's Init command is enveloped with its screen (producedBy), exactly
+// as Update envelops the commands that pane returns later: at startup every
+// pane is off screen except the one we begin on, and review's Init is
+// loadCmd — an unenveloped loadedMsg went to the start screen and was
+// dropped, so Review rendered empty until something else happened to reload
+// it.
 func (a *App) Init() tea.Cmd {
 	cmds := []tea.Cmd{tea.RequestBackgroundColor}
 	for _, s := range a.order {
 		if p := a.panes[s]; p != nil {
 			if cmd := p.Init(); cmd != nil {
-				cmds = append(cmds, cmd)
+				cmds = append(cmds, producedBy(s, cmd))
 			}
 		}
 	}
@@ -136,9 +143,11 @@ func (a *App) Init() tea.Cmd {
 }
 
 // Update handles the shell-wide messages (resize, background polarity, the
-// two shell-level keys, and the shell's own broadcast/routing messages) and
-// forwards everything else — including keys the shell does not bind itself
-// — to the active pane.
+// two shell-level keys, and the shell's own broadcast/routing messages). A
+// message that arrives in a producer envelope (paneMsg — the answer to some
+// pane's own command) is unwrapped and delivered to the pane that produced
+// it, through the same switch; everything else, including keys the shell
+// does not bind itself, goes to the active pane.
 //
 // Fan-out (backbone §12, s4-tui.md S4-T8, C-106/TD-4, C-117/D-DA): routing
 // is by named type, not by "key or not". A message in the fan-out set goes
@@ -161,10 +170,30 @@ func (a *App) Init() tea.Cmd {
 // it*, so the next message type a pane emitted was silently re-routed to
 // panes that have no business seeing it. Naming the three pump types here
 // instead — they live in pane.go precisely so the shell, which never
-// imports a screen package (backbone §12), can — closes that set: a screen's
-// own internal messages now go to the screen that emitted them, which is
-// what its Update expects.
+// imports a screen package (backbone §12), can — closes that set for
+// messages that arrive bare; and a message that arrives in a producer
+// envelope (paneMsg) is closed the other way: it goes to the pane that
+// produced it and to nothing else, so an off-screen pane's own traffic
+// cannot leak onto the screen the user is looking at.
+//
+// Envelopes (paneMsg) are unwrapped before any case below runs — an envelope
+// is never itself a key and never itself a broadcast — but only a pane's own
+// message is ever enveloped (producedBy): the shell-level messages a pane
+// emits (logview's revert emits StageChangedMsg and SwitchScreenMsg, ask's
+// ctrl+r emits SwitchScreenMsg, lintview's enter emits OpenPathMsg) reach
+// Update bare, and so are routed by exactly the cases below, unchanged. The
+// default branch is the one whose behaviour changes: a message the shell
+// neither acts on nor names now goes to the pane that produced it, instead of
+// to whichever pane is active.
 func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Unwrap first: an envelope is never itself a key or a broadcast, and
+	// every case below matches on the payload, not on the envelope.
+	var from Screen
+	enveloped := false
+	if env, ok := msg.(paneMsg); ok {
+		from, msg, enveloped = env.from, env.msg, true
+	}
+
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		a.width, a.height = msg.Width, msg.Height
@@ -221,15 +250,22 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.deliverTo(ScreenBrowse, msg)
 
 	default:
-		// Active pane only, keys and non-keys alike: anything that reaches
-		// this branch is a message the shell does not itself act on and is
-		// not in the fan-out set, which in practice means a screen's own
-		// internal message (ask's sessionClosedMsg, review's loadedMsg) or
-		// a key event the shell does not bind. Keys matched on the way in —
-		// tea.KeyPressMsg, never the tea.KeyMsg interface, which
-		// double-fires once keyboard enhancements are negotiated (C-80) —
-		// are the ordinary case here. See Update's doc comment for why the
-		// fan-out set is named rather than "everything not a key".
+		// A pane's own message goes back to the pane that produced it, and
+		// to nothing else: this branch is where review's loadedMsg,
+		// lintview's reportMsg and logview's eventsMsg arrive, and the pane
+		// that issued the command may be off screen (press `r` on Log, and
+		// Review — not active — still has to hear its own loadCmd result).
+		// See Update's doc comment for why the fan-out set is named rather
+		// than "everything not a key".
+		//
+		// A message that arrives bare — not from a pane's command — keeps
+		// the S6 tightening's rule: active pane only, keys and non-keys
+		// alike. Keys matched on the way in — tea.KeyPressMsg, never the
+		// tea.KeyMsg interface, which double-fires once keyboard
+		// enhancements are negotiated (C-80) — are the ordinary case here.
+		if enveloped {
+			return a, a.deliverTo(from, msg)
+		}
 		return a, a.propagate(msg)
 	}
 }
@@ -248,7 +284,9 @@ func (a *App) switchTo(s Screen) {
 // propagate forwards msg to the active pane's Update, if one is injected
 // for the current screen, and stores the pane it returns back into the map
 // — Pane.Update returns a (possibly new) Pane the same way tea.Model.Update
-// returns a (possibly new) Model.
+// returns a (possibly new) Model. Whatever command the pane returns comes
+// back tagged with its screen (deliverTo's producedBy), so its answer
+// reaches it however the active screen has moved on in the meantime.
 func (a *App) propagate(msg tea.Msg) tea.Cmd {
 	return a.deliverTo(a.order[a.cur], msg)
 }
@@ -279,6 +317,11 @@ func (a *App) propagateAll(msg tea.Msg) tea.Cmd {
 // on this; OpenPathMsg's handler in Update also calls it directly so the
 // message reaches the Browse pane even on the frame Browse becomes active
 // (C-108/D-CU).
+//
+// The command the pane returns is enveloped with s (producedBy) before it
+// goes back: a tea.Cmd's result is delivered to App.Update, not to the pane,
+// so without the tag the answer to an off-screen pane's own command would be
+// routed to whichever pane is active — the gap this closes.
 func (a *App) deliverTo(s Screen, msg tea.Msg) tea.Cmd {
 	p, ok := a.panes[s]
 	if !ok || p == nil {
@@ -286,7 +329,75 @@ func (a *App) deliverTo(s Screen, msg tea.Msg) tea.Cmd {
 	}
 	updated, cmd := p.Update(msg)
 	a.panes[s] = updated
-	return cmd
+	if cmd == nil {
+		return nil
+	}
+	return producedBy(s, cmd)
+}
+
+// producedBy wraps cmd so the message it produces reaches Update tagged with
+// the screen whose pane produced it (paneMsg). A nil cmd stays nil, and a
+// cmd that produces no message stays a cmd that produces no message — the
+// runtime treats a nil tea.Msg as nothing to deliver, and so does the
+// envelope.
+//
+// A message the shell or the runtime itself consumes (shellOwned) is passed
+// through untouched: it is a command to the shell, not the producing pane's
+// answer, and Update would route it by the same named case either way.
+// Leaving it bare keeps the shell's message stream exactly what it was
+// before the envelope existed — which is what logview's revert, ask's ctrl+r
+// and lintview's enter all depend on, and what anything watching that stream
+// from outside ui is entitled to.
+//
+// A tea.BatchMsg is the one message the envelope must not carry: the runtime
+// expands a batch itself and never hands one to Update, so an enveloped
+// batch would arrive at Update's default branch as an ordinary message and
+// be delivered, unexpanded, to a single pane — three quarters of logview's
+// revert (its query, the StageChangedMsg and the jump to Review) would
+// vanish into the log pane. Each constituent is wrapped with the same
+// producer instead, which is what the runtime would have done with them.
+func producedBy(from Screen, cmd tea.Cmd) tea.Cmd {
+	return func() tea.Msg {
+		msg := cmd()
+		if msg == nil {
+			return nil
+		}
+		if batch, ok := msg.(tea.BatchMsg); ok {
+			var wrapped tea.BatchMsg
+			for _, c := range batch {
+				if c == nil {
+					continue
+				}
+				wrapped = append(wrapped, producedBy(from, c))
+			}
+			if len(wrapped) == 0 {
+				return nil
+			}
+			return wrapped
+		}
+		if shellOwned(msg) {
+			return msg
+		}
+		return paneMsg{from: from, msg: msg}
+	}
+}
+
+// shellOwned reports whether msg is addressed to the shell or the runtime
+// rather than to a pane: the shell's own message vocabulary (pane.go) plus
+// the runtime's key and quit traffic. See producedBy for why those are left
+// bare. A message missing from this set is still routed correctly when it is
+// enveloped — Update unwraps before any of its cases — so this list shapes
+// who may watch the shell's message stream, never where a message goes.
+func shellOwned(msg tea.Msg) bool {
+	switch msg.(type) {
+	case tea.KeyPressMsg, tea.KeyReleaseMsg, tea.WindowSizeMsg,
+		tea.BackgroundColorMsg, tea.QuitMsg,
+		StageChangedMsg, VaultReloadedMsg, StreamMsg, EventMsg,
+		StreamClosedMsg, SwitchScreenMsg, OpenPathMsg:
+		return true
+	default:
+		return false
+	}
 }
 
 // View renders the shell (backbone §12, C-79: v2's tea.Model returns

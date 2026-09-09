@@ -117,3 +117,31 @@ type SwitchScreenMsg struct {
 type OpenPathMsg struct {
 	Path string // vault-relative, slash-separated, e.g. "wiki/concepts/kv-cache.md"
 }
+
+// paneMsg is the shell's private envelope: it tags a tea.Msg with the Screen
+// whose pane produced it, so App.Update can hand a screen's own message back
+// to that screen instead of to whichever screen happens to be active.
+//
+// It exists because a pane's tea.Cmd results reach the shell, not the pane —
+// review's loadCmd, lintview's runReportCmd and logview's queryCmd all
+// resolve to a message the shell then has to route. A message that is not in
+// the named fan-out set (StreamMsg and its two siblings, pane.go above) used
+// to land on the active pane, which ignores it, so a pane that was off screen
+// when it issued a command never heard its own answer: press `r` on Log and
+// the Review pane's loadCmd result was dropped, leaving Review stale when the
+// jump landed.
+//
+// Only a pane's *own* messages are enveloped — never one the shell or the
+// runtime consumes (see App.producedBy), which travel exactly as they did
+// before, because a StageChangedMsg or SwitchScreenMsg a pane emits is a
+// command to the shell, not that pane's answer.
+//
+// paneMsg is unexported and never delivered to a pane: Update unwraps it
+// before any other case runs, so no screen ever sees one and no screen can
+// produce one. Declared here with the rest of the shell's message
+// vocabulary, because Update routes it and the shell never imports a screen
+// package (backbone §12).
+type paneMsg struct {
+	from Screen // the pane that produced msg
+	msg  tea.Msg
+}
