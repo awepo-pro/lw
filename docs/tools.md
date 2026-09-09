@@ -1,0 +1,65 @@
+# The tool surface
+
+17 tools. **There is no filesystem verb, and none is ever added** — no `write`,
+no `edit`, no `delete`, no `bash`, no `exec`. Not denied: *not offered*. The
+registry is compiled into the binary, so there is nothing for a prompt or a
+permission profile to flip.
+
+Each tool is defined once in `internal/tools` and consumed twice:
+
+- by the **in-process agent loop** (`lw ingest`, `lw query`, `lw lint --fix`,
+  the TUI's ask screen), under its canonical dotted name;
+- over **MCP** (`lw mcp`), where dots become underscores: `wiki.search` →
+  `wiki_search`. The mapping is total and bijective over the 17 names, and the
+  MCP layer adds no tool and changes no semantics — it is a transport.
+
+## Read — no side effects, ever
+
+| # | Tool | MCP name | What it reads |
+|---|---|---|---|
+| 1 | `vault.orient` | `vault_orient` | `SCHEMA.md`, `index.md` (truncated to 200 lines), `curator-memory.md` and the last 30 `log.md` lines **in one call**. Orientation is a mandatory ritual; one tool means it cannot be half-done |
+| 2 | `wiki.search` | `wiki_search` | The word index: `{q, type?, tags?, limit?}` → at most 20 hits of title plus a short snippet, **never a page body** |
+| 3 | `wiki.get` | `wiki_get` | One page in full, or one section (`{page, section?}`, the section being the exact heading line) |
+| 4 | `wiki.neighbors` | `wiki_neighbors` | `{page, depth?}` (1–2 hops) in either link direction — the duplicate-page check |
+| 5 | `wiki.backlinks` | `wiki_backlinks` | `{page}` → every page linking in, with the linking line's text |
+| 6 | `raw.get` | `raw_get` | One ~4000-token chunk of an immutable source's body, by its exact vault-relative path |
+| 7 | `wiki.lint` | `wiki_lint` | The lint findings, computed by `internal/lint` in Go. **The model never computes a lint result; it only reads these** |
+
+## Propose — staged, never applied
+
+A proposal appends an op to the open changeset. It does not touch `wiki/`.
+Nothing reaches the working tree until a human commits.
+
+| # | Tool | MCP name | What it stages |
+|---|---|---|---|
+| 8 | `stage.open` | `stage_open` | `{intent}` — opens the buffer and the session that travels with it |
+| 9 | `stage.create_page` | `stage_create_page` | A full page: path, title, type, tags, sources, confidence, contested, body, rationale — frontmatter, taxonomy, directory and outbound-link rules all checked *at proposal time* |
+| 10 | `stage.patch_page` | `stage_patch_page` | A **section-level** patch: `replace_section`, `append_section` or `insert_after`. Sections survive reformatting; line-number patches do not |
+| 11 | `stage.rename_page` | `stage_rename_page` | `{from, to}` — the engine computes every inbound backlink rewrite from the graph, each one its own reviewable hunk. This is what `mv` cannot do |
+| 12 | `stage.merge_pages` | `stage_merge_pages` | `{sources[], into}` — redirect plus backlink rewrites as one reviewable unit |
+| 13 | `stage.split_page` | `stage_split_page` | `{path, sections[]}` — the source becomes a reviewable stub |
+| 14 | `stage.add_link` | `stage_add_link` | `{from, to, context?}` — bidirectional; refuses a broken endpoint |
+| 15 | `stage.ingest_source` | `stage_ingest_source` | `{uri, kind?}` — extracts a **local** file, writes `raw/` (write-once, only for a path that does not exist yet), hashes and dedupes by body `sha256`. HTTP URLs are refused here; `lw ingest <url>` fetches and extracts first, then hands the tool a scratch local path. Over MCP this tool reports `no extractor configured` — the CLI wires the extractor, the MCP transport does not |
+| 16 | `stage.retract` | `stage_retract` | `{page, reason}` — a tombstone with a reason, **never a deletion** |
+| 17 | `stage.close` | `stage_close` | A human-readable summary of the proposal — reads only, writes nothing |
+
+Nine tools propose changes; `stage.close` is the tenth staging verb and is
+itself read-only.
+
+## Contracts the handlers are held to
+
+- **Errors are content, not aborts.** A validation failure (out-of-taxonomy
+  tag, broken link, path outside `wiki/`) returns `IsError: true` with text
+  that says what was wrong and how to fix it, and a **nil Go error** — so the
+  model can self-correct in the next round. A Go error is reserved for an
+  engine failure and aborts the loop.
+- **Context discipline lives here.** `wiki.search` caps at 20 hits of title +
+  200-rune snippet; `raw.get` returns one chunk; `vault.orient` truncates
+  `index.md` at 200 lines. A handler cannot flood the context window.
+- **No handler touches the filesystem.** Reads go through the vault handle,
+  writes through the staging engine.
+
+## Related
+
+- [architecture.md](architecture.md) — where this boundary sits in the pipeline
+- [changesets.md](changesets.md) — the buffer these tools append to
