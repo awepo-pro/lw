@@ -8,7 +8,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/awepo-pro/lw/internal/agent"
+	"github.com/awepo-pro/lw/internal/config"
 	"github.com/awepo-pro/lw/internal/lint"
+	"github.com/awepo-pro/lw/internal/stage"
 	"github.com/awepo-pro/lw/internal/testutil"
 )
 
@@ -190,16 +193,91 @@ func TestCmdLintBadFlag(t *testing.T) {
 	}
 }
 
-func TestCmdLintFixNotImplemented(t *testing.T) {
-	_, stderr, code := captureRun(t, func() int {
-		return run([]string{"lint", "--fix"})
+// TestCmdLintFixCleanVaultNeedsNoAgent proves --fix short-circuits before
+// ever constructing an agent when there is nothing to repair: newAgent is
+// swapped for a function that fails the test if called at all.
+func TestCmdLintFixCleanVaultNeedsNoAgent(t *testing.T) {
+	root := testutil.CopyFixture(t, "minimal")
+
+	withFakeAgent(t, func(e *stage.Engine, cfg *config.Config, sessions agent.SessionStore) (agent.Agent, error) {
+		t.Fatal("newAgent should never be called for a clean vault")
+		return nil, nil
 	})
 
-	if code != 1 {
-		t.Fatalf("exit code = %d, want 1; stderr=%q", code, stderr)
+	stdout, stderr, code := captureRun(t, func() int {
+		return run([]string{"lint", "--fix", "--vault", root})
+	})
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
 	}
-	if !strings.Contains(stderr, "--fix requires the agent") {
-		t.Fatalf("stderr = %q, want it to contain %q", stderr, "--fix requires the agent")
+	if stdout != "clean\n" {
+		t.Fatalf("stdout = %q, want %q", stdout, "clean\n")
+	}
+
+	e, err := stage.OpenEngine(root)
+	if err != nil {
+		t.Fatalf("OpenEngine: %v", err)
+	}
+	defer e.Close()
+	if _, err := e.Current(); err == nil {
+		t.Fatal("a changeset was opened for a clean vault")
+	}
+}
+
+// TestCmdLintFixStagesRepairsForFindings drives --fix over the "dirty"
+// fixture (which lint.Run reports real findings for) with a fake agent
+// that proposes one repair op, and requires the result to be exactly one
+// open changeset holding that op — the same "still stages" contract
+// `lw ingest` has (/PLAN.md §9.4): nothing here commits.
+func TestCmdLintFixStagesRepairsForFindings(t *testing.T) {
+	root := testutil.CopyFixture(t, "dirty")
+
+	var sawFindings bool
+	withFakeAgent(t, func(e *stage.Engine, cfg *config.Config, sessions agent.SessionStore) (agent.Agent, error) {
+		sawFindings = true
+		return &fakeStageAgent{
+			e:        e,
+			sessions: sessions,
+			ops: []stage.Op{
+				{
+					Kind:      stage.OpIngestSource,
+					Path:      "raw/articles/lint-fix-repair.md",
+					Content:   []byte("a repair, staged by the fake agent\n"),
+					Extractor: "test-fake",
+				},
+			},
+		}, nil
+	})
+
+	stdout, stderr, code := captureRun(t, func() int {
+		return run([]string{"lint", "--fix", "--vault", root})
+	})
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr, stdout)
+	}
+	if !sawFindings {
+		t.Fatal("newAgent was never called even though the dirty fixture has findings")
+	}
+	if !strings.Contains(stdout, "opened changeset cs-") {
+		t.Fatalf("stdout = %q, want it to mention an opened changeset", stdout)
+	}
+
+	e, err := stage.OpenEngine(root)
+	if err != nil {
+		t.Fatalf("OpenEngine: %v", err)
+	}
+	defer e.Close()
+	cs, err := e.Current()
+	if err != nil {
+		t.Fatalf("Current: %v", err)
+	}
+	if len(cs.Ops) != 1 {
+		t.Fatalf("len(cs.Ops) = %d, want 1", len(cs.Ops))
+	}
+	if cs.Ops[0].Path != "raw/articles/lint-fix-repair.md" {
+		t.Errorf("cs.Ops[0].Path = %q, want %q", cs.Ops[0].Path, "raw/articles/lint-fix-repair.md")
 	}
 }
 

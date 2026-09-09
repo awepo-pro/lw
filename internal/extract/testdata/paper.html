@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Speculative Decoding for Faster Inference</title>
+</head>
+<body>
+  <div class="banner">
+    <nav>Site navigation, dropped entirely.</nav>
+  </div>
+  <div id="content">
+    <p>
+      We propose speculative decoding, which uses a small draft model to
+      propose several tokens that a larger target model verifies in a single
+      forward pass.
+    </p>
+    <p>
+      This yields a <strong>2-3x</strong> wall-clock speedup with
+      <em>no change</em> to the target model's output distribution.
+    </p>
+    <pre><code>def verify(draft_tokens, target_logits):
+    accepted = 0
+    for t in draft_tokens:
+        if accept(t, target_logits):
+            accepted += 1
+        else:
+            break
+    return accepted
+</code></pre>
+  </div>
+  <aside class="related">See also: KV cache, batching.</aside>
+  <footer>Preprint — do not cite.</footer>
+  <script src="/tracking.js"></script>
+</body>
+</html>

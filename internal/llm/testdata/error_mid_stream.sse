@@ -1,0 +1,3 @@
+data: {"id":"chatcmpl-3","choices":[{"index":0,"delta":{"role":"assistant","content":"Working on it"},"finish_reason":null}]}
+
+data: {this is not valid json}

@@ -1,0 +1,352 @@
+package agent
+
+// loop.go implements backbone §9's Send: streaming one turn from the
+// configured streamer, dispatching each complete tool call through the
+// tools.Registry, feeding results back, and ending the turn with exactly
+// one terminal event (backbone §9, "Contract — who owns out", C-105/D-CR).
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/awepo-pro/lw/internal/llm"
+	"github.com/awepo-pro/lw/internal/stage"
+	"github.com/awepo-pro/lw/internal/tools"
+)
+
+// maxConsecutiveBadCalls is the one-retry budget backbone §9 gives a
+// model-correctable tool-call failure — malformed JSON (item 7) or an
+// unknown tool name (item 8, D-CT) — before Send gives up on the turn. A
+// call that parses and dispatches resets the counter; only two such
+// failures IN A ROW end the turn.
+const maxConsecutiveBadCalls = 2
+
+// Send streams one turn of session sessionID, dispatching every tool call
+// the model completes through l's registry and feeding each result back,
+// until a round produces no tool call, the round cap fires, two
+// consecutive tool calls fail to parse or name a known tool, ctx is
+// canceled, or a setup step fails.
+//
+// Contract — ownership of out (backbone §9, C-105/D-CR): one channel per
+// Send call. Send is synchronous, and closes out on every exit path
+// (defer, below) including a setup failure before the first event and
+// cancellation. Exactly one terminal event ends a turn on a normal exit:
+// DoneEv{Reason, Rounds} with Reason "stop" or "max_rounds", or
+// ErrorEv{Err} — never both, and never for a ctx cancellation, which simply
+// stops promptly with no terminal event of its own since nothing gave up on
+// the model's behalf. When Send reports ErrorEv it also returns that exact
+// error, so a TUI can render the event and a CLI can check the return; a
+// clean finish returns nil. Every send to out is guarded against a stalled
+// consumer with select on ctx.Done() (send/fail below).
+func (l *Loop) Send(ctx context.Context, sessionID, msg string, out chan<- Event) error {
+	defer close(out)
+
+	sess, err := l.sessions.Get(sessionID)
+	if err != nil {
+		return l.fail(ctx, out, fmt.Errorf("agent: resolve session %s: %w", sessionID, err))
+	}
+
+	// Append the user Record to the durable store immediately — a crash
+	// mid-turn must not lose it — but do NOT also fold it into sess's
+	// in-memory Records: ContextBuilder.Build(s, userMsg) already renders
+	// s.Records as history (backbone §9 part 4) and appends userMsg as
+	// the turn's own message (part 5). sess.Records here is "history
+	// before this turn"; mutating it first made parts 4 and 5 the same
+	// message (repair-1, orchestrator probe 2026-09-06).
+	userRec := Record{TS: time.Now().UTC(), Role: "user", Content: msg}
+	if err := l.sessions.Append(sessionID, userRec); err != nil {
+		return l.fail(ctx, out, fmt.Errorf("agent: append user record: %w", err))
+	}
+
+	msgs, err := l.ctxBldr.Build(sess, msg)
+	if err != nil {
+		return l.fail(ctx, out, fmt.Errorf("agent: build context: %w", err))
+	}
+
+	badCalls := 0
+	rounds := 0
+
+	for {
+		rounds++
+
+		newMsgs, toolCalled, err := l.runRound(ctx, sessionID, msgs, &badCalls, out)
+		if err != nil {
+			return err
+		}
+		msgs = newMsgs
+
+		if !toolCalled {
+			if !l.send(ctx, out, DoneEv{Reason: "stop", Rounds: rounds}) {
+				return ctx.Err()
+			}
+			return nil
+		}
+
+		if rounds >= l.cfg.MaxToolRounds {
+			if !l.send(ctx, out, DoneEv{Reason: "max_rounds", Rounds: rounds}) {
+				return ctx.Err()
+			}
+			return nil
+		}
+	}
+}
+
+// runRound streams one Stream call's response to completion: text deltas
+// become TextDelta events and are folded into an assistant Record once the
+// round (or a tool call within it) ends; each complete ToolCall is
+// dispatched immediately. It returns the message list to send on the next
+// round (msgs plus whatever this round appended) and whether this round
+// produced at least one tool call — the signal Send uses to decide whether
+// to loop again.
+//
+// Contract — replaying reasoning_content (backbone §9, C-114/C-115/D-CZ). A
+// thinking-mode provider's reasoning deltas (llm.Chunk.Reasoning) accumulate
+// in roundReasoning exactly as text accumulates in roundText, and are
+// attached to EVERY assistant llm.Message the round produces — the text
+// flush below and each tool-call message dispatchToolCall (or its error
+// path, correctable) builds, not only the first. An orchestrator wire probe
+// against the live provider (C-115) measured that attaching it to only the
+// first or only the last assistant message of a round still 400s; only
+// repeating the same string on every assistant message of the round is
+// accepted — the provider emits parallel tool calls, so one round routinely
+// produces several assistant messages, all of which need it. roundReasoning
+// is therefore read, never reset, for the rest of the round: it is a local
+// variable that goes out of scope when runRound returns, so the next round's
+// call starts a fresh builder — "reset" happens for free at the round
+// boundary, never mid-round. It is never emitted as an Event (backbone §9's
+// event set is frozen) and never written to a Record (recordToMessage
+// renders history as text and never rebuilds a structured tool-call message,
+// so no later turn needs it back).
+func (l *Loop) runRound(ctx context.Context, sessionID string, msgs []llm.Message, badCalls *int, out chan<- Event) ([]llm.Message, bool, error) {
+	ch, err := l.client.Stream(ctx, llm.Request{Messages: msgs, Tools: l.tools.Definitions()})
+	if err != nil {
+		return nil, false, l.fail(ctx, out, fmt.Errorf("agent: stream: %w", err))
+	}
+
+	var roundText strings.Builder
+	var roundReasoning strings.Builder
+	toolCalled := false
+
+	// flush folds any text accumulated so far this round into an
+	// assistant Record and llm.Message, in the position it arrived —
+	// before the tool call that interrupted it, or at the round's end if
+	// none did (backbone §9 item 3: "each assistant text turn"). It reads
+	// roundReasoning's current value without resetting it (C-115): a tool
+	// call flushed alongside earlier text still needs the same reasoning
+	// on its own assistant message.
+	flush := func() error {
+		if roundText.Len() == 0 {
+			return nil
+		}
+		text := roundText.String()
+		roundText.Reset()
+		rec := Record{TS: time.Now().UTC(), Role: "assistant", Content: text}
+		if err := l.sessions.Append(sessionID, rec); err != nil {
+			return fmt.Errorf("agent: append assistant record: %w", err)
+		}
+		msgs = append(msgs, llm.Message{Role: "assistant", Content: text, ReasoningContent: roundReasoning.String()})
+		return nil
+	}
+
+	for {
+		select {
+		case chunk, ok := <-ch:
+			if !ok {
+				if err := flush(); err != nil {
+					return nil, false, l.fail(ctx, out, err)
+				}
+				return msgs, toolCalled, nil
+			}
+			if chunk.Err != nil {
+				return nil, false, l.fail(ctx, out, fmt.Errorf("agent: stream: %w", chunk.Err))
+			}
+			if chunk.Reasoning != "" {
+				roundReasoning.WriteString(chunk.Reasoning)
+			}
+			if chunk.Text != "" {
+				if !l.send(ctx, out, TextDelta{Text: chunk.Text}) {
+					return nil, false, ctx.Err()
+				}
+				roundText.WriteString(chunk.Text)
+			}
+			if chunk.ToolCall != nil {
+				if err := flush(); err != nil {
+					return nil, false, l.fail(ctx, out, err)
+				}
+				toolCalled = true
+
+				// Every tool-call assistant message in the round carries the
+				// round's full reasoning so far (C-115) — roundReasoning is
+				// read, not reset, so a second parallel tool call in this
+				// same round gets it too.
+				extra, stop, tErr := l.dispatchToolCall(ctx, sessionID, *chunk.ToolCall, roundReasoning.String(), badCalls, out)
+				if stop {
+					return nil, false, tErr
+				}
+				msgs = append(msgs, extra...)
+			}
+		case <-ctx.Done():
+			return nil, false, ctx.Err()
+		}
+	}
+}
+
+// dispatchToolCall handles one complete llm.ToolCall: it always emits
+// ToolCallEv, then validates the arguments parse as a JSON object before
+// ever calling the registry (backbone §9 item 7). A parse failure, or a
+// Call error wrapping tools.ErrUnknownTool (item 8, D-CT), is
+// model-correctable and shares the one-retry budget in badCalls; a second
+// consecutive one aborts the turn. Every other non-nil error from Call
+// aborts immediately. On success it appends the assistant/tool message
+// pair for the next round, emits ToolResEv (and StageEv when applicable),
+// records the turn, and resets badCalls to 0.
+//
+// reasoning is runRound's accumulated Chunk.Reasoning for the round so far,
+// passed in rather than patched on afterwards (backbone §9, C-114/C-115/
+// D-CZ): this is the assistant message that carries the tool call, and it
+// gets the round's full reasoning every time, not only on a round's first
+// tool call — a live wire probe (C-115) showed a provider rejects the
+// follow-up request unless every assistant message of the round repeats the
+// same reasoning string, since the provider can emit several parallel tool
+// calls in one round.
+func (l *Loop) dispatchToolCall(ctx context.Context, sessionID string, tc llm.ToolCall, reasoning string, badCalls *int, out chan<- Event) (extra []llm.Message, stop bool, err error) {
+	// The provider echoes tc.Function.Name back to us in wire spelling —
+	// underscores, never dots (backbone §6/§7's amendment, D-CY/C-112),
+	// since Registry.Definitions advertised it that way. Canonicalize once,
+	// here, and use canonical for everything below except the tool-result
+	// message sent back to the provider, which must keep its own spelling
+	// to match the tool_call_id/name pair it gave us.
+	canonical := tools.CanonicalName(tc.Function.Name)
+
+	if !l.send(ctx, out, ToolCallEv{ID: tc.ID, Name: canonical, Args: tc.Function.Arguments}) {
+		return nil, true, ctx.Err()
+	}
+
+	args := strings.TrimSpace(tc.Function.Arguments)
+	if args == "" {
+		args = "{}" // legal for a no-argument tool (backbone §9 item 7)
+	}
+	if perr := json.Unmarshal([]byte(args), &map[string]any{}); perr != nil {
+		return l.correctable(ctx, sessionID, tc, canonical, reasoning, fmt.Errorf("malformed tool arguments: %w", perr), badCalls, out)
+	}
+
+	res, callErr := l.tools.Call(ctx, canonical, json.RawMessage(args))
+	if callErr != nil {
+		if errors.Is(callErr, tools.ErrUnknownTool) {
+			return l.correctable(ctx, sessionID, tc, canonical, reasoning, callErr, badCalls, out)
+		}
+		return nil, true, l.fail(ctx, out, fmt.Errorf("agent: call %s: %w", canonical, callErr))
+	}
+	*badCalls = 0 // a dispatched call, whatever its result, resets the retry budget
+
+	if !l.send(ctx, out, ToolResEv{ID: tc.ID, Name: canonical, Content: res.Content, IsError: res.IsError}) {
+		return nil, true, ctx.Err()
+	}
+
+	staged := false
+	if !res.IsError && strings.HasPrefix(canonical, "stage.") {
+		ev, ferr := l.stageEvent()
+		if ferr != nil {
+			return nil, true, l.fail(ctx, out, fmt.Errorf("agent: read current changeset: %w", ferr))
+		}
+		if !l.send(ctx, out, ev) {
+			return nil, true, ctx.Err()
+		}
+		staged = true
+	}
+
+	rec := Record{TS: time.Now().UTC(), Role: "tool", Tool: canonical, Args: args, Result: res.Content, Staged: staged}
+	if aerr := l.sessions.Append(sessionID, rec); aerr != nil {
+		return nil, true, l.fail(ctx, out, fmt.Errorf("agent: append tool record: %w", aerr))
+	}
+
+	return []llm.Message{
+		{Role: "assistant", ReasoningContent: reasoning, ToolCalls: []llm.ToolCall{tc}},
+		{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: res.Content},
+	}, false, nil
+}
+
+// correctable feeds cause back to the model as an IsError tool result — the
+// shared handling for malformed JSON (item 7) and an unknown tool name
+// (item 8, D-CT) — and aborts the turn once badCalls reaches
+// maxConsecutiveBadCalls in a row. canonical is dispatchToolCall's
+// already-canonicalized tc.Function.Name (D-CY), passed through rather
+// than recomputed so both call sites — before and after the registry
+// lookup — agree on one spelling for the ToolResEv this emits. reasoning is
+// dispatchToolCall's own reasoning parameter, threaded through so the
+// error-path assistant message carries it exactly like the success path
+// (backbone §9, C-114/C-115/D-CZ) — never patched on after the fact.
+func (l *Loop) correctable(ctx context.Context, sessionID string, tc llm.ToolCall, canonical string, reasoning string, cause error, badCalls *int, out chan<- Event) ([]llm.Message, bool, error) {
+	*badCalls++
+	content := cause.Error()
+
+	if !l.send(ctx, out, ToolResEv{ID: tc.ID, Name: canonical, Content: content, IsError: true}) {
+		return nil, true, ctx.Err()
+	}
+
+	rec := Record{TS: time.Now().UTC(), Role: "tool", Tool: canonical, Args: tc.Function.Arguments, Result: content}
+	if aerr := l.sessions.Append(sessionID, rec); aerr != nil {
+		return nil, true, l.fail(ctx, out, fmt.Errorf("agent: append tool record: %w", aerr))
+	}
+
+	if *badCalls >= maxConsecutiveBadCalls {
+		return nil, true, l.fail(ctx, out, fmt.Errorf("agent: tool %s: two consecutive unusable calls: %w", canonical, cause))
+	}
+
+	return []llm.Message{
+		{Role: "assistant", ReasoningContent: reasoning, ToolCalls: []llm.ToolCall{tc}},
+		{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: content},
+	}, false, nil
+}
+
+// stageEvent reads l.engine's current changeset for a StageEv (backbone §9
+// item 6): {cs.ID, len(cs.Live())} when one is open, or {"", 0} when
+// e.Current() reports stage.ErrNoChangeset — which is not an error, since a
+// stage.* call (e.g. stage.close) can succeed with none open. Any other
+// error from Current is a genuine engine failure and is returned as such.
+func (l *Loop) stageEvent() (StageEv, error) {
+	cs, err := l.engine.Current()
+	if err != nil {
+		if errors.Is(err, stage.ErrNoChangeset) {
+			return StageEv{ChangesetID: "", Ops: 0}, nil
+		}
+		return StageEv{}, err
+	}
+	return StageEv{ChangesetID: cs.ID, Ops: len(cs.Live())}, nil
+}
+
+// send delivers ev to out, guarded by ctx so a consumer that has stopped
+// reading cannot wedge the loop (backbone §9, C-105). It reports whether
+// the send was delivered; false means ctx ended first.
+//
+// The non-blocking check up front gives an already-canceled ctx priority
+// over a send that could otherwise race it (Go's select has no preference
+// among simultaneously ready cases): once cancellation is visible, every
+// subsequent send deterministically declines rather than occasionally
+// slipping one more event out, so a canceled turn unwinds the same way
+// every time instead of depending on scheduler luck.
+func (l *Loop) send(ctx context.Context, out chan<- Event, ev Event) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	default:
+	}
+	select {
+	case out <- ev:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// fail reports err as the turn's terminal ErrorEv — best-effort, guarded
+// the same way send is — and returns err, so Send's own return matches
+// what the event carried (backbone §9, C-105).
+func (l *Loop) fail(ctx context.Context, out chan<- Event, err error) error {
+	l.send(ctx, out, ErrorEv{Err: err})
+	return err
+}
