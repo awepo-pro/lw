@@ -925,3 +925,68 @@ func TestDoctorObjectsAfterCommit(t *testing.T) {
 	}
 	wantFailed(t, checkObjects(root, openEngine(t, root)), "000001", "lw revert")
 }
+
+// TestDoctorObjectsAfterCreatePageCommit is the S6-C126 regression pin: a
+// create_page commit rewrites index.md IMPLICITLY, through its own
+// index-derivation (backbone §5.4 D-CA rule (a), derive.go) rather than
+// through any op that carries a Before/After sha — unlike
+// commitIngestSource above, whose ingest_source op never touches index.md
+// at all, which is exactly why that helper's coverage missed this defect.
+// Found live at gate G6, 2026-09-14: on a freshly `lw init`-ed vault, the
+// first commit that creates a page left index.md's pre-commit blob out of
+// the CAS entirely, and this exact check reported it missing. internal/stage
+// pins the underlying storage fix directly (apply_preimage_test.go); this
+// test pins it through the same doctor entry point the live defect was
+// diagnosed with, so a regression here is caught the way it was found.
+func TestDoctorObjectsAfterCreatePageCommit(t *testing.T) {
+	doctorTestEnv(t)
+	root := testutil.CopyFixture(t, "minimal")
+	commitCreatePageForDoctorTest(t, root)
+
+	c := checkObjects(root, openEngine(t, root))
+	if !c.OK {
+		t.Fatalf("objects check = %+v, want OK after a create_page commit (S6-C126)", c)
+	}
+	if strings.Contains(c.Detail, "missing") {
+		t.Errorf("detail = %q, want no missing objects", c.Detail)
+	}
+}
+
+// commitCreatePageForDoctorTest opens a changeset, proposes one well-formed
+// create_page op against a page under wiki/concepts/, and commits it — the
+// shape that triggers create_page's own index.md derivation, unlike
+// commitIngestSource's ingest_source op.
+func commitCreatePageForDoctorTest(t *testing.T, root string) {
+	t.Helper()
+	e := openEngine(t, root)
+
+	const path = "wiki/concepts/doctor-create.md"
+	content := []byte("---\n" +
+		"title: Doctor Create\n" +
+		"created: 2026-09-14\n" +
+		"updated: 2026-09-14\n" +
+		"type: concept\n" +
+		"tags: [inference]\n" +
+		"confidence: medium\n" +
+		"---\n" +
+		"\n" +
+		"# Doctor Create\n" +
+		"\n" +
+		"See [[kv-cache]] and [[gpt-4]] for background.\n")
+
+	if _, err := e.OpenChangeset("doctor test create", stage.Author{Kind: "human"}); err != nil {
+		t.Fatalf("open changeset: %v", err)
+	}
+	if _, err := e.Append(stage.Op{
+		Kind:       stage.OpCreatePage,
+		Path:       path,
+		Content:    content,
+		Rationale:  "test",
+		Provenance: []string{"raw/papers/leviathan-2023.md"},
+	}); err != nil {
+		t.Fatalf("append create_page: %v", err)
+	}
+	if _, err := e.Commit("doctor test create commit"); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+}

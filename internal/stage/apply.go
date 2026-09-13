@@ -334,7 +334,46 @@ func (e *Engine) buildCommitMaterialization(live []Op, retractedDate string) (*c
 		}
 	}
 
+	e.capturePreExistingWrites(m)
+
 	return m, nil
+}
+
+// capturePreExistingWrites appends the current pre-commit canonical bytes
+// of every path m.writes will overwrite to m.extraPreImages, when that path
+// already exists in the working tree — including a path rewritten only
+// IMPLICITLY, with no Op of its own, such as index.md's create_page
+// derivation a few lines above. Without this, storeCommitMaterialization
+// (step 4) only ever Puts a pre-image for the ops that happen to carry one
+// (patch_page's Before, retract/split_page's extraPreImages) — an
+// implicitly rewritten file's PRE-commit bytes are never stored anywhere,
+// so lw doctor's objects check reports it missing (first surfaced live,
+// 2026-09-14: a fresh `lw init` vault's very first create_page commit) and
+// Revert has no blob to reconstruct it from.
+//
+// Iterated over commitTargetPaths(m) — the same sorted, deduped path list
+// step 3 journals as commit_begin's Paths — so this covers exactly the set
+// that list promises has both images durable (backbone §5.4 step 4), not a
+// second, independently-derived list that could drift from it. A path
+// m.writes holds because it is a brand-new file (create_page's own target,
+// a rename/merge's To) is correctly skipped: canonicalContent reports it
+// absent, and there is no pre-image because there is no "pre" — Op.Before
+// is "" for exactly this reason (backbone §5.3).
+//
+// Store.Put is idempotent, so re-capturing a path an op-level step already
+// stored (a top-level patch_page's Before, a retract's or split_page's
+// extraPreImages entry) costs one extra disk read and Put, nothing more —
+// simpler and safer than threading "was this path's pre-image already
+// captured" through every op kind above.
+func (e *Engine) capturePreExistingWrites(m *commitMaterialization) {
+	for _, p := range commitTargetPaths(m) {
+		if _, ok := m.writes[p]; !ok {
+			continue
+		}
+		if content, ok := canonicalContent(e.vault, p); ok {
+			m.extraPreImages = append(m.extraPreImages, content)
+		}
+	}
 }
 
 // planOp adds op's own disposition to m, then recurses into op.Cascade —
