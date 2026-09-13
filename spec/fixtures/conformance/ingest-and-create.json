@@ -3,20 +3,20 @@
   "steps": [
     {"tool": "stage.open", "args": {"intent": "ingest a source and add two concept pages"}},
     {"tool": "stage.ingest_source", "args": {"uri": "conformance.md", "kind": "article"}},
-    {"tool": "stage.create_page", "args": {"path": "wiki/concepts/conformance-alpha.md", "title": "Conformance Alpha", "type": "concept", "tags": ["inference"], "sources": ["raw/article/conformance-source.md"], "confidence": "medium", "contested": false, "body": "# Conformance Alpha\n\nSee [[kv-cache]] and [[gpt-4]].", "rationale": "exercise create"}},
-    {"tool": "stage.create_page", "args": {"path": "wiki/concepts/conformance-beta.md", "title": "Conformance Beta", "type": "concept", "tags": ["decoding"], "sources": ["raw/article/conformance-source.md"], "confidence": "medium", "contested": false, "body": "# Conformance Beta\n\nSee [[kv-cache]] and [[gpt-4]].", "rationale": "exercise create"}},
+    {"tool": "stage.create_page", "args": {"path": "wiki/concepts/conformance-alpha.md", "title": "Conformance Alpha", "type": "concept", "tags": ["inference"], "sources": ["raw/articles/conformance-source.md"], "confidence": "medium", "contested": false, "body": "# Conformance Alpha\n\nSee [[kv-cache]] and [[gpt-4]].", "rationale": "exercise create"}},
+    {"tool": "stage.create_page", "args": {"path": "wiki/concepts/conformance-beta.md", "title": "Conformance Beta", "type": "concept", "tags": ["decoding"], "sources": ["raw/articles/conformance-source.md"], "confidence": "medium", "contested": false, "body": "# Conformance Beta\n\nSee [[kv-cache]] and [[gpt-4]].", "rationale": "exercise create"}},
     {"tool": "stage.add_link", "args": {"from": "wiki/concepts/kv-cache.md", "to": "wiki/entities/gpt-4.md", "context": "cross-check"}},
     {"tool": "stage.close", "args": {}}
   ],
   "golden": [
     "opened changeset <id> for \"ingest a source and add two concept pages\"",
-    "proposed <id> (ingest_source)",
+    "proposed <id> (ingest_source) at raw/articles/conformance-source.md — 1 chunk(s); read it with raw.get {\"source\":\"raw/articles/conformance-source.md\",\"chunk\":1}",
     "proposed <id> (create_page)",
     "proposed <id> (create_page)",
     "proposed bidirectional link between wiki/concepts/kv-cache.md and wiki/entities/gpt-4.md (2 page patches)",
-    "changeset <id>\nintent: ingest a source and add two concept pages\noperations: 6\nby kind:\n- add_link: 1\n- create_page: 2\n- ingest_source: 1\n- patch_page: 2\nfiles touched: 5\n- raw/article/conformance-source.md\n- wiki/concepts/conformance-alpha.md\n- wiki/concepts/conformance-beta.md\n- wiki/concepts/kv-cache.md\n- wiki/entities/gpt-4.md\nchecks: schema=pass lint=pass orphans=2 broken_links=0"
+    "changeset <id>\nintent: ingest a source and add two concept pages\noperations: 6\nby kind:\n- add_link: 1\n- create_page: 2\n- ingest_source: 1\n- patch_page: 2\nfiles touched: 5\n- raw/articles/conformance-source.md\n- wiki/concepts/conformance-alpha.md\n- wiki/concepts/conformance-beta.md\n- wiki/concepts/kv-cache.md\n- wiki/entities/gpt-4.md\nchecks: schema=pass lint=pass orphans=2 broken_links=0"
   ],
   "commit_message": "ingest and create pages",
-  "expect_paths": ["raw/article/conformance-source.md", "wiki/concepts/conformance-alpha.md", "wiki/concepts/conformance-beta.md"],
+  "expect_paths": ["raw/articles/conformance-source.md", "wiki/concepts/conformance-alpha.md", "wiki/concepts/conformance-beta.md"],
   "expect_errors": 0
 }

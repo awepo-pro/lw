@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -398,6 +399,74 @@ func TestIngestCommitProducesLintCleanRawSource(t *testing.T) {
 		if f := lint.Run(ctx, []string{check}).ByCheck[check]; len(f) != 0 {
 			t.Errorf("%s reported the committed raw source: %+v", check, f)
 		}
+	}
+}
+
+// TestIngestSourceKindDirectory is the S6-C122 regression: kind maps to the
+// PLURAL raw/ subdirectory lw init actually scaffolds (raw/articles,
+// raw/papers, raw/transcripts — cmd/lw/cmd_init.go), not "raw/" + kind
+// verbatim, which staged every source one directory below every other
+// reader of raw/ (internal/extract's kindDir/SuggestPath, the backbone,
+// lw init).
+func TestIngestSourceKindDirectory(t *testing.T) {
+	tests := []struct {
+		kind    string
+		wantDir string
+	}{
+		{"article", "articles"},
+		{"paper", "papers"},
+		{"transcript", "transcripts"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.kind, func(t *testing.T) {
+			doc := ingestDoc{
+				Title:     "Kind Directory " + tt.kind,
+				SourceURL: "https://example.test/" + tt.kind,
+				Markdown:  "# Kind Directory\n\nBody for " + tt.kind + ".\n",
+				Kind:      tt.kind,
+			}
+			reg, e := ingestRegistry(t, doc)
+			r := openAndIngest(t, reg, tt.kind+".md", tt.kind)
+			if r.IsError {
+				t.Fatalf("ingest rejected: %s", r.Content)
+			}
+			fd := proposedRawDiff(t, e)
+			wantPrefix := "raw/" + tt.wantDir + "/"
+			if !strings.HasPrefix(fd.Path, wantPrefix) {
+				t.Errorf("staged path = %q, want it under %q", fd.Path, wantPrefix)
+			}
+			if strings.Contains(fd.Path, "raw/"+tt.kind+"/") {
+				t.Errorf("staged path = %q, still uses the singular raw/%s/ directory", fd.Path, tt.kind)
+			}
+		})
+	}
+}
+
+// TestIngestSourceResultNamesPathAndChunkCount pins the Result content
+// shape S6-C121 asks for: on success, stage.ingest_source names the exact
+// staged path and its chunk count, and shows the raw.get call that reads
+// it — so an agent that just staged a source is told the path, rather
+// than guessing at raw.get afterward.
+func TestIngestSourceResultNamesPathAndChunkCount(t *testing.T) {
+	doc := ingestDoc{
+		Title:     "Chunk Count Source",
+		SourceURL: "https://example.test/chunk-count",
+		Markdown:  "# Chunk Count Source\n\nA short body, one chunk.\n",
+		Kind:      "paper",
+	}
+	reg, e := ingestRegistry(t, doc)
+	r := proposeIngest(t, reg, "chunk-count.md")
+	if r.IsError {
+		t.Fatalf("ingest rejected: %s", r.Content)
+	}
+	fd := proposedRawDiff(t, e)
+
+	wantSuffix := fmt.Sprintf(" at %s — 1 chunk(s); read it with raw.get {\"source\":%q,\"chunk\":1}", fd.Path, fd.Path)
+	if !strings.HasSuffix(r.Content, wantSuffix) {
+		t.Fatalf("stage.ingest_source Content = %q, want it to end with %q", r.Content, wantSuffix)
+	}
+	if !strings.HasPrefix(r.Content, "proposed op1 (ingest_source) at ") {
+		t.Fatalf("stage.ingest_source Content = %q, want it to start with the usual \"proposed op1 (ingest_source)\"", r.Content)
 	}
 }
 

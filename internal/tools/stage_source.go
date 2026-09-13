@@ -25,8 +25,30 @@ type stageIngestSourceArgs struct {
 	Kind string `json:"kind,omitempty"`
 }
 
+// rawKindDir maps stage.ingest_source's kind argument to the raw/
+// subdirectory lw init actually scaffolds — raw/articles, raw/papers,
+// raw/transcripts (cmd/lw/cmd_init.go), which internal/extract's own
+// kindDir/SuggestPath already use. Fixed S6-C122: this handler used to
+// build "raw/" + kind directly, staging every source one directory below
+// where lw init, extract and the backbone's own docs put it, so a page's
+// declared sources: could never resolve against a real raw/ path once the
+// tool proposed it. kind is normalized to one of the three schema enum
+// values before this is called, so the default is unreachable in
+// practice; it is still the safe article-shaped fallback, never a made-up
+// fourth directory.
+func rawKindDir(kind string) string {
+	switch kind {
+	case "paper":
+		return "papers"
+	case "transcript":
+		return "transcripts"
+	default:
+		return "articles"
+	}
+}
+
 func stageIngestSourceTool(d Deps) Tool {
-	return Tool{Name: "stage.ingest_source", Description: "Extract and propose a local raw source. Network URLs are rejected in this stage; duplicate body hashes are rejected.", Schema: json.RawMessage(stageIngestSourceSchema), Handler: func(ctx context.Context, args json.RawMessage) (Result, error) {
+	return Tool{Name: "stage.ingest_source", Description: "Extract and propose a local raw source. Network URLs are rejected in this stage; duplicate body hashes are rejected. On success the result names the exact staged path and chunk count — read the staged source with raw.get before proposing pages from it.", Schema: json.RawMessage(stageIngestSourceSchema), Handler: func(ctx context.Context, args json.RawMessage) (Result, error) {
 		var a stageIngestSourceArgs
 		if err := decodeArgs(args, &a); err != nil {
 			return badArgs("stage.ingest_source", err, `{"uri":"/path/to/source.html","kind":"article"}`), nil
@@ -76,7 +98,7 @@ func stageIngestSourceTool(d Deps) Tool {
 		if name == "" {
 			return Result{IsError: true, Content: "could not derive a stable source filename from uri or extracted title"}, nil
 		}
-		sourcePath := "raw/" + kind + "/" + name + ".md"
+		sourcePath := "raw/" + rawKindDir(kind) + "/" + name + ".md"
 		sourceURL := strings.TrimSpace(doc.SourceURL)
 		if sourceURL == "" {
 			sourceURL = uri
@@ -114,7 +136,24 @@ func stageIngestSourceTool(d Deps) Tool {
 		if extractor == "" {
 			extractor = "local"
 		}
-		return appendStageOp(d, "stage.ingest_source", stage.Op{Kind: stage.OpIngestSource, Path: sourcePath, Content: content, SHA256: bodySHA, Extractor: extractor})
+		res, err := appendStageOp(d, "stage.ingest_source", stage.Op{Kind: stage.OpIngestSource, Path: sourcePath, Content: content, SHA256: bodySHA, Extractor: extractor})
+		if err != nil || res.IsError {
+			return res, err
+		}
+		// S6-C121: name the exact staged path and how to read it back, in
+		// the same changeset, before it is committed. Without this an
+		// agent that just staged a source has no way to learn the path
+		// stage.ingest_source normalized it to (kind, slug and directory
+		// are all derived here, not echoed anywhere else) and falls back
+		// to guessing at raw.get, which fails on every guess. n is the
+		// chunk count raw.get itself will report for the SAME body — see
+		// rawSourceBody, which parses the identical staged bytes back
+		// through vault.ParseRawSource before chunking, so the two counts
+		// cannot drift.
+		n := len(chunkText(body, rawChunkRunes))
+		res.Content = fmt.Sprintf("%s at %s — %d chunk(s); read it with raw.get {\"source\":%q,\"chunk\":1}",
+			res.Content, sourcePath, n, sourcePath)
+		return res, nil
 	}}
 }
 
