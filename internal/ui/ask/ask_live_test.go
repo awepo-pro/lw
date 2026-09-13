@@ -10,6 +10,7 @@ package ask
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -281,11 +282,12 @@ func TestSubmitStartsRealTurnAndStreamsScript(t *testing.T) {
 	}
 }
 
-// TestSubmitRefusedWithNoOpenChangeset pins the third refusal: a session is
-// keyed by its changeset (backbone §9, C-102), so with no changeset open
-// there is nothing for a turn to run in — the submit is refused with a
-// visible status line, never silently and never by starting a turn.
-func TestSubmitRefusedWithNoOpenChangeset(t *testing.T) {
+// TestSubmitWithNoOpenChangesetOpensOneDuringTheTurn is C-124/D-DH's
+// headline: a fresh vault with no open changeset no longer refuses the
+// submit. The turn itself opens one, and it is genuinely open — with a
+// session file beside it — while Send is still running, not merely after
+// the fact.
+func TestSubmitWithNoOpenChangesetOpensOneDuringTheTurn(t *testing.T) {
 	root := testutil.CopyFixture(t, "minimal")
 	engine, err := stage.OpenEngine(root)
 	if err != nil {
@@ -293,22 +295,243 @@ func TestSubmitRefusedWithNoOpenChangeset(t *testing.T) {
 	}
 	defer engine.Close()
 
-	ag := &fakeTurnAgent{sessions: agent.NewFileSessions(root)}
+	if _, err := engine.Current(); !errors.Is(err, stage.ErrNoChangeset) {
+		t.Fatalf("fixture already has an open changeset: %v", err)
+	}
+
+	release := make(chan struct{})
+	entered := make(chan struct{})
+	ag := &fakeTurnAgent{
+		sessions: agent.NewFileSessions(root),
+		release:  release,
+		entered:  entered,
+		script:   []agent.Event{agent.DoneEv{Reason: "stop", Rounds: 1}},
+	}
 	m := New(liveDeps(t, engine, ag)).(*Model)
 
-	m, cmd := typeAndSubmit(t, m, "anyone there?")
-	if cmd != nil {
-		t.Fatalf("submit with no open changeset produced a command (%#v), want nil", cmd)
+	m, cmd := typeAndSubmit(t, m, "what should I stage?")
+	if cmd == nil {
+		t.Fatal("submit produced no command")
 	}
-	if ag.sendCount() != 0 {
-		t.Fatalf("Send called %d times, want 0", ag.sendCount())
+	if !m.turnActive {
+		t.Fatal("submit did not mark the turn active")
+	}
+
+	<-entered // runTurn resolved a changeset and Agent.Send has started
+
+	cs, err := engine.Current()
+	if err != nil {
+		t.Fatalf("Current mid-turn: %v", err)
+	}
+	if !strings.HasPrefix(cs.Intent, "ask: ") {
+		t.Fatalf("Intent = %q, want an \"ask: \" prefix (C-124/D-DH)", cs.Intent)
+	}
+	if cs.Author.Kind != "agent" {
+		t.Fatalf("Author.Kind = %q, want \"agent\"", cs.Author.Kind)
+	}
+	if ag.gotSess != cs.ID {
+		t.Fatalf("Send ran with session %q, want the opened changeset %q", ag.gotSess, cs.ID)
+	}
+	if _, err := os.Stat(sessionPath(root, cs.ID)); err != nil {
+		t.Fatalf("session file was not created beside the opened changeset: %v", err)
+	}
+
+	close(release)
+	var seen []tea.Msg
+	m = runCmd(t, m, cmd, &seen).(*Model)
+	if m.turnActive {
+		t.Fatal("turn still active after DoneEv")
+	}
+}
+
+// TestSubmitWithNoOpenChangesetRejectsWhenNothingStaged is D-DH's cleanup
+// half: a turn that opened its own changeset and staged nothing rejects it
+// once Send returns, so a curious "what's in this vault?" question never
+// leaves an empty changeset sitting in changesets/open/ for review to have
+// to notice and reject by hand.
+func TestSubmitWithNoOpenChangesetRejectsWhenNothingStaged(t *testing.T) {
+	root := testutil.CopyFixture(t, "minimal")
+	engine, err := stage.OpenEngine(root)
+	if err != nil {
+		t.Fatalf("OpenEngine: %v", err)
+	}
+	defer engine.Close()
+
+	sessions := &recordingSessions{SessionStore: agent.NewFileSessions(root)}
+	ag := &fakeTurnAgent{
+		sessions: sessions,
+		script:   []agent.Event{agent.DoneEv{Reason: "stop", Rounds: 1}},
+	}
+	m := New(liveDeps(t, engine, ag)).(*Model)
+
+	m, cmd := typeAndSubmit(t, m, "nothing to stage here")
+	if cmd == nil {
+		t.Fatal("submit produced no command")
+	}
+	var seen []tea.Msg
+	m = runCmd(t, m, cmd, &seen).(*Model)
+
+	if _, err := engine.Current(); !errors.Is(err, stage.ErrNoChangeset) {
+		t.Fatalf("Current after an empty self-opened turn = %v, want ErrNoChangeset", err)
+	}
+
+	rejectedDir := filepath.Join(root, ".llmwiki", "changesets", "rejected")
+	entries, err := os.ReadDir(rejectedDir)
+	if err != nil {
+		t.Fatalf("ReadDir %s: %v", rejectedDir, err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("changesets/rejected/ has %d entries, want exactly 1: %v", len(entries), entries)
+	}
+	rejectedID := entries[0].Name()
+	if _, err := os.Stat(filepath.Join(rejectedDir, rejectedID, "session.ndjson")); err != nil {
+		t.Fatalf("session did not travel with the rejected changeset: %v", err)
+	}
+	if got := sessions.closedIDs(); len(got) != 1 || got[0] != rejectedID {
+		t.Fatalf("closed = %v, want exactly [%s]", got, rejectedID)
+	}
+
+	// The badge refresh: the same empty ui.StageChangedMsg review's own
+	// Commit/Reject broadcasts (backbone §12) was observed here too, and it
+	// arrived before the turn's own terminal status line.
+	var gotEmptyStage bool
+	for _, msg := range seen {
+		if sc, ok := msg.(ui.StageChangedMsg); ok && sc.ChangesetID == "" {
+			gotEmptyStage = true
+		}
+	}
+	if !gotEmptyStage {
+		t.Fatalf("no empty ui.StageChangedMsg observed after the auto-reject; seen = %#v", seen)
 	}
 	if m.turnActive {
-		t.Fatal("refused submit left a turn marked active")
+		t.Fatal("turn still marked active after DoneEv")
 	}
-	got := lastEntry(m)
-	if got.kind != kindStatus || !strings.Contains(got.text, "no open changeset") {
-		t.Fatalf("last entry = %#v, want a \"no open changeset\" status line", got)
+	last := lastEntry(m)
+	if last.kind != kindStatus || !strings.Contains(last.text, "done: stop") {
+		t.Fatalf("last entry = %#v, want the \"done: stop\" status line", last)
+	}
+	if m.sessionID != "" {
+		t.Fatalf("pane sessionID = %q after the reject, want empty", m.sessionID)
+	}
+}
+
+// TestSubmitWithNoOpenChangesetKeepsItWhenSomethingIsStaged is the other
+// half of D-DH's rule: a turn that opened its own changeset but DID stage
+// something (simulated here the same way review's own tests do — a direct
+// Engine.Append while the turn is parked mid-flight) leaves that changeset
+// open for review, exactly as if it had been open all along.
+func TestSubmitWithNoOpenChangesetKeepsItWhenSomethingIsStaged(t *testing.T) {
+	root := testutil.CopyFixture(t, "minimal")
+	engine, err := stage.OpenEngine(root)
+	if err != nil {
+		t.Fatalf("OpenEngine: %v", err)
+	}
+	defer engine.Close()
+
+	release := make(chan struct{})
+	entered := make(chan struct{})
+	ag := &fakeTurnAgent{
+		sessions: agent.NewFileSessions(root),
+		release:  release,
+		entered:  entered,
+		script:   []agent.Event{agent.DoneEv{Reason: "stop", Rounds: 1}},
+	}
+	m := New(liveDeps(t, engine, ag)).(*Model)
+
+	m, cmd := typeAndSubmit(t, m, "stage a small edit for me")
+	if cmd == nil {
+		t.Fatal("submit produced no command")
+	}
+	<-entered
+
+	page, ok := engine.Vault().Page("wiki/concepts/kv-cache.md")
+	if !ok {
+		t.Fatal("fixture missing wiki/concepts/kv-cache.md")
+	}
+	oldFlash := "- [[flash-attention]] — a kernel design that reduces the memory-bandwidth cost"
+	newFlash := "- [[flash-attention]] — an even better kernel design that reduces bandwidth"
+	if !strings.Contains(page.Body, oldFlash) {
+		t.Fatalf("fixture body does not contain the expected line:\n%s", page.Body)
+	}
+	rewritten := *page
+	rewritten.Body = strings.Replace(page.Body, oldFlash, newFlash, 1)
+	if _, err := engine.Append(stage.Op{
+		Kind:      stage.OpPatchPage,
+		Path:      page.Path,
+		Section:   "## Related",
+		Before:    page.SHA256(),
+		Content:   rewritten.Serialize(),
+		Rationale: "the turn staged this before finishing",
+		Hunks: []stage.Hunk{
+			{ID: "h1", Path: page.Path, Del: []string{oldFlash}, Add: []string{newFlash}},
+		},
+	}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	close(release)
+	var seen []tea.Msg
+	m = runCmd(t, m, cmd, &seen).(*Model)
+
+	cs, err := engine.Current()
+	if err != nil {
+		t.Fatalf("Current after a turn that staged something = %v, want the changeset still open", err)
+	}
+	if len(cs.Live()) == 0 {
+		t.Fatal("changeset has no live ops after staging one")
+	}
+	for _, msg := range seen {
+		if sc, ok := msg.(ui.StageChangedMsg); ok && sc.ChangesetID == "" {
+			t.Fatalf("empty ui.StageChangedMsg observed though the turn staged something")
+		}
+	}
+	if m.sessionID != cs.ID {
+		t.Fatalf("pane sessionID = %q, want the still-open changeset %q", m.sessionID, cs.ID)
+	}
+}
+
+// TestSubmitWithChangesetAlreadyOpenNeverRejectsEvenIfEmpty is D-DH's other
+// boundary: a changeset already open at submit is reused, and a turn that
+// stages nothing under it is left alone — this pane never rejects a
+// changeset it did not open itself.
+func TestSubmitWithChangesetAlreadyOpenNeverRejectsEvenIfEmpty(t *testing.T) {
+	_, engine, csID := liveVault(t) // a changeset is already open (case d)
+	ag := &fakeTurnAgent{
+		sessions: agent.NewFileSessions(engine.Vault().Root()),
+		script:   []agent.Event{agent.DoneEv{Reason: "stop", Rounds: 1}},
+	}
+	m := New(liveDeps(t, engine, ag)).(*Model)
+
+	m, cmd := typeAndSubmit(t, m, "anything staged?")
+	if cmd == nil {
+		t.Fatal("submit produced no command")
+	}
+	// A pre-existing changeset is known synchronously at submit — this pane
+	// never has to wait on the turn to learn its own bookkeeping for it.
+	if m.sessionID != csID {
+		t.Fatalf("sessionID after submit = %q, want the pre-existing %q", m.sessionID, csID)
+	}
+
+	var seen []tea.Msg
+	m = runCmd(t, m, cmd, &seen).(*Model)
+
+	cs, err := engine.Current()
+	if err != nil {
+		t.Fatalf("Current after the turn = %v, want the pre-existing changeset still open", err)
+	}
+	if cs.ID != csID {
+		t.Fatalf("Current().ID = %q, want the pre-existing %q", cs.ID, csID)
+	}
+	if len(cs.Live()) != 0 {
+		t.Fatalf("changeset unexpectedly has live ops: %v", cs.Live())
+	}
+	for _, msg := range seen {
+		if sc, ok := msg.(ui.StageChangedMsg); ok && sc.ChangesetID == "" {
+			t.Fatalf("empty ui.StageChangedMsg observed though the changeset predates this turn")
+		}
+	}
+	if ag.gotSess != csID {
+		t.Fatalf("Send ran with session %q, want %q", ag.gotSess, csID)
 	}
 }
 

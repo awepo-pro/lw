@@ -9,6 +9,11 @@
 // submitting refuses with a visible status line instead of dying, and
 // browse/review/lint/log keep working without a provider (s5-agent-loop.md
 // S5-T5).
+//
+// Since C-124/D-DH (S6) a turn no longer refuses for want of an open
+// changeset: when none is open at submit, runTurn (stream.go) opens one
+// itself, the same seam `lw ingest` already uses, and rejects it afterwards
+// if the turn staged nothing — see stream.go's runTurn/resolveTurnChangeset.
 package ask
 
 import (
@@ -104,6 +109,23 @@ func (m *Model) Update(msg tea.Msg) (ui.Pane, tea.Cmd) {
 		m.ch = msg.Ch
 		return m, m.rearm()
 
+	case turnStartedMsg:
+		// C-124/D-DH: runTurn's own report of the changeset it resolved to
+		// run this turn under (or a failure that ends the turn before
+		// Agent.Send ever ran) — delivered before any agent.Event so
+		// sessionID and m.ch are never behind the turn they track.
+		if msg.err != nil {
+			if m.cancel != nil {
+				m.cancel()
+				m.cancel = nil
+			}
+			m.endTurnError(msg.err.Error())
+			return m, nil
+		}
+		m.sessionID = msg.sessionID
+		m.ch = msg.ch
+		return m, m.rearm()
+
 	case EventMsg:
 		extra := m.applyEvent(msg.Ev)
 		return m, tea.Batch(m.rearm(), extra)
@@ -176,12 +198,12 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (ui.Pane, tea.Cmd) {
 
 // submitInput handles enter on a non-empty input box: it echoes the typed
 // text into the scrollback, clears the box, and — when there is an agent to
-// answer and a session to answer in — starts one real agent turn. The turn
-// itself runs in startTurn's goroutine and reaches this pane only as
-// tea.Cmds, so Update returns immediately no matter how long the model
-// takes (backbone §9, C-105; s5-agent-loop.md S5-T5 "never block Update").
+// answer — starts one real agent turn. The turn itself runs in startTurn's
+// goroutine and reaches this pane only as tea.Cmds, so Update returns
+// immediately no matter how long the model takes (backbone §9, C-105;
+// s5-agent-loop.md S5-T5 "never block Update").
 //
-// Three conditions refuse the submit instead, each as a visible status line
+// Two conditions refuse the submit instead, each as a visible status line
 // rather than a dead input or a silent drop:
 //
 //   - a turn is already running. Refused, NOT queued — the documented
@@ -191,13 +213,21 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (ui.Pane, tea.Cmd) {
 //   - Deps.Agent is nil. The config did not load, so there is no provider;
 //     ask says so and every other screen carries on (S5-T5's degrade
 //     requirement).
-//   - no changeset is open. A session is keyed by its changeset (backbone
-//     §9, C-102) and Loop.Send resolves that session before it does
-//     anything else, so a turn with no open changeset has nowhere to run.
 //
-// The engine read this performs — Engine.Current, one small directory scan
-// plus one small JSON file — is bounded and local, the same order of work
-// review's own commit path already does in Update.
+// A third refusal used to fire here — "no open changeset" — because a
+// session is keyed by its changeset (backbone §9, C-102) and a fresh
+// vault's first question had nowhere to run. C-124/D-DH removed it: when
+// this synchronous, bounded read finds nothing open, the turn opens its
+// own changeset itself, inside runTurn's goroutine where the filesystem and
+// lint work that entails belongs (backbone §9, C-105) — see stream.go's
+// runTurn and resolveTurnChangeset.
+//
+// The engine read this performs when a changeset IS already open —
+// Engine.Current, one small directory scan plus one small JSON file — is
+// bounded and local, the same order of work review's own commit path
+// already does in Update; finding one this way (rather than waiting on the
+// turn to report back) is what lets this pane's bookkeeping (m.sessionID)
+// stay synchronous for that case, exactly as before D-DH.
 func (m *Model) submitInput() tea.Cmd {
 	msg := m.input
 
@@ -218,14 +248,12 @@ func (m *Model) submitInput() tea.Cmd {
 			sessionID = cs.ID
 		}
 	}
-	if sessionID == "" {
-		m.echoUser(msg)
-		m.appendStatus("no open changeset — a turn needs one to run in; stage or ingest something first")
-		return nil
-	}
 
 	m.echoUser(msg)
 	m.turnActive = true
+	// "" until runTurn resolves it and reports back via turnStartedMsg
+	// (C-124/D-DH) — a changeset already open above is known synchronously,
+	// same as before.
 	m.sessionID = sessionID
 	return m.startTurn(sessionID, msg)
 }

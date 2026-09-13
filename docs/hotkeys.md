@@ -107,5 +107,10 @@ keymap can be planned around them.
 | `r` | Log | Revert a commit into a new changeset (opens Review) |
 
 Anything the keymap and this table both leave unbound does nothing. The
-footer bar's `[?]` hint is the one place v0.1 advertises a key that is not
-wired up yet — see the `help` row above.
+footer bar advertises only keys something actually binds — `tab`, `ctrl+r`,
+Review's `y`/`n`/`C`, and `q` — and no longer hints at `?`: v0.1 renders no
+help overlay, so nothing consumes it (C-124/TD-8; see the `help` row
+above).
+
+Screens are cycled with `tab`, in this order: Review → Ask → Lint → Log →
+Browse, wrapping back to Review.

@@ -17,8 +17,14 @@ import (
 // assumes 80x24 (s4-tui.md S4-T2 item 4).
 const sidebarWidth = 20
 
-// footerBarText is the fixed footer line s4-tui.md S4-T2 specifies.
-const footerBarText = "[tab] pane · [a]sk · [s]tage · [c]ommit · [l]int · [L]og · [?]"
+// footerBarText is the shell's footer line. It advertises only keys a
+// screen actually binds (C-124/TD-8): s4-tui.md S4-T2's original line named
+// "[a]sk · [s]tage · [c]ommit · [l]int · [L]og · [?]" — letters nothing in
+// the shell or any screen ever matched, plus a help overlay v0.1 never
+// built — found live at gate G6 (docs/hotkeys.md has the same fix). Screens
+// switch on tab alone; Review's own y/n/C letters are the only
+// accept/drop/commit keys that exist.
+const footerBarText = "[tab] next screen · [ctrl+r] ask→review · [y/n] accept/drop · [C] commit · [q] quit"
 
 // fitLine returns s clipped or padded to exactly w display columns, so
 // composing lines side by side or stacking them can never produce a frame

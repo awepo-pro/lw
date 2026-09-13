@@ -9,6 +9,11 @@
 // own. Submitting a question starts a real agent turn (backbone §9,
 // C-105: the pane makes the channel, the pane's goroutine runs Send) and
 // hands that channel to the pump through the very same StreamMsg.
+//
+// Since C-124/D-DH (S6), a turn that started with no changeset open
+// resolves and opens one itself (runTurn, resolveTurnChangeset below)
+// rather than the pane refusing at submit; forwardTurn rejects that
+// changeset afterwards if the turn staged nothing.
 package ask
 
 import (
@@ -88,63 +93,94 @@ func Listen(ch <-chan agent.Event) tea.Cmd {
 // renders and a few orders of magnitude below anything memory-relevant.
 const turnEventBuffer = 64
 
-// startTurn launches one agent turn for session sessionID (backbone §9,
-// C-105): it makes the channel, runs Send in a goroutine of its own — Send
-// is synchronous by contract — and returns the tea.Cmd that installs that
-// channel through StreamMsg, so Update never blocks on the turn. Every
-// value the goroutine needs is passed in, never read off m: Update owns
-// the model, and a goroutine writing to it would be a data race.
+// turnStartedMsg reports the changeset id a turn resolved to run under —
+// C-124/D-DH: opened fresh by this turn, reused from what was already open
+// at submit, or a failure that ends the turn before Agent.Send ever runs —
+// plus, on success, the channel to install as the pane's active stream. It
+// is delivered before any agent.Event so the pane's own bookkeeping
+// (sessionID, ctrl+r → Review, commit/close handling) is never behind the
+// turn it tracks.
+//
+// Unexported on purpose: the shell already routes any message a pane's own
+// tea.Cmd produces back to that same pane, on screen or not
+// (internal/ui/app.go's producedBy/deliverTo) — nothing needs adding to
+// pane.go's named fan-out set for a message only this package ever sees.
+type turnStartedMsg struct {
+	sessionID string
+	ch        <-chan agent.Event
+	err       error
+}
+
+// startTurn launches one agent turn (backbone §9, C-105). sessionID is the
+// changeset id already known at submit time, or "" when none was open —
+// C-124/D-DH: runTurn resolves it, opening one itself when it must, because
+// that is filesystem and lint work that has to stay off Update. Every value
+// the goroutine needs is passed in, never read off m: Update owns the
+// model, and a goroutine writing to it would be a data race.
 //
 // ctx is cancellable and remembered on m, so the pane can abandon a turn
 // whose changeset was committed or rejected underneath it (see
-// changesetGone); Send closes out promptly on cancellation and delivers no
-// terminal event of its own (backbone §9, C-105).
+// changesetGone); Send closes its channel promptly on cancellation and
+// delivers no terminal event of its own (backbone §9, C-105).
 func (m *Model) startTurn(sessionID, msg string) tea.Cmd {
 	ag := m.deps.Agent
 	e := m.deps.Engine
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancel = cancel
 
+	started := make(chan turnStartedMsg, 1)
 	out := make(chan agent.Event, turnEventBuffer)
-	go runTurn(ctx, ag, e, sessionID, msg, out)
+	go runTurn(ctx, ag, e, sessionID, msg, started, out)
 
-	return func() tea.Msg { return StreamMsg{Ch: out} }
+	return func() tea.Msg { return <-started }
 }
 
-// runTurn is startTurn's goroutine body. It re-reads the changeset the turn
-// is about to run in, resolves the session under it — the one piece of setup
-// the pane deliberately does not do in Update, because Sessions.Get/Create
-// read the filesystem — then hands over to Send. Send closes out on every
-// exit path of its own (backbone §9, C-105), so runTurn closes it only on
-// the paths that never reach Send, reporting the failure as the turn's
-// ErrorEv first: that is exactly one terminal event, and the pane renders it
-// like any other.
-//
-// The re-read is not ceremony: the changeset id was captured in Update, and
-// between that keypress and this goroutine the changeset may have been
-// committed or rejected in review. Creating a session for a changeset that
-// no longer exists would leave an empty directory under changesets/open/
-// that the engine then reports as an open changeset it cannot read — so the
-// turn is refused instead. There is still a sliver of a race between that
-// read and Create (one is the engine's directory, the other the session
-// store's), accepted here because closing it needs a stage-level "create the
-// session with the changeset" seam this package does not own.
-func runTurn(ctx context.Context, ag agent.Agent, e *stage.Engine, sessionID, msg string, out chan agent.Event) {
+// runTurn is startTurn's goroutine body (backbone §9, C-105; C-124/D-DH).
+// It resolves the changeset this turn runs in — reusing sessionID when one
+// was already open at submit, or opening a fresh one itself via
+// resolveTurnChangeset when nothing was — reports that resolution (or a
+// failure) back through started before Agent.Send ever runs, then relays
+// Send's events through forwardTurn, which is also what rejects a
+// self-opened changeset that ends up with nothing staged. runTurn never
+// touches Update or m: everything it needs is a parameter, and everything
+// it produces goes out through started or out.
+func runTurn(ctx context.Context, ag agent.Agent, e *stage.Engine, sessionID, msg string, started chan<- turnStartedMsg, out chan agent.Event) {
 	fail := func(err error) {
-		out <- agent.ErrorEv{Err: err}
+		started <- turnStartedMsg{err: err}
+		close(started)
 		close(out)
 	}
 
-	if e != nil {
-		cs, err := e.Current()
+	openedHere := false
+	if sessionID != "" {
+		// A changeset was already open when the pane checked (backbone §9,
+		// C-102 — a session is keyed by its changeset). Re-read it: the
+		// window between that keypress and this goroutine running is where
+		// C-118's race lives, and creating a session for a changeset that
+		// just vanished would fabricate an empty directory the engine could
+		// never clear on its own.
+		if e != nil {
+			cs, err := e.Current()
+			if err != nil {
+				fail(fmt.Errorf("ask: the changeset this turn runs in is gone: %w", err))
+				return
+			}
+			if cs.ID != sessionID {
+				fail(fmt.Errorf("ask: the open changeset changed under the turn: %s is open, not %s", cs.ID, sessionID))
+				return
+			}
+		}
+	} else {
+		// C-124/D-DH: nothing was open, so this turn opens its own
+		// changeset — the same seam `lw ingest` already uses — rather than
+		// refusing. intent is the question itself, so `lw log`/`lw status`
+		// show what prompted it.
+		id, opened, err := resolveTurnChangeset(e, msg)
 		if err != nil {
-			fail(fmt.Errorf("ask: the changeset this turn runs in is gone: %w", err))
+			fail(err)
 			return
 		}
-		if cs.ID != sessionID {
-			fail(fmt.Errorf("ask: the open changeset changed under the turn: %s is open, not %s", cs.ID, sessionID))
-			return
-		}
+		sessionID, openedHere = id, opened
 	}
 
 	ss := ag.Sessions()
@@ -152,29 +188,144 @@ func runTurn(ctx context.Context, ag agent.Agent, e *stage.Engine, sessionID, ms
 		fail(errors.New("ask: the agent has no session store"))
 		return
 	}
-	if err := ensureSession(ss, sessionID); err != nil {
+
+	if openedHere {
+		// Created immediately after OpenChangeset returns, with no other
+		// engine call in between — the "session created WITH the
+		// changeset" seam C-118 asked for, closing that race for this path.
+		if _, err := ss.Create(sessionID); err != nil {
+			fail(fmt.Errorf("ask: open a session for changeset %s: %w", sessionID, err))
+			return
+		}
+	} else if err := ensureSession(ss, sessionID); err != nil {
 		fail(err)
 		return
 	}
 
-	// The returned error is deliberately dropped: when Send fails it has
-	// already delivered that same error as the turn's ErrorEv (backbone §9,
-	// C-105), and the pane renders events, not return values.
-	_ = ag.Send(ctx, sessionID, msg, out)
+	started <- turnStartedMsg{sessionID: sessionID, ch: out}
+	close(started)
+
+	sendCh := make(chan agent.Event, turnEventBuffer)
+	go func() {
+		// The returned error is deliberately dropped: when Send fails it has
+		// already delivered that same error as the turn's ErrorEv (backbone
+		// §9, C-105), and forwardTurn relays events, not return values.
+		_ = ag.Send(ctx, sessionID, msg, sendCh)
+	}()
+
+	forwardTurn(ctx, e, sessionID, openedHere, sendCh, out)
 }
 
-// ensureSession makes sure a turn can actually run under id. Loop.Send
-// resolves its session through Sessions.Get before it does anything else
-// (backbone §9), and a file-backed store keys a session by the changeset id
-// (backbone §9, C-102) — so a changeset opened by another verb (`lw stage
-// --from`, `lw revert`) has no session yet and needs one created, while a
-// changeset `lw ingest` opened already has the session that verb created,
-// and reusing it is the point: the transcript stays one continuous record
-// per changeset across processes.
+// resolveTurnChangeset opens a changeset for a turn that started with none
+// open (C-124/D-DH), or falls back to whatever is open if something raced
+// ahead of it. It never returns an empty id without a non-nil err.
+func resolveTurnChangeset(e *stage.Engine, msg string) (id string, openedHere bool, err error) {
+	if e == nil {
+		return "", false, errors.New("ask: no engine to open a changeset in")
+	}
+	cs, err := e.OpenChangeset(askIntent(msg), stage.Author{Kind: "agent"})
+	if err == nil {
+		return cs.ID, true, nil
+	}
+	if !errors.Is(err, stage.ErrOpenChangeset) {
+		return "", false, fmt.Errorf("ask: open a changeset for this turn: %w", err)
+	}
+	// Something opened one between the pane's read and this goroutine
+	// running: fall back to it, exactly as a turn that found one open at
+	// submit would.
+	cur, curErr := e.Current()
+	if curErr != nil {
+		return "", false, fmt.Errorf("ask: no changeset open to run this turn in: %w", curErr)
+	}
+	return cur.ID, false, nil
+}
+
+// askIntentRunes bounds the intent D-DH stamps on a changeset this pane
+// opens for itself, so `lw log`/`lw status` show a readable one-liner
+// instead of a raw, possibly multi-line question.
+const askIntentRunes = 60
+
+// askIntent turns msg into that intent: "ask: " plus the question collapsed
+// to one line and truncated to askIntentRunes runes.
+func askIntent(msg string) string {
+	return "ask: " + truncateRunes(singleLine(msg), askIntentRunes)
+}
+
+// forwardTurn relays sendCh — the channel Agent.Send actually writes into —
+// onto out, the channel this pane's pump reads (backbone §9, C-105: Send
+// closes sendCh on every exit path, so the range below terminates on its
+// own). It holds the turn's one terminal event back until a turn that
+// opened its own changeset (D-DH) and staged nothing has been rejected, so
+// the pane never renders "done" against a changeset that is about to
+// disappear.
 //
-// Create is only ever called here after the pane has read the changeset
-// back from Engine.Current, so the directory Create writes into
-// (changesets/open/<id>/) is the changeset's own, never a fabricated one.
+// A synthetic, zero-value agent.StageEv precedes the terminal event when
+// that reject happens: ask.go's existing StageEv handling already turns any
+// StageEv into a ui.StageChangedMsg, and the empty form is exactly what
+// review's own Commit/Reject broadcast to say "no changeset is open any
+// more" (changesetGone, below) — reusing it here refreshes the shell's
+// STAGE badge and archives this turn's session without a new message type.
+func forwardTurn(ctx context.Context, e *stage.Engine, sessionID string, openedHere bool, sendCh <-chan agent.Event, out chan<- agent.Event) {
+	var terminal agent.Event
+	for ev := range sendCh {
+		if isTerminalEvent(ev) {
+			terminal = ev
+			continue
+		}
+		select {
+		case out <- ev:
+		case <-ctx.Done():
+		}
+	}
+
+	if openedHere && e != nil {
+		if cs, err := e.Current(); err == nil && cs.ID == sessionID && len(cs.Live()) == 0 {
+			if err := e.Reject("ask turn staged nothing"); err == nil {
+				select {
+				case out <- agent.StageEv{}:
+				case <-ctx.Done():
+				}
+			}
+		}
+	}
+
+	if terminal != nil {
+		select {
+		case out <- terminal:
+		case <-ctx.Done():
+		}
+	}
+	close(out)
+}
+
+// isTerminalEvent reports whether ev is one of backbone §9's two terminal
+// events (DoneEv, ErrorEv) — exactly one ends a turn, never both (C-105).
+func isTerminalEvent(ev agent.Event) bool {
+	switch ev.(type) {
+	case agent.DoneEv, agent.ErrorEv:
+		return true
+	default:
+		return false
+	}
+}
+
+// ensureSession makes sure a turn can actually run under id, when id names a
+// changeset this turn did not just open itself. Loop.Send resolves its
+// session through Sessions.Get before it does anything else (backbone §9),
+// and a file-backed store keys a session by the changeset id (backbone §9,
+// C-102) — so a changeset opened by another verb (`lw stage --from`, `lw
+// revert`) has no session yet and needs one created, while a changeset `lw
+// ingest` opened already has the session that verb created, and reusing it
+// is the point: the transcript stays one continuous record per changeset
+// across processes.
+//
+// Create is only ever called here after id has been confirmed open —
+// Engine.Current for a changeset already open at submit, or resolveTurnChangeset's
+// own Current fallback (C-124/D-DH) — so the directory Create writes into
+// (changesets/open/<id>/) is the changeset's own, never a fabricated one. A
+// changeset this turn opened itself calls ss.Create directly instead
+// (runTurn), immediately after OpenChangeset returns, which is what closes
+// C-118's race for that path.
 func ensureSession(ss agent.SessionStore, id string) error {
 	if _, err := ss.Get(id); err == nil {
 		return nil
