@@ -47,8 +47,12 @@
             inherit version;
             src = self;
 
-            # Fill in on first build — see the note at the top of this file.
-            vendorHash = nixpkgs.lib.fakeHash;
+            # Pinned from the first real build (2026-09-14); refresh it whenever go.sum changes — see the note at the top of this file.
+            vendorHash = "sha256-FFt7SdPmyKVuz7NbhIsyya7tuxPx9uiMQCEEF6hJ6+I=";
+
+            # internal/stage's TestUnifiedAppliesCleanly validates generated
+            # diffs with `git apply`; the build sandbox has no git otherwise.
+            nativeCheckInputs = [ pkgs.git ];
 
             # go.mod declares `toolchain go1.27.0`; without this the build
             # would try to download that toolchain from the network, which a
