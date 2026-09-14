@@ -95,7 +95,11 @@ lw doctor                                    # index, objects, journal, provider
 lw lint && lw log --limit 20 && lw status
 ```
 
-`lw` with no command opens the TUI: browse, review, ask, lint, log.
+`lw` with no command opens the TUI: browse, review, ask, lint, log. Typing a
+question on the Ask screen opens a changeset for you if none is open, and
+discards it automatically if the turn stages nothing. See
+[docs/tutorial.md](docs/tutorial.md) for the full walkthrough, including the
+TUI.
 
 `lw ingest`, `lw query` and `lw lint --fix` need a configured provider with a
 resolvable API key. **Every other verb works offline with no LLM at all** —
@@ -119,7 +123,8 @@ commands:
   query "..."                  ask the curator agent a question
   lint [--fix]                 run the lint checks
   mcp                          run the MCP server over stdio
-  doctor [--unlock]            check vault and lock health
+  doctor [--unlock] [--rebuild-index] [--discard-changeset] [--json]
+                               check vault and lock health
   tui                          launch the terminal UI (default with no command)
 
 flags:
@@ -145,7 +150,7 @@ are the same flag). Exit codes: `0` success, `1` failure, `2` usage error.
 | `query` | (positional) `"…"` | One-shot answer with citations; uses an ephemeral in-process session and never touches a changeset |
 | `lint` | `-checks <id,id,…>`, `-fix`, `-json` | 14 checks ([docs/vault-schema.md](docs/vault-schema.md#the-14-lint-checks)). Exits 1 only on errors. `--fix` asks the agent to propose repairs — as a changeset |
 | `mcp` | — | stdio MCP server; see below |
-| `doctor` | `--unlock`, `--rebuild-index`, `--json` | Index freshness, object-store completeness, journal tail, interrupted apply, stale lock, config, provider. Every failure prints the fix. Exit 1 on any failure |
+| `doctor` | `--unlock`, `--rebuild-index`, `--discard-changeset`, `--json` | Index freshness, object-store completeness, journal tail, interrupted apply, stale lock, config, provider. Every failure prints the fix. `--discard-changeset` moves the open changeset to `changesets/rejected/`, journalled — the CLI way to discard one without opening the TUI. Exit 1 on any failure |
 | `tui` | — | The TUI; also the default with no command |
 
 ## MCP setup
@@ -185,6 +190,7 @@ warning pointing at `env:`.
 
 | | |
 |---|---|
+| [docs/tutorial.md](docs/tutorial.md) | Start here — a hands-on walkthrough from install to a reviewed wiki |
 | [docs/architecture.md](docs/architecture.md) | The pipeline, the agent's verb boundary, the package map |
 | [docs/vault-schema.md](docs/vault-schema.md) | The vault layout, frontmatter, and the 14 lint checks |
 | [docs/tools.md](docs/tools.md) | The 17 tools and what each one reads |
