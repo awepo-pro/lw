@@ -1,25 +1,28 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
 
-	"github.com/awepo-pro/lw/internal/lint"
 	"github.com/awepo-pro/lw/internal/stage"
+	"github.com/awepo-pro/lw/internal/ui/review"
 )
 
 // cmdCommit commits the open changeset to the vault.
 //
 // Contract (backbone §13): commit refuses when the projected tree's lint
-// errors regress against the last commit's baseline (Report.Regresses);
-// --force overrides that refusal and journals that it was forced. Engine
-// itself does no such check — S2-T4's brief makes that explicit ("no
+// errors regress against the vault's baseline (Report.Regresses); --force
+// overrides that refusal and journals that it was forced. Engine itself
+// does no such check — S2-T4's brief makes that explicit ("no
 // lint-regression gate on the CLI [...] T7 owns that flag") — cmdCommit
 // owns the whole thing: computing it, refusing on it, and recording an
-// override.
+// override. The baseline itself comes from review.LintBaseline (S6-C127,
+// closing part of TD-3): the same helper the review screen's `C` key
+// calls, which is what keeps `lw commit` and a TUI commit producing
+// "exactly the same result" (s4-tui.md S4-T3) rather than two
+// hand-maintained copies of the rule.
 func cmdCommit(args []string) error {
 	fs := flag.NewFlagSet("commit", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -63,16 +66,20 @@ func cmdCommit(args []string) error {
 		return err
 	}
 
-	baseline, hasBaseline, err := lastCommitLintBaseline(e)
+	// review.LintBaseline resolves the most recent commit_end's counts when
+	// one exists, or — a vault that has never been committed, S6-C127's
+	// live defect — the report of linting the CURRENT committed working
+	// tree, so a vault's very first commit is gated exactly like every
+	// later one instead of passing unconditionally (backbone §5.7 D-AG,
+	// extended by S6-C127; not touched at all for a vault with a prior
+	// commit).
+	baseline, err := review.LintBaseline(e)
 	if err != nil {
 		return fmt.Errorf("read lint baseline: %w", err)
 	}
 
-	// A vault with no prior commit_end has no baseline: the check passes
-	// (backbone §5.7 D-AG, verbatim) — gate G2's own first commit is
-	// exactly this case.
 	forced := false
-	if hasBaseline && projected.Regresses(baseline) {
+	if projected.Regresses(baseline) {
 		if !*force {
 			return fmt.Errorf("lint regressed: %d error(s) projected vs %d in the last commit; review with `lw diff`, fix it, or re-run with --force", projected.Errors, baseline.Errors)
 		}
@@ -97,41 +104,4 @@ func cmdCommit(args []string) error {
 
 	fmt.Printf("committed %s\n", commitID)
 	return nil
-}
-
-// commitEndData is the shape of a commit_end event's Data (backbone §5.7
-// D-AG): the counts of the report computed for that commit, and, when
-// --force overrode a refusal, "forced":true.
-type commitEndData struct {
-	LintErrors int  `json:"lint_errors"`
-	LintWarns  int  `json:"lint_warns"`
-	Forced     bool `json:"forced,omitempty"`
-}
-
-// lastCommitLintBaseline reads the most recent commit_end event's lint
-// counts as the baseline lw commit refuses a regression against.
-//
-// Contract (backbone §5.7 D-AU, MASTER §9): Filter.Limit selects the most
-// recent N events and returns them oldest-first, so Limit:1 must be read
-// as evs[0] — a larger Limit read as evs[0] would silently compare every
-// future commit against the FIRST commit ever made. hasBaseline is false
-// when the journal holds no commit_end at all (a fresh vault's first
-// commit), which is the case backbone §5.7 pins as "the check passes".
-func lastCommitLintBaseline(e *stage.Engine) (lint.Report, bool, error) {
-	evs, err := e.Journal().Query(stage.Filter{
-		Kinds: []stage.EventKind{stage.EvCommitEnd},
-		Limit: 1,
-	})
-	if err != nil {
-		return lint.Report{}, false, err
-	}
-	if len(evs) == 0 {
-		return lint.Report{}, false, nil
-	}
-
-	var data commitEndData
-	if err := json.Unmarshal(evs[0].Data, &data); err != nil {
-		return lint.Report{}, false, fmt.Errorf("parse commit_end data: %w", err)
-	}
-	return lint.Report{Errors: data.LintErrors, Warns: data.LintWarns}, true, nil
 }
