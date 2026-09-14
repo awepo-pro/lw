@@ -395,6 +395,38 @@ func TestCmdInitDeterministicBytes(t *testing.T) {
 	}
 }
 
+// TestCmdInitCuratorMemoryHasNoSeededRules is the regression test for
+// S6-C129: a live URL ingest showed that copying /PLAN.md §6's example
+// verbatim into a fresh vault taught the curator a preference no reviewer
+// had ever stated. curator-memory.md must show the file's shape — both
+// headings, plus the explanatory comment — but seed zero rule lines.
+func TestCmdInitCuratorMemoryHasNoSeededRules(t *testing.T) {
+	dir := t.TempDir()
+	runInitIn(t, dir, initOpts{args: []string{"--schema", "ml-systems"}, out: io.Discard})
+
+	b, err := os.ReadFile(filepath.Join(dir, "curator-memory.md"))
+	if err != nil {
+		t.Fatalf("read curator-memory.md: %v", err)
+	}
+	got := string(b)
+
+	for _, want := range []string{"## Page thresholds", "## Naming"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("curator-memory.md is missing heading %q:\n%s", want, got)
+		}
+	}
+	for _, line := range strings.Split(got, "\n") {
+		if strings.HasPrefix(line, "- ") {
+			t.Errorf("curator-memory.md seeds a rule line %q, want none", line)
+		}
+	}
+	for _, stale := range []string{"benchmark numbers", "gpt4"} {
+		if strings.Contains(got, stale) {
+			t.Errorf("curator-memory.md still contains the old seeded example %q", stale)
+		}
+	}
+}
+
 func TestCmdInitBadFlag(t *testing.T) {
 	_, stderr, code := captureRun(t, func() int {
 		return run([]string{"init", "--bogusflag"})

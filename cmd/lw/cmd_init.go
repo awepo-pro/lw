@@ -2,8 +2,10 @@ package main
 
 // cmdInit scaffolds a new vault in the current directory (backbone §13,
 // s6-polish-release.md S6-T2): SCHEMA.md with the domain's real taxonomy,
-// index.md, log.md, curator-memory.md seeded from /PLAN.md §6's examples,
-// the raw/ and wiki/ trees of §14, and .llmwiki/.
+// index.md, log.md, an empty curator-memory.md (S6-C129: its headings show
+// the file's shape; /PLAN.md §6's rule lines are an example of memory the
+// agent has already learned, not seed content), the raw/ and wiki/ trees of
+// §14, and .llmwiki/.
 //
 // init is the one command that writes vault files directly. There is no
 // vault yet to stage a changeset against and nothing for a reviewer to
@@ -215,14 +217,21 @@ const initIndexMD = `# Index
 ## Queries
 `
 
-// initCuratorMemory is /PLAN.md §6's example, verbatim: the plan seeds a new
-// vault with these two sections so the file's shape is visible before the
-// agent has learned anything. The agent edits it only through stage.patch_page.
-const initCuratorMemory = `## Page thresholds
-- Do not create pages for individual benchmark numbers. (2026-08-14, after I rejected 4 such pages.)
+// initCuratorMemory is a fresh vault's curator-memory.md: the "## Page
+// thresholds" / "## Naming" headings show the file's shape, but it seeds no
+// rule under either. /PLAN.md §6's benchmark/gpt-4 lines are an EXAMPLE of
+// memory the agent has already learned from a past review, not seed content
+// a brand-new vault ships with — a live URL ingest surfaced that a verbatim
+// copy taught the curator a preference no reviewer had actually stated yet
+// (S6-C129). The agent still edits this file only through stage.patch_page.
+const initCuratorMemory = `<!-- curator-memory.md: the curator agent's standing editorial preferences.
+It starts with no rules. When your reviews teach the agent a preference, it
+adds a dated rule under a heading here through stage.patch_page, and the
+change reaches you as a diff like any other page. -->
+
+## Page thresholds
 
 ## Naming
-- Prefer the hyphenated vendor form: ` + "`gpt-4`" + `, not ` + "`gpt4`" + `. (2026-08-29)
 `
 
 // initAnswers is everything the prompts — or their defaults — decided.
