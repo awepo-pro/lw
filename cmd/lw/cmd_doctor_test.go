@@ -754,7 +754,7 @@ func TestDoctorConfigCheck(t *testing.T) {
 
 	t.Run("keyring unsupported", func(t *testing.T) {
 		c := checkConfig(configWithKey("keyring:lw"), nil)
-		if !strings.Contains(c.Detail, "not supported in v0.1") {
+		if !strings.Contains(c.Detail, "not supported yet") {
 			t.Errorf("detail = %q, want the keyring finding", c.Detail)
 		}
 		wantFailed(t, c, "env:NAME")

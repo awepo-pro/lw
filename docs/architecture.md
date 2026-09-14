@@ -5,7 +5,7 @@ interlinked markdown wiki, and it is built around one rule: the model never
 touches your files, and you never accept a change you have not read.
 
 [`/.dev-notes/PLAN-v1.md`](../.dev-notes/PLAN-v1.md) is the design of record; this page is the map of what
-actually shipped in v0.1.
+actually shipped in v1.0.0.
 
 ---
 
@@ -98,7 +98,7 @@ rationale attached.
 
 ---
 
-## What is deliberately not in v0.1
+## What is deliberately not in v1
 
 Graph view, embeddings and vector search, SQLite/FTS5, PDF and OCR extraction,
 multi-vault, parallel changesets, and a web server are all **deferred**, by

@@ -469,8 +469,8 @@ func TestConfigSetAcceptsKeyringReference(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; the keyring: prefix is accepted", code)
 	}
-	if !strings.Contains(stderr, "not implemented in v0.1") {
-		t.Errorf("stderr = %q, want the v0.1 note", stderr)
+	if !strings.Contains(stderr, "not implemented yet") {
+		t.Errorf("stderr = %q, want the not-implemented note", stderr)
 	}
 
 	got, err := config.Load()

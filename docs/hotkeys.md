@@ -44,7 +44,7 @@ These are the thirteen actions in the keymap. Defaults are frozen; the
 |---|---|---|---|
 | `accept_hunk` | `y` | Accept (undrop) the selected hunk and advance | Review |
 | `drop_hunk` | `n` | Drop the selected hunk and advance | Review |
-| `split_hunk` | `s` | Split the selected hunk — not implemented in v0.1; Review reports that it lands in v1.0 | Review |
+| `split_hunk` | `s` | Split the selected hunk — not implemented yet; Review says so and suggests dropping the op instead | Review |
 | `accept_all` | `A` | Accept every hunk; refused unless lint is clean | Review |
 | `reject_changeset` | `X` | Reject the whole changeset | Review |
 | `commit` | `C` | Commit the changeset; refused if lint regresses | Review |
@@ -54,7 +54,7 @@ These are the thirteen actions in the keymap. Defaults are frozen; the
 | `bottom` | `G` | Jump to the last entry | Browse, Review, Lint, Log |
 | `next_pane` | `tab` | Cycle to the next screen | Shell |
 | `quit` | `q`, `ctrl+c` | Quit `lw` | Shell |
-| `help` | `?` | Help — declared and rebindable, but v0.1 renders no help overlay, so no screen consumes it yet | — |
+| `help` | `?` | Help — declared and rebindable, but no help overlay exists yet, so no screen consumes it | — |
 
 Review's `y`/`n`/`s`/`A`/`X`/`C` letters are the review surface `/.dev-notes/PLAN-v1.md`
 §9 fixes, and they are also the defaults above. The keymap is the source of
@@ -108,7 +108,7 @@ keymap can be planned around them.
 
 Anything the keymap and this table both leave unbound does nothing. The
 footer bar advertises only keys something actually binds — `tab`, `ctrl+r`,
-Review's `y`/`n`/`C`, and `q` — and no longer hints at `?`: v0.1 renders no
+Review's `y`/`n`/`C`, and `q` — and no longer hints at `?`: nothing renders a
 help overlay, so nothing consumes it (C-124/TD-8; see the `help` row
 above).
 

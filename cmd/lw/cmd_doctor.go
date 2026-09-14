@@ -842,7 +842,7 @@ func checkConfig(cfg *config.Config, err error) doctorCheck {
 	case strings.HasPrefix(ref, "keyring:"):
 		return doctorCheck{
 			Name:   name,
-			Detail: fmt.Sprintf("api_key %s: keyring references are not supported in v0.1%s", ref, about),
+			Detail: fmt.Sprintf("api_key %s: keyring references are not supported yet%s", ref, about),
 			Remedy: "store the key in the environment and reference it, e.g. lw config set llm.api_key env:NAME",
 		}
 	default:

@@ -205,7 +205,7 @@ func (c *Config) Save() error {
 
 // ResolveAPIKey returns the literal API key for c.LLM.APIKey. "env:NAME"
 // reads that environment variable and errors clearly if it is unset or
-// empty; "keyring:NAME" errors because v0.1 does not support a keyring;
+// empty; "keyring:NAME" errors because lw does not support a keyring yet;
 // anything else is a literal, returned as-is.
 func (c *Config) ResolveAPIKey() (string, error) {
 	ref := c.LLM.APIKey
@@ -218,7 +218,7 @@ func (c *Config) ResolveAPIKey() (string, error) {
 		}
 		return v, nil
 	case strings.HasPrefix(ref, keyringPrefix):
-		return "", fmt.Errorf("config: keyring references are not supported in v0.1")
+		return "", fmt.Errorf("config: keyring references are not supported yet")
 	default:
 		return ref, nil
 	}

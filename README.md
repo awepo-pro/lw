@@ -223,7 +223,7 @@ Stated plainly, because a tool asking for this much trust should not oversell.
   an ordinary module rather than shipping a fork.
 - **Search is a word index.** No SQLite, no FTS5, no embeddings, no vector
   store — an in-memory inverted index, which is instant at vault scale and is
-  all v0.1 promises.
+  all v1 promises.
 - **Extraction is HTML and markdown.** No PDF, no OCR, no transcripts from
   audio. Sources arrive as files or web pages.
 - **One vault, one open changeset.** No multi-vault, no parallel ingest.

@@ -91,7 +91,7 @@ func checkScaffoldLayout(t *testing.T, dir string) {
 		t.Errorf(".llmwiki/journal.ndjson: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, ".llmwiki", "config.toml")); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf(".llmwiki/config.toml: no v0.1 code writes it, got stat err %v", err)
+		t.Errorf(".llmwiki/config.toml: no v1 code writes it, got stat err %v", err)
 	}
 }
 

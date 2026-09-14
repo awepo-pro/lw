@@ -171,8 +171,8 @@ func TestResolveAPIKeyEnv(t *testing.T) {
 		if err == nil {
 			t.Fatal("ResolveAPIKey: want error for keyring: reference, got nil")
 		}
-		if !strings.Contains(err.Error(), "v0.1") {
-			t.Fatalf("ResolveAPIKey error = %q, want it to explain keyring is unsupported in v0.1", err)
+		if !strings.Contains(err.Error(), "not supported yet") {
+			t.Fatalf("ResolveAPIKey error = %q, want it to explain keyring is unsupported", err)
 		}
 	})
 }

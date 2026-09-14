@@ -131,7 +131,7 @@ func displayAPIKey(raw string) string {
 		}
 		return raw + " (missing)"
 	case strings.HasPrefix(raw, "keyring:"):
-		return raw + " (not implemented in v0.1)"
+		return raw + " (not implemented yet)"
 	default:
 		return "literal (set)"
 	}
@@ -389,7 +389,7 @@ func warnUnresolvableKey(w io.Writer, cfg *config.Config) {
 			fmt.Fprintf(w, "warning: %s is not set in this shell; lw cannot resolve the key until it is exported\n", name)
 		}
 	case strings.HasPrefix(ref, "keyring:"):
-		fmt.Fprintln(w, "note: keyring: references are accepted but not implemented in v0.1, so this key will not resolve; use env:NAME")
+		fmt.Fprintln(w, "note: keyring: references are accepted but not implemented yet, so this key will not resolve; use env:NAME")
 	}
 }
 

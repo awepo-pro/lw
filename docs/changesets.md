@@ -43,7 +43,7 @@ got in".
                                       removes a stale one)
 ```
 
-\* in the frozen layout (`01-backbone.md` §14) but no v0.1 code writes it; the
+\* in the frozen layout (`01-backbone.md` §14) but no v1 code writes it; the
 only configuration this build reads is `~/.config/lw/config.toml`.
 
 `objects/` and `journal.ndjson` are the durable state. `snapshots/` and

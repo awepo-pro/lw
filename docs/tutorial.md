@@ -478,7 +478,7 @@ wiki/queries/why-is-prefix-cache-hit-rate-zero.md | +3 -32
 Two paths are skipped, and the revert says so rather than dropping them
 silently. `raw/articles/gemini.md` is skipped because `raw/` is write-once and
 immutable: a revert can undo the pages a source produced, but it never
-touches the source itself. `index.md` is skipped because v0.1 does not
+touches the source itself. `index.md` is skipped because v1 does not
 reconstruct `index.md` on revert; the reverted pages become retraction
 stubs rather than disappearing, so the index entries that point at them keep
 resolving. From here you either `lw commit -m "revert 000001"` like any

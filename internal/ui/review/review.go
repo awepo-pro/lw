@@ -219,7 +219,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (ui.Pane, tea.Cmd) {
 		return m.dropHunk()
 	case key.Matches(msg, k.SplitHunk):
 		// C-90/TD-2: hunk splitting is not built in v0.1. No engine call.
-		m.setStatus(statusInfo, "hunk split lands in v1.0 — drop the op and re-propose")
+		m.setStatus(statusInfo, "hunk split is not built yet — drop the op and re-propose")
 	case key.Matches(msg, k.AcceptAll):
 		return m.acceptAll()
 	case key.Matches(msg, k.Reject):
