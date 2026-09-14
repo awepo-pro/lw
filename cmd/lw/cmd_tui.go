@@ -161,7 +161,7 @@ func tuiAgent(e *stage.Engine) (agent.Agent, error) {
 // buildTUIOptions assembles the ui.Options ui.NewApp is built from: the
 // five screens constructed from one ui.Deps and injected into Options.Panes
 // under their Screen key (backbone §12; s4-tui.md S4-T8, C-103), with
-// Options.Start pinned to ui.ScreenReview — /PLAN.md §13 says ship review
+// Options.Start pinned to ui.ScreenReview — /.dev-notes/PLAN-v1.md §13 says ship review
 // first and §9 calls it the reason this project exists.
 //
 // cmd/lw is the only package allowed to import a screen: internal/ui itself

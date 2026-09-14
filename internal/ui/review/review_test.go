@@ -246,7 +246,7 @@ func TestDropThenAcceptRestoresHunk(t *testing.T) {
 // TestAcceptAllRefusedWhenLintDirty presses `A` over the dirty fixture
 // (which lints error-dirty by construction) and asserts the refusal is
 // visible in View and that no hunk changed state (s4-tui.md S4-T3 item 8;
-// /PLAN.md §14's review-fatigue mitigation).
+// /.dev-notes/PLAN-v1.md §14's review-fatigue mitigation).
 func TestAcceptAllRefusedWhenLintDirty(t *testing.T) {
 	d, e, _ := newTestDeps(t, "dirty")
 
@@ -417,7 +417,7 @@ func TestCommitRefusedOnFirstCommitLintRegression(t *testing.T) {
 
 // TestRationaleRendered checks that an op's Rationale and Provenance both
 // show up in View(w, h) — the property that makes this a review of
-// reasoning, not a diff viewer (/PLAN.md §9.2, s4-tui.md S4-T3 item 2).
+// reasoning, not a diff viewer (/.dev-notes/PLAN-v1.md §9.2, s4-tui.md S4-T3 item 2).
 func TestRationaleRendered(t *testing.T) {
 	d, e, _ := newTestDeps(t, "minimal")
 

@@ -8,7 +8,7 @@
 // Every mutation this screen could cause still goes through stage.Engine
 // or the shell's own message vocabulary — nothing here writes to the
 // vault, and `f` is a message, not a repair (00-conventions.md §5.4;
-// /PLAN.md §9.4: even repairs go through review).
+// /.dev-notes/PLAN-v1.md §9.4: even repairs go through review).
 package lintview
 
 import (
@@ -238,7 +238,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (ui.Pane, tea.Cmd) {
 	case "f":
 		// Pinned item 3: a message, not a repair — no engine call, even
 		// though the engine is what would eventually perform one
-		// (/PLAN.md §9.4: even repairs go through review).
+		// (/.dev-notes/PLAN-v1.md §9.4: even repairs go through review).
 		m.setStatus(statusInfo, "requires the agent (M5)")
 		return m, nil
 	}

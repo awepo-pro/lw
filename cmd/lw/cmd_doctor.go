@@ -855,7 +855,7 @@ func checkConfig(cfg *config.Config, err error) doctorCheck {
 }
 
 // checkProvider reports whether the configured endpoint is reachable and
-// actually returns tool calls — the failure /PLAN.md §11.2 wants visible at
+// actually returns tool calls — the failure /.dev-notes/PLAN-v1.md §11.2 wants visible at
 // config time rather than mid-ingest. It is skipped, not failed, when no key
 // resolves: the config check above already reports that, and a probe without
 // credentials can only fail misleadingly.

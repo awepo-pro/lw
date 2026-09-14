@@ -1,6 +1,6 @@
 // Package browse is the vault browser screen: a directory tree of wiki pages
 // and raw sources alongside a glamour-rendered preview, a backlinks strip,
-// and a `/` fuzzy finder (backbone §12, /PLAN.md §9, s4-tui.md S4-T4).
+// and a `/` fuzzy finder (backbone §12, /.dev-notes/PLAN-v1.md §9, s4-tui.md S4-T4).
 package browse
 
 import (

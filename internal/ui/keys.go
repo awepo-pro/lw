@@ -27,7 +27,7 @@ type KeyMap struct {
 	// — unknown keys — so a caller can surface them without LoadKeys failing.
 	Warnings []string
 
-	// Review screen keys, fixed by /PLAN.md §9.
+	// Review screen keys, fixed by /.dev-notes/PLAN-v1.md §9.
 	AcceptHunk key.Binding // y — undrop-and-advance (Engine.UndropHunk, D-CL)
 	DropHunk   key.Binding // n — drop-and-advance (Engine.DropHunk)
 	SplitHunk  key.Binding // s — not built in v0.1 (C-90/TD-2)

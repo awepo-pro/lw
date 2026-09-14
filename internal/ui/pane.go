@@ -18,11 +18,11 @@ import (
 )
 
 // Screen identifies one of the app's top-level views (backbone §12,
-// /PLAN.md §9). tab cycles through all five regardless of whether
+// /.dev-notes/PLAN-v1.md §9). tab cycles through all five regardless of whether
 // Options.Panes carries an entry for one yet.
 type Screen int
 
-// The five screens /PLAN.md §9 defines, in tab order.
+// The five screens /.dev-notes/PLAN-v1.md §9 defines, in tab order.
 const (
 	ScreenBrowse Screen = iota
 	ScreenReview
@@ -105,7 +105,7 @@ type SwitchScreenMsg struct {
 
 // OpenPathMsg asks the shell to switch to Browse and select a vault-relative
 // path — Lint's `enter` on a finding ("jump to the page in Browse",
-// /PLAN.md §9) is the case it exists for.
+// /.dev-notes/PLAN-v1.md §9) is the case it exists for.
 //
 // It is separate from SwitchScreenMsg because that message carries only a
 // Screen, and a screen switch that cannot say *where* to land makes the jump

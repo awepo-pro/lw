@@ -229,7 +229,7 @@ func TestCmdLintFixCleanVaultNeedsNoAgent(t *testing.T) {
 // fixture (which lint.Run reports real findings for) with a fake agent
 // that proposes one repair op, and requires the result to be exactly one
 // open changeset holding that op — the same "still stages" contract
-// `lw ingest` has (/PLAN.md §9.4): nothing here commits.
+// `lw ingest` has (/.dev-notes/PLAN-v1.md §9.4): nothing here commits.
 func TestCmdLintFixStagesRepairsForFindings(t *testing.T) {
 	root := testutil.CopyFixture(t, "dirty")
 

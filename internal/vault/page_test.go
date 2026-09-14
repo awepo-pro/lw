@@ -86,7 +86,7 @@ func lastBytes(s string, n int) string {
 }
 
 // TestPageSection proves Section looks pages up by their full raw heading
-// line, matching how /PLAN.md §7's stage.patch_page examples address a
+// line, matching how /.dev-notes/PLAN-v1.md §7's stage.patch_page examples address a
 // section (e.g. "## Related"), and reports ok == false for a heading that
 // is not present.
 func TestPageSection(t *testing.T) {

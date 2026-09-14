@@ -671,7 +671,7 @@ func sha256Hex(b []byte) string {
 // appendLog appends one human-readable entry to log.md — "- YYYY-MM-DD
 // HH:MM <commit> <intent> (+N pages, ~M edits)" — rotating log.md's
 // existing entries out to log-<year>.md when the append would leave it
-// holding more than logRotateThreshold entries (/PLAN.md §6). The
+// holding more than logRotateThreshold entries (/.dev-notes/PLAN-v1.md §6). The
 // rotation boundary is the one internal/lint/check_log_rotate.go judges:
 // after rotation, log.md holds zero entries, so that check never fires on
 // the file this method just wrote.

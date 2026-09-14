@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-// TestOneOpenChangeset pins /PLAN.md D7: OpenChangeset returns
+// TestOneOpenChangeset pins /.dev-notes/PLAN-v1.md D7: OpenChangeset returns
 // ErrOpenChangeset when changesets/open/ is already non-empty.
 func TestOneOpenChangeset(t *testing.T) {
 	e, _ := newTestEngine(t)

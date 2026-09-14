@@ -1,5 +1,5 @@
 // tree.go builds and walks the browse screen's vault tree: two roots, "raw"
-// and "wiki" (/PLAN.md §9's sketch), populated from the vault-relative paths
+// and "wiki" (/.dev-notes/PLAN-v1.md §9's sketch), populated from the vault-relative paths
 // backbone §2.8's Vault.Pages() and Vault.RawSources() return.
 //
 // buildTree is a pure function of two path slices — no *vault.Vault involved

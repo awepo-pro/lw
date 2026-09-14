@@ -1,6 +1,6 @@
 // layout.go is the shell's pure string composition: fitting text to an
 // exact width, and laying out the title bar, sidebar, active pane and
-// footer into one frame (/PLAN.md §9). Nothing here touches tea.Msg or
+// footer into one frame (/.dev-notes/PLAN-v1.md §9). Nothing here touches tea.Msg or
 // mutates App state — app.go is the only caller, and it is the only place
 // that decides what text these functions receive.
 package ui
@@ -12,7 +12,7 @@ import (
 	lipgloss "charm.land/lipgloss/v2"
 )
 
-// sidebarWidth is the shell's SIDEBAR column width (/PLAN.md §9). It
+// sidebarWidth is the shell's SIDEBAR column width (/.dev-notes/PLAN-v1.md §9). It
 // shrinks to fit a narrower terminal — see bodyDimensions — so nothing
 // assumes 80x24 (s4-tui.md S4-T2 item 4).
 const sidebarWidth = 20
@@ -63,7 +63,7 @@ func fitLines(s string, w, n int) []string {
 	return out
 }
 
-// titleBarText is /PLAN.md §9's title line.
+// titleBarText is /.dev-notes/PLAN-v1.md §9's title line.
 func titleBarText(vaultName string, pages, raw, lintErrors int) string {
 	return fmt.Sprintf("%s — %d pages · %d raw · ⚠ %d lint", vaultName, pages, raw, lintErrors)
 }
@@ -109,7 +109,7 @@ func bodyDimensions(width, height int) (sideW, sepW, mainW, bodyH int) {
 
 // composeFrame lays out one full frame: a title bar, a two-column body (the
 // STAGE sidebar beside the active pane's content) and a footer bar, per
-// /PLAN.md §9. It never returns a line wider than width or more lines than
+// /.dev-notes/PLAN-v1.md §9. It never returns a line wider than width or more lines than
 // height, regardless of what theme or the active pane produced — nothing
 // may assume 80x24 (s4-tui.md S4-T2 item 4).
 func composeFrame(theme Theme, width, height int, title, footer string, sidebar []string, mainContent string) string {

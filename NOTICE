@@ -30,7 +30,7 @@ lw's own, independently written Go code borrows is three *patterns*:
   3. a flat `key_name = ["stroke", ...]` hotkeys.toml, mapping one named
      action to a list of keystrokes.
 
-An earlier design (/PLAN.md D1) called for vendoring three of superfile's
+An earlier design (/.dev-notes/PLAN-v1.md D1) called for vendoring three of superfile's
 Go packages (pkg/file_preview, pkg/string_function, pkg/utils) under
 third_party/. That plan was measured against yorukot/superfile@b72f550
 before any code was written and reversed: those three packages pull in

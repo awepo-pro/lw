@@ -93,7 +93,7 @@ func renderOpList(theme ui.Theme, ops []stage.Op, currentOpID string, w int) str
 // review"), and either its hunks (with the cursor's hunk marked, and any
 // dropped hunk shown faint with a "dropped" marker — item 4 / item 11) or,
 // for a stale op, both full versions and a rebase-or-drop prompt in amber
-// (item 4, /PLAN.md §7).
+// (item 4, /.dev-notes/PLAN-v1.md §7).
 func renderDiffPane(theme ui.Theme, cs *stage.Changeset, d stage.Diff, stops []cursorStop, cursor int, w int) string {
 	if len(d.Files) == 0 {
 		return theme.Faint.Render(fitLine("(no changes to review)", w))

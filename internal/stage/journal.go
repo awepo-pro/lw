@@ -4,7 +4,7 @@
 //
 // The journal is append-only, forever. Nothing in this package — or
 // anywhere else in the codebase — ever rewrites, truncates or compacts
-// journal.ndjson: rejections are permanent history (/PLAN.md §4.4).
+// journal.ndjson: rejections are permanent history (/.dev-notes/PLAN-v1.md §4.4).
 package stage
 
 import (

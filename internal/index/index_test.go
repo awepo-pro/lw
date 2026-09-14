@@ -56,7 +56,7 @@ func TestSearchRanking(t *testing.T) {
 // alias (backbone §3 amendment): a page becomes findable by words that only
 // ever appear as an alias, never as the link's target or anywhere else in
 // prose. wiki.search is the agent's primary discovery surface and, per
-// /PLAN.md §11.3, what stops duplicate pages being created — it must be
+// /.dev-notes/PLAN-v1.md §11.3, what stops duplicate pages being created — it must be
 // able to find a page by the words actually rendered on it.
 func TestSearchFindsAliasWords(t *testing.T) {
 	dir := testutil.CopyFixture(t, "minimal")

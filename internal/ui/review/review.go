@@ -264,7 +264,7 @@ func (m *Model) dropHunk() (ui.Pane, tea.Cmd) {
 }
 
 // acceptAll is `A`: refused unless the projected tree lints clean
-// (s4-tui.md S4-T3 item 8, /PLAN.md §14's review-fatigue mitigation). A
+// (s4-tui.md S4-T3 item 8, /.dev-notes/PLAN-v1.md §14's review-fatigue mitigation). A
 // refusal changes nothing — no hunk is touched and no reload is issued.
 func (m *Model) acceptAll() (ui.Pane, tea.Cmd) {
 	e := m.deps.Engine

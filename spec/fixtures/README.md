@@ -7,7 +7,7 @@ against (backbone `01-backbone.md` §2, §4).
 ## `minimal/`
 
 A small, canonical, lint-clean vault on the domain "ml-systems"
-(`/PLAN.md` §6's running example). Every wiki page's frontmatter is already
+(`/.dev-notes/PLAN-v1.md` §6's running example). Every wiki page's frontmatter is already
 in the exact byte form `vault.Frontmatter.Encode()` must produce (backbone
 §2.2): known keys in struct order, zero-value optional fields omitted, lists
 in flow style, minimal quoting. This is the byte-stability golden behind

@@ -1,7 +1,7 @@
 // revert.go implements Engine.Revert (backbone §5.8): diff two consecutive
 // snapshots, invert every entry per the backbone's per-kind inversion
 // table, and open the result as a new changeset for review — never applied
-// directly (/PLAN.md §7). Owned by S2-T6.
+// directly (/.dev-notes/PLAN-v1.md §7). Owned by S2-T6.
 package stage
 
 import (
@@ -28,7 +28,7 @@ var revertHistoryPathPattern = regexp.MustCompile(`^log(-\d{4})?\.md$`)
 // opens the result as a new changeset for review.
 //
 // Contract (backbone §5.8): it never applies anything directly — a revert
-// is a proposal like any other (/PLAN.md §7) — and it never takes the
+// is a proposal like any other (/.dev-notes/PLAN-v1.md §7) — and it never takes the
 // lock: like OpenChangeset and Append, it writes only under
 // changesets/open/ and never touches the working tree (MASTER §9 D-BZ).
 // Any path it cannot express as an op (an ingest_source addition, or a
@@ -259,7 +259,7 @@ func (e *Engine) buildRevertOps(commitID string, prev, cur Snapshot, renames []r
 	// original fix, still honest under phase 2. The un-fixed code silently
 	// dropped this case too, which is exactly what MASTER §9 D-BY/D-BZ
 	// forbid — a review surface that misdescribes what will land is the
-	// one defect /PLAN.md §1 cannot ship. TestRevertMergeReportsUncoveredPaths
+	// one defect /.dev-notes/PLAN-v1.md §1 cannot ship. TestRevertMergeReportsUncoveredPaths
 	// pins this and was proved to fail against the pre-fix code.
 	for _, p := range changed {
 		if covered[p] {

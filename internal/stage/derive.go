@@ -226,7 +226,7 @@ func deriveIndex(running []byte, creates []Op, post func(Op) ([]byte, error)) ([
 // stub (S2-T8 rule (c)): left in place at the source path rather than
 // moved out to .llmwiki/tombstones/ the way a rename_page/merge_pages
 // source is, because retargeting an inbound link after a split ("which
-// product did this link mean?") is judgement that /PLAN.md §1 reserves for
+// product did this link mean?") is judgement that /.dev-notes/PLAN-v1.md §1 reserves for
 // the model — a Go guess here is the exact D-Y silent-corruption class.
 // Leaving the stub in place lets every inbound link keep resolving with no
 // guess at all.

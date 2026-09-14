@@ -1,6 +1,6 @@
 // app.go implements backbone §12's App: the Bubble Tea v2 shell that lays
 // out the title bar, the STAGE sidebar, the active screen and the footer
-// (/PLAN.md §9), cycles screens on tab, and quits cleanly on q/Ctrl-C.
+// (/.dev-notes/PLAN-v1.md §9), cycles screens on tab, and quits cleanly on q/Ctrl-C.
 //
 // The shell never constructs a screen and never imports one — Options.Panes
 // is injected by cmd/lw (backbone §12; s4-tui.md S4-T2 item 1).
@@ -16,7 +16,7 @@ import (
 	"github.com/awepo-pro/lw/internal/lint"
 )
 
-// screenOrder is the fixed tab cycle — /PLAN.md §9's reading order —
+// screenOrder is the fixed tab cycle — /.dev-notes/PLAN-v1.md §9's reading order —
 // deterministic because it is a slice, never a map range.
 var screenOrder = []Screen{ScreenBrowse, ScreenReview, ScreenAsk, ScreenLint, ScreenLog}
 

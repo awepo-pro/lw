@@ -396,7 +396,7 @@ func TestCmdInitDeterministicBytes(t *testing.T) {
 }
 
 // TestCmdInitCuratorMemoryHasNoSeededRules is the regression test for
-// S6-C129: a live URL ingest showed that copying /PLAN.md §6's example
+// S6-C129: a live URL ingest showed that copying /.dev-notes/PLAN-v1.md §6's example
 // verbatim into a fresh vault taught the curator a preference no reviewer
 // had ever stated. curator-memory.md must show the file's shape — both
 // headings, plus the explanatory comment — but seed zero rule lines.

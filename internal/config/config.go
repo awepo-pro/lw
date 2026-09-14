@@ -11,7 +11,7 @@ import (
 )
 
 // envPrefix and keyringPrefix mark the two reference forms an api_key value
-// may take; anything else is a literal (/PLAN.md §11.2 calls this
+// may take; anything else is a literal (/.dev-notes/PLAN-v1.md §11.2 calls this
 // "discouraged" but legal).
 const (
 	envPrefix     = "env:"
@@ -44,7 +44,7 @@ type Limits struct {
 // all compile against it. The toml:"llm.limits" tag below is NOT what puts
 // Limits on disk: BurntSushi reads a dotted struct tag as a literal top-level
 // key named "llm.limits", not as a path into the nested [llm.limits] table
-// /PLAN.md §11.2 documents. Load and Save therefore marshal through the
+// /.dev-notes/PLAN-v1.md §11.2 documents. Load and Save therefore marshal through the
 // private shadowConfig below instead of decoding/encoding Config directly;
 // see toShadow/fromShadow.
 type Config struct {
@@ -55,7 +55,7 @@ type Config struct {
 
 // shadowLLM is LLM with Limits nested inside it as "limits", so encoding
 // shadowConfig produces [llm] followed by a nested [llm.limits] table —
-// byte-for-byte the wire format /PLAN.md §11.2 publishes.
+// byte-for-byte the wire format /.dev-notes/PLAN-v1.md §11.2 publishes.
 type shadowLLM struct {
 	BaseURL     string  `toml:"base_url"`
 	Model       string  `toml:"model"`
@@ -112,7 +112,7 @@ func fromShadow(s shadowConfig) *Config {
 // A file that IS present is merged over Default() rather than read alone.
 // This is the fix for a measured defect: a hand-written file naming one key
 // came back with every other field zeroed, which sent MaxToolRounds 0 and
-// MaxTokens 0 into the agent loop (the hard stop /PLAN.md §11.2 calls the
+// MaxTokens 0 into the agent loop (the hard stop /.dev-notes/PLAN-v1.md §11.2 calls the
 // defence against a runaway agent) and made `lw config set` save an
 // `api_key = ""` over the user's credential reference.
 //
@@ -225,7 +225,7 @@ func (c *Config) ResolveAPIKey() (string, error) {
 }
 
 // Default returns lw's out-of-the-box configuration: the DeepSeek endpoint
-// from /PLAN.md §11.2 (MASTER §9 D-CG), with its API key referenced from the
+// from /.dev-notes/PLAN-v1.md §11.2 (MASTER §9 D-CG), with its API key referenced from the
 // environment rather than stored.
 func Default() *Config {
 	return &Config{

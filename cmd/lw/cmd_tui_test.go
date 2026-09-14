@@ -58,7 +58,7 @@ func TestBuildTUIOptionsInjectsAllFivePanes(t *testing.T) {
 	}
 }
 
-// TestBuildTUIOptionsStartsOnReview pins /PLAN.md §13's "ship review before
+// TestBuildTUIOptionsStartsOnReview pins /.dev-notes/PLAN-v1.md §13's "ship review before
 // anything else" — §9 calls review "the reason this project exists" — to
 // Options.Start rather than leaving it to whatever NewApp happens to
 // default to.

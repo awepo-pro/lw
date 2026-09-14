@@ -56,7 +56,7 @@ These are the thirteen actions in the keymap. Defaults are frozen; the
 | `quit` | `q`, `ctrl+c` | Quit `lw` | Shell |
 | `help` | `?` | Help — declared and rebindable, but v0.1 renders no help overlay, so no screen consumes it yet | — |
 
-Review's `y`/`n`/`s`/`A`/`X`/`C` letters are the review surface `/PLAN.md`
+Review's `y`/`n`/`s`/`A`/`X`/`C` letters are the review surface `/.dev-notes/PLAN-v1.md`
 §9 fixes, and they are also the defaults above. The keymap is the source of
 truth: rebinding one of them changes what Review matches, so rebind them
 only if you are also prepared to relearn what the documentation says.

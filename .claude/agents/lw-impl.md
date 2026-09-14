@@ -29,7 +29,7 @@ orchestrator decides what happens next.
    touch `.meta.git/`. You leave the tree dirty; the user commits.
 5. **No dependency outside the allowlist** in `00-conventions.md` §4. Do not
    `go get` anything else — stop and report.
-6. **Never build anything from `/PLAN-v1.md` or `/PLAN-v1.1.md`.** No graph
+6. **Never build anything from `/.dev-notes/PLAN-v2.md` or `/.dev-notes/PLAN-v2.1.md`.** No graph
    view, embeddings, SQLite/FTS5, PDF, OCR, multi-vault, web server.
 7. **Run the tests and paste the real output.** Reporting a pass that did not
    happen is the single worst outcome here — the orchestrator re-runs

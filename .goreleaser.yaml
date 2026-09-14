@@ -10,7 +10,7 @@
 #
 # Design notes:
 #   * CGO_ENABLED=0 on every target. lw must ship as one static binary — the
-#     whole point (/PLAN.md §5) is that it runs over SSH on a machine with
+#     whole point (/.dev-notes/PLAN-v1.md §5) is that it runs over SSH on a machine with
 #     nothing but a shell. `file dist/lw_linux_amd64_v1/lw` must say
 #     "statically linked".
 #   * `mod_timestamp` pins the module clock so two builds of the same commit
