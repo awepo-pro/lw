@@ -1,0 +1,5 @@
+data: {"id":"chatcmpl-e2e-2","choices":[{"index":0,"delta":{"role":"assistant","content":"Proposed wiki/concepts/e2e-round-trip.md; it is staged for human review."},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-e2e-2","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
