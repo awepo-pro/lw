@@ -25,7 +25,7 @@ var lwBin string
 // e2eVersion is the version stamped into the binary under test. It must track
 // the Makefile's VERSION (Makefile:2) — same value, same -X target — so the
 // suite and `make build` produce byte-identical `lw --version` output.
-const e2eVersion = "0.1.0-dev"
+const e2eVersion = "1.0.0-dev"
 
 // goTool is the absolute go toolchain path, resolved once at init: LookPath
 // first, then GOROOT/bin/go. The old literal /usr/local/go/bin/go was this
@@ -68,7 +68,7 @@ func runMain(m *testing.M) int {
 	bin := filepath.Join(tmp, "lw")
 	// e2eVersion must track the Makefile's VERSION (Makefile:2): stamping here
 	// is how the suite exercises the same -ldflags "-X main.version=..." path
-	// `make build` takes, and the frozen `lw 0.1.0-dev` assertions in
+	// `make build` takes, and the frozen `lw 1.0.0-dev` assertions in
 	// harness_test.go and coldstart_test.go depend on the two staying equal.
 	build := exec.Command(goTool, "build",
 		"-ldflags", "-X main.version="+e2eVersion,

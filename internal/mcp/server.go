@@ -59,7 +59,7 @@ func Serve(ctx context.Context, r *tools.Registry, in io.Reader, out io.Writer) 
 	if in == nil || out == nil {
 		return fmt.Errorf("mcp: nil stdio stream")
 	}
-	server := NewServer(r, "0.1.0-dev")
+	server := NewServer(r, "1.0.0-dev")
 	state := &stdioState{response: make(chan struct{})}
 	transport := &sdk.IOTransport{
 		Reader: newInputReader(in, state),

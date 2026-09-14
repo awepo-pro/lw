@@ -51,7 +51,7 @@ Either way, check it landed:
 
 ```
 $ lw --version
-lw 0.1.0-dev
+lw 1.0.0-dev
 ```
 
 `lw` finds its vault by walking up from your current directory to the

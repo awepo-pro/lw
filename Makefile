@@ -1,5 +1,5 @@
 BINARY := lw
-VERSION := 0.1.0-dev
+VERSION := 1.0.0-dev
 LDFLAGS := -X main.version=$(VERSION)
 BENCHTIME ?= 1x
 

@@ -8,6 +8,73 @@ up later doesn't mean rediscovering the design. Items are ordered by expected va
 
 ---
 
+## 0. TUI redesign — taste, themes, and a rendered preview
+
+**Do this first.** Added 2026-09-14, after the user ran the shipped TUI on a real vault:
+*"Current TUI is too ugly … it has definitely no taste. Theme are bad."* The review
+screen is the reason the project exists (`PLAN.md` §1), and today it looks like a debug
+view. Screenshot of record: `.dev-notes/assets/tui-review-2026-09-14.png`.
+
+**What is wrong, measured from that screenshot and the code**
+
+| Problem | Where |
+|---|---|
+| Full-width saturated mustard bars (header, footer, selected row, selected hunk) dominate the screen, so nothing reads as more important than anything else | default theme `Accent` dark `#DFA344` (`internal/ui/theme.go:62`), also used as `Selected`'s background (`theme.go:269`) |
+| The STAGE sidebar is a fixed 20-column strip showing two lines (changeset id, op count); the rest of the column is empty | `sidebarWidth = 20` (`internal/ui/layout.go:18`), `stageLines` (`layout.go:71`) |
+| The OPS list truncates every path mid-word (`wiki/concepts/pri`), so ops are told apart by number, not by what they touch | review screen's fixed ≤ 32-column left pane (`internal/ui/review/review.go:477`) |
+| The rationale is cut to one line and never wraps; provenance is not visible on a patch op at all | `review.go` `renderBody` |
+| Hunks show raw markdown source with `+` prefixes: `*server-side*`, `##` headings, blank `+` lines. No context lines. You review the page's source, not the page | `internal/ui/review/diffview.go` |
+| Most of the detail pane is empty; three near-black panels in slightly different greys with dashed blue separators | layout + `Border` colours |
+| The four themes (default, dark, light, nord) share one layout and one way of using colour; changing the theme recolours the same problems | `theme.go:61–114` (S6-T4) |
+
+**Scope**
+
+- **Rendered preview in Review.** A toggle (`p`) between the diff and the page *as it
+  will look after commit*, rendered with glamour. The user proved the idea on the command
+  line and liked it:
+
+  ```bash
+  lw diff --op op2 | grep '^+' | grep -v '^+++' | sed 's/^+//' | glow -
+  ```
+
+  `create_page` renders the whole page. `patch_page` renders the patched section, with
+  changed blocks marked in a gutter so the eye still lands on what changed.
+- **`lw diff --render`** (or `lw show --staged <path>`): the same preview without the
+  TUI, so the pipeline above becomes one flag.
+- **Browse shows staged pages** ghosted in, marked as uncommitted, and they open in the
+  same rendered preview. Closes the UI half of TD-10.
+- **Layout.** Fold the STAGE sidebar into the header (changeset id · op count · check
+  status). Give the op list the width back: the file's basename in full, its directory
+  dimmed. Wrap the rationale; show provenance on every op. Add context lines to hunks.
+- **A real visual system, not four palettes.** One accent used sparingly (cursor and
+  focus only); no full-bleed coloured bars; quiet borders; typographic hierarchy (bold,
+  dim, spacing) doing the work colour does today. Then 3–4 curated themes on top of it,
+  replacing the §9 "Themes" row below. Reference points: lazygit, gh-dash, glow, and
+  superfile (whose theme format is already vendored).
+- **Help overlay on `?`**: the binding already exists and does nothing (TD-8 part 1).
+- **Split hunk `s`** (TD-2) belongs in the same pass, since it changes the same screen.
+
+**Plugs into**
+
+- `Engine.StagedFile` (`internal/stage/staged.go:34`) already returns the projected bytes
+  of any `ingest_source`, `create_page` or `patch_page` path in the open changeset (added
+  for C-121). The rendered preview is a view over it; no new engine data is needed.
+- Browse already renders markdown with glamour (`internal/ui/browse/preview.go`). Review
+  and the new preview should share that renderer and its polarity handling.
+- Themes load through `LoadTheme` with user theme files layered on built-ins (S6-T4);
+  that loading path stays, the palette contract gets redesigned.
+
+**Acceptance: taste is judged, not asserted**
+
+- Before any code, a mock of Review, Ask and Browse at 80×24, 120×40 and 200×60, in dark
+  and light, approved by the user. Screenshots in the design doc, not adjectives.
+- Golden-output tests per screen and size, so a later change can't silently regress the
+  look.
+- The user runs it on their own vault and signs off. A green test suite is not
+  acceptance for this item.
+
+---
+
 ## 1. Knowledge graph — visualization and traversal
 
 **The headline feature of v1.0.** A compiled wiki *is* a graph; v0.1 can query it
@@ -214,4 +281,4 @@ though nothing is comparing them to each other.
 | Templates | Per-`type` page skeletons in `SCHEMA.md` so `stage.create_page` starts from house style |
 | `lw audit` | Periodic deep review: sample N pages, re-verify claims against `raw/`, flag drift the lint suite can't see |
 | Log rotation UI | Browse archived `log-YYYY.md` from the Log screen |
-| Themes | Ship 3–4 curated themes beyond the default; superfile's theme format is already vendored |
+| Themes | Superseded by §0: curated themes come after the visual-system redesign, not instead of it |

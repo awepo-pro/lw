@@ -253,7 +253,7 @@ func harnessVersion(t *testing.T) {
 	if res.Code != 0 {
 		t.Fatalf("lw --version: exit %d, want 0\n%s", res.Code, res.Output)
 	}
-	if got, want := strings.TrimSpace(res.Stdout), "lw 0.1.0-dev"; got != want {
+	if got, want := strings.TrimSpace(res.Stdout), "lw 1.0.0-dev"; got != want {
 		t.Errorf("lw --version: stdout = %q, want %q", got, want)
 	}
 	if res.Stderr != "" {

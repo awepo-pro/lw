@@ -12,7 +12,7 @@ import (
 
 // version is the build version. Override at link time with
 // -ldflags "-X main.version=...".
-var version = "0.1.0-dev"
+var version = "1.0.0-dev"
 
 // verb pairs one CLI verb with its handler, in the order shown by usage.
 type verb struct {

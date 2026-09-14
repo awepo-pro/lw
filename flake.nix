@@ -36,7 +36,7 @@
       ];
       forAllSystems =
         f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
-      version = "0.1.0"; # bump with the release tag; goreleaser stamps its own
+      version = "1.0.0"; # bump with the release tag; goreleaser stamps its own
     in
     {
       packages = forAllSystems (

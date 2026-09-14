@@ -17,8 +17,8 @@
 #     are byte-identical. This project's thesis is determinism; a release
 #     artifact that differs run-to-run would be an odd thing to ship.
 #   * `main.version` is cmd/lw/main.go's `var version` (`lw --version` prints
-#     it). The Makefile's dev builds stamp `0.1.0-dev`; a release stamps the
-#     tag itself, so `lw --version` prints `lw v0.1.0` on a v0.1.0 tag.
+#     it). The Makefile's dev builds stamp `1.0.0-dev`; a release stamps the
+#     tag itself, so `lw --version` prints `lw v1.0.0` on a v1.0.0 tag.
 
 version: 2
 
