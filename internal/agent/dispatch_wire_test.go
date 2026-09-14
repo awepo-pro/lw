@@ -119,9 +119,9 @@ func TestDispatchCanonicalizesWireToolName(t *testing.T) {
 // TestReasoningContentReachesWireBody is S5-T7's wire-body test (C-114/D-CZ):
 // a struct-level assertion on Message.ReasoningContent would pass even if
 // its json tag were wrong or missing entirely — the C-101 repair used this
-// same discipline for MaxTokens — so this actually marshals the assistant
-// message runRound/dispatchToolCall built for round 2 and greps the bytes
-// for the literal "reasoning_content" key and value.
+// same discipline for MaxTokens — so this actually marshals the round's one
+// assistant message (built once, at round end, by runRound — C-120/D-DG)
+// and greps the bytes for the literal "reasoning_content" key and value.
 func TestReasoningContentReachesWireBody(t *testing.T) {
 	const reasoning = "Let me think about it."
 	rounds := [][]llm.Chunk{
@@ -166,5 +166,73 @@ func TestReasoningContentReachesWireBody(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("round 2 request carried no assistant tool-call message: %+v", reqs[1].Messages)
+	}
+}
+
+// TestC120WireBodyMergesTextAndToolCallIntoOneAssistantObject is C-120/D-DG's
+// third required new test: the live G6 replay 400 was a wire-shape defect,
+// not a struct-shape one, so this marshals the actual outbound
+// llm.Request.Messages for the C-120 regression scenario (text, then one
+// tool call, no reasoning) and asserts on the JSON bytes directly — a single
+// marshalled object carrying both "content" and "tool_calls", with no
+// content-only assistant object anywhere before it. That second half is the
+// exact shape DeepSeek's captured req-02.json rejected: an assistant object
+// with content and no tool_calls, immediately followed by a second
+// assistant object with tool_calls and no content, neither carrying
+// reasoning_content.
+func TestC120WireBodyMergesTextAndToolCallIntoOneAssistantObject(t *testing.T) {
+	const text = "I'll start with the orientation ritual, then ingest the new source."
+	rounds := [][]llm.Chunk{
+		{
+			{Text: text},
+			toolCallChunk("call-1", "stage.close", ""),
+			{Finish: "tool_calls"},
+		},
+		{
+			{Text: "done"},
+			{Finish: "stop"},
+		},
+	}
+	l, fx, fake := newTestLoop(t, rounds, LoopConfig{})
+
+	out := make(chan Event, 64)
+	if err := l.Send(context.Background(), fx.csID, "wire-body shape for text then a tool call", out); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	drain(out)
+
+	reqs := fake.Requests()
+	if len(reqs) != 2 {
+		t.Fatalf("Stream called %d times, want exactly 2", len(reqs))
+	}
+
+	// Marshal each assistant message on its own, the way the real wire
+	// body renders it inside "messages": [...]. Walk them in order: a
+	// content-only assistant object must never appear before the one that
+	// also carries tool_calls (the shape that 400s).
+	sawContentOnly := false
+	var mergedObjects int
+	for _, m := range reqs[1].Messages {
+		if m.Role != "assistant" {
+			continue
+		}
+		b, err := json.Marshal(m)
+		if err != nil {
+			t.Fatalf("marshal assistant message: %v", err)
+		}
+		hasContent := bytes.Contains(b, []byte(`"content":"`+text+`"`))
+		hasToolCalls := bytes.Contains(b, []byte(`"tool_calls":[`))
+		switch {
+		case hasContent && hasToolCalls:
+			mergedObjects++
+		case hasContent && !hasToolCalls:
+			sawContentOnly = true
+		}
+	}
+	if sawContentOnly {
+		t.Fatalf("found a content-only assistant object in round 2's request — the exact shape req-02.json 400ed on: %+v", reqs[1].Messages)
+	}
+	if mergedObjects != 1 {
+		t.Fatalf("want exactly 1 assistant object carrying both content and tool_calls in one JSON object, got %d: %+v", mergedObjects, reqs[1].Messages)
 	}
 }

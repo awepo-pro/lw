@@ -3,7 +3,7 @@ VERSION := 0.1.0-dev
 LDFLAGS := -X main.version=$(VERSION)
 BENCHTIME ?= 1x
 
-.PHONY: build test lint check smoke bench stress-scale fixtures install clean
+.PHONY: build test lint check smoke bench stress-scale fixtures install release-snapshot clean
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/lw
@@ -41,3 +41,10 @@ install:
 clean:
 	rm -f $(BINARY)
 	rm -rf dist/
+
+# Release engineering — the build leg only. `goreleaser release` (which tags,
+# uploads and commits the tap) is run by hand by the maintainer; no target
+# here publishes anything. Requires goreleaser v2:
+#   go install github.com/goreleaser/goreleaser/v2@latest
+release-snapshot:
+	goreleaser build --snapshot --clean

@@ -449,9 +449,11 @@ func TestToolErrorDoesNotAbort(t *testing.T) {
 // discarded the model's own reasoning, and round 2's request never carried
 // it back, so a real thinking provider rejects it with a 400. Round 1
 // scripts reasoning deltas immediately followed by a tool call with no
-// preceding text, so dispatchToolCall — not flush — is the one that must
-// attach the accumulated reasoning to the assistant message it builds; this
-// asserts that message reaches round 2's actual llm.Request.
+// preceding text, so runRound's end-of-round assembly (C-120/D-DG) — not a
+// text flush — is the one that must attach the accumulated reasoning to the
+// round's one assistant message; this asserts that message reaches round
+// 2's actual llm.Request with an empty Content (no text this round) and its
+// tool call attached.
 func TestLoopReplaysReasoningOnRoundTwo(t *testing.T) {
 	const wantReasoning = "Let me think about it."
 	rounds := [][]llm.Chunk{
@@ -486,8 +488,11 @@ func TestLoopReplaysReasoningOnRoundTwo(t *testing.T) {
 			if m.ToolCalls[0].ID != "call-1" {
 				continue
 			}
+			if m.Content != "" {
+				t.Errorf("round 2's assistant message Content = %q, want \"\" (round 1 streamed no text)", m.Content)
+			}
 			if m.ReasoningContent != wantReasoning {
-				t.Errorf("round 2's assistant tool-call message ReasoningContent = %q, want %q", m.ReasoningContent, wantReasoning)
+				t.Errorf("round 2's assistant message ReasoningContent = %q, want %q", m.ReasoningContent, wantReasoning)
 			}
 		}
 	}
@@ -497,14 +502,15 @@ func TestLoopReplaysReasoningOnRoundTwo(t *testing.T) {
 }
 
 // TestLoopReasoningOnEveryAssistantMessageInRound is the reset test the
-// stage file requires, corrected by C-115: a live wire probe against the
-// real provider showed that attaching a round's reasoning to only its first
-// assistant message (the rule frozen at dispatch) still 400s — the provider
-// accepts a follow-up request only when EVERY assistant message of the
-// round repeats the same reasoning string, because it can emit several
-// parallel tool calls in one round. This round produces three: a text
-// flush and two tool-call messages, all three from the one accumulated
-// roundReasoning builder — assert all three carry it, unchanged.
+// stage file requires. C-115's live wire probe against the real provider
+// showed that attaching a round's reasoning to only its first assistant
+// message (the rule frozen at dispatch) still 400s; C-120/D-DG's live
+// replay went further and found the actual accepted shape is not "repeat
+// the string on several assistant messages" but "merge the round into one":
+// this round streams shared reasoning, leading text and two parallel tool
+// calls, and must reach round 2 as exactly ONE assistant message carrying
+// the text, the reasoning and both tool calls (in stream order), followed
+// by both tool-result messages in call order.
 func TestLoopReasoningOnEveryAssistantMessageInRound(t *testing.T) {
 	const reasoning = "shared reasoning for the whole round"
 	rounds := [][]llm.Chunk{
@@ -523,7 +529,7 @@ func TestLoopReasoningOnEveryAssistantMessageInRound(t *testing.T) {
 	l, fx, fake := newTestLoop(t, rounds, LoopConfig{})
 
 	out := make(chan Event, 64)
-	if err := l.Send(context.Background(), fx.csID, "one round, three assistant messages", out); err != nil {
+	if err := l.Send(context.Background(), fx.csID, "one round, one assistant message", out); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 	drain(out)
@@ -533,41 +539,46 @@ func TestLoopReasoningOnEveryAssistantMessageInRound(t *testing.T) {
 		t.Fatalf("Stream called %d times, want exactly 2", len(reqs))
 	}
 
-	var textMsg *llm.Message
-	var toolCallMsgs []llm.Message
-	for i := range reqs[1].Messages {
-		m := reqs[1].Messages[i]
-		if m.Role != "assistant" {
-			continue
-		}
-		switch {
-		case len(m.ToolCalls) > 0:
-			toolCallMsgs = append(toolCallMsgs, m)
-		case m.Content == "here's what I found":
-			textMsg = &reqs[1].Messages[i]
+	var assistantMsgs []llm.Message
+	var toolMsgs []llm.Message
+	for _, m := range reqs[1].Messages {
+		switch m.Role {
+		case "assistant":
+			assistantMsgs = append(assistantMsgs, m)
+		case "tool":
+			toolMsgs = append(toolMsgs, m)
 		}
 	}
-	if textMsg == nil {
-		t.Fatalf("no text-flush assistant message found in round 2's request: %+v", reqs[1].Messages)
+	if len(assistantMsgs) != 1 {
+		t.Fatalf("got %d assistant messages for the round, want exactly 1 (C-120/D-DG): %+v", len(assistantMsgs), assistantMsgs)
 	}
-	if textMsg.ReasoningContent != reasoning {
-		t.Errorf("text-flush assistant message ReasoningContent = %q, want %q", textMsg.ReasoningContent, reasoning)
+	m := assistantMsgs[0]
+	if m.Content != "here's what I found" {
+		t.Errorf("assistant message Content = %q, want the round's text", m.Content)
 	}
-	if len(toolCallMsgs) != 2 {
-		t.Fatalf("got %d assistant tool-call messages, want 2: %+v", len(toolCallMsgs), toolCallMsgs)
+	if m.ReasoningContent != reasoning {
+		t.Errorf("assistant message ReasoningContent = %q, want %q", m.ReasoningContent, reasoning)
 	}
-	for i, m := range toolCallMsgs {
-		if m.ReasoningContent != reasoning {
-			t.Errorf("tool-call assistant message %d ReasoningContent = %q, want %q (every assistant message in the round must carry it, C-115)", i, m.ReasoningContent, reasoning)
-		}
+	if len(m.ToolCalls) != 2 {
+		t.Fatalf("assistant message ToolCalls = %+v, want both call-1 and call-2", m.ToolCalls)
+	}
+	if m.ToolCalls[0].ID != "call-1" || m.ToolCalls[1].ID != "call-2" {
+		t.Errorf("assistant message ToolCalls IDs = [%s %s], want [call-1 call-2] (stream order)", m.ToolCalls[0].ID, m.ToolCalls[1].ID)
+	}
+	if len(toolMsgs) != 2 {
+		t.Fatalf("got %d tool-result messages, want 2: %+v", len(toolMsgs), toolMsgs)
+	}
+	if toolMsgs[0].ToolCallID != "call-1" || toolMsgs[1].ToolCallID != "call-2" {
+		t.Errorf("tool-result messages out of order: %+v", toolMsgs)
 	}
 }
 
-// TestLoopReasoningDoesNotLeakAcrossRounds proves the other half of C-115:
-// roundReasoning resets when the NEXT ROUND starts, not mid-round — round
-// 1's reasoning must never appear on round 2's assistant message, and vice
-// versa, even though by round 3's request both messages sit side by side in
-// the same history.
+// TestLoopReasoningDoesNotLeakAcrossRounds proves the other half of C-115,
+// unaffected by C-120/D-DG's later change to how many assistant messages
+// one round produces: roundReasoning resets when the NEXT ROUND starts, not
+// mid-round — round 1's reasoning must never appear on round 2's (one)
+// assistant message, and vice versa, even though by round 3's request both
+// messages sit side by side in the same history.
 func TestLoopReasoningDoesNotLeakAcrossRounds(t *testing.T) {
 	const round1Reasoning = "round one reasoning"
 	const round2Reasoning = "round two reasoning"
@@ -601,9 +612,14 @@ func TestLoopReasoningDoesNotLeakAcrossRounds(t *testing.T) {
 	}
 
 	var msg1, msg2 *llm.Message
+	assistantCount := 0
 	for i := range reqs[2].Messages {
 		m := reqs[2].Messages[i]
-		if m.Role != "assistant" || len(m.ToolCalls) == 0 {
+		if m.Role != "assistant" {
+			continue
+		}
+		assistantCount++
+		if len(m.ToolCalls) == 0 {
 			continue
 		}
 		switch m.ToolCalls[0].ID {
@@ -613,6 +629,12 @@ func TestLoopReasoningDoesNotLeakAcrossRounds(t *testing.T) {
 			msg2 = &reqs[2].Messages[i]
 		}
 	}
+	// One assistant message per round (C-120/D-DG): rounds 1 and 2 each
+	// produced exactly one tool call and no text, so the history carries
+	// exactly two assistant messages by round 3 — never four.
+	if assistantCount != 2 {
+		t.Fatalf("round 3's request carries %d assistant messages, want exactly 2 (one per prior round): %+v", assistantCount, reqs[2].Messages)
+	}
 	if msg1 == nil || msg2 == nil {
 		t.Fatalf("round 3's request is missing one of round 1/2's tool-call messages: %+v", reqs[2].Messages)
 	}
@@ -621,6 +643,194 @@ func TestLoopReasoningDoesNotLeakAcrossRounds(t *testing.T) {
 	}
 	if msg2.ReasoningContent != round2Reasoning {
 		t.Errorf("round 2's assistant message ReasoningContent = %q, want %q (its own round's reasoning, not round 1's)", msg2.ReasoningContent, round2Reasoning)
+	}
+}
+
+// TestC120TextThenToolCallNoReasoning is C-120's own regression test: the
+// live G6 replay showed a round that streams text, then one tool call, with
+// NO reasoning deltas at all — the exact shape that used to become a
+// content-only assistant message followed by a tool-call assistant message,
+// neither carrying reasoning_content (omitempty drops an empty string from
+// both), which DeepSeek 400s. Under C-120/D-DG's fix the round still yields
+// exactly one assistant message, with an empty ReasoningContent, and it
+// must be followed immediately by its one tool-result message.
+func TestC120TextThenToolCallNoReasoning(t *testing.T) {
+	const text = "I'll start with the orientation ritual, then ingest the new source."
+	rounds := [][]llm.Chunk{
+		{
+			{Text: text},
+			toolCallChunk("call-1", "stage.close", ""),
+			{Finish: "tool_calls"},
+		},
+		{
+			{Text: "done"},
+			{Finish: "stop"},
+		},
+	}
+	l, fx, fake := newTestLoop(t, rounds, LoopConfig{})
+
+	out := make(chan Event, 64)
+	if err := l.Send(context.Background(), fx.csID, "text then a tool call, no reasoning", out); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	drain(out)
+
+	reqs := fake.Requests()
+	if len(reqs) != 2 {
+		t.Fatalf("Stream called %d times, want exactly 2", len(reqs))
+	}
+
+	msgs := reqs[1].Messages
+	assistantIdx := -1
+	for i, m := range msgs {
+		if m.Role == "assistant" && len(m.ToolCalls) > 0 {
+			if assistantIdx != -1 {
+				t.Fatalf("more than one assistant message with tool calls in round 2's request: %+v", msgs)
+			}
+			assistantIdx = i
+		}
+	}
+	if assistantIdx == -1 {
+		t.Fatalf("no assistant message carrying the tool call found: %+v", msgs)
+	}
+	m := msgs[assistantIdx]
+	if m.Content != text {
+		t.Errorf("assistant message Content = %q, want %q", m.Content, text)
+	}
+	if m.ReasoningContent != "" {
+		t.Errorf("assistant message ReasoningContent = %q, want \"\" (round streamed no reasoning)", m.ReasoningContent)
+	}
+	if len(m.ToolCalls) != 1 || m.ToolCalls[0].ID != "call-1" {
+		t.Fatalf("assistant message ToolCalls = %+v, want exactly [call-1]", m.ToolCalls)
+	}
+	if assistantIdx+1 >= len(msgs) || msgs[assistantIdx+1].Role != "tool" || msgs[assistantIdx+1].ToolCallID != "call-1" {
+		t.Fatalf("the one assistant message must be followed immediately by its tool result: %+v", msgs)
+	}
+}
+
+// TestC120ParallelToolCallsReasoningAndText is C-120/D-DG's second required
+// new test: leading text, shared reasoning and two parallel tool calls must
+// all land in ONE assistant message — both calls in stream order, the
+// reasoning and the text — followed by both tool-result messages in call
+// order, never interleaved with a second assistant message.
+func TestC120ParallelToolCallsReasoningAndText(t *testing.T) {
+	const text = "checking two things at once"
+	const reasoning = "I should call both in parallel"
+	rounds := [][]llm.Chunk{
+		{
+			{Text: text},
+			{Reasoning: reasoning},
+			toolCallChunk("call-a", "stage.close", ""),
+			toolCallChunk("call-b", "stage.close", ""),
+			{Finish: "tool_calls"},
+		},
+		{
+			{Text: "done"},
+			{Finish: "stop"},
+		},
+	}
+	l, fx, fake := newTestLoop(t, rounds, LoopConfig{})
+
+	out := make(chan Event, 64)
+	if err := l.Send(context.Background(), fx.csID, "parallel calls with text and reasoning", out); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	drain(out)
+
+	reqs := fake.Requests()
+	if len(reqs) != 2 {
+		t.Fatalf("Stream called %d times, want exactly 2", len(reqs))
+	}
+
+	msgs := reqs[1].Messages
+	var assistant *llm.Message
+	var toolIdx []int
+	for i := range msgs {
+		switch msgs[i].Role {
+		case "assistant":
+			if assistant != nil {
+				t.Fatalf("more than one assistant message in round 2's request: %+v", msgs)
+			}
+			assistant = &msgs[i]
+		case "tool":
+			toolIdx = append(toolIdx, i)
+		}
+	}
+	if assistant == nil {
+		t.Fatalf("no assistant message found: %+v", msgs)
+	}
+	if assistant.Content != text {
+		t.Errorf("assistant.Content = %q, want %q", assistant.Content, text)
+	}
+	if assistant.ReasoningContent != reasoning {
+		t.Errorf("assistant.ReasoningContent = %q, want %q", assistant.ReasoningContent, reasoning)
+	}
+	if len(assistant.ToolCalls) != 2 || assistant.ToolCalls[0].ID != "call-a" || assistant.ToolCalls[1].ID != "call-b" {
+		t.Fatalf("assistant.ToolCalls = %+v, want [call-a call-b] in stream order", assistant.ToolCalls)
+	}
+	if len(toolIdx) != 2 {
+		t.Fatalf("got %d tool messages, want 2: %+v", len(toolIdx), msgs)
+	}
+	if msgs[toolIdx[0]].ToolCallID != "call-a" || msgs[toolIdx[1]].ToolCallID != "call-b" {
+		t.Errorf("tool messages out of call order: %+v", msgs)
+	}
+}
+
+// TestC120CorrectablePathContributesToOneAssistantMessage is C-120/D-DG's
+// fourth required new test: a malformed-args call followed by a good call
+// in the same round must still contribute both calls — the correctable one
+// and the dispatched one — to the round's single assistant message, exactly
+// like two successful parallel calls do.
+func TestC120CorrectablePathContributesToOneAssistantMessage(t *testing.T) {
+	rounds := [][]llm.Chunk{
+		{
+			toolCallChunk("call-bad", "wiki.get", "{not valid json"),
+			toolCallChunk("call-good", "stage.close", ""),
+			{Finish: "tool_calls"},
+		},
+		{
+			{Text: "done"},
+			{Finish: "stop"},
+		},
+	}
+	l, fx, fake := newTestLoop(t, rounds, LoopConfig{})
+
+	out := make(chan Event, 64)
+	if err := l.Send(context.Background(), fx.csID, "one malformed call, then a good one", out); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	drain(out)
+
+	reqs := fake.Requests()
+	if len(reqs) != 2 {
+		t.Fatalf("Stream called %d times, want exactly 2", len(reqs))
+	}
+
+	msgs := reqs[1].Messages
+	var assistant *llm.Message
+	var toolMsgs []llm.Message
+	for i := range msgs {
+		switch msgs[i].Role {
+		case "assistant":
+			if assistant != nil {
+				t.Fatalf("more than one assistant message in round 2's request: %+v", msgs)
+			}
+			assistant = &msgs[i]
+		case "tool":
+			toolMsgs = append(toolMsgs, msgs[i])
+		}
+	}
+	if assistant == nil {
+		t.Fatalf("no assistant message found: %+v", msgs)
+	}
+	if len(assistant.ToolCalls) != 2 || assistant.ToolCalls[0].ID != "call-bad" || assistant.ToolCalls[1].ID != "call-good" {
+		t.Fatalf("assistant.ToolCalls = %+v, want [call-bad call-good] — the correctable call and the dispatched one, in order", assistant.ToolCalls)
+	}
+	if len(toolMsgs) != 2 {
+		t.Fatalf("got %d tool-result messages, want 2: %+v", len(toolMsgs), msgs)
+	}
+	if toolMsgs[0].ToolCallID != "call-bad" || toolMsgs[1].ToolCallID != "call-good" {
+		t.Errorf("tool-result messages out of order: %+v", toolMsgs)
 	}
 }
 

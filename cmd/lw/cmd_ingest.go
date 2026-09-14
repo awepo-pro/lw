@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,8 +24,8 @@ import (
 // behalf — a hung remote server must not hang the whole command.
 const httpTimeout = 30 * time.Second
 
-// newAgent constructs the agent.Agent used by ingest, query and lint
-// --fix (cmd_ingest.go, cmd_query.go, cmd_lint.go): the single
+// newIngestAgent constructs the agent.Agent used by ingest, query and
+// lint --fix (cmd_ingest.go, cmd_query.go, cmd_lint.go): the single
 // package-level seam this subtask's brief asks for, since agent.Agent is
 // a small interface but internal/agent's own fake-client seam (backbone
 // §9, D-CS) is unexported and lives in another package. A test in package
@@ -40,7 +41,18 @@ const httpTimeout = 30 * time.Second
 // lint --fix pass agent.NewFileSessions(root) so the session travels with
 // the real changeset (backbone §9, C-102); query passes its own ephemeral,
 // in-process store (cmd_query.go) so no changeset is ever touched.
-var newAgent = func(e *stage.Engine, cfg *config.Config, sessions agent.SessionStore) (agent.Agent, error) {
+//
+// ex is the extract.Extractor the tools' Deps.Extract is built over — the
+// ingest-local seam C-123's fix needs (backbone §6, §10): cmdIngest calls
+// this directly with a Chain that resolves each scratch path it wrote back
+// to the already-extracted Doc, corrected SourceURL and all (see
+// preExtracted below), rather than letting stage.ingest_source re-extract
+// the scratch file with a bare extract.NewFile() and record the scratch
+// path itself as the raw source's provenance. newAgent (below) keeps its
+// existing three-argument signature — query, lint --fix and the TUI all
+// swap it directly in their own tests — by delegating to this with
+// extract.NewFile(), exactly what it built inline before.
+var newIngestAgent = func(e *stage.Engine, cfg *config.Config, sessions agent.SessionStore, ex extract.Extractor) (agent.Agent, error) {
 	apiKey, err := cfg.ResolveAPIKey()
 	if err != nil {
 		return nil, fmt.Errorf("resolve api key: %w", err)
@@ -56,7 +68,7 @@ var newAgent = func(e *stage.Engine, cfg *config.Config, sessions agent.SessionS
 		Vault:   e.Vault(),
 		Index:   e.Index(),
 		Engine:  e,
-		Extract: extract.NewFile(),
+		Extract: ex,
 		Author:  stage.Author{Kind: "agent", Model: cfg.LLM.Model},
 	})
 	loopCfg := agent.LoopConfig{
@@ -64,6 +76,69 @@ var newAgent = func(e *stage.Engine, cfg *config.Config, sessions agent.SessionS
 		ContextTokens: cfg.Limits.ContextTokens,
 	}
 	return agent.NewLoop(client, reg, sessions, e, loopCfg), nil
+}
+
+// newAgent is the seam cmd_query.go, cmd_lint.go and cmd_tui.go call and
+// swap in their own tests. It is unchanged in signature and behaviour —
+// still extract.NewFile() — so none of those callers or tests are
+// affected by C-123's fix, which only changes what cmdIngest itself calls.
+var newAgent = func(e *stage.Engine, cfg *config.Config, sessions agent.SessionStore) (agent.Agent, error) {
+	return newIngestAgent(e, cfg, sessions, extract.NewFile())
+}
+
+// preExtracted is the extract.Extractor cmdIngest hands the agent's tools
+// for one ingest (C-123). stage.ingest_source only ever accepts a local
+// path, so the agent is always given a scratch file cmdIngest already
+// wrote — but re-extracting that scratch file with a bare extract.NewFile()
+// sets Doc.SourceURL to the scratch path itself, and that path is removed
+// (os.RemoveAll on a deferred temp dir) the moment lw ingest exits: every
+// committed raw file then records a provenance that no longer exists. This
+// type closes that gap by remembering, per scratch path, the Doc cmdIngest
+// already extracted from the ORIGINAL source — SourceURL corrected back to
+// that original argument before the doc is ever staged (stage below) — and
+// handing back a copy of exactly that Doc when the tool re-extracts the
+// path. CanHandle is true only for paths this ingest staged; every other
+// uri is left to the next extractor in the chain, extract.NewFile().
+type preExtracted struct {
+	docs map[string]extract.Doc
+}
+
+// newPreExtracted returns an empty preExtracted, ready for stage.
+func newPreExtracted() *preExtracted {
+	return &preExtracted{docs: make(map[string]extract.Doc)}
+}
+
+// stage records doc — with SourceURL already corrected — as the result
+// preExtracted returns for a future Extract(ctx, path).
+func (p *preExtracted) stage(path string, doc extract.Doc) {
+	p.docs[path] = doc
+}
+
+// CanHandle reports whether uri is a path preExtracted staged.
+func (p *preExtracted) CanHandle(uri string) bool {
+	_, ok := p.docs[uri]
+	return ok
+}
+
+// Extract returns a copy of the Doc staged for uri, so the caller's own
+// mutations (e.g. stage.ingest_source trimming Markdown) never alter the
+// map entry a second call to the same path would see.
+func (p *preExtracted) Extract(ctx context.Context, uri string) (*extract.Doc, error) {
+	doc, ok := p.docs[uri]
+	if !ok {
+		return nil, fmt.Errorf("preExtracted: no document staged for %s", uri)
+	}
+	out := doc
+	return &out, nil
+}
+
+// isURLSource reports whether src parses as an http or https URL — the
+// same test stage.ingest_source itself applies (internal/tools/
+// stage_source.go) — as opposed to a local file path given on the command
+// line.
+func isURLSource(src string) bool {
+	u, err := url.Parse(src)
+	return err == nil && (u.Scheme == "http" || u.Scheme == "https")
 }
 
 // runAgentTurn drives one agent.Agent turn to completion: it starts
@@ -140,13 +215,33 @@ func cmdIngest(args []string) error {
 	}
 	defer os.RemoveAll(tmpDir)
 
+	// pre lets the agent's stage.ingest_source tool re-extract each scratch
+	// path back to the Doc already produced above, provenance corrected —
+	// fixing C-123, where a bare extract.NewFile() re-extraction recorded
+	// the scratch path itself (removed by the tmpDir cleanup below the
+	// moment this process exits) as the raw source's source_url.
+	pre := newPreExtracted()
 	items := make([]ingestItem, 0, len(docs))
 	for i, doc := range docs {
+		// doc.SourceURL is already sources[i] verbatim — both NewHTML and
+		// NewFile set it to the uri they were handed (backbone §10) — so a
+		// URL source needs no change. A local path is instead resolved to
+		// absolute + cleaned (00-conventions.md §3: never store a path a
+		// caller could have typed relative to a directory that no longer
+		// matches by the time a human reviews the committed raw file).
+		corrected := *doc
+		if !isURLSource(sources[i]) {
+			if abs, absErr := filepath.Abs(sources[i]); absErr == nil {
+				corrected.SourceURL = abs
+			}
+		}
+
 		name := filepath.Base(extract.SuggestPath(doc))
 		tmpPath := filepath.Join(tmpDir, fmt.Sprintf("%02d-%s", i+1, name))
 		if err := os.WriteFile(tmpPath, []byte(doc.Markdown), 0o644); err != nil {
 			return fmt.Errorf("write scratch file: %w", err)
 		}
+		pre.stage(tmpPath, corrected)
 		items = append(items, ingestItem{path: tmpPath, kind: doc.Kind, title: doc.Title, source: sources[i]})
 	}
 
@@ -164,9 +259,11 @@ func cmdIngest(args []string) error {
 	// Construct the agent (which resolves the configured API key) before
 	// opening a changeset: a bad or missing key must fail with nothing
 	// opened at all, not an empty changeset the caller has to notice and
-	// clean up by hand.
+	// clean up by hand. newIngestAgent (not newAgent) so the tools' Extract
+	// is pre chained in front of extract.NewFile() — see preExtracted above.
 	sessions := agent.NewFileSessions(e.Vault().Root())
-	ag, err := newAgent(e, cfg, sessions)
+	toolExtract := extract.Chain(pre, extract.NewFile())
+	ag, err := newIngestAgent(e, cfg, sessions, toolExtract)
 	if err != nil {
 		return fmt.Errorf("construct agent: %w", err)
 	}
@@ -234,7 +331,7 @@ func ingestIntent(sources []string) string {
 // compile or update wiki pages from the newly ingested content.
 func buildIngestMessage(items []ingestItem) string {
 	var b strings.Builder
-	b.WriteString("New source material has been extracted and saved locally, ready to ingest. For each file below: call stage.ingest_source with its local path (and the given kind, if it does not match), read the resulting raw source, and create or update wiki pages that faithfully reflect it, following the schema and citing the new raw source. When you are done, call stage.close to summarize the proposed changeset.\n\n")
+	b.WriteString("New source material has been extracted and saved locally, ready to ingest. The changeset for this ingest is already open, so do not call stage.open. For each file below: call stage.ingest_source with its local path (and the given kind, if it does not match) — its result names the exact raw/ path to read next with raw.get — then create or update wiki pages that faithfully reflect it, following the schema and citing the new raw source. When you are done, call stage.close to summarize the proposed changeset.\n\n")
 	for _, it := range items {
 		fmt.Fprintf(&b, "- path: %s\n  kind: %s\n  title: %s\n  original source: %s\n", it.path, it.kind, it.title, it.source)
 	}

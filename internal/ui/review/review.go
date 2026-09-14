@@ -2,8 +2,10 @@
 // §5.4 Engine, §5.6 Diff; s4-tui.md S4-T3 — "ship this first"): walking
 // the open changeset's ops and hunks, accepting and dropping hunks through
 // stage.Engine, and committing with the same lint-regression gate
-// cmd/lw's `lw commit` applies (TD-3, a known and accepted duplication —
-// Engine.Commit itself performs no such check).
+// cmd/lw's `lw commit` applies — Engine.Commit itself performs no such
+// check. LintBaseline (S6-C127) is the one shared implementation of that
+// gate's baseline computation; cmd/lw imports this package already
+// (cmd_tui.go) and calls it directly, which closes that half of TD-3.
 //
 // Every mutation goes through stage.Engine; nothing in this package writes
 // a vault file directly (00-conventions.md §5.4).
@@ -314,36 +316,61 @@ func (m *Model) reject() (ui.Pane, tea.Cmd) {
 }
 
 // commitEndData is the wire shape of a commit_end event's Data (backbone
-// §5.7 D-AG): the counts of the report computed for that commit. Defined
-// again here, unexported, because cmd/lw's identical struct lives in
-// package main and cannot be imported by this package (item 10).
+// §5.7 D-AG): the counts of the report computed for that commit.
 type commitEndData struct {
 	LintErrors int `json:"lint_errors"`
 	LintWarns  int `json:"lint_warns"`
 }
 
-// lastCommitLintBaseline reads the most recent commit_end event's lint
-// counts as the baseline `C` refuses a regression against — the same
-// journal query cmd/lw's cmdCommit runs, replicated here because
-// Engine.Commit performs no such check itself (item 10, TD-3: known and
-// accepted duplication). No commit_end at all means no baseline, and the
-// check passes (backbone §5.7 D-AG).
-func lastCommitLintBaseline(e *stage.Engine) (lint.Report, bool, error) {
+// LintBaseline computes the lint-regression baseline the commit gate
+// compares a projected report against (backbone §5.7 D-AG; S6-C127). It is
+// exported and lives here — rather than duplicated a second time — because
+// cmd/lw already imports this package (cmd_tui.go, to wire the review
+// screen into the shell), which is what closes TD-3's "the gate is
+// implemented twice" for this half of it: cmd/lw's cmdCommit calls
+// review.LintBaseline directly instead of running its own copy of this
+// journal query.
+//
+// When the journal already holds a commit_end event, its counts ARE the
+// baseline — the tree exactly as it was committed, decoded from Data
+// exactly as Commit wrote it. Filter.Limit selects the most recent N
+// events and returns them oldest-first (backbone §5.7 D-AU), so Limit:1
+// is read as evs[0]; a larger Limit read as evs[0] would silently compare
+// every future commit against the FIRST commit ever made.
+//
+// When it does not — a vault that has never been committed — there is no
+// commit_end to read. Before S6-C127 that meant "no baseline, so the
+// check passes" (backbone §5.7 D-AG's literal wording): a vault's very
+// first commit had no gate at all, which is backwards, since an agent's
+// first ingest is exactly the commit this gate exists to catch. S6-C127
+// resolves it here: the baseline becomes the lint.Report of the CURRENT
+// COMMITTED working tree — e.Vault(), e.Index() and e.Vault().Graph(),
+// the same {Vault, Index, Graph} shape `lw lint` and cmd_lint's --fix
+// path build (no check reads Index at all, but the shape matches so the
+// counts can never disagree with what `lw lint` would print right now).
+// A vault's first commit is then refused exactly like every later one —
+// against "no worse than what's on disk right now" — rather than
+// unconditionally, and a vault that already carries N lint errors before
+// its first commit is not penalized for them: only a NEW error, added by
+// the changeset being committed, regresses.
+func LintBaseline(e *stage.Engine) (lint.Report, error) {
 	evs, err := e.Journal().Query(stage.Filter{
 		Kinds: []stage.EventKind{stage.EvCommitEnd},
 		Limit: 1,
 	})
 	if err != nil {
-		return lint.Report{}, false, err
+		return lint.Report{}, err
 	}
-	if len(evs) == 0 {
-		return lint.Report{}, false, nil
+	if len(evs) > 0 {
+		var data commitEndData
+		if err := json.Unmarshal(evs[0].Data, &data); err != nil {
+			return lint.Report{}, fmt.Errorf("review: parse commit_end data: %w", err)
+		}
+		return lint.Report{Errors: data.LintErrors, Warns: data.LintWarns}, nil
 	}
-	var data commitEndData
-	if err := json.Unmarshal(evs[0].Data, &data); err != nil {
-		return lint.Report{}, false, fmt.Errorf("review: parse commit_end data: %w", err)
-	}
-	return lint.Report{Errors: data.LintErrors, Warns: data.LintWarns}, true, nil
+
+	ctx := &lint.Context{Vault: e.Vault(), Index: e.Index(), Graph: e.Vault().Graph()}
+	return lint.Run(ctx, nil), nil
 }
 
 // commitMessage is the changeset's Intent, falling back to "review: <id>"
@@ -358,9 +385,10 @@ func (m *Model) commitMessage() string {
 	return "review: " + m.changeset.ID
 }
 
-// commit is `C`: replicates cmd/lw's lint-regression gate (item 10, TD-3)
-// before calling Engine.Commit, so it produces exactly the same result as
-// `lw commit`. There is no --force in the TUI in v0.1.
+// commit is `C`: calls the same LintBaseline this package exports before
+// calling Engine.Commit, so it produces exactly the same result as
+// `lw commit` (item 10, TD-3 — now the same call, not a second
+// implementation of it). There is no --force in the TUI in v0.1.
 func (m *Model) commit() (ui.Pane, tea.Cmd) {
 	e := m.deps.Engine
 
@@ -369,12 +397,12 @@ func (m *Model) commit() (ui.Pane, tea.Cmd) {
 		m.setStatus(statusWarn, fmt.Sprintf("commit failed: %v", err))
 		return m, nil
 	}
-	baseline, hasBaseline, err := lastCommitLintBaseline(e)
+	baseline, err := LintBaseline(e)
 	if err != nil {
 		m.setStatus(statusWarn, fmt.Sprintf("commit failed: %v", err))
 		return m, nil
 	}
-	if hasBaseline && projected.Regresses(baseline) {
+	if projected.Regresses(baseline) {
 		m.setStatus(statusWarn, fmt.Sprintf(
 			"commit refused: lint regressed: %d error(s) projected vs %d in the last commit; fix it or drop the offending hunk",
 			projected.Errors, baseline.Errors))

@@ -362,6 +362,59 @@ func TestStaleOpBlocksCommit(t *testing.T) {
 	}
 }
 
+// TestCommitRefusedOnFirstCommitLintRegression is S6-C127 fixed in the TUI:
+// before this fix the review screen's `C` (like `lw commit`) had no gate
+// at all on a vault's very first commit, because `lastCommitLintBaseline`
+// found no commit_end and reported "no baseline". Here "minimal" (0
+// errors) never had a prior commit, and the open changeset's one
+// create_page links two pages that do not exist — a projected regression
+// to 2 errors that must still be refused, exactly as it would be against
+// a real prior commit_end, and must leave the changeset open.
+//
+// This is also the permanent regression test TD-3 flagged as missing
+// (`grep -n 'Regress\|baseline' internal/ui/review/*_test.go` returned
+// nothing before this subtask).
+func TestCommitRefusedOnFirstCommitLintRegression(t *testing.T) {
+	d, e, _ := newTestDeps(t, "minimal")
+
+	if _, err := e.OpenChangeset("regressing changeset", stage.Author{Kind: "human"}); err != nil {
+		t.Fatalf("OpenChangeset: %v", err)
+	}
+	content := "---\n" +
+		"title: Broken Links Page\n" +
+		"created: 2026-08-30\n" +
+		"updated: 2026-08-30\n" +
+		"type: concept\n" +
+		"tags: [inference]\n" +
+		"confidence: medium\n" +
+		"---\n" +
+		"\n" +
+		"# Broken Links Page\n" +
+		"\n" +
+		"Links to [[does-not-exist-one]] and [[does-not-exist-two]].\n"
+	if _, err := e.Append(stage.Op{
+		Kind:       stage.OpCreatePage,
+		Path:       "wiki/concepts/broken-links-page.md",
+		Content:    []byte(content),
+		Rationale:  "test fixture for the first-commit regression gate",
+		Provenance: []string{"raw/articles/kv-cache-explained.md"},
+	}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	m := initModel(t, d)
+	m = send(t, m, keyPress('C'))
+
+	view := m.View(120, 30)
+	if !strings.Contains(view, "commit refused: lint regressed: 2 error(s) projected vs 0") {
+		t.Errorf("View does not show the first-commit regression refusal:\n%s", view)
+	}
+
+	if _, err := e.Current(); err != nil {
+		t.Errorf("Current after a refused first commit: %v (the changeset should still be open)", err)
+	}
+}
+
 // TestRationaleRendered checks that an op's Rationale and Provenance both
 // show up in View(w, h) — the property that makes this a review of
 // reasoning, not a diff viewer (/PLAN.md §9.2, s4-tui.md S4-T3 item 2).

@@ -4,6 +4,9 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
 )
 
 func TestLoadKeysDefaultsWithNoFilePresent(t *testing.T) {
@@ -110,5 +113,55 @@ func TestLoadKeysMissingConfigDirEntirelyIsNotAnError(t *testing.T) {
 	}
 	if len(km.Warnings) != 0 {
 		t.Fatalf("Warnings = %v, want none", km.Warnings)
+	}
+}
+
+// TestLoadKeysRebindsMoveKeys is S6-T4's proof that hotkeys.toml actually
+// rebinds — the stage file's worked example, `j`/`k` moved onto `n`/`p` —
+// and that the rebinding is visible to the matcher screens use
+// (key.Matches against a tea.KeyPressMsg), not just to Keys().
+func TestLoadKeysRebindsMoveKeys(t *testing.T) {
+	configDir := setConfigDir(t)
+	writeConfigFile(t, configDir, "hotkeys.toml", `
+move_down = ["n"]
+move_up = ["p"]
+`)
+
+	km, err := LoadKeys()
+	if err != nil {
+		t.Fatalf("LoadKeys() error = %v", err)
+	}
+	if len(km.Warnings) != 0 {
+		t.Fatalf("Warnings = %v, want none", km.Warnings)
+	}
+
+	if got, want := km.MoveDown.Keys(), []string{"n"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("MoveDown.Keys() = %v, want %v", got, want)
+	}
+	if got, want := km.MoveUp.Keys(), []string{"p"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("MoveUp.Keys() = %v, want %v", got, want)
+	}
+
+	// The binding a screen matches with must now fire on the new key...
+	down := tea.KeyPressMsg{Code: 'n', Text: "n"}
+	up := tea.KeyPressMsg{Code: 'p', Text: "p"}
+	if !key.Matches(down, km.MoveDown) {
+		t.Error("key.Matches(n, MoveDown) = false, want true after the rebind")
+	}
+	if !key.Matches(up, km.MoveUp) {
+		t.Error("key.Matches(p, MoveUp) = false, want true after the rebind")
+	}
+	// ...and not on the old one, nor on each other's key.
+	if key.Matches(tea.KeyPressMsg{Code: 'j', Text: "j"}, km.MoveDown) {
+		t.Error("key.Matches(j, MoveDown) = true, want false after the rebind")
+	}
+	if key.Matches(down, km.MoveUp) || key.Matches(up, km.MoveDown) {
+		t.Error("n and p both match one binding; the rebind crossed over")
+	}
+
+	// Help text survives the rebind, so the footer still says what the
+	// action is rather than what key it used to be on.
+	if got, want := km.MoveDown.Help().Desc, "down"; got != want {
+		t.Fatalf("MoveDown.Help().Desc = %q, want %q", got, want)
 	}
 }

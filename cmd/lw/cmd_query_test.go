@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -117,6 +119,108 @@ func TestCmdQueryRejectsAnyChangesetTheAgentOpens(t *testing.T) {
 	defer e.Close()
 	if _, err := e.Current(); err == nil {
 		t.Fatal("the rogue changeset was not rejected: query left one open")
+	}
+}
+
+// TestCmdQueryLeavesAPreexistingChangesetAlone is C-116's regression test.
+// The exit guard used to reject ANY open changeset, so `lw query` against a
+// vault whose curator had an `lw ingest` changeset open for review ended
+// with that changeset silently moved to changesets/rejected/ — a turn that
+// called no stage.* tool at all. A changeset open before the query started
+// must still be open, and identical, afterwards.
+func TestCmdQueryLeavesAPreexistingChangesetAlone(t *testing.T) {
+	root := testutil.CopyFixture(t, "minimal")
+
+	// Open the review-in-progress changeset and release the engine before the
+	// query runs, exactly as the `lw ingest` process that opened it would.
+	open := openEngine(t, root)
+	cs, err := open.OpenChangeset("ingest under review", stage.Author{Kind: "human"})
+	if err != nil {
+		t.Fatalf("OpenChangeset: %v", err)
+	}
+	priorID := cs.ID
+	if err := open.Close(); err != nil {
+		t.Fatalf("close the opening engine: %v", err)
+	}
+
+	withFakeAgent(t, func(e *stage.Engine, cfg *config.Config, sessions agent.SessionStore) (agent.Agent, error) {
+		return &fakeTextAgent{sessions: sessions, reply: "Nothing to stage."}, nil
+	})
+
+	stdout, stderr, code := captureRun(t, func() int {
+		return run([]string{"query", "--vault", root, "what is open right now?"})
+	})
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr, stdout)
+	}
+
+	after := openEngine(t, root)
+	got, err := after.Current()
+	if err != nil {
+		t.Fatalf("after the query, Current: %v — the pre-existing changeset did not survive", err)
+	}
+	if got.ID != priorID {
+		t.Fatalf("open changeset = %s, want the pre-existing %s", got.ID, priorID)
+	}
+	if len(got.Ops) != 0 {
+		t.Errorf("open changeset carries %d op(s), want the 0 it was opened with", len(got.Ops))
+	}
+	if got.Intent != "ingest under review" {
+		t.Errorf("intent = %q, want the pre-existing one untouched", got.Intent)
+	}
+
+	// The state directories tell the same story: nothing moved to rejected.
+	rejected := filepath.Join(root, stateDirName, "changesets", "rejected")
+	entries, err := os.ReadDir(rejected)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("read %s: %v", rejected, err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("%d changeset(s) under rejected/, want none: %v", len(entries), entries)
+	}
+}
+
+// TestCmdQueryRogueAgentCannotTouchAPreexistingChangeset is the same
+// pre-existing case with a misbehaving model: its stage.open fails (one
+// changeset is already open), the turn reports the failure, and the
+// curator's changeset is still exactly where it was — neither rejected nor
+// replaced.
+func TestCmdQueryRogueAgentCannotTouchAPreexistingChangeset(t *testing.T) {
+	root := testutil.CopyFixture(t, "minimal")
+
+	open := openEngine(t, root)
+	cs, err := open.OpenChangeset("ingest under review", stage.Author{Kind: "human"})
+	if err != nil {
+		t.Fatalf("OpenChangeset: %v", err)
+	}
+	priorID := cs.ID
+	if err := open.Close(); err != nil {
+		t.Fatalf("close the opening engine: %v", err)
+	}
+
+	withFakeAgent(t, func(e *stage.Engine, cfg *config.Config, sessions agent.SessionStore) (agent.Agent, error) {
+		return &fakeStagingQueryAgent{e: e, sessions: sessions}, nil
+	})
+
+	_, stderr, code := captureRun(t, func() int {
+		return run([]string{"query", "--vault", root, "stage something anyway"})
+	})
+
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1 — the rogue turn failed; stderr=%q", code, stderr)
+	}
+
+	after := openEngine(t, root)
+	got, err := after.Current()
+	if err != nil {
+		t.Fatalf("after the turn, Current: %v — the pre-existing changeset did not survive", err)
+	}
+	if got.ID != priorID {
+		t.Fatalf("open changeset = %s, want the pre-existing %s", got.ID, priorID)
+	}
+	if strings.Contains(stderr, "rejected") {
+		t.Errorf("stderr = %q, want no rejection of the curator's changeset", stderr)
 	}
 }
 

@@ -1,13 +1,14 @@
 // coldstart_test.go drives the real lw binary through every verb that exists
 // today — the automated replacement for gate G6's manual walkthrough. Each
 // scenario is independent: one private sandbox from the task-2 helpers, one
-// vault of its own, and no network but the fake LLM the ingest and query
-// scenarios script. init/config/doctor enter as placeholders rather than being
-// silently absent, because their verbs are stubs in this build.
+// vault of its own, and no network but the fake LLM the ingest, query,
+// config and doctor scenarios script.
 package e2e
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -220,15 +221,30 @@ func TestSmokeStageFromRoundtrip(t *testing.T) {
 }
 
 // TestSmokeIngestCommit runs the agent-driven half of the loop against the
-// fake LLM: a local markdown source goes in, the scripted curator proposes one
-// page, and that changeset is reviewed, committed and read back out of the
-// journal — the path a real session takes, with no network beyond localhost.
+// fake LLM: a local markdown source goes in, the scripted curator ingests it
+// into raw/ and proposes one page citing exactly that raw path, and that
+// changeset is reviewed, committed and read back out of the journal — the
+// path a real session takes, with no network beyond localhost.
+//
+// Three rounds, not two: newVault seeds six pages and NO raw/ sources at all,
+// so a page whose sources: cites a raw/ path that nothing ever staged is a
+// src-integrity error the moment the changeset is committed — and S6-C127
+// made a vault's first commit lint-gated on exactly that count. Round 1
+// stages stage_ingest_source on the local source this scenario already wrote
+// (a relative "sources/..." path, which resolves against the subprocess's own
+// working directory — see runLW's cmd.Dir — independent of cmdIngest's own
+// scratch-file bookkeeping), round 2 proposes the page citing the raw path
+// that call produces, round 3 stops. testdata/ingest_round{1,2}.sse stay
+// untouched: TestHarness's own two-round script never commits, so the
+// dangling citation these round files also carry is not this fixture's to
+// fix.
 func TestSmokeIngestCommit(t *testing.T) {
 	e := newEnv(t)
 	vault := newVault(t)
 	fake := newFakeLLM(t,
-		sseFixture(t, "ingest_round1.sse"),
-		sseFixture(t, "ingest_round2.sse"),
+		sseFixture(t, "smoke_ingest_round1.sse"),
+		sseFixture(t, "smoke_ingest_round2.sse"),
+		sseFixture(t, "smoke_ingest_round3.sse"),
 	)
 	writeConfig(t, e.config, fake.URL()+"/v1")
 
@@ -364,18 +380,243 @@ func TestSmokeLintDirty(t *testing.T) {
 	}
 }
 
-// TestSmokeInit, TestSmokeConfig and TestSmokeDoctor stand in for the three
-// verbs this build still ships as stubs. They are listed and skipped, never
-// dropped, so the smoke suite's inventory stays complete: when a verb lands,
-// its scenario replaces its placeholder instead of arriving unnoticed.
+// initDir builds a fresh empty directory under e's working directory and an
+// *env whose subprocess cwd is that directory — `lw init` takes no --vault
+// flag and always scaffolds the process's own working directory (README
+// "Every verb ... takes -vault <dir> ... (init is the exception)"), so a
+// scenario driving it needs a sandbox rooted there rather than at e.work.
+func initDir(t *testing.T, e *env, name string) (*env, string) {
+	t.Helper()
+
+	dir := filepath.Join(e.work, name)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("e2e: create %s: %v", dir, err)
+	}
+	return &env{root: e.root, home: e.home, config: e.config, tmp: e.tmp, work: dir}, dir
+}
+
+// TestSmokeInit scaffolds a fresh vault with `lw init --schema`, checks every
+// path README's Quickstart promises gets created, that the result lints
+// clean and reports zero pages/raw sources, and that a second init into the
+// now-occupied directory is refused without --force.
 func TestSmokeInit(t *testing.T) {
-	t.Skip("S6-T2/T3/T1 not landed: init/config/doctor are stubs (cmd_init.go:7, cmd_config.go:7, cmd_doctor.go:7)")
+	e := newEnv(t)
+	ei, dir := initDir(t, e, "new-vault")
+
+	init0 := runLW(t, ei, "init", "--schema", "ml-systems")
+	if init0.Code != 0 {
+		t.Fatalf("lw init --schema ml-systems: exit %d, want 0\n%s", init0.Code, init0.Output)
+	}
+
+	wantPaths := []string{
+		"SCHEMA.md", "index.md", "log.md", "curator-memory.md",
+		filepath.Join("raw", "articles"), filepath.Join("raw", "papers"),
+		filepath.Join("raw", "transcripts"), filepath.Join("raw", "assets"),
+		filepath.Join("wiki", "entities"), filepath.Join("wiki", "concepts"),
+		filepath.Join("wiki", "comparisons"), filepath.Join("wiki", "queries"),
+		".llmwiki",
+	}
+	for _, want := range wantPaths {
+		if _, err := os.Stat(filepath.Join(dir, want)); err != nil {
+			t.Errorf("lw init: %s was not created: %v", want, err)
+		}
+	}
+
+	lint := runLW(t, e, "lint", "--vault", dir)
+	if lint.Code != 0 {
+		t.Fatalf("lw lint --vault (freshly initialized): exit %d, want 0 (clean)\n%s", lint.Code, lint.Output)
+	}
+
+	status := runLW(t, e, "status", "--vault", dir)
+	if status.Code != 0 {
+		t.Fatalf("lw status --vault (freshly initialized): exit %d, want 0\n%s", status.Code, status.Output)
+	}
+	if want := "0 pages"; !strings.Contains(status.Output, want) {
+		t.Errorf("lw status: output does not say %q\n%s", want, status.Output)
+	}
+	if want := "0 raw"; !strings.Contains(status.Output, want) {
+		t.Errorf("lw status: output does not say %q\n%s", want, status.Output)
+	}
+
+	// The directory is no longer empty: a second init without --force must
+	// refuse it (README: "Refuses a non-empty directory unless --force").
+	init1 := runLW(t, ei, "init", "--schema", "x")
+	if init1.Code == 0 {
+		t.Fatalf("lw init --schema x (occupied directory, no --force): exit 0, want non-zero\n%s", init1.Output)
+	}
+	assertNoPanic(t, init1.Output)
 }
 
+// configAPIKeyEnvRE matches `lw config`'s llm.api_key row naming its env:
+// reference — loosely on whitespace, since writeConfigRows pads every key to
+// the widest one in the table and that width shifts if the field list ever
+// grows.
+var configAPIKeyEnvRE = regexp.MustCompile(`llm\.api_key\s*=\s*env:`)
+
+// TestSmokeConfig drives `lw config`'s show/set/path surface with no vault
+// and no fake LLM at all — every one of these is offline (README's verb
+// table). It never writes a real secret to disk: the one `set` this scenario
+// tries with a key-shaped literal must be refused, and neither the config
+// file nor any command output may ever carry it.
 func TestSmokeConfig(t *testing.T) {
-	t.Skip("S6-T2/T3/T1 not landed: init/config/doctor are stubs (cmd_init.go:7, cmd_config.go:7, cmd_doctor.go:7)")
+	e := newEnv(t)
+
+	show := runLW(t, e, "config")
+	if show.Code != 0 {
+		t.Fatalf("lw config: exit %d, want 0\n%s", show.Code, show.Output)
+	}
+	for _, want := range []string{"llm.base_url", "llm.model"} {
+		if !strings.Contains(show.Stdout, want) {
+			t.Errorf("lw config: stdout does not mention %q\n%s", want, show.Stdout)
+		}
+	}
+	if !configAPIKeyEnvRE.MatchString(show.Stdout) {
+		t.Errorf("lw config: stdout does not show an llm.api_key = env:... row\n%s", show.Stdout)
+	}
+
+	set := runLW(t, e, "config", "set", "llm.model", "some-model")
+	if set.Code != 0 {
+		t.Fatalf("lw config set llm.model some-model: exit %d, want 0\n%s", set.Code, set.Output)
+	}
+
+	show2 := runLW(t, e, "config")
+	if show2.Code != 0 {
+		t.Fatalf("lw config (after set): exit %d, want 0\n%s", show2.Code, show2.Output)
+	}
+	if want := regexp.MustCompile(`some-model\s*\(file\)`); !want.MatchString(show2.Stdout) {
+		t.Errorf("lw config: stdout does not show some-model marked (file) after set\n%s", show2.Stdout)
+	}
+
+	// A key-shaped literal is refused outright (README "Secrets"), and never
+	// reaches the config file or any output — stdout, stderr, or disk.
+	const secret = "sk-literal-secret-value"
+	refused := runLW(t, e, "config", "set", "llm.api_key", secret)
+	if refused.Code == 0 {
+		t.Fatalf("lw config set llm.api_key <literal secret>: exit 0, want non-zero\n%s", refused.Output)
+	}
+	if strings.Contains(refused.Output, secret) {
+		t.Errorf("lw config set llm.api_key: refusal output leaks the literal\n%s", refused.Output)
+	}
+	cfgPath := filepath.Join(e.config, "lw", "config.toml")
+	if b, err := os.ReadFile(cfgPath); err == nil && strings.Contains(string(b), secret) {
+		t.Errorf("config file %s carries the refused literal secret", cfgPath)
+	} else if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("read config file %s: %v", cfgPath, err)
+	}
+
+	path := runLW(t, e, "config", "path")
+	if path.Code != 0 {
+		t.Fatalf("lw config path: exit %d, want 0\n%s", path.Code, path.Output)
+	}
+	if got := strings.TrimSpace(path.Stdout); !strings.HasPrefix(got, e.config) {
+		t.Errorf("lw config path: stdout %q is not under the env's config dir %s", got, e.config)
+	}
 }
 
+// doctorProbeSSE is the single round `lw doctor`'s provider check consumes:
+// a tool call and nothing else, so llm.Client.Probe reports the endpoint
+// both reachable and tool-calling — the shape that makes doctor's own
+// "provider" line read ✓ (backbone §8's Probe contract), preferred here over
+// asserting on a ✗ the fake would otherwise manufacture for a reason that
+// has nothing to do with what this scenario tests.
+const doctorProbeSSE = "data: {\"id\":\"chatcmpl-e2e-doctor\",\"choices\":[{\"index\":0," +
+	"\"delta\":{\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":\"call_e2e_ping\"," +
+	"\"type\":\"function\",\"function\":{\"name\":\"ping\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\n" +
+	"data: {\"id\":\"chatcmpl-e2e-doctor\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n" +
+	"data: [DONE]\n"
+
+// assertFixFollowsFailure checks doctorReport.writeText's own contract: every
+// "✗ <name> ..." line is immediately followed by a "  fix: ..." line (see
+// cmd_doctor.go's writeText) — never a bare failure with no stated remedy.
+func assertFixFollowsFailure(t *testing.T, output string) {
+	t.Helper()
+
+	lines := strings.Split(output, "\n")
+	for i, line := range lines {
+		if !strings.HasPrefix(line, "✗") {
+			continue
+		}
+		if i+1 >= len(lines) || !strings.HasPrefix(strings.TrimSpace(lines[i+1]), "fix:") {
+			t.Errorf("lw doctor: failing line %q is not immediately followed by a fix: line\n%s", line, output)
+		}
+	}
+}
+
+// TestSmokeDoctor runs `lw doctor` over a freshly initialized vault pointed
+// at the fake LLM (so the provider probe reports ✓ rather than a ✗ this
+// scenario is not about), checks every check this build ships is either ✓ or
+// paired with a `fix:` line, then injects the one fault that needs no
+// provider — a stale lock file — and drives it through detect, --unlock,
+// and confirm.
 func TestSmokeDoctor(t *testing.T) {
-	t.Skip("S6-T2/T3/T1 not landed: init/config/doctor are stubs (cmd_init.go:7, cmd_config.go:7, cmd_doctor.go:7)")
+	e := newEnv(t)
+	ei, dir := initDir(t, e, "doctor-vault")
+
+	init0 := runLW(t, ei, "init", "--schema", "ml-systems")
+	if init0.Code != 0 {
+		t.Fatalf("lw init --schema ml-systems: exit %d, want 0\n%s", init0.Code, init0.Output)
+	}
+
+	// One scripted round per doctor invocation below: each resolves the
+	// literal api_key writeConfig wrote and probes it exactly once.
+	fake := newFakeLLM(t,
+		fakeRound{Name: "doctor_probe_1", Body: doctorProbeSSE},
+		fakeRound{Name: "doctor_probe_2", Body: doctorProbeSSE},
+		fakeRound{Name: "doctor_probe_3", Body: doctorProbeSSE},
+		fakeRound{Name: "doctor_probe_4", Body: doctorProbeSSE},
+	)
+	writeConfig(t, e.config, fake.URL()+"/v1")
+
+	assertCheckLines := func(t *testing.T, output string, names ...string) {
+		t.Helper()
+		for _, name := range names {
+			re := regexp.MustCompile(`(?m)^(✓|✗) +` + regexp.QuoteMeta(name) + ` `)
+			m := re.FindStringSubmatch(output)
+			if m == nil {
+				t.Errorf("lw doctor: no %s check line found\n%s", name, output)
+				continue
+			}
+			if m[1] != "✓" {
+				t.Errorf("lw doctor: %s check is %s, want ✓\n%s", name, m[1], output)
+			}
+		}
+	}
+
+	healthy := runLW(t, e, "doctor", "--vault", dir)
+	if healthy.Code != 0 {
+		t.Fatalf("lw doctor (freshly initialized): exit %d, want 0\n%s", healthy.Code, healthy.Output)
+	}
+	assertCheckLines(t, healthy.Output, "index", "objects", "journal", "recovery", "lock")
+	assertFixFollowsFailure(t, healthy.Output)
+
+	// Inject a lock fault that needs no provider: an unparsable pid makes
+	// checkLock report it stale without touching the network at all.
+	lockPath := filepath.Join(dir, ".llmwiki", "lock")
+	if err := os.WriteFile(lockPath, []byte("not-a-pid\n"), 0o600); err != nil {
+		t.Fatalf("e2e: write stale lock %s: %v", lockPath, err)
+	}
+
+	faulted := runLW(t, e, "doctor", "--vault", dir)
+	if faulted.Code == 0 {
+		t.Fatalf("lw doctor (stale lock): exit 0, want non-zero\n%s", faulted.Output)
+	}
+	if !regexp.MustCompile(`(?m)^✗ +lock `).MatchString(faulted.Output) {
+		t.Errorf("lw doctor: no ✗ lock line for the stale lock\n%s", faulted.Output)
+	}
+	if !strings.Contains(faulted.Output, "--unlock") {
+		t.Errorf("lw doctor: stale-lock output does not name --unlock as the fix\n%s", faulted.Output)
+	}
+	assertFixFollowsFailure(t, faulted.Output)
+	assertNoPanic(t, faulted.Output)
+
+	unlocked := runLW(t, e, "doctor", "--unlock", "--vault", dir)
+	if unlocked.Code != 0 {
+		t.Fatalf("lw doctor --unlock: exit %d, want 0\n%s", unlocked.Code, unlocked.Output)
+	}
+
+	confirmed := runLW(t, e, "doctor", "--vault", dir)
+	if confirmed.Code != 0 {
+		t.Fatalf("lw doctor (after --unlock): exit %d, want 0\n%s", confirmed.Code, confirmed.Output)
+	}
+	assertCheckLines(t, confirmed.Output, "lock")
 }

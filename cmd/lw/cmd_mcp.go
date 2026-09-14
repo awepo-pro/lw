@@ -4,8 +4,10 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 
+	"github.com/awepo-pro/lw/internal/extract"
 	"github.com/awepo-pro/lw/internal/mcp"
 	"github.com/awepo-pro/lw/internal/stage"
 	"github.com/awepo-pro/lw/internal/tools"
@@ -34,11 +36,22 @@ func cmdMCP(args []string) error {
 	}
 	defer e.Close()
 
-	reg := tools.NewRegistry(tools.Deps{
-		Vault:  e.Vault(),
-		Index:  e.Index(),
-		Engine: e,
-		Author: stage.Author{Kind: "agent", Model: "mcp"},
-	})
+	reg := tools.NewRegistry(mcpDeps(e))
 	return mcp.Serve(context.Background(), reg, os.Stdin, os.Stdout)
+}
+
+// mcpDeps assembles the tool registry's dependencies for the MCP server.
+//
+// Extract is set exactly as cmd_ingest.go's Deps are, so stage_ingest_source
+// works over MCP the same way it does in-process: the two-consumers contract
+// (backbone §6/§7) promises the same 17-tool surface to both, and without an
+// extractor the tool answers "no extractor configured" for every source.
+func mcpDeps(e *stage.Engine) tools.Deps {
+	return tools.Deps{
+		Vault:   e.Vault(),
+		Index:   e.Index(),
+		Engine:  e,
+		Extract: extract.Chain(extract.NewHTML(&http.Client{Timeout: httpTimeout}), extract.NewFile()),
+		Author:  stage.Author{Kind: "agent", Model: "mcp"},
+	}
 }

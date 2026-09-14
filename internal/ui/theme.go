@@ -1,14 +1,16 @@
-// theme.go implements backbone §12's Theme, LoadTheme and Theme.WithDark.
+// theme.go implements backbone §12's Theme, LoadTheme and Theme.WithDark,
+// including S6-T4's four named built-ins ("default", "dark", "light",
+// "nord") and user theme files from <config.ConfigDir()>/themes/.
 //
 // The TOML shape here follows a pattern, not a copy: yorukot/superfile ships
 // a flat key = value theme.toml, one file per colour polarity, and a user
 // picks the file that matches their terminal. lipgloss v2 has no
 // AdaptiveColor (C-81) — colour is resolved by calling a LightDarkFunc at
-// Style-build time instead — so this theme.toml stays flat and
-// superfile-style but pairs every semantic colour with explicit
-// "<name>_light" / "<name>_dark" keys, letting the one theme this subtask
-// ships still render correctly on both polarities. See NOTICE for the full
-// attribution and the MIT licence text this pattern is credited under.
+// Style-build time instead — so a theme file stays flat and superfile-style
+// but pairs every semantic colour with explicit "<name>_light" /
+// "<name>_dark" keys, letting any theme render correctly on both
+// polarities. See NOTICE for the full attribution and the MIT licence text
+// this pattern is credited under.
 package ui
 
 import (
@@ -32,9 +34,9 @@ type colorPair struct {
 	Dark  string
 }
 
-// themeColors is every semantic colour the default theme defines. Field
-// names double as the "<name>_light" / "<name>_dark" TOML key prefixes an
-// override file names — see themeFile.
+// themeColors is every semantic colour a theme defines. Field names double
+// as the "<name>_light" / "<name>_dark" TOML key prefixes a theme file
+// names — see themeFile.
 type themeColors struct {
 	Foreground colorPair
 	Background colorPair
@@ -47,9 +49,9 @@ type themeColors struct {
 	Bad        colorPair
 }
 
-// defaultThemeColors is lw's one compiled-in palette (S6-T4 owns adding more
-// themes). The hex values are /demo.html's design so the TUI matches the
-// mock the project was designed against.
+// defaultThemeColors is lw's compiled-in adaptive palette: one half for a
+// light terminal, one for a dark one. The hex values are /demo.html's
+// design so the TUI matches the mock the project was designed against.
 func defaultThemeColors() themeColors {
 	return themeColors{
 		Foreground: colorPair{Light: "#14171D", Dark: "#E4E8EE"},
@@ -64,7 +66,84 @@ func defaultThemeColors() themeColors {
 	}
 }
 
-// themeFile is the on-disk shape of <config.ConfigDir()>/theme.toml. Every
+// darkThemeColors is the `dark` built-in: a deep neutral-indigo palette for
+// someone who wants a dark UI on a light terminal as much as on a dark one.
+func darkThemeColors() themeColors {
+	return themeColors{
+		Foreground: locked("#E8EBF2"),
+		Background: locked("#0B0E14"),
+		Muted:      locked("#A3ADC2"),
+		Faint:      locked("#5C6577"),
+		Border:     locked("#1E2430"),
+		Accent:     locked("#7AA2F7"),
+		Good:       locked("#9ECE6A"),
+		Warn:       locked("#E0AF68"),
+		Bad:        locked("#F7768E"),
+	}
+}
+
+// lightThemeColors is the `light` built-in: a warm white palette locked to
+// light rendering, for a terminal whose reported polarity a curator does
+// not want to trust.
+func lightThemeColors() themeColors {
+	return themeColors{
+		Foreground: locked("#1B1F27"),
+		Background: locked("#FBFBFC"),
+		Muted:      locked("#4E5765"),
+		Faint:      locked("#8B94A3"),
+		Border:     locked("#DDE2E9"),
+		Accent:     locked("#1F5FBF"),
+		Good:       locked("#1C6E48"),
+		Warn:       locked("#8A6410"),
+		Bad:        locked("#A63535"),
+	}
+}
+
+// nordThemeColors is the `nord` built-in, from the documented Nord palette
+// (nordtheme.com): polar night for the background, snow storm for text,
+// frost for the accent and the aurora colours for status. Nord ships no
+// light polarity, so it is locked to its own dark one rather than invented
+// into one.
+func nordThemeColors() themeColors {
+	return themeColors{
+		Foreground: locked("#ECEFF4"), // nord6  — snow storm
+		Background: locked("#2E3440"), // nord0  — polar night
+		Muted:      locked("#D8DEE9"), // nord4  — snow storm
+		Faint:      locked("#4C566A"), // nord3  — polar night
+		Border:     locked("#3B4252"), // nord1  — polar night
+		Accent:     locked("#88C0D0"), // nord8  — frost
+		Good:       locked("#A3BE8C"), // nord14 — aurora
+		Warn:       locked("#EBCB8B"), // nord13 — aurora
+		Bad:        locked("#BF616A"), // nord11 — aurora
+	}
+}
+
+// locked collapses one hex colour into a pair that renders identically on
+// both terminal polarities — how a built-in opts out of LightDark
+// resolution (C-81) and says "this theme is this theme, whatever the
+// terminal reports".
+func locked(hex string) colorPair { return colorPair{Light: hex, Dark: hex} }
+
+// builtInThemeColors returns the compiled-in palette for name, and false
+// when name is not one lw ships. The names, in stable order, are
+// "default", "dark", "light" and "nord".
+func builtInThemeColors(name string) (themeColors, bool) {
+	switch name {
+	case "default":
+		return defaultThemeColors(), true
+	case "dark":
+		return darkThemeColors(), true
+	case "light":
+		return lightThemeColors(), true
+	case "nord":
+		return nordThemeColors(), true
+	}
+	return themeColors{}, false
+}
+
+// themeFile is the on-disk shape of a theme file: either
+// <config.ConfigDir()>/theme.toml (the per-machine overlay) or
+// <config.ConfigDir()>/themes/<name>.toml (a named user theme). Every
 // field is a pointer so a partial file overrides only the keys it names —
 // nil means "not present in the file, keep the default".
 type themeFile struct {
@@ -122,8 +201,9 @@ func (f themeFile) applyOverrides(colors *themeColors) {
 type Theme struct {
 	// IsDark is the polarity these styles were built for.
 	IsDark bool
-	// Warnings collects non-fatal problems found while loading theme.toml —
-	// an unknown key, or an unrecognised theme name — so a caller can
+	// Warnings collects non-fatal problems found while loading a theme —
+	// an unknown key in theme.toml or themes/<name>.toml, or an
+	// unrecognised theme name with no file behind it — so a caller can
 	// surface them without LoadTheme failing (00-conventions.md §2: no
 	// log.Fatal, no printing from a library).
 	Warnings []string
@@ -191,47 +271,113 @@ func buildTheme(colors themeColors, isDark bool, warnings []string) Theme {
 	}
 }
 
-// LoadTheme returns the named theme, with lw's compiled-in defaults
-// overlaid by <config.ConfigDir()>/theme.toml when that file is present
-// (backbone §12). A missing file is not an error. A partial file overrides
-// only the keys it names; an unknown key is recorded on the returned
-// Theme's Warnings field, never fatal and never printed here.
+// LoadTheme returns the named theme (backbone §12). name comes from
+// config.toml's `theme` key, and "" means "default".
 //
-// v0.1 ships exactly one compiled-in theme (S6-T4 owns adding more): any
-// name other than "" or "default" is itself recorded as a warning and the
-// default theme is returned regardless, so an unrecognised
-// Config.Theme value degrades to something usable instead of failing
-// startup.
+// Four names are compiled in: "default" (adaptive — a light half and a dark
+// half, resolved by the terminal's reported polarity), "dark", "light" and
+// "nord". Any other name is looked up as a user theme file at
+// <config.ConfigDir()>/themes/<name>.toml, which lets a vault's curator add
+// themes — including ones that shadow a built-in name — without
+// recompiling lw.
+//
+// A theme file is the same flat TOML shape <ConfigDir()>/theme.toml has
+// always used: one optional "<colour>_light" / "<colour>_dark" key per
+// semantic colour (foreground, background, muted, faint, border, accent,
+// good, warn, bad), every one of them optional. A user theme file starts
+// from the built-in whose name it shares, or from the default palette when
+// the name is a new one, and overrides only the keys it names — so
+// themes/nord.toml is one tweaked key, not eighteen. theme.toml is applied
+// last, on top of whichever theme was selected, as the per-machine overlay
+// it has always been.
+//
+// A missing file is not an error. A partial file overrides only the keys it
+// names; an unknown key is recorded on the returned Theme's Warnings field,
+// never fatal and never printed here. An unrecognised name with no file
+// behind it is a warning too, and the default theme comes back — an
+// unrecognised Config.Theme value degrades to something usable instead of
+// failing startup.
 func LoadTheme(name string) (Theme, error) {
-	colors := defaultThemeColors()
+	if name == "" {
+		name = "default"
+	}
+	// Resolution order, most specific first: a user theme file is applied on
+	// top of the built-in of the same name when there is one, and on top of
+	// the default palette when there is not — so themes/<name>.toml both
+	// adds new themes and overrides shipped ones, key by key. A name with
+	// neither a file nor a built-in behind it is a warning, not an error.
+	colors, isBuiltIn := builtInThemeColors(name)
+	if !isBuiltIn {
+		colors = defaultThemeColors()
+	}
 	var warnings []string
 
-	if name != "" && name != "default" {
+	found, fileWarnings, err := loadThemeFile(userThemePath(name), &colors)
+	if err != nil {
+		return Theme{}, err
+	}
+	warnings = append(warnings, fileWarnings...)
+	if !found && !isBuiltIn {
 		warnings = append(warnings, fmt.Sprintf(
-			"theme: unknown theme %q, only \"default\" is built in — using default", name))
+			"theme: unknown theme %q, and no themes/%s.toml — using default "+
+				"(built in: default, dark, light, nord)", name, name))
 	}
 
-	path := filepath.Join(config.ConfigDir(), "theme.toml")
-	b, err := os.ReadFile(path)
-	switch {
-	case errors.Is(err, os.ErrNotExist):
-		// No overlay file: compiled-in defaults only.
-	case err != nil:
-		return Theme{}, fmt.Errorf("ui: read %s: %w", path, err)
-	default:
-		var f themeFile
-		meta, decErr := toml.Decode(string(b), &f)
-		if decErr != nil {
-			return Theme{}, fmt.Errorf("ui: parse %s: %w", path, decErr)
-		}
-		f.applyOverrides(&colors)
-		for _, k := range meta.Undecoded() {
-			warnings = append(warnings, fmt.Sprintf("theme.toml: unknown key %q ignored", k.String()))
-		}
+	// theme.toml stays the last word: it is the per-machine overlay a user
+	// tweaks a single colour with, whichever theme config.toml selects.
+	_, overlayWarnings, err := loadThemeFile(filepath.Join(config.ConfigDir(), "theme.toml"), &colors)
+	if err != nil {
+		return Theme{}, err
 	}
+	warnings = append(warnings, overlayWarnings...)
 
 	// The shell does not know the terminal's real polarity until
 	// tea.BackgroundColorMsg arrives (backbone §12, C-81); dark is the
-	// reasonable default until then; WithDark corrects it either way.
+	// reasonable default until then; WithDark corrects it either way. A
+	// locked theme is unaffected: both halves of every pair are the same
+	// colour.
 	return buildTheme(colors, true, warnings), nil
+}
+
+// loadThemeFile reads and applies one theme file onto colors, if path names
+// a file that exists (an empty path, or a missing file, applies nothing and
+// is not an error). It reports whether a file was applied, plus the warnings
+// reading it produced; an existing file that cannot be read or parsed is an
+// error naming that file, because a theme a curator wrote and got wrong is
+// something they have to be told about, not something to paper over.
+func loadThemeFile(path string, colors *themeColors) (applied bool, warnings []string, err error) {
+	if path == "" {
+		return false, nil, nil
+	}
+	b, err := os.ReadFile(path)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return false, nil, nil
+	case err != nil:
+		return false, nil, fmt.Errorf("ui: read %s: %w", path, err)
+	}
+	var f themeFile
+	meta, decErr := toml.Decode(string(b), &f)
+	if decErr != nil {
+		return false, nil, fmt.Errorf("ui: parse %s: %w", path, decErr)
+	}
+	f.applyOverrides(colors)
+	for _, k := range meta.Undecoded() {
+		warnings = append(warnings, fmt.Sprintf("%s: unknown key %q ignored",
+			filepath.Base(path), k.String()))
+	}
+	return true, warnings, nil
+}
+
+// userThemePath returns the file that defines name, if that name can be a
+// user theme: <config.ConfigDir()>/themes/<name>.toml. A name that is not a
+// single safe path element — one that would climb out of the themes
+// directory with "..", or hide a separator — is refused by returning "",
+// rather than looked up, so a config.toml theme value can never make lw
+// read a theme file from outside its own config directory.
+func userThemePath(name string) string {
+	if name == "" || name != filepath.Base(filepath.Clean(name)) {
+		return ""
+	}
+	return filepath.Join(config.ConfigDir(), "themes", name+".toml")
 }

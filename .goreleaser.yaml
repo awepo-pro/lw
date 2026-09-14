@@ -1,0 +1,97 @@
+# GoReleaser configuration for lw — schema version 2.
+#
+# Who runs what:
+#   * `make release-snapshot` runs `goreleaser build --snapshot --clean`.
+#     It compiles every target into dist/ and touches nothing else — no tag,
+#     no push, no upload, no tap commit. It is what CI and gate G6 run.
+#   * `goreleaser release` is run by hand by the maintainer. Nothing in this
+#     repository automates publishing: no CI job releases, and no hook here
+#     tags, pushes or uploads.
+#
+# Design notes:
+#   * CGO_ENABLED=0 on every target. lw must ship as one static binary — the
+#     whole point (/PLAN.md §5) is that it runs over SSH on a machine with
+#     nothing but a shell. `file dist/lw_linux_amd64_v1/lw` must say
+#     "statically linked".
+#   * `mod_timestamp` pins the module clock so two builds of the same commit
+#     are byte-identical. This project's thesis is determinism; a release
+#     artifact that differs run-to-run would be an odd thing to ship.
+#   * `main.version` is cmd/lw/main.go's `var version` (`lw --version` prints
+#     it). The Makefile's dev builds stamp `0.1.0-dev`; a release stamps the
+#     tag itself, so `lw --version` prints `lw v0.1.0` on a v0.1.0 tag.
+
+version: 2
+
+project_name: lw
+
+builds:
+  - id: lw
+    main: ./cmd/lw
+    binary: lw
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    # Reproducible builds: stamp the source clock from the commit, not from
+    # the moment the build happened.
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    ldflags:
+      - -s -w
+      - -X main.version=v{{ .Version }}
+
+archives:
+  - id: lw
+    # tar.gz on every target: darwin and linux both read it natively, and
+    # goreleaser's default `format` is tar.gz for non-Windows anyway.
+    formats: ["tar.gz"]
+    # goreleaser's default naming — the same strings the README documents and
+    # gate G6 checks: dist/lw_linux_amd64_v1/, lw_linux_arm64.tar.gz, …
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Os }}_
+      {{- .Arch }}
+      {{- if .Arm }}v{{ .Arm }}{{ end }}
+    files:
+      - README.md
+      - LICENSE
+      - NOTICE
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+snapshot:
+  # `goreleaser build --snapshot` (and `release --snapshot`) label the
+  # artifact with this instead of a tag. Kept alphabetical, never published.
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  # Generated from local git history, so a release needs no API access and
+  # stays reproducible offline.
+  use: git
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+# Homebrew. `goreleaser release` writes the formula into
+# github.com/awepo-pro/homebrew-tap at Formula/lw.rb and commits it there;
+# nothing in this repository's automation runs that step. The in-tree
+# Formula/lw.rb is the source-build fallback and mirrors this section's
+# install block.
+brews:
+  - repository:
+      owner: awepo-pro
+      name: homebrew-tap
+    directory: Formula
+    homepage: "https://github.com/awepo-pro/lw"
+    description: "Compiles immutable sources into a reviewable markdown wiki; the agent gets no filesystem verbs."
+    license: MIT
+    test: |
+      system "#{bin}/lw", "--version"

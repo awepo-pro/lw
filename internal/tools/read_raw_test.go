@@ -123,3 +123,113 @@ func TestChunkTextEmptyBody(t *testing.T) {
 		t.Fatalf("chunkText(\"\", 100) = %#v, want one empty chunk", chunks)
 	}
 }
+
+// openAndIngest opens a changeset and runs stage.ingest_source with an
+// explicit kind, unlike proposeIngest (stage_source_test.go), which always
+// sends "kind":"paper" regardless of its ingestDoc — this package's read.get
+// tests need to control the kind, since that is exactly what determines the
+// raw/ subdirectory S6-C122 fixed.
+func openAndIngest(t *testing.T, reg *Registry, uri, kind string) Result {
+	t.Helper()
+	ctx := context.Background()
+	if r, err := reg.Call(ctx, "stage.open", json.RawMessage(`{"intent":"ingest a source"}`)); err != nil || r.IsError {
+		t.Fatalf("stage.open: %+v %v", r, err)
+	}
+	r, err := reg.Call(ctx, "stage.ingest_source", json.RawMessage(fmt.Sprintf(`{"uri":%q,"kind":%q}`, uri, kind)))
+	if err != nil {
+		t.Fatalf("stage.ingest_source: %v", err)
+	}
+	return r
+}
+
+// TestRawGetReadsStagedIngestSource is the S6-C121 regression: immediately
+// after stage.ingest_source succeeds — before any commit — raw.get on the
+// exact path the result named must return chunk 1 of the staged body, not
+// "was not found". This is the failure the live G6 ingest hit: the agent
+// staged raw/article/gemini.md and every subsequent raw.get, including the
+// exact right guess, came back not-found because raw.get read only the
+// committed vault.
+func TestRawGetReadsStagedIngestSource(t *testing.T) {
+	doc := ingestDoc{
+		Title:     "Gemini",
+		SourceURL: "https://example.test/gemini",
+		Markdown:  "# Gemini\n\nA staged body raw.get must be able to read.\n",
+		Kind:      "article",
+	}
+	reg, _ := ingestRegistry(t, doc)
+	ctx := context.Background()
+
+	ingestRes := openAndIngest(t, reg, "gemini.md", "article")
+	if ingestRes.IsError {
+		t.Fatalf("stage.ingest_source rejected: %s", ingestRes.Content)
+	}
+	if !strings.Contains(ingestRes.Content, "raw/articles/gemini.md") {
+		t.Fatalf("stage.ingest_source result = %q, want it to name raw/articles/gemini.md", ingestRes.Content)
+	}
+
+	res, err := reg.Call(ctx, "raw.get", json.RawMessage(`{"source": "raw/articles/gemini.md"}`))
+	if err != nil {
+		t.Fatalf("raw.get error = %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("raw.get on a just-staged source is IsError: %s", res.Content)
+	}
+	if !strings.Contains(res.Content, "staged in the open changeset") {
+		t.Errorf("raw.get Content = %q, want the staged marker", res.Content)
+	}
+	if !strings.Contains(res.Content, "chunk 1 of") {
+		t.Errorf("raw.get Content = %q, want a \"chunk 1 of N\" marker", res.Content)
+	}
+	if !strings.Contains(res.Content, "A staged body raw.get must be able to read.") {
+		t.Errorf("raw.get Content = %q, want the staged body", res.Content)
+	}
+}
+
+// TestRawGetWrongGuessListsStagedPaths pins the not-found message's second
+// half: when a source is staged in the open changeset, a wrong guess must
+// list the real staged path so a model can self-correct in one step,
+// instead of guessing blind the way the live G6 session did ~20 times.
+func TestRawGetWrongGuessListsStagedPaths(t *testing.T) {
+	doc := ingestDoc{
+		Title:     "Gemini",
+		SourceURL: "https://example.test/gemini",
+		Markdown:  "# Gemini\n\nBody.\n",
+		Kind:      "article",
+	}
+	reg, _ := ingestRegistry(t, doc)
+	ctx := context.Background()
+
+	if r := openAndIngest(t, reg, "gemini.md", "article"); r.IsError {
+		t.Fatalf("stage.ingest_source rejected: %s", r.Content)
+	}
+
+	res, err := reg.Call(ctx, "raw.get", json.RawMessage(`{"source": "raw/articles/wrong-guess.md"}`))
+	if err != nil {
+		t.Fatalf("raw.get error = %v", err)
+	}
+	if !res.IsError {
+		t.Fatal("raw.get on a wrong guess must be IsError")
+	}
+	if !strings.Contains(res.Content, "raw/articles/gemini.md") {
+		t.Errorf("raw.get not-found Content = %q, want it to list the staged path raw/articles/gemini.md", res.Content)
+	}
+}
+
+// TestRawGetCommittedSourceStillWorks pins that the S6-C121 fix does not
+// disturb the plain committed-source path: no marker, chunk 1 of 1, same
+// shape as before the fix (TestRawGetReturnsOneChunk covers the read-only
+// registry; this exercises the same call through a real Engine, whose
+// StagedFile branch must not fire when Deps.Vault already has the source).
+func TestRawGetCommittedSourceStillWorks(t *testing.T) {
+	reg, _, _ := engineRegistry(t, nil)
+	res, err := reg.Call(context.Background(), "raw.get", json.RawMessage(`{"source": "raw/papers/leviathan-2023.md"}`))
+	if err != nil || res.IsError {
+		t.Fatalf("Call(raw.get) = %+v, err = %v", res, err)
+	}
+	if strings.Contains(res.Content, "staged in the open changeset") {
+		t.Errorf("Content = %q, a committed source must not carry the staged marker", res.Content)
+	}
+	if !strings.HasPrefix(res.Content, "chunk 1 of 1\n\n") {
+		t.Fatalf("Content = %q, want it to start with \"chunk 1 of 1\"", res.Content)
+	}
+}

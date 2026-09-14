@@ -2,7 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sort"
@@ -11,8 +15,10 @@ import (
 
 	"github.com/awepo-pro/lw/internal/agent"
 	"github.com/awepo-pro/lw/internal/config"
+	"github.com/awepo-pro/lw/internal/extract"
 	"github.com/awepo-pro/lw/internal/stage"
 	"github.com/awepo-pro/lw/internal/testutil"
+	"github.com/awepo-pro/lw/internal/tools"
 )
 
 // fakeStageAgent is a minimal agent.Agent for tests: Send proposes a fixed
@@ -59,12 +65,134 @@ func (f *fakeStageAgent) Send(ctx context.Context, sessionID, msg string, out ch
 func (f *fakeStageAgent) Sessions() agent.SessionStore { return f.sessions }
 
 // withFakeAgent swaps the package-level newAgent seam for the duration of
-// one test, restoring the original on cleanup.
+// one test, restoring the original on cleanup. cmd_query.go, cmd_lint.go
+// and cmd_tui.go all call newAgent unchanged, and their own tests use this
+// helper directly — it is NOT what cmdIngest calls (see withFakeIngestAgent
+// below), so it stays untouched by C-123's fix.
 func withFakeAgent(t *testing.T, fn func(e *stage.Engine, cfg *config.Config, sessions agent.SessionStore) (agent.Agent, error)) {
 	t.Helper()
 	orig := newAgent
 	newAgent = fn
 	t.Cleanup(func() { newAgent = orig })
+}
+
+// withFakeIngestAgent swaps the package-level newIngestAgent seam — the
+// one cmdIngest itself calls (C-123) — for the duration of one test,
+// restoring the original on cleanup.
+func withFakeIngestAgent(t *testing.T, fn func(e *stage.Engine, cfg *config.Config, sessions agent.SessionStore, ex extract.Extractor) (agent.Agent, error)) {
+	t.Helper()
+	orig := newIngestAgent
+	newIngestAgent = fn
+	t.Cleanup(func() { newIngestAgent = orig })
+}
+
+// toolCallingFakeAgent is a fake agent.Agent that — unlike fakeStageAgent,
+// which proposes ops directly through *stage.Engine — drives the real
+// *tools.Registry via Registry.Call for stage.ingest_source. This is what
+// proves C-123's fix end to end: the registry is built over exactly the
+// extract.Extractor cmdIngest wired (a chain fronted by preExtracted), and
+// stage.ingest_source's handler (internal/tools/stage_source.go, not owned
+// by this subtask) actually re-extracts each scratch path through it,
+// rather than the test asserting on preExtracted in isolation and hoping
+// the wiring matches. It reads which scratch paths to ingest straight out
+// of the message buildIngestMessage produced, the same "- path: <path>"
+// lines a real tool-calling model would read.
+type toolCallingFakeAgent struct {
+	reg      *tools.Registry
+	sessions agent.SessionStore
+}
+
+// newToolCallingFakeAgent builds a toolCallingFakeAgent whose registry is
+// constructed the same way newIngestAgent's would be, over the extractor
+// ex the caller (cmdIngest, via the swapped newIngestAgent seam) supplies.
+func newToolCallingFakeAgent(e *stage.Engine, cfg *config.Config, sessions agent.SessionStore, ex extract.Extractor) *toolCallingFakeAgent {
+	return &toolCallingFakeAgent{
+		reg: tools.NewRegistry(tools.Deps{
+			Vault:   e.Vault(),
+			Index:   e.Index(),
+			Engine:  e,
+			Extract: ex,
+			Author:  stage.Author{Kind: "agent", Model: cfg.LLM.Model},
+		}),
+		sessions: sessions,
+	}
+}
+
+func (f *toolCallingFakeAgent) Send(ctx context.Context, sessionID, msg string, out chan<- agent.Event) error {
+	defer close(out)
+	for _, path := range parseIngestPaths(msg) {
+		args, err := json.Marshal(map[string]string{"uri": path})
+		if err != nil {
+			select {
+			case out <- agent.ErrorEv{Err: err}:
+			case <-ctx.Done():
+			}
+			return err
+		}
+		res, err := f.reg.Call(ctx, "stage.ingest_source", args)
+		if err != nil {
+			select {
+			case out <- agent.ErrorEv{Err: err}:
+			case <-ctx.Done():
+			}
+			return err
+		}
+		if res.IsError {
+			cerr := fmt.Errorf("stage.ingest_source: %s", res.Content)
+			select {
+			case out <- agent.ErrorEv{Err: cerr}:
+			case <-ctx.Done():
+			}
+			return cerr
+		}
+	}
+	select {
+	case out <- agent.DoneEv{Reason: "stop", Rounds: 1}:
+	case <-ctx.Done():
+	}
+	return nil
+}
+
+func (f *toolCallingFakeAgent) Sessions() agent.SessionStore { return f.sessions }
+
+// parseIngestPaths extracts every scratch path buildIngestMessage listed,
+// in the order they appear, from its "- path: <path>" lines.
+func parseIngestPaths(msg string) []string {
+	var paths []string
+	for _, line := range strings.Split(msg, "\n") {
+		if p, ok := strings.CutPrefix(line, "- path: "); ok {
+			paths = append(paths, p)
+		}
+	}
+	return paths
+}
+
+// findIngestOp returns the one stage.OpIngestSource op in cs, failing the
+// test if there is none.
+func findIngestOp(t *testing.T, cs *stage.Changeset) stage.Op {
+	t.Helper()
+	for _, op := range cs.Ops {
+		if op.Kind == stage.OpIngestSource {
+			return op
+		}
+	}
+	t.Fatalf("changeset %s has no ingest_source op; ops=%+v", cs.ID, cs.Ops)
+	return stage.Op{}
+}
+
+// findFileDiffNew returns the projected New content stage.Engine.Diff
+// computed for path, failing the test if path is not among the diff's
+// files — this is the exact bytes stage.ingest_source proposed staging,
+// read back the same way `lw diff` would.
+func findFileDiffNew(t *testing.T, d stage.Diff, path string) string {
+	t.Helper()
+	for _, f := range d.Files {
+		if f.Path == path {
+			return f.New
+		}
+	}
+	t.Fatalf("diff has no file entry for %s; files=%+v", path, d.Files)
+	return ""
 }
 
 // snapshotVaultFiles returns every wiki/ and raw/ file under root, mapped
@@ -105,7 +233,7 @@ func TestCmdIngestFakeAgentLeavesOpenChangeset(t *testing.T) {
 
 	const wantOps = 1
 	var capturedEngine *stage.Engine
-	withFakeAgent(t, func(e *stage.Engine, cfg *config.Config, sessions agent.SessionStore) (agent.Agent, error) {
+	withFakeIngestAgent(t, func(e *stage.Engine, cfg *config.Config, sessions agent.SessionStore, ex extract.Extractor) (agent.Agent, error) {
 		capturedEngine = e
 		return &fakeStageAgent{
 			e:        e,
@@ -188,8 +316,8 @@ func TestCmdIngestNoSources(t *testing.T) {
 func TestCmdIngestExtractErrorOpensNoChangeset(t *testing.T) {
 	root := testutil.CopyFixture(t, "minimal")
 
-	withFakeAgent(t, func(e *stage.Engine, cfg *config.Config, sessions agent.SessionStore) (agent.Agent, error) {
-		t.Fatal("newAgent should never be called when extraction fails")
+	withFakeIngestAgent(t, func(e *stage.Engine, cfg *config.Config, sessions agent.SessionStore, ex extract.Extractor) (agent.Agent, error) {
+		t.Fatal("newIngestAgent should never be called when extraction fails")
 		return nil, nil
 	})
 
@@ -247,7 +375,7 @@ func TestCmdIngestAgentErrorRejectsChangeset(t *testing.T) {
 		t.Fatalf("write local source: %v", err)
 	}
 
-	withFakeAgent(t, func(e *stage.Engine, cfg *config.Config, sessions agent.SessionStore) (agent.Agent, error) {
+	withFakeIngestAgent(t, func(e *stage.Engine, cfg *config.Config, sessions agent.SessionStore, ex extract.Extractor) (agent.Agent, error) {
 		return &fakeStageAgent{e: e, sessions: sessions, failWith: errBoom}, nil
 	})
 
@@ -287,6 +415,213 @@ func TestCmdIngestAgentErrorRejectsChangeset(t *testing.T) {
 
 // errBoom is a fixed sentinel so assertions can match its message exactly.
 var errBoom = errors.New("boom")
+
+// TestCmdIngestSourceURLLocalFile is C-123's regression test: a real
+// `lw ingest <local file>` run, driven end to end through the real
+// stage.ingest_source tool handler (toolCallingFakeAgent, no LLM and no
+// network), must record the raw file's source_url as the ORIGINAL
+// argument's absolute path — never the scratch path cmdIngest wrote it to
+// and later deletes. The argument given on the command line is
+// deliberately relative, so a fix that merely forwarded the argument
+// unchanged (already correct for an absolute path by coincidence) would
+// not pass this.
+func TestCmdIngestSourceURLLocalFile(t *testing.T) {
+	root := testutil.CopyFixture(t, "minimal")
+
+	localSrc := filepath.Join(t.TempDir(), "gemini-note.md")
+	if err := os.WriteFile(localSrc, []byte("# A Gemini Note\n\nSome body text about kv-cache.\n"), 0o644); err != nil {
+		t.Fatalf("write local source: %v", err)
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	relSrc, err := filepath.Rel(cwd, localSrc)
+	if err != nil {
+		t.Fatalf("Rel: %v", err)
+	}
+	if relSrc == localSrc {
+		t.Fatalf("relSrc = %q, want it to differ from the absolute path so this test exercises the abs-path correction", relSrc)
+	}
+
+	withFakeIngestAgent(t, func(e *stage.Engine, cfg *config.Config, sessions agent.SessionStore, ex extract.Extractor) (agent.Agent, error) {
+		return newToolCallingFakeAgent(e, cfg, sessions, ex), nil
+	})
+
+	stdout, stderr, code := captureRun(t, func() int {
+		return run([]string{"ingest", "--vault", root, relSrc})
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr, stdout)
+	}
+
+	e, err := stage.OpenEngine(root)
+	if err != nil {
+		t.Fatalf("OpenEngine: %v", err)
+	}
+	defer e.Close()
+
+	cs, err := e.Current()
+	if err != nil {
+		t.Fatalf("Current: %v", err)
+	}
+	op := findIngestOp(t, cs)
+
+	d, err := e.Diff()
+	if err != nil {
+		t.Fatalf("Diff: %v", err)
+	}
+	content := findFileDiffNew(t, d, op.Path)
+
+	want := fmt.Sprintf("source_url: %s\n", localSrc)
+	if !strings.Contains(content, want) {
+		t.Fatalf("staged raw file %s does not contain %q; got:\n%s", op.Path, want, content)
+	}
+	if strings.Contains(content, "lw-ingest-") {
+		t.Fatalf("staged raw file %s still names the deleted scratch directory; got:\n%s", op.Path, content)
+	}
+}
+
+// TestCmdIngestSourceURLRemote is C-123's regression test for a URL
+// source: `lw ingest <url>` served by a local httptest server (no live
+// network to any provider) must record source_url as that exact URL, not
+// the scratch path stage.ingest_source's re-extraction would otherwise
+// see.
+func TestCmdIngestSourceURLRemote(t *testing.T) {
+	root := testutil.CopyFixture(t, "minimal")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprint(w, "<html><body><h1>Remote Note</h1><p>Some body text about kv-cache.</p></body></html>")
+	}))
+	defer srv.Close()
+
+	withFakeIngestAgent(t, func(e *stage.Engine, cfg *config.Config, sessions agent.SessionStore, ex extract.Extractor) (agent.Agent, error) {
+		return newToolCallingFakeAgent(e, cfg, sessions, ex), nil
+	})
+
+	stdout, stderr, code := captureRun(t, func() int {
+		return run([]string{"ingest", "--vault", root, srv.URL})
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr, stdout)
+	}
+
+	e, err := stage.OpenEngine(root)
+	if err != nil {
+		t.Fatalf("OpenEngine: %v", err)
+	}
+	defer e.Close()
+
+	cs, err := e.Current()
+	if err != nil {
+		t.Fatalf("Current: %v", err)
+	}
+	op := findIngestOp(t, cs)
+
+	d, err := e.Diff()
+	if err != nil {
+		t.Fatalf("Diff: %v", err)
+	}
+	content := findFileDiffNew(t, d, op.Path)
+
+	want := fmt.Sprintf("source_url: %s\n", srv.URL)
+	if !strings.Contains(content, want) {
+		t.Fatalf("staged raw file %s does not contain %q; got:\n%s", op.Path, want, content)
+	}
+}
+
+// TestPreExtractedResolvesScratchPathToStagedDoc unit-tests preExtracted
+// directly (independent of the whole CLI plumbing exercised above): the
+// exact Extractor contract stage.ingest_source's Deps.Extract relies on
+// for C-123's fix — CanHandle true only for staged paths, Extract
+// returning an independent copy of the staged Doc, and a clear error for
+// an unstaged path.
+func TestPreExtractedResolvesScratchPathToStagedDoc(t *testing.T) {
+	pre := newPreExtracted()
+	doc := extract.Doc{
+		Title:     "T",
+		SourceURL: "https://example.com/a",
+		Markdown:  "# T\n\nBody.\n",
+		Kind:      "article",
+		Extractor: "go/html",
+	}
+	pre.stage("/tmp/scratch/01-t.md", doc)
+
+	if !pre.CanHandle("/tmp/scratch/01-t.md") {
+		t.Error("CanHandle(staged path) = false, want true")
+	}
+	if pre.CanHandle("/tmp/scratch/02-other.md") {
+		t.Error("CanHandle(unstaged path) = true, want false")
+	}
+
+	got, err := pre.Extract(context.Background(), "/tmp/scratch/01-t.md")
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	if *got != doc {
+		t.Fatalf("Extract() = %+v, want %+v", *got, doc)
+	}
+
+	// The returned *Doc must be an independent copy: mutating it must not
+	// alter what a second Extract call on the same path returns.
+	got.SourceURL = "mutated"
+	got2, err := pre.Extract(context.Background(), "/tmp/scratch/01-t.md")
+	if err != nil {
+		t.Fatalf("second Extract: %v", err)
+	}
+	if got2.SourceURL != doc.SourceURL {
+		t.Fatalf("second Extract().SourceURL = %q, want %q (unaffected by the first caller's mutation)", got2.SourceURL, doc.SourceURL)
+	}
+
+	if _, err := pre.Extract(context.Background(), "/tmp/scratch/nope.md"); err == nil {
+		t.Fatal("Extract(unstaged path) error = nil, want non-nil")
+	}
+}
+
+func TestIsURLSource(t *testing.T) {
+	cases := []struct {
+		src  string
+		want bool
+	}{
+		{"https://example.com/a", true},
+		{"http://example.com/a", true},
+		{"/tmp/lw-ingest-1234/01-note.md", false},
+		{"note.md", false},
+		{"ftp://example.com/a", false},
+	}
+	for _, c := range cases {
+		if got := isURLSource(c.src); got != c.want {
+			t.Errorf("isURLSource(%q) = %v, want %v", c.src, got, c.want)
+		}
+	}
+}
+
+// TestBuildIngestMessageStatesChangesetAlreadyOpen pins the second half of
+// C-123's live observation: cmdIngest opens the changeset before this
+// message is ever sent (see cmdIngest), so the agent's first instinct to
+// call stage.open fails with "a changeset is already open" — harmless, but
+// avoidable. The message must say so, name stage.ingest_source's own
+// result as the way to find the raw/ path for raw.get, and keep the
+// "original source:" line the agent needs to write correct provenance.
+func TestBuildIngestMessageStatesChangesetAlreadyOpen(t *testing.T) {
+	items := []ingestItem{{path: "/tmp/x/01-note.md", kind: "article", title: "Note", source: "note.md"}}
+	msg := buildIngestMessage(items)
+
+	if !strings.Contains(msg, "already open") {
+		t.Errorf("buildIngestMessage() = %q, want it to state the changeset is already open", msg)
+	}
+	if !strings.Contains(msg, "stage.open") {
+		t.Errorf("buildIngestMessage() = %q, want it to name stage.open", msg)
+	}
+	if !strings.Contains(msg, "raw.get") {
+		t.Errorf("buildIngestMessage() = %q, want it to mention raw.get for reading back the staged source", msg)
+	}
+	if !strings.Contains(msg, "original source: note.md") {
+		t.Errorf("buildIngestMessage() = %q, want it to keep the \"original source:\" line", msg)
+	}
+}
 
 func TestMemSessionStoreIsolated(t *testing.T) {
 	s := newMemSessionStore()

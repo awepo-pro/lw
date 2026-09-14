@@ -1,7 +1,7 @@
 // pane.go implements backbone §12's shared shell vocabulary: the Screen
 // enum, the Pane interface every screen package implements, the Deps and
 // Options a screen (and the shell itself) are constructed with, and the
-// three messages the shell broadcasts to panes.
+// messages the shell broadcasts to panes.
 //
 // Nothing here imports a screen package. Options.Panes is injected by
 // cmd/lw once a screen exists (s4-tui.md S4-T2 item 1) — that is what lets
@@ -47,9 +47,13 @@ type Pane interface {
 // Deps is what a screen (and the shell itself) is handed at construction.
 type Deps struct {
 	Engine *stage.Engine
-	Agent  agent.Agent // nil until S5 wires a real agent.Agent (backbone §12)
-	Theme  Theme
-	Keys   KeyMap
+	// Agent is the agent.Agent the Ask pane drives. nil is a supported
+	// state, not a stub: cmd/lw builds it only when the provider config
+	// resolves, and a nil here means Ask reports why it cannot answer while
+	// every other screen works untouched (backbone §12; S5-T5).
+	Agent agent.Agent
+	Theme Theme
+	Keys  KeyMap
 }
 
 // Options configures NewApp. Panes is injected by cmd/lw; the shell never
@@ -73,6 +77,25 @@ type StageChangedMsg struct {
 // knows to refresh it.
 type VaultReloadedMsg struct{}
 
+// StreamMsg hands the ask pane the agent.Event channel to consume for one
+// turn, and arms its pump (internal/ui/ask's Listen, which re-arms itself
+// after every event through this same channel). Declared here rather than
+// in internal/ui/ask because the shell has to route it — an ask pane that
+// is off screen must keep draining its stream (C-117/D-DA) — and the shell
+// never imports a screen package (backbone §12).
+type StreamMsg struct{ Ch <-chan agent.Event }
+
+// EventMsg carries one agent.Event the ask pane's pump has read. Routed
+// through the shell's fan-out like StreamMsg: the pane consuming it may be
+// off screen for a whole turn (C-117/D-DA).
+type EventMsg struct{ Ev agent.Event }
+
+// StreamClosedMsg reports that the channel the ask pane's pump was reading
+// has closed — the turn's event source is gone, so the pane stops
+// re-arming. Routed like the other two, so a turn that outlives its screen
+// still ends cleanly in the pane that owns it.
+type StreamClosedMsg struct{}
+
 // SwitchScreenMsg asks the shell to change the active screen — for example
 // Ask's Ctrl-R jumping to Review, or Log's r reverting a commit into a new
 // changeset and switching to Review to show it.
@@ -93,4 +116,32 @@ type SwitchScreenMsg struct {
 // may emit it and nothing acts on it.
 type OpenPathMsg struct {
 	Path string // vault-relative, slash-separated, e.g. "wiki/concepts/kv-cache.md"
+}
+
+// paneMsg is the shell's private envelope: it tags a tea.Msg with the Screen
+// whose pane produced it, so App.Update can hand a screen's own message back
+// to that screen instead of to whichever screen happens to be active.
+//
+// It exists because a pane's tea.Cmd results reach the shell, not the pane —
+// review's loadCmd, lintview's runReportCmd and logview's queryCmd all
+// resolve to a message the shell then has to route. A message that is not in
+// the named fan-out set (StreamMsg and its two siblings, pane.go above) used
+// to land on the active pane, which ignores it, so a pane that was off screen
+// when it issued a command never heard its own answer: press `r` on Log and
+// the Review pane's loadCmd result was dropped, leaving Review stale when the
+// jump landed.
+//
+// Only a pane's *own* messages are enveloped — never one the shell or the
+// runtime consumes (see App.producedBy), which travel exactly as they did
+// before, because a StageChangedMsg or SwitchScreenMsg a pane emits is a
+// command to the shell, not that pane's answer.
+//
+// paneMsg is unexported and never delivered to a pane: Update unwraps it
+// before any other case runs, so no screen ever sees one and no screen can
+// produce one. Declared here with the rest of the shell's message
+// vocabulary, because Update routes it and the shell never imports a screen
+// package (backbone §12).
+type paneMsg struct {
+	from Screen // the pane that produced msg
+	msg  tea.Msg
 }

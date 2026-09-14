@@ -1,0 +1,5 @@
+data: {"id":"chatcmpl-smoke-ingest-3","choices":[{"index":0,"delta":{"role":"assistant","content":"Ingested sources/smoke-ingest.md as raw/articles/smoke-ingest.md and proposed wiki/concepts/e2e-round-trip.md; it is staged for human review."},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-smoke-ingest-3","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
