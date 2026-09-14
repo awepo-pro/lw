@@ -623,6 +623,84 @@ func TestBuildIngestMessageStatesChangesetAlreadyOpen(t *testing.T) {
 	}
 }
 
+// scriptedEventAgent is a fake agent.Agent whose Send emits a fixed script
+// of agent.Event values, then a DoneEv, then closes out — used to drive
+// runAgentTurn directly (S6-C130) without any real LLM or stage.Engine
+// involved. A plain string in the script is shorthand for
+// agent.TextDelta{Text: s}.
+type scriptedEventAgent struct {
+	script []agent.Event
+}
+
+// newScriptedEventAgent builds a scriptedEventAgent from a mix of
+// agent.Event values and bare strings (each turned into an
+// agent.TextDelta), finishing the script with agent.DoneEv.
+func newScriptedEventAgent(items ...any) *scriptedEventAgent {
+	script := make([]agent.Event, 0, len(items)+1)
+	for _, it := range items {
+		if s, ok := it.(string); ok {
+			script = append(script, agent.TextDelta{Text: s})
+			continue
+		}
+		script = append(script, it.(agent.Event))
+	}
+	script = append(script, agent.DoneEv{Reason: "stop", Rounds: 1})
+	return &scriptedEventAgent{script: script}
+}
+
+func (f *scriptedEventAgent) Send(ctx context.Context, sessionID, msg string, out chan<- agent.Event) error {
+	defer close(out)
+	for _, ev := range f.script {
+		select {
+		case out <- ev:
+		case <-ctx.Done():
+			return nil
+		}
+	}
+	return nil
+}
+
+func (f *scriptedEventAgent) Sessions() agent.SessionStore { return nil }
+
+// TestRunAgentTurnSeparatesRounds is S6-C130's regression test: text from
+// two different agent rounds — separated by at least one tool event — must
+// land on its own paragraph, never run together on one line the way a live
+// URL ingest did ("...orientation ritual.The vault is empty..."). Deltas
+// within one round, with no tool event between them, must stay exactly as
+// they were before this fix.
+func TestRunAgentTurnSeparatesRounds(t *testing.T) {
+	toolCall := agent.ToolCallEv{ID: "1", Name: "stage.ingest_source", Args: "{}"}
+	toolRes := agent.ToolResEv{ID: "1", Name: "stage.ingest_source", Content: "ok"}
+
+	cases := []struct {
+		name   string
+		script []any
+		want   string
+	}{
+		{"deltas_within_one_round_untouched", []any{"Hel", "lo"}, "Hello"},
+		{"tool_between_rounds_no_newline", []any{"A.", toolCall, toolRes, "B."}, "A.\n\nB."},
+		{"tool_between_rounds_one_newline", []any{"A.\n", toolCall, "B."}, "A.\n\nB."},
+		{"tool_between_rounds_already_blank", []any{"A.\n\n", toolRes, "B."}, "A.\n\nB."},
+		{"no_leading_separator_before_first_text", []any{toolCall, toolRes, "B."}, "B."},
+		{"empty_delta_changes_nothing", []any{"A.", toolCall, "", "B"}, "A.\n\nB"},
+		{"two_tool_gaps_two_separators", []any{"A.", toolCall, "B.", toolCall, "C."}, "A.\n\nB.\n\nC."},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ag := newScriptedEventAgent(c.script...)
+			var buf strings.Builder
+			err := runAgentTurn(context.Background(), ag, "sess-1", "go", &buf)
+			if err != nil {
+				t.Fatalf("runAgentTurn: %v", err)
+			}
+			if got := buf.String(); got != c.want {
+				t.Errorf("runAgentTurn() output = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
 func TestMemSessionStoreIsolated(t *testing.T) {
 	s := newMemSessionStore()
 	sess, err := s.Create("q1")

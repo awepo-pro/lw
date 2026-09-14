@@ -147,6 +147,15 @@ func isURLSource(src string) bool {
 // Send caller), streams every TextDelta to w as it arrives, and returns
 // once Send has both closed the channel and returned. Shared by ingest,
 // query and lint --fix.
+//
+// S6-C130: text from two different agent rounds is separated by a blank
+// line, so successive rounds no longer run together on one line — a live
+// URL ingest printed "…orientation ritual.The vault is empty…" because the
+// old version dropped tool events entirely and never marked a round
+// boundary. A round boundary is "a ToolCallEv or ToolResEv arrived since
+// the text last written", checked only when the next non-empty TextDelta
+// arrives; deltas within one round (no tool event between them) are still
+// written byte-identical to before.
 func runAgentTurn(ctx context.Context, ag agent.Agent, sessionID, msg string, w io.Writer) error {
 	out := make(chan agent.Event)
 	done := make(chan struct{})
@@ -155,13 +164,57 @@ func runAgentTurn(ctx context.Context, ag agent.Agent, sessionID, msg string, w 
 		sendErr = ag.Send(ctx, sessionID, msg, out)
 		close(done)
 	}()
+
+	var wrote bool     // some TextDelta has already been written this turn
+	var toolSince bool // a tool event arrived since the last TextDelta write
+	var trailingNL int // trailing '\n' run at the end of w, capped at 2
 	for ev := range out {
-		if td, ok := ev.(agent.TextDelta); ok {
-			fmt.Fprint(w, td.Text)
+		switch e := ev.(type) {
+		case agent.TextDelta:
+			if e.Text == "" {
+				continue
+			}
+			if wrote && toolSince {
+				switch trailingNL {
+				case 0:
+					fmt.Fprint(w, "\n\n")
+					trailingNL = 2
+				case 1:
+					fmt.Fprint(w, "\n")
+					trailingNL = 2
+				}
+				// trailingNL == 2: the round's text already ended on a
+				// blank line — no separator needed, nothing to write.
+			}
+			fmt.Fprint(w, e.Text)
+			trailingNL = trailingNewlineRun(trailingNL, e.Text)
+			wrote = true
+			toolSince = false
+		case agent.ToolCallEv, agent.ToolResEv:
+			toolSince = true
 		}
 	}
 	<-done
 	return sendErr
+}
+
+// trailingNewlineRun returns, capped at 2, the number of consecutive '\n'
+// bytes ending the text written so far: prev is that same count before s
+// was written, and s is non-empty. If s itself contains a non-'\n' byte,
+// the run resets to whatever trails s alone; if s is entirely '\n', the
+// run carries over from prev.
+func trailingNewlineRun(prev int, s string) int {
+	n := 0
+	for i := len(s) - 1; i >= 0; i-- {
+		if s[i] != '\n' {
+			return n
+		}
+		n++
+		if n >= 2 {
+			return 2
+		}
+	}
+	return min(prev+n, 2)
 }
 
 // cmdIngest extracts one or more sources (a URL or a local path) into
