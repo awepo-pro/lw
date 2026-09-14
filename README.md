@@ -18,7 +18,7 @@ make it different from every agent-with-a-shell tool:
    what did I reject?" — not just "what got in".
 
 Everything deterministic — parsing, indexing, search, lint, diff, apply,
-revert — is Go. Only judgement goes to the model. [`.dev-notes/PLAN-v1.md`](.dev-notes/PLAN-v1.md) is the
+revert — is Go. Only judgement goes to the model. [`docs/design.md`](docs/design.md) is the
 design of record; [`docs/architecture.md`](docs/architecture.md) is the map.
 
 ## Install

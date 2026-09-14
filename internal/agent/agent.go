@@ -5,7 +5,7 @@ package agent
 // delegates to, and Sessions. Send itself and the round machinery live in
 // loop.go (backbone §9; stage file S5-T3 item 9) — this file never imports
 // internal/ui, keeping Agent the seam that lets a different backend (letta
-// or otherwise) slot in later (/.dev-notes/PLAN-v1.md D2).
+// or otherwise) slot in later (/docs/design.md D2).
 
 import (
 	"context"
@@ -16,7 +16,7 @@ import (
 )
 
 // defaultMaxToolRounds and defaultContextTokens are LoopConfig's documented
-// zero-value defaults (backbone §9: "default 24 (/.dev-notes/PLAN-v1.md §11.2)" and
+// zero-value defaults (backbone §9: "default 24 (/docs/design.md §11.2)" and
 // "default 96000").
 const (
 	defaultMaxToolRounds = 24
@@ -36,7 +36,7 @@ type streamer interface {
 // Loop is the Agent that streams a turn from an LLM client, dispatches tool
 // calls through a tools.Registry, and persists the turn through a
 // SessionStore. Construct with NewLoop; Loop is the only implementation of
-// Agent in this module (/.dev-notes/PLAN-v1.md D2).
+// Agent in this module (/docs/design.md D2).
 type Loop struct {
 	client   streamer
 	tools    *tools.Registry

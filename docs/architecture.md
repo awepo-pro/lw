@@ -4,7 +4,7 @@ lw is one Go binary. It compiles a directory of **immutable sources** into an
 interlinked markdown wiki, and it is built around one rule: the model never
 touches your files, and you never accept a change you have not read.
 
-[`/.dev-notes/PLAN-v1.md`](../.dev-notes/PLAN-v1.md) is the design of record; this page is the map of what
+[`/docs/design.md`](../docs/design.md) is the design of record; this page is the map of what
 actually shipped in v1.0.0.
 
 ---
@@ -102,6 +102,6 @@ rationale attached.
 
 Graph view, embeddings and vector search, SQLite/FTS5, PDF and OCR extraction,
 multi-vault, parallel changesets, and a web server are all **deferred**, by
-design, to `/.dev-notes/PLAN-v2.md` and `/.dev-notes/PLAN-v2.1.md`. Search is a plain word index.
+design, to the v2 and v2.1 roadmaps (kept outside this repository). Search is a plain word index.
 Nothing in this build reads a vector store, and the tool registry never gains a
 filesystem verb to make any of it easier.

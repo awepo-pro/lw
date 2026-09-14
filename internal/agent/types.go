@@ -65,7 +65,7 @@ func (ErrorEv) isEvent()    {}
 // Agent drives one curator turn, streaming Events to out and persisting the
 // turn through its SessionStore. Loop (S5-T3) is the only implementation in
 // this module; the interface is the seam that lets a different backend
-// (letta or otherwise) slot in later (/.dev-notes/PLAN-v1.md D2).
+// (letta or otherwise) slot in later (/docs/design.md D2).
 type Agent interface {
 	Send(ctx context.Context, sessionID, msg string, out chan<- Event) error
 	Sessions() SessionStore
@@ -73,7 +73,7 @@ type Agent interface {
 
 // LoopConfig bounds one Loop's resource usage.
 type LoopConfig struct {
-	MaxToolRounds int // default 24 (/.dev-notes/PLAN-v1.md §11.2)
+	MaxToolRounds int // default 24 (/docs/design.md §11.2)
 	ContextTokens int // default 96000
 }
 

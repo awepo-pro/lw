@@ -12,7 +12,7 @@ func (linkMinOutCheck) Describe() string   { return "fewer than 2 outbound wikil
 func (linkMinOutCheck) Severity() Severity { return SevWarn }
 
 // Run reports every page with fewer than two outbound wikilinks
-// (/.dev-notes/PLAN-v1.md §6). Context.Graph.Outbound counts every wikilink a page
+// (/docs/design.md §6). Context.Graph.Outbound counts every wikilink a page
 // carries, resolved or not, matching what a human reading the page would
 // call its "outbound wikilinks".
 func (linkMinOutCheck) Run(ctx *Context) []Finding {

@@ -91,7 +91,7 @@ func (e *Engine) Diff() (Diff, error) {
 // applyDerivedIndexDiff is S2-T8 rule (a)'s THIRD surface: the identical
 // derivation pass buildCommitMaterialization (apply.go) and projectedTree
 // (projection.go) already run, so what a reviewer sees here is what
-// Commit actually writes (/.dev-notes/PLAN-v1.md §1 — nothing lands without hunk-level
+// Commit actually writes (/docs/design.md §1 — nothing lands without hunk-level
 // human review, and a review surface that misdescribes index.md is
 // exactly the C-65 defect class this repair closes on the third and last
 // place it could still hide). Mutates files in place.
@@ -348,7 +348,7 @@ func (e *Engine) workingTreeContent(p string) string {
 }
 
 // diffRisk ranks an OpKind for Diff.Files ordering (backbone §5.6 Contract,
-// /.dev-notes/PLAN-v1.md §14 "new pages and renames first, link additions last"). A
+// /docs/design.md §14 "new pages and renames first, link additions last"). A
 // cascade sub-op is always OpPatchPage, so it sorts into rank 2 regardless
 // of which top-level op produced it.
 func diffRisk(k OpKind) int {

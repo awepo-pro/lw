@@ -43,7 +43,7 @@ func cmdLint(args []string) error {
 
 	// --fix hands the engine's findings to the agent and lets it propose
 	// repairs; the result still stages, same as any other agent turn
-	// (/.dev-notes/PLAN-v1.md §9.4) — it returns here rather than falling into the
+	// (/docs/design.md §9.4) — it returns here rather than falling into the
 	// read-only report built below.
 	if *fix {
 		return runLintFix(*vaultPath, *checksFlag)
@@ -94,7 +94,7 @@ func cmdLint(args []string) error {
 // any other agent turn uses. The model never computes lint results itself
 // (00-conventions.md §5); it only reads what lint.Run already reported.
 // The result still stages: even an automated repair goes through
-// hunk-level human review before it lands (/.dev-notes/PLAN-v1.md §9.4), so this leaves
+// hunk-level human review before it lands (/docs/design.md §9.4), so this leaves
 // an open changeset and commits nothing, exactly like `lw ingest`.
 func runLintFix(vaultPath, checksFlag string) error {
 	root, err := findVaultRoot(vaultPath)

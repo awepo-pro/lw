@@ -19,7 +19,7 @@ const orientLogMaxLines = 30
 
 // vaultOrientTool builds "vault.orient": SCHEMA.md, index.md, curator
 // memory and the tail of log.md, all in one call. Orientation is a
-// mandatory ritual and one tool means it cannot be half-done (/.dev-notes/PLAN-v1.md §8).
+// mandatory ritual and one tool means it cannot be half-done (/docs/design.md §8).
 func vaultOrientTool(d Deps) Tool {
 	return Tool{
 		Name: "vault.orient",

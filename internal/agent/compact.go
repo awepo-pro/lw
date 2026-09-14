@@ -3,7 +3,7 @@ package agent
 // compact.go implements backbone §9's Compact and EstimateTokens: the
 // mechanical (never model-driven) rule that trims session history to fit a
 // token budget without ever touching a Record whose Staged flag is true —
-// those are the audit trail behind an open changeset (/.dev-notes/PLAN-v1.md §11.3).
+// those are the audit trail behind an open changeset (/docs/design.md §11.3).
 
 import "fmt"
 
@@ -36,7 +36,7 @@ func isProse(r Record) bool {
 // Compact trims recs to fit budget (an EstimateTokens total), mechanically,
 // without ever consulting a model.
 //
-// Contract (backbone §9, /.dev-notes/PLAN-v1.md §11.3): records with Staged == true are
+// Contract (backbone §9, /docs/design.md §11.3): records with Staged == true are
 // NEVER dropped or summarized — they are the audit trail behind the
 // changeset, and losing one silently detaches a staged op from the tool
 // call that produced it. Tool calls and results are already small by

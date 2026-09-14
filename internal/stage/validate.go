@@ -17,7 +17,7 @@ import (
 // form: one or more lowercase-alphanumeric segments joined by single
 // hyphens, then ".md" — the same shape internal/lint's path-convention
 // check enforces as a warning; ValidateOp enforces it as a hard rejection
-// at proposal time (backbone §5.5's first bullet, /.dev-notes/PLAN-v1.md §8).
+// at proposal time (backbone §5.5's first bullet, /docs/design.md §8).
 var vaultPathFilenameRE = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*\.md$`)
 
 // vaultPathSegmentRE matches one lowercase-hyphen directory segment.

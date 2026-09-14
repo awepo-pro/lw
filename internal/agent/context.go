@@ -1,7 +1,7 @@
 package agent
 
 // context.go implements backbone §9's ContextBuilder: assembling one turn's
-// full message list in the exact five-part order /.dev-notes/PLAN-v1.md §11.3 specifies.
+// full message list in the exact five-part order /docs/design.md §11.3 specifies.
 
 import (
 	"context"
@@ -17,7 +17,7 @@ import (
 )
 
 // ContextBuilder assembles the five-part turn context backbone §9 and
-// /.dev-notes/PLAN-v1.md §11.3 specify, in the one order that is ever legal: the system
+// /docs/design.md §11.3 specify, in the one order that is ever legal: the system
 // prompt, curator-memory.md, the orientation digest, compacted session
 // history, then the user message.
 type ContextBuilder struct {
@@ -50,7 +50,7 @@ func NewContextBuilder(v *vault.Vault, r *tools.Registry, budget int) *ContextBu
 }
 
 // Build assembles one turn's messages for session s plus the new userMsg,
-// in backbone §9's exact order (/.dev-notes/PLAN-v1.md §11.3):
+// in backbone §9's exact order (/docs/design.md §11.3):
 //
 //  1. the system prompt (prompt.go, static);
 //  2. curator-memory.md, verbatim;

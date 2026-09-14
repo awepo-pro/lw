@@ -256,7 +256,7 @@ func TestRevertRenameRoundTripsExactly(t *testing.T) {
 
 // TestRevertOpensChangesetNotApplies asserts that Revert only proposes:
 // the working tree, the loaded Vault and snapshots/ are all untouched
-// until the revert changeset is itself committed (backbone §5.8, /.dev-notes/PLAN-v1.md
+// until the revert changeset is itself committed (backbone §5.8, /docs/design.md
 // §7 — "never apply directly").
 func TestRevertOpensChangesetNotApplies(t *testing.T) {
 	e, dir := newTestEngine(t)

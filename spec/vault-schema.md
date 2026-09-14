@@ -4,10 +4,10 @@ This is the human-readable counterpart to [`changeset.schema.json`](changeset.sc
 Together they are one contract in two languages: this file documents the vault
 itself (directory layout, frontmatter, mechanical conventions, lint checks);
 the JSON Schema documents the changeset buffer that mutates it. Section
-numbers below (`/.dev-notes/PLAN-v1.md §N`) cite the design of record; nothing here invents
-a rule that isn't traceable to `/.dev-notes/PLAN-v1.md` or `01-backbone.md`.
+numbers below (`/docs/design.md §N`) cite the design of record; nothing here invents
+a rule that isn't traceable to `/docs/design.md` or `01-backbone.md`.
 
-## 1. Directory layout (`/.dev-notes/PLAN-v1.md §6`, backbone §1)
+## 1. Directory layout (`/docs/design.md §6`, backbone §1)
 
 ```
 vault/
@@ -29,11 +29,11 @@ vault/
 └── .llmwiki/             engine state (backbone §14, not part of the reviewable wiki)
 ```
 
-`wiki/summaries` is not enumerated in `/.dev-notes/PLAN-v1.md §6`'s tree but is one of the
+`wiki/summaries` is not enumerated in `/docs/design.md §6`'s tree but is one of the
 five `PageType` values in backbone §2.1 (`TypeSummary`), whose `Dir()` is
 `"wiki/summaries"`; it is listed here for completeness.
 
-## 2. Wiki page frontmatter (`/.dev-notes/PLAN-v1.md §6`; field order and enums from
+## 2. Wiki page frontmatter (`/docs/design.md §6`; field order and enums from
 backbone §2.1-§2.2)
 
 Every page under `wiki/` opens with a YAML frontmatter block, delimited by
@@ -46,7 +46,7 @@ Every page under `wiki/` opens with a YAML frontmatter block, delimited by
 | `created` | date (`YYYY-MM-DD`) | always emitted | non-zero; `created <= updated` |
 | `updated` | date (`YYYY-MM-DD`) | always emitted | non-zero |
 | `type` | string | always emitted | one of `entity`, `concept`, `comparison`, `query`, `summary` (backbone §2.1 `PageType`) |
-| `tags` | list of strings | emitted unless empty (then `[]`) | every tag must be present in `SCHEMA.md`'s taxonomy (`/.dev-notes/PLAN-v1.md §6`, backbone §2.2 `Validate`) |
+| `tags` | list of strings | emitted unless empty (then `[]`) | every tag must be present in `SCHEMA.md`'s taxonomy (`/docs/design.md §6`, backbone §2.2 `Validate`) |
 | `sources` | list of strings | emitted unless empty | paths into `raw/`, e.g. `raw/papers/leviathan-2023.md` |
 | `confidence` | string | emitted unless empty | one of `high`, `medium`, `low` (backbone §2.1 `Confidence`) |
 | `contested` | bool | emitted unless false | `true` / `false` |
@@ -58,7 +58,7 @@ space, in which case they are double-quoted (backbone §2.2 `Encode`
 contract). This is the byte-stability golden that `spec/fixtures/minimal/`
 and `spec/fixtures/noncanonical/` (S0-T3) exercise.
 
-## 3. Raw source frontmatter (`/.dev-notes/PLAN-v1.md §6`; fields from backbone §2.7 `RawSource`)
+## 3. Raw source frontmatter (`/docs/design.md §6`; fields from backbone §2.7 `RawSource`)
 
 Every page under `raw/` opens with a frontmatter block carrying:
 
@@ -66,14 +66,14 @@ Every page under `raw/` opens with a frontmatter block carrying:
 |---|---|---|
 | `source_url` | string | where the material came from |
 | `ingested` | date (`YYYY-MM-DD`) | when `stage.ingest_source` wrote it |
-| `sha256` | string | hex sha256 of the body; drives dedupe and drift detection (`/.dev-notes/PLAN-v1.md §6`) |
+| `sha256` | string | hex sha256 of the body; drives dedupe and drift detection (`/docs/design.md §6`) |
 
 `raw/` is write-once: the only writer is `stage.ingest_source`, and only for a
 path that does not yet exist (00-conventions.md §5.3). A raw file's body
 sha256 disagreeing with its recorded `sha256` is drift, caught by the
 `src-integrity` check (§5 below).
 
-## 4. Mechanical conventions (`/.dev-notes/PLAN-v1.md §6`)
+## 4. Mechanical conventions (`/docs/design.md §6`)
 
 Enforced by code, not by prompt:
 
@@ -84,7 +84,7 @@ Enforced by code, not by prompt:
 - A page body **exceeding 200 lines** is flagged as a split candidate
   (`size-split`, §5 below) — see also backbone §4 "Page thresholds".
 - Tags outside `SCHEMA.md`'s taxonomy are **rejected at `stage.*` proposal
-  time**, not merely discovered later at lint time (`/.dev-notes/PLAN-v1.md §6`, backbone
+  time**, not merely discovered later at lint time (`/docs/design.md §6`, backbone
   §5.5 `ValidateOp`).
 - The vault is a normal Obsidian vault by construction — no proprietary
   extension to Markdown or YAML.
@@ -93,13 +93,13 @@ Enforced by code, not by prompt:
 
 Each check is independently testable (`check_<id>.go`); the set is fixed at
 14. `Severity` is `error`, `warn`, or `info`; only `error` blocks `lw commit`
-(`/.dev-notes/PLAN-v1.md §7`, `/.dev-notes/PLAN-v1.md §10`).
+(`/docs/design.md §7`, `/docs/design.md §10`).
 
-These are the 14 checks of MASTER §9 **D-V**. Checks 1–11 enforce `/.dev-notes/PLAN-v1.md`
-§6's mechanical conventions; 12–14 come from the Hermes suite `/.dev-notes/PLAN-v1.md` §2
+These are the 14 checks of MASTER §9 **D-V**. Checks 1–11 enforce `/docs/design.md`
+§6's mechanical conventions; 12–14 come from the Hermes suite `/docs/design.md` §2
 cites. Hermes's *contradictions* check is deliberately absent — it requires
-judgement, and `internal/lint` is pure Go (`/.dev-notes/PLAN-v1.md` §8); it is deferred to
-`/.dev-notes/PLAN-v2.md` §8.
+judgement, and `internal/lint` is pure Go (`/docs/design.md` §8); it is deferred to
+the v2 roadmap, §8.
 
 | # | ID | Severity | Fires when |
 |---|---|---|---|
@@ -118,7 +118,7 @@ judgement, and `internal/lint` is pure Go (`/.dev-notes/PLAN-v1.md` §8); it is 
 | 13 | `src-stale` | warn | the page's `updated` is more than 90 days earlier than the `ingested` date of a source it cites |
 | 14 | `log-rotate` | info | `log.md` exceeds 500 entries and should be rotated to `log-YYYY.md` |
 
-## 6. The changeset buffer (`/.dev-notes/PLAN-v1.md §7`; schema in `changeset.schema.json`)
+## 6. The changeset buffer (`/docs/design.md §7`; schema in `changeset.schema.json`)
 
 `.llmwiki/changesets/open/<id>/changeset.json` is the only in-flight
 representation of a proposed edit; nothing in the codebase writes into the

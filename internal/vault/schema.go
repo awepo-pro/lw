@@ -9,7 +9,7 @@ import (
 // Schema is the parsed SCHEMA.md: the domain definition and tag taxonomy.
 type Schema struct {
 	Domain      string
-	Tags        []string // sorted, lowercase; 10-20 of them per /.dev-notes/PLAN-v1.md §6
+	Tags        []string // sorted, lowercase; 10-20 of them per /docs/design.md §6
 	Conventions []string
 }
 

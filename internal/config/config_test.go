@@ -177,7 +177,7 @@ func TestResolveAPIKeyEnv(t *testing.T) {
 	})
 }
 
-// TestLoadPlanDocumentedFormat decodes the exact config.toml block /.dev-notes/PLAN-v1.md
+// TestLoadPlanDocumentedFormat decodes the exact config.toml block /docs/design.md
 // §11.2 publishes — [llm] followed by a nested [llm.limits] table, as a
 // human would hand-write it — and asserts Limits actually lands on Config.
 // This is the shape backbone §11 C-96 says must decode; the TOML below is a
@@ -232,7 +232,7 @@ context_tokens  = 96000
 }
 
 // TestSaveEmitsPlanDocumentedFormat asserts Save writes a bare [llm.limits]
-// table header — the form /.dev-notes/PLAN-v1.md §11.2 documents and a human would write —
+// table header — the form /docs/design.md §11.2 documents and a human would write —
 // never the quoted ["llm.limits"] a literal "llm.limits" struct tag produces.
 func TestSaveEmitsPlanDocumentedFormat(t *testing.T) {
 	dir := withConfigDir(t)
@@ -352,7 +352,7 @@ model = "custom-model"
 }
 
 // TestLoadPartialNestedLimits pins the C-96 wire format through the merge:
-// [llm] plus a nested [llm.limits] is the shape /.dev-notes/PLAN-v1.md §11.2 documents,
+// [llm] plus a nested [llm.limits] is the shape /docs/design.md §11.2 documents,
 // so a file that sets one limit and omits the other must land the one it
 // set and keep lw's default for the other.
 func TestLoadPartialNestedLimits(t *testing.T) {

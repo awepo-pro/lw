@@ -1,7 +1,7 @@
 package agent
 
 // prompt.go holds the one static system prompt every turn sends first
-// (backbone §9; /.dev-notes/PLAN-v1.md §11.3 item 1). It never changes at runtime and
+// (backbone §9; /docs/design.md §11.3 item 1). It never changes at runtime and
 // carries no vault-specific data — that arrives separately, as
 // curator-memory.md and the orientation digest (ContextBuilder.Build).
 // Keep it short: every line here is sent on every turn of every session.

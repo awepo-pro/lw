@@ -3,7 +3,7 @@ package main
 // cmdInit scaffolds a new vault in the current directory (backbone §13,
 // s6-polish-release.md S6-T2): SCHEMA.md with the domain's real taxonomy,
 // index.md, log.md, an empty curator-memory.md (S6-C129: its headings show
-// the file's shape; /.dev-notes/PLAN-v1.md §6's rule lines are an example of memory the
+// the file's shape; /docs/design.md §6's rule lines are an example of memory the
 // agent has already learned, not seed content), the raw/ and wiki/ trees of
 // §14, and .llmwiki/.
 //
@@ -194,7 +194,7 @@ var initPageTypes = []initPageType{
 	{vault.TypeQuery, "a standing question the wiki answers as evidence arrives"},
 }
 
-// initConventions are /.dev-notes/PLAN-v1.md §6's mechanically enforced rules, written
+// initConventions are /docs/design.md §6's mechanically enforced rules, written
 // into every SCHEMA.md so they are visible to the human and to the agent.
 var initConventions = []string{
 	"Filenames are lowercase-hyphen.md.",
@@ -219,7 +219,7 @@ const initIndexMD = `# Index
 
 // initCuratorMemory is a fresh vault's curator-memory.md: the "## Page
 // thresholds" / "## Naming" headings show the file's shape, but it seeds no
-// rule under either. /.dev-notes/PLAN-v1.md §6's benchmark/gpt-4 lines are an EXAMPLE of
+// rule under either. /docs/design.md §6's benchmark/gpt-4 lines are an EXAMPLE of
 // memory the agent has already learned from a past review, not seed content
 // a brand-new vault ships with — a live URL ingest surfaced that a verbatim
 // copy taught the curator a preference no reviewer had actually stated yet
@@ -368,7 +368,7 @@ func normalizeInitTags(raw []string) []string {
 	return tags
 }
 
-// initDirs lists the empty directories §14 scaffolds, in /.dev-notes/PLAN-v1.md §6's own
+// initDirs lists the empty directories §14 scaffolds, in /docs/design.md §6's own
 // order: raw first, then wiki. The wiki half comes from PageType.Dir(), so
 // it cannot drift from the type mapping lint's path-convention checks
 // against.

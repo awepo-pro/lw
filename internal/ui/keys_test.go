@@ -20,7 +20,7 @@ func TestLoadKeysDefaultsWithNoFilePresent(t *testing.T) {
 		t.Fatalf("Warnings = %v, want none", km.Warnings)
 	}
 
-	// Every key /.dev-notes/PLAN-v1.md §9 fixes for review, plus the shell keys, is bound.
+	// Every key /docs/design.md §9 fixes for review, plus the shell keys, is bound.
 	cases := []struct {
 		name string
 		b    interface{ Keys() []string }

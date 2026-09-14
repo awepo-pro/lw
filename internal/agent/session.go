@@ -4,9 +4,9 @@ package agent
 // append-only session.ndjson per changeset, living BESIDE changeset.json —
 // inside the changeset's own directory — rather than in a fourth directory
 // of its own (backbone §9's "Contract — where session.ndjson lives", C-102,
-// corrected at S5-T2 verification 2026-09-06; /.dev-notes/PLAN-v1.md D9 — "a session is
+// corrected at S5-T2 verification 2026-09-06; /docs/design.md D9 — "a session is
 // bound to a changeset"). One open changeset means one live session
-// (/.dev-notes/PLAN-v1.md D7), so this store uses the changeset id as the session id
+// (/docs/design.md D7), so this store uses the changeset id as the session id
 // directly: there is no separate session-id namespace to invent, and
 // Create's signature — Create(changesetID string) — takes no other
 // identifier to derive one from.

@@ -220,7 +220,7 @@ func trailingNewlineRun(prev int, s string) int {
 // cmdIngest extracts one or more sources (a URL or a local path) into
 // deterministic markdown, opens a changeset, and hands it to the agent to
 // ingest the raw content and compile wiki pages from it — leaving the
-// changeset open for human review (/.dev-notes/PLAN-v1.md §9.4; nothing in this verb
+// changeset open for human review (/docs/design.md §9.4; nothing in this verb
 // commits).
 func cmdIngest(args []string) error {
 	fs := flag.NewFlagSet("ingest", flag.ContinueOnError)

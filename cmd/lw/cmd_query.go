@@ -31,7 +31,7 @@ const queryPromptPrefix = "Answer the following question about the vault, citing
 
 // cmdQuery asks the curator agent a one-shot, read-only question over the
 // vault: no changeset is opened, and none is left behind even if the
-// model attempts to stage something (backbone §13, /.dev-notes/PLAN-v1.md §11.3's
+// model attempts to stage something (backbone §13, /docs/design.md §11.3's
 // "lw ingest and lw query use ephemeral sessions").
 func cmdQuery(args []string) error {
 	fs := flag.NewFlagSet("query", flag.ContinueOnError)
@@ -117,7 +117,7 @@ func cmdQuery(args []string) error {
 // query`: it never touches .llmwiki/changesets, so an ephemeral query
 // session cannot collide with OpenChangeset's "is changesets/open/ empty"
 // check and leaves no residue on disk once the process exits — there is,
-// by design, no changeset for it to be bound to (/.dev-notes/PLAN-v1.md §11.3).
+// by design, no changeset for it to be bound to (/docs/design.md §11.3).
 type memSessionStore struct {
 	mu       sync.Mutex
 	sessions map[string]*agent.Session

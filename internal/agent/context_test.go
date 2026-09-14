@@ -27,7 +27,7 @@ func newTestVault(t *testing.T) (*vault.Vault, string) {
 }
 
 // TestContextOrder is one of the three PASS-by-name tests the stage file
-// names. It asserts Build's five-part order exactly (/.dev-notes/PLAN-v1.md §11.3,
+// names. It asserts Build's five-part order exactly (/docs/design.md §11.3,
 // backbone §9): system prompt, curator-memory.md verbatim, orientation
 // digest, compacted history (role sequence and content), user message.
 func TestContextOrder(t *testing.T) {

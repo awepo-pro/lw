@@ -206,7 +206,7 @@ summary comes first (its wording varies run to run, so it is abridged here);
 the changeset summary at the end is `lw`'s own, fixed output:
 
 ```
-$ lw ingest /home/anton/Downloads/gemini-note.md
+$ lw ingest ~/Downloads/gemini-note.md
 Ingested raw/articles/gemini.md (a 4-chunk Gemini chat transcript, exported from a vLLM deployment
 debugging session), then built four pages around it:
 | wiki/entities/vllm.md | entity | …
@@ -214,7 +214,7 @@ debugging session), then built four pages around it:
 | wiki/concepts/multimodal-cache.md | concept | …
 | wiki/queries/why-is-prefix-cache-hit-rate-zero.md | query | …
 …the three mechanism pages carry confidence: low with contested: true.
-opened changeset cs-5cf3e3d030aad754: ingest /home/anton/Downloads/gemini-note.md (5 op(s))
+opened changeset cs-5cf3e3d030aad754: ingest ~/Downloads/gemini-note.md (5 op(s))
   op1 ingest_source raw/articles/gemini.md
   op2 create_page wiki/entities/vllm.md
   op3 create_page wiki/concepts/prefix-caching.md
@@ -230,7 +230,7 @@ of its body that later drives drift detection:
 ```
 $ head -5 raw/articles/gemini.md
 ---
-source_url: /home/anton/Downloads/gemini-note.md
+source_url: ~/Downloads/gemini-note.md
 ingested: 2026-09-13
 sha256: 8ff0a73248a8b2d1fdf7d56f43256435af3a027431adc769eacb678f2aeeb98e
 ---
@@ -251,7 +251,7 @@ means nothing has landed:
 $ lw status
 0 pages · 0 raw · 10 tags
 lint: 0 errors, 0 warnings, 0 info
-open changeset cs-5cf3e3d030aad754: ingest /home/anton/Downloads/gemini-note.md (5 op(s), 0 stale; schema=pass lint=pass orphans=0 broken_links=0)
+open changeset cs-5cf3e3d030aad754: ingest ~/Downloads/gemini-note.md (5 op(s), 0 stale; schema=pass lint=pass orphans=0 broken_links=0)
 ```
 
 The `open changeset` line is where the real state lives: how many ops, how
@@ -449,7 +449,7 @@ the same screen.
 
 ```
 $ lw log --limit 20
-2026-09-13T18:03:49Z changeset_opened changeset=cs-5cf3e3d030aad754 actor=agent message="ingest /home/anton/Downloads/gemini-note.md"
+2026-09-13T18:03:49Z changeset_opened changeset=cs-5cf3e3d030aad754 actor=agent message="ingest ~/Downloads/gemini-note.md"
 2026-09-13T18:03:54Z op_proposed changeset=cs-5cf3e3d030aad754 op=op1 actor=agent paths=raw/articles/gemini.md
 2026-09-13T18:04:37Z op_proposed changeset=cs-5cf3e3d030aad754 op=op2 actor=agent paths=wiki/entities/vllm.md
 …
