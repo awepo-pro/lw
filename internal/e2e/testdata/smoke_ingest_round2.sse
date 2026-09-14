@@ -1,0 +1,7 @@
+data: {"id":"chatcmpl-smoke-ingest-2","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-smoke-ingest-2","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_smoke_create_page","type":"function","function":{"name":"stage_create_page","arguments":"{\"path\":\"wiki/concepts/e2e-round-trip.md\",\"title\":\"E2E Round Trip\",\"type\":\"concept\",\"tags\":[\"inference\",\"memory\"],\"sources\":[\"raw/articles/smoke-ingest.md\"],\"confidence\":\"high\",\"contested\":false,\"body\":\"A page the e2e smoke suite proposes through the real lw binary, citing the source it just ingested in the same turn.\\n\\n^[raw/articles/smoke-ingest.md]\\n\\n## Related\\n\\n- [[note-0000]] - a seeded scale note.\\n- [[note-0001]] - another seeded scale note.\\n\",\"rationale\":\"Coldstart ingest scenario: ingest one local source, then propose one page citing it.\"}"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-smoke-ingest-2","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
