@@ -27,10 +27,15 @@ func checkMaskRules(t *testing.T, name string, grid, actual []string) {
 // display forms and the overflow note must still hold where the exact
 // bytes are not pinned.
 //
+// The rules judge a frame that already has the grid's shape. A render with
+// the wrong row count fails the exact comparison on every row, and indexing
+// the rules into its rows would panic the gate — a red subtest must be a
+// layout diff (TestGridCompareSelfCheck/rules_do_not_index_a_short_frame).
+//
 // "Content cells" throughout are the two columns a panel's content starts
 // at — one in from the border, past the cursor-gutter column.
 func maskRuleProblems(name string, grid, actual []string, mask *maskRegion) []string {
-	if mask == nil {
+	if mask == nil || len(actual) != len(grid) {
 		return nil
 	}
 	var probs []string

@@ -264,6 +264,18 @@ func TestGridCompareSelfCheck(t *testing.T) {
 			t.Error("a # at the start of a masked row's content broke no rule")
 		}
 	})
+
+	t.Run("rules do not index a short frame", func(t *testing.T) {
+		const name = "review-preview-120x40"
+		grid := grids[name+".txt"]
+		mask := locateMask(t, name, grid)
+
+		// A screen that breaks its h-lines invariant fails the exact
+		// comparison on every row; the rules must stay out of its way
+		// instead of panicking past the masked rows they index.
+		short := cloneLines(grid)[:mask.bottomRow]
+		maskRuleProblems(name, grid, short, mask)
+	})
 }
 
 // firstLetterCell returns the first cell of the masked region holding a

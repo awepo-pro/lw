@@ -117,9 +117,11 @@ func TestDiffRender(t *testing.T) {
 		}
 
 		// §8.2 de-duplicates by path, in order: a third op patching the
-		// same kv-cache.md gives Diff().Files two entries for that path
-		// (StagedFile's last-op-wins content), and the unfiltered render
-		// shows it once.
+		// same kv-cache.md gives Diff().Files two entries for that path,
+		// and the unfiltered render shows it once, at the first entry's
+		// position, from the LAST entry — the write Commit materializes
+		// (C25/D-3P: the body source is FileDiff.New of that last entry,
+		// so "[x]" proves the last op's patch is what renders).
 		e, err := stage.OpenEngine(root)
 		if err != nil {
 			t.Fatalf("OpenEngine: %v", err)
