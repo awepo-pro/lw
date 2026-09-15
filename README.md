@@ -86,6 +86,7 @@ lw ingest https://example.com/some-post
 lw diff                                      # full unified diff
 lw diff --stat                               # or just the per-file summary
 lw diff --op op3                             # or one operation's files
+lw diff --render                             # each changed page as it will read after commit
 
 # 5. Commit — refuses if lint regresses; --force overrides and says so.
 lw commit -m "first pages from example.com"
@@ -143,7 +144,7 @@ are the same flag). Exit codes: `0` success, `1` failure, `2` usage error.
 | `config` | `set <key> <value>`, `--probe` | Prints the resolved config; `set` writes `~/.config/lw/config.toml`; `--probe` checks the provider is reachable and that tool calling actually works. The API key is printed only as `env:NAME (set)` / `(missing)` |
 | `ingest` | `-kind article\|paper\|transcript` | One or more URLs or local paths. Extracts every source *before* opening a changeset, so a bad URL fails the whole command with nothing created |
 | `status` | — | The open changeset, if any |
-| `diff` | `-op <id>`, `-stat` | The projected diff of the buffer — what commit would write |
+| `diff` | `-op <id>`, `-stat`, `-render` | The projected diff of the buffer — what commit would write. `lw diff --render [--op <id>]` renders each changed page as it will read after commit, as plain text when stdout is not a terminal; it cannot be combined with `--stat` |
 | `commit` | `-m <msg>` (required), `-force` | Re-hashes the tree first; an op whose `before` hash no longer matches is stale and the commit is refused. Refuses a lint regression unless `--force`, which is journalled |
 | `log` | `-rejected`, `-agent`, `-limit <n>`, `-page <path>`, `-since <rfc3339\|YYYY-MM-DD>` | The journal, including what you rejected |
 | `revert` | (positional) `<commit-id>` | Opens the inverse ops as a *new* changeset — a rollback is reviewed like anything else |
@@ -152,6 +153,70 @@ are the same flag). Exit codes: `0` success, `1` failure, `2` usage error.
 | `mcp` | — | stdio MCP server; see below |
 | `doctor` | `--unlock`, `--rebuild-index`, `--discard-changeset`, `--json` | Index freshness, object-store completeness, journal tail, interrupted apply, stale lock, config, provider. Every failure prints the fix. `--discard-changeset` moves the open changeset to `changesets/rejected/`, journalled — the CLI way to discard one without opening the TUI. Exit 1 on any failure |
 | `tui` | — | The TUI; also the default with no command |
+
+## The TUI
+
+`lw` with no command — or `lw tui` — opens the terminal UI. Five screens
+cycle with `tab`, always in this order:
+
+```
+Review → Ask → Lint → Log → Browse   (wrapping back to Review)
+```
+
+Every screen draws inside the same frame. The header row names the vault,
+the five screens, and — on the right — the vault counts plus the open
+changeset (`cs-09cdb2 · 2 ops · checks ✓`, or `no changeset`). The footer
+row always shows what the current screen's keys actually do, ending with
+`? help` — `?` toggles a help overlay listing every key on the active
+screen. The UI needs a terminal of at least **80×24**; anything smaller
+shows a "Terminal too small" notice until the window is enlarged, and `q`
+still quits.
+
+| Key | Screen | Action |
+|---|---|---|
+| `tab` | all | next screen |
+| `?` | all | toggle the keys overlay |
+| `j`/`k`, `g`/`G` | list screens | move the cursor; jump to top/bottom |
+| `y` / `n` | Review | accept (undrop) / drop the selected hunk and advance |
+| `p` | Review | toggle the detail panel between the diff and a preview of the page as it will read after commit |
+| `A` | Review | accept every remaining hunk; refused unless lint is clean |
+| `X` | Review | reject the whole changeset |
+| `C` | Review | commit, subject to the same lint-regression rule as `lw commit` |
+| `enter` | Ask | send the message |
+| `↑`/`↓` | Ask | select a tool call in the transcript (`enter` expands it) |
+| `ctrl+r` | Ask | jump to Review |
+| `enter` | Lint | open the selected finding's page in Browse |
+| `enter`, `/` | Browse | open a page; find one by name |
+| `h`/`l` | Browse | collapse / expand a subtree |
+| `f` | Log | cycle the journal filter (all → accepted → rejected → agent → human) |
+| `r` | Log | revert the selected commit into a new changeset |
+| `q` | all but Ask | quit (`ctrl+c` also quits) |
+
+Ask's message box takes all typing: `q` and `?` type into the message
+instead of quitting or opening the overlay — quit from Ask with `ctrl+c`.
+Keys rebind from `~/.config/lw/hotkeys.toml`; see
+[docs/hotkeys.md](docs/hotkeys.md) for the table and the file format.
+
+### Themes
+
+lw ships one theme, and it is adaptive: the UI reads the terminal's
+light/dark background and picks the matching half of the palette. Setting
+`theme = "dark"` or `theme = "light"` in `config.toml` forces a polarity.
+
+The named themes of lw 1 are retired — `nord` is no longer available, and
+neither is any other name lw 2 does not find a file for: selecting one falls
+back to the default theme with a notice.
+
+To recolour, drop a TOML file in the config directory (`~/.config/lw/`):
+`themes/<name>.toml` defines a theme that `theme = "<name>"` selects, and
+`theme.toml` overrides single colours on whatever theme is selected — it is
+applied last, as the per-machine word. Both files are partial: a key you
+omit keeps the value it would otherwise have, and every colour comes in a
+light and a dark spelling — `fg_light`/`fg_dark`, `muted_*`, `faint_*`,
+`border_*`, `accent_*`, `cursor_*`, `good_*`, `warn_*`, `bad_*` — as
+`#RRGGBB` values. The pre-2 `foreground_*` spelling still sets `fg_*`, and
+`background_*` is accepted but ignored: lw draws only foregrounds and uses
+the terminal's own background.
 
 ## MCP setup
 

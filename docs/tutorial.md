@@ -370,45 +370,128 @@ the agent has nothing to cite — see §13 for what that refusal looks like.
 Review → Ask → Lint → Log → Browse   (wrapping back to Review)
 ```
 
-The footer always shows what the current screen's keys actually do — for
-example, on Review:
+Every screen draws inside the same frame. The header row names the vault,
+the five screens, and — on the right — the vault counts plus the open
+changeset, or `no changeset`. The footer row always shows what the current
+screen's keys actually do — for example, on Review:
 
 ```
-[tab] next screen · [ctrl+r] ask→review · [y/n] accept/drop · [C] commit · [q] quit
+ y accept hunk  n drop hunk  j/k move  p preview  A accept all  C commit  ? help
 ```
+
+On a narrow terminal the footer drops keys from its right end until it fits.
+`?` toggles a help overlay listing every key on the active screen, and the
+UI needs a terminal of at least **80×24** — anything smaller shows a
+"Terminal too small" notice until the window is enlarged (`q` still quits).
+
+(The screens below were captured against the vault of §5–§8 after a few
+more sources had been through the same loop, which is why the counts differ;
+rows cut from a capture for length are marked `…`.)
 
 ### Ask, then Review
 
 Type a question and press `enter`. If no changeset is open, an Ask turn
 opens one for you — the intent is literally `ask: <your question>` — and if
 the turn ends without staging anything, that changeset is discarded
-automatically; you never have to clean it up by hand. A real capture, asking
-the vault above to stage a new page:
+automatically; you never have to clean it up by hand. The message box takes
+all typing, so on this screen `q` and `?` type into the message instead of
+quitting or opening the overlay — quit from Ask with `ctrl+c`. A real
+capture, asking the vault to stage a new page (the turn is abridged; the
+transcript tail-follows, so the question itself has scrolled up under its
+`↑ 47 earlier` note):
 
 ```
- vault — 4 pages · 1 raw · ⚠ 0 lint
-STAGE               │you: From raw/articles/gemini.md, stage one new glossary-style concept page wiki/concepts/kv-cache-block.md …
-no changeset        │▸ stage.create_page {"path": "wiki/concepts/kv-cache-block.md", "ti…  → proposed op1 (create_page)
-                    │▸ stage.close {}  → changeset cs-94394f82d4f6264a intent: ask: From raw/article…
-                    │— done: stop (7 round(s)) —
- [tab] next screen · [ctrl+r] ask→review · [y/n] accept/drop · [C] commit · [q] quit
+ ml-notes   Review  Ask  Lint  Log  Browse  7 pages · 3 raw · 0 lint   cs-09cdb2 · 2 ops · checks ✓
+╭ Transcript ──────────────────────────────────────────────────────────────────────── ↑ 47 earlier ╮
+│ assistant                                                                                        │
+│ Staged and ready for review — changeset cs-09cdb2a4684d6d36, 2 operations, engine checks clean   │
+│ (schema=pass lint=pass orphans=0 broken_links=0):                                                │
+│                                                                                                  │
+│ 1. New page `wiki/concepts/wireguard-tunnel.md` (concept, tags glossary+tools, confidence        │
+│ medium, single source)                                                                           │
+│ …                                                                                                │
+│ 2. One-line patch to `network-namespace-egress-isolation.md` — added wireguard-tunnel to its     │
+│ Related list. The first summary showed orphans=1 (new page unreachable from the graph); this was │
+│ the smallest connective fix, since that page's body already leans on the tunnel throughout. If   │
+│ you'd rather keep the changeset to exactly the one page you asked for, drop op2 at review.       │
+│                                                                                                  │
+│ done · 9 rounds                                                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭ Message ─────────────────────────────────────────────────────────────────────────────────────────╮
+│ › █ Ask about the wiki…                                                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+ enter send  ↑/↓ select tool call  ctrl+r review  tab screen  ? help
 ```
 
-The moment `stage.create_page` succeeds, the left-hand badge changes from
-`no changeset` to `cs-94394f82d4f6264a / 1 op(s)`. Pressing `ctrl+r` jumps
-straight to Review:
+Each turn renders in the same shape: your question under a bold `you`, each
+tool call as one collapsed `▸ name args → result` row, the answer under
+`assistant`, and a `done · N rounds` line at the end. `↑`/`↓` select a tool
+call in the transcript and `enter` expands or collapses the selected one.
+The header's right side tracks the buffer the whole time: the moment the
+agent stages something, `no changeset` becomes `cs-09cdb2 · 2 ops · checks
+✓`. Pressing `ctrl+r` jumps straight to Review:
 
 ```
-STAGE               │OPS                             |op1  create_page  wiki/concepts/kv-cache-block.md
-                    │op1 create_page wiki/concepts/kv|rationale: New glossary-style concept page defining vLLM's 16-token KV cache block, requested …
-cs-94394f82d4f6264a │                                |provenance: raw/articles/gemini.md
-1 op(s)             │                                |(no hunks — whole-file change)
+ ml-notes   Review  Ask  Lint  Log  Browse  7 pages · 3 raw · 0 lint   cs-09cdb2 · 2 ops · checks ✓
+╭ Ops ──────────────────────────╮╭ Diff ──────────────────────────────────────────────── p preview ╮
+│ ● new   wireguard-tunnel.md   ││ patch  wiki/concepts/network-namespace-egress-isolation.md      │
+│▌● patch network-namespace-eg… ││ Resolves the orphan flagged by the engine (orphans=1): the new  │
+│                               ││ wireguard-tunnel page has outbound links but no inbound ones.   │
+│                               ││ The namespace page's body already depends on the WireGuard      │
+│                               ││ tunnel concept — it moves the wg-claude interface, checks wg…   │
+│                               ││                                                                 │
+│                               ││▌@@ -7,7 +7,7 @@  h1                                             │
+│                               ││▌  sources: [raw/articles/claude-in-a-box.md]                    │
+│                               ││▌  confidence: medium                                            │
+│                               ││▌  ---                                                           │
+│                               ││▌-                                                               │
+│                               ││▌+ [[claude]] · [[wireguard-tunnel]] ·                           │
+…
+│ source  ask: From raw/articl… ││▌  interface named `wg-claude`, and typing `claude` in a         │
+│ id      cs-09cdb2a4684d6d36   ││▌  terminal drops the binary inside it.                          │
+│ ops     2 · 0 dropped · 0 st… ││▌  ^[raw/articles/claude-in-a-box.md]                            │
+│ hunks   4 kept · 0 dropped    ││▌                                                                 │
+│                               ││▌@@ -49,4 +49,3 @@  h1                                           │
+│ checks  ✓ schema   ✓ lint     ││▌                                                                │
+│         ✓ orphans  ✓ links    ││▌  ## Related                                                    │
+╰───────────────────────────────╯╰─────────────────────────────────────────────────────── ↓ 2 more ╯
+ y accept hunk  n drop hunk  j/k move  p preview  A accept all  C commit  ? help
 ```
+
+The left-hand **Ops** panel lists the changeset's operations, each with a
+glyph for its state: `●` untouched, `◐` with some of its hunks dropped, `✗`
+with every hunk dropped, and `!` stale — an op proposed against a file that
+has since changed on disk, which `y`, `n` and `A` refuse to act on. The
+`▌` gutter marks the cursor: the row it names in Ops, and the hunk it names
+in the **Diff** panel on the right, which carries the op's rationale and
+provenance above the hunks themselves. On a terminal tall enough, a third
+panel under Ops summarizes the changeset — where it came from, its id, the
+ops and hunks kept or dropped, and the engine checks.
 
 A brand-new page has no hunks to accept or drop individually — it is shown
 as one whole-file change, with its rationale and provenance right there.
-Pressing `C` commits it: the badge returns to `no changeset`, and the
-journal gets a `commit_end … commit=000002` line.
+
+Pressing `p` flips the Detail panel between the diff and a **Preview** of
+the page under the cursor as it will read after commit:
+
+```
+╭ Ops ──────────────────────────╮╭ Preview ──────────────────────────────────────────────── p diff ╮
+│ ● new   wireguard-tunnel.md   ││ patch  wiki/concepts/network-namespace-egress-isolation.md      │
+│▌● patch network-namespace-eg… ││                                                                 │
+│                               ││   Network Namespace Egress Isolation                            │
+│                               ││   concept · methods, tools · confidence medium · updated        │
+│                               ││   2026-09-14                                                    │
+│                               ││                                                                 │
+│                               ││   A Linux network namespace can hold its own routing table, its │
+│                               ││   own DNS configuration and its own WireGuard interface, so a   │
+│                               ││   process launched into that namespace sees the tunnel as its   │
+…
+╰───────────────────────────────╯╰─────────────────────────────────────────────────────── ↓ 86 more ╯
+```
+
+Pressing `p` again flips back to the diff. Pressing `C` commits: the footer
+confirms with the commit id — ` committed 000004` — the header's right side
+returns to `no changeset`, and the journal gets its `commit_end` line.
 
 Not every Ask turn stages something. On an empty vault, `lw log` after an
 Ask turn that only answered a question (nothing to cite, nothing to stage)
@@ -422,23 +505,25 @@ changeset_rejected … message="ask turn staged nothing"
 ### Review
 
 `j`/`k` move between hunks; `y` accepts (undrops) the selected hunk and
-advances, `n` drops it and advances. `A` accepts every remaining hunk, but is
-refused outright if the changeset does not currently pass lint — you cannot
+advances, `n` drops it and advances; `g`/`G` jump to the start and end of
+the walk. `A` accepts every remaining hunk, but is refused outright if the
+changeset does not currently pass lint — you cannot
 blanket-accept your way past a warning you have not looked at. `X` rejects
 the whole changeset. `C` commits, subject to the same lint-regression rule
 as `lw commit` on the command line.
 
 ### Lint, Log, Browse
 
-Lint lists findings by severity; `enter` expands one or jumps to the page in
+Lint lists findings by severity; `enter` opens the finding's page in
 Browse. Log lists the journal's events; `f` cycles its filter through
 all → accepted → rejected → agent → human, and `r` reverts the selected
 **commit** into a new changeset, which drops you into Review to decide on it. Browse is the page tree: `enter`
 opens a page, `/` finds one by name, `h`/`l` collapse or expand a subtree.
 
 Every key above is the shipped default. All of them except a handful of
-screen-local ones (`enter`, arrows, `ctrl+r` on Ask; `enter`, `/`, `h`/`l` on
-Browse) are rebindable from `~/.config/lw/hotkeys.toml` — see
+screen-local ones (`enter`, the arrow keys and `ctrl+r` on Ask; `enter` on
+Lint; `enter`, `/`, `h`/`l` on Browse) are rebindable from
+`~/.config/lw/hotkeys.toml` — see
 [hotkeys.md](hotkeys.md) for the full table, the file format, and the
 match-order rule that lets a rebound navigation key shadow an action key on
 the same screen.
