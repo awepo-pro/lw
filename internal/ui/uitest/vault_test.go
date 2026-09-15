@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/awepo-pro/lw/internal/stage"
+	"github.com/awepo-pro/lw/internal/testutil"
 )
 
 // TestPublicVaultShape opens the public fixture and asserts everything the
@@ -169,5 +170,48 @@ func TestCopyVault(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(src, ".llmwiki")); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("source vault %s grew engine state (err %v), want it untouched", src, err)
+	}
+}
+
+// TestPublicVaultDeterministic pins C24's whole point (contract §6 note 2
+// as amended): two PublicVault calls — different temp dirs, different
+// names — stage the SAME changeset id at the SAME OpenedAt, and every
+// journal event either wrote carries the fixed clock's TS. The id shows
+// in the shell header (cs9) and the timestamps in the Log screen, so
+// without this the screens' goldens would differ on every run. The journal
+// is read through Engine.Journal().Query, the public path the Log screen
+// itself uses.
+func TestPublicVaultDeterministic(t *testing.T) {
+	fixed := testutil.FixedClock()
+
+	var firstID string
+	for i, name := range []string{"deterministic-a", "deterministic-b"} {
+		v := PublicVault(t, name)
+
+		c, err := v.Engine.Current()
+		if err != nil {
+			t.Fatalf("PublicVault(%q): Current: %v", name, err)
+		}
+		if i == 0 {
+			firstID = c.ID
+		} else if c.ID != firstID {
+			t.Errorf("second PublicVault changeset id = %q, want the first call's %q", c.ID, firstID)
+		}
+		if !c.OpenedAt.Equal(fixed()) {
+			t.Errorf("PublicVault(%q): OpenedAt = %s, want the fixed clock %s", name, c.OpenedAt, fixed())
+		}
+
+		events, err := v.Engine.Journal().Query(stage.Filter{})
+		if err != nil {
+			t.Fatalf("PublicVault(%q): Journal().Query: %v", name, err)
+		}
+		if len(events) == 0 {
+			t.Fatalf("PublicVault(%q): journal has no events, want the changeset_opened one at least", name)
+		}
+		for _, ev := range events {
+			if !ev.TS.Equal(fixed()) {
+				t.Errorf("PublicVault(%q): journal event %s TS = %s, want the fixed clock %s", name, ev.Kind, ev.TS, fixed())
+			}
+		}
 	}
 }

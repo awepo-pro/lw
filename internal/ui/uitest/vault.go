@@ -20,14 +20,16 @@ import (
 	"testing"
 
 	"github.com/awepo-pro/lw/internal/stage"
+	"github.com/awepo-pro/lw/internal/testutil"
 )
 
-// Vault is a staged fixture vault opened with a fixed clock.
-//
-// The engine's clock seam (stage's unexported e.now) is not reachable
-// through the public API, so PublicVault and CopyVault open the engine on
-// its own default clock; nothing the harness or its users assert depends on
-// that clock, and the fixture's own dates are literals in the fixture.
+// Vault is a staged fixture vault opened with a fixed clock and pinned
+// changeset-id entropy (contract §6 note 2, as amended by C24): every
+// engine PublicVault and CopyVault opens is built with
+// stage.WithClock(testutil.FixedClock()) and stage.WithEntropy over a
+// deterministic reader, so two runs stage byte-identical changesets —
+// same id, same OpenedAt, same journal timestamps — and the screens'
+// goldens can show the id and the Log rows without masking.
 type Vault struct {
 	Root   string // absolute; its base name is the header's vault name
 	Engine *stage.Engine
@@ -56,11 +58,16 @@ func CopyVault(t *testing.T, src string) *Vault {
 	return &Vault{Root: root, Engine: openEngine(t, root)}
 }
 
-// openEngine opens root and registers Close with t, so a test's temp vault
-// never keeps the engine's journal or lock past the test.
+// openEngine opens root with the harness's pinned clock and entropy
+// (contract §6 note 2, C24) and registers Close with t, so a test's temp
+// vault never keeps the engine's journal or lock past the test. Every
+// engine the harness opens goes through here, so PublicVault and
+// CopyVault are deterministic identically.
 func openEngine(t *testing.T, root string) *stage.Engine {
 	t.Helper()
-	e, err := stage.OpenEngine(root)
+	e, err := stage.OpenEngine(root,
+		stage.WithClock(testutil.FixedClock()),
+		stage.WithEntropy(fixtureEntropy{}))
 	if err != nil {
 		t.Fatalf("uitest: open engine at %s: %v", root, err)
 	}
@@ -68,9 +75,26 @@ func openEngine(t *testing.T, root string) *stage.Engine {
 	return e
 }
 
-// The fixture changeset's identity. The ingested date and the ops' paths are
-// literals so the staged changeset is byte-identical run to run (whatever
-// the changeset id's entropy makes of it).
+// fixtureEntropy is the deterministic entropy source every harness engine
+// injects: an io.Reader that fills each read with the same fixed pattern
+// and never returns EOF. OpenChangeset draws 8 bytes per id candidate and
+// may retry (its maxIDAttempts loop), so the source must be inexhaustible
+// — a finite buffer would fail the second changeset, and a varying one
+// would make the changeset id differ run to run. With the fixed clock the
+// same 8 bytes yield the same candidate id every draw, which is what
+// makes two PublicVault calls produce the same changeset.
+type fixtureEntropy struct{}
+
+func (fixtureEntropy) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = byte(0x5A ^ i)
+	}
+	return len(p), nil
+}
+
+// The fixture changeset's identity. The ingested date and the ops' paths
+// are literals, and openEngine pins the clock and the id entropy, so the
+// staged changeset — id included — is byte-identical run to run.
 const (
 	fixtureIntent       = "uitest: add baker percentages to the bread wiki"
 	fixtureSourcePath   = "raw/articles/baker-percentages-explained.md"

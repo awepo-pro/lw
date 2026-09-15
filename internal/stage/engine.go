@@ -97,7 +97,13 @@ func (e *Engine) llmwikiDir() string {
 // and a failed Save is returned as an error since .llmwiki/ has already
 // been proven writable. OpenEngine is idempotent — a second call on the
 // same vault changes nothing on disk.
-func OpenEngine(vaultRoot string) (*Engine, error) {
+//
+// Each opts entry is applied to the Engine immediately after it is built
+// with its defaults (contract §6 note 3, MASTER C24) — before anything
+// reads e.now or e.rand — so WithClock and WithEntropy pin every
+// timestamp and changeset id the engine produces. Production passes no
+// options.
+func OpenEngine(vaultRoot string, opts ...Option) (*Engine, error) {
 	root, err := filepath.Abs(vaultRoot)
 	if err != nil {
 		return nil, fmt.Errorf("stage: open engine: %w", err)
@@ -113,6 +119,15 @@ func OpenEngine(vaultRoot string) (*Engine, error) {
 		vault: v,
 		now:   time.Now,
 		rand:  rand.Reader,
+	}
+	// The options are applied here — before the rest of this function and
+	// every later Engine method reads e.now or e.rand — so an injected
+	// clock or entropy source covers the engine's whole life. The rest of
+	// OpenEngine itself reads neither.
+	for _, opt := range opts {
+		if opt != nil {
+			opt(e)
+		}
 	}
 
 	dir := e.llmwikiDir()
