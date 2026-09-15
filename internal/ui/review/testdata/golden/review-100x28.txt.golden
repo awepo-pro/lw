@@ -1,28 +1,28 @@
 ╭ Ops ──────────────────────────╮╭ Diff ──────────────────────────────────────────────── p preview ╮
-│ ● src   baker-percentages-ex… ││ patch  wiki/concepts/autolyse.md                   op3 · 1 hunk │
-│ ● new   baker-percentages.md  ││ The rest line undersold the point of the page: once the flour   │
-│▌● patch autolyse.md           ││ is fully hydrated, the water percentage decides how far the     │
-│ ✗ patch banneton.md           ││ gluten can stretch before it tears. Point that line at the      │
-│                               ││ baker-percentages page so a reader who wants the arithmetic…    │
-│                               ││                                                                 │
-│                               ││▌@@ -18,7 +18,7 @@  h1                                           │
-│                               ││▌  ## Why it matters                                             │
-│                               ││▌                                                                │
-│                               ││▌  - Gives the flour time to hydrate fully before any kneading   │
-│                               ││▌  starts.                                                       │
-│                               ││▌- - Lets enzymes begin breaking down starches while the dough   │
-│                               ││▌  simply rests.                                                 │
-│                               ││▌+ - Lets enzymes begin breaking down starches while the dough   │
-│                               ││▌  rests, and the [[baker-percentages]] behind the flour-water   │
-│                               ││▌  ratio starts to matter.                                       │
-│                               ││▌  - Shortens the work the dough still needs, which keeps the    │
-│                               ││▌  crumb open.                                                   │
-│                               ││▌                                                                │
-│                               ││▌  ## Related                                                    │
-│                               ││                                                                 │
-│                               ││ ─────────────────────────────────────────────────────────────── │
-│                               ││                                                                 │
-│                               ││ patch  wiki/entities/banneton.md                  op4 · dropped │
-│                               ││ tighten the release line while the page is open                 │
-│                               ││                                                                 │
-╰─────────────────────── 3 of 4 ╯╰────────────────────────────────────────────────────── ↓ 12 more ╯
+│▌● src   baker-percentages-ex… ││ src  raw/articles/baker-percentages-explained.md   op1 · 1 hunk │
+│ ● new   baker-percentages.md  ││ raw source for the new baker-percentages page                   │
+│ ● patch autolyse.md           ││                                                                 │
+│ ✗ patch banneton.md           ││ @@ -0,0 +1,21 @@                                                │
+│                               ││ + ---                                                           │
+│                               ││ + source_url:                                                   │
+│                               ││   https://example.org/articles/baker-percentages-explained      │
+│                               ││ + ingested: 2026-08-29                                          │
+│                               ││ + sha256:                                                       │
+│                               ││   01737517844386bdd1e50605eb8b3fbf010b95d47035ff52a4510646dab16 │
+│                               ││   2b0                                                           │
+│                               ││ + ---                                                           │
+│                               ││ +                                                               │
+│                               ││ + # Baker Percentages, Explained                                │
+│                               ││ +                                                               │
+│                               ││ + Professional bakers rarely write a recipe as a list of        │
+│                               ││   ingredient weights.                                           │
+│                               ││ + They write it as a set of percentages of the flour weight, a  │
+│                               ││   convention                                                    │
+│                               ││ + called baker percentages. Flour is always one hundred         │
+│                               ││   percent, and every                                            │
+│                               ││ + other ingredient is measured against it, so a dough at        │
+│                               ││   seventy percent                                               │
+│                               ││ + hydration carries water equal to seven tenths of its flour.   │
+│                               ││ +                                                               │
+│                               ││ + ## Why bakers use it                                          │
+╰─────────────────────── 1 of 4 ╯╰───────────────────────────────────────────────────── ↓ 105 more ╯

@@ -16,10 +16,10 @@ import (
 )
 
 // loadedMsg carries the result of loading the open changeset: the
-// changeset itself, its Diff (the cursor's walk order and y/n targets)
-// and every op's OpDiff windows (what the Detail panel displays,
-// contract §1). Unexported: nothing outside this package's Update ever
-// sees one.
+// changeset itself, its Diff (the hunk stops' y/n targets, walked in the
+// ops order below) and every op's OpDiff windows (what the Detail panel
+// displays, contract §1). Unexported: nothing outside this package's
+// Update ever sees one.
 type loadedMsg struct {
 	changeset *stage.Changeset
 	diff      stage.Diff
@@ -111,7 +111,7 @@ func (m *Model) applyLoaded(msg loadedMsg) {
 	m.diff = msg.diff
 	m.ops = flattenAllOps(msg.changeset)
 	m.opDiffs = msg.opDiffs
-	m.stops = buildCursorStops(msg.diff)
+	m.stops = buildCursorStops(msg.diff, m.ops)
 	m.cursor = clampCursor(m.cursor, len(m.stops))
 }
 

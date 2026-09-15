@@ -94,15 +94,17 @@ func TestStaleOpRefusesReviewKeys(t *testing.T) {
 // deliberately: proceeding past the refusal would nil-panic on the engine
 // call, so the assertion is the proof that no engine method ran.
 func TestOwnerlessWindowIsNeverYNCursorTarget(t *testing.T) {
+	ops := []stage.Op{{ID: "op1", Kind: stage.OpCreatePage, State: stage.StateProposed}}
+	d := stage.Diff{Files: []stage.FileDiff{{OpID: "op1", Hunks: []stage.Hunk{{ID: "h1"}}}}}
 	m := &Model{
 		deps:         ui.Deps{Theme: testTheme(t), Keys: defaultTestKeys(t)}, // no engine
 		theme:        testTheme(t),
 		hasChangeset: true,
 		changeset:    &stage.Changeset{ID: "cs-ownerless"},
-		ops:          []stage.Op{{ID: "op1", Kind: stage.OpCreatePage, State: stage.StateProposed}},
+		ops:          ops,
 		// The cursor walk has a stop on the op's file hunk...
-		diff:  stage.Diff{Files: []stage.FileDiff{{OpID: "op1", Hunks: []stage.Hunk{{ID: "h1"}}}}},
-		stops: buildCursorStops(stage.Diff{Files: []stage.FileDiff{{OpID: "op1", Hunks: []stage.Hunk{{ID: "h1"}}}}}),
+		diff:  d,
+		stops: buildCursorStops(d, ops),
 		// ...but the displayed windows are ownerless, as OpDiff shows them
 		// for an op that persists no hunks.
 		opDiffs: map[string][]stage.FileOpDiff{

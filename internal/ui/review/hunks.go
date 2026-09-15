@@ -1,8 +1,9 @@
 // hunks.go implements the review screen's cursor model: a single cursor
-// walking the flattened sequence of (FileDiff, Hunk) pairs across a
-// stage.Diff's Files, in the engine's own risk order (backbone §5.6) — an
-// order this package must never re-sort (s4-tui.md S4-T3 §5 item 5). Kept
-// as small, pure functions so the cursor arithmetic is unit-testable
+// walking every Ops-panel row in the panel's own order — each op's hunks
+// as (FileDiff, Hunk) index pairs in the engine's own risk order (backbone
+// §5.6, which this package must never re-sort — s4-tui.md S4-T3 §5 item
+// 5), and each op without hunks as one op-level stop (C32/D-3U). Kept as
+// small, pure functions so the cursor arithmetic is unit-testable
 // without constructing a Model, an Engine, or a tea.Program at all.
 package review
 
@@ -13,27 +14,42 @@ import (
 )
 
 // cursorStop is one addressable position in the review cursor's walk
-// order: the index of its FileDiff within a Diff's Files, and the index of
-// its Hunk within that FileDiff's Hunks. An op with zero hunks — a rename,
-// a merge, a split, an add_link marker — contributes no cursorStop at all:
-// it renders in the op list but is never a cursor stop, and there is no
-// op-level focus key in the frozen keymap to make it one (s4-tui.md S4-T3
-// §5).
+// order. A hunk stop (opID "") addresses the Hunk hunkIdx of the FileDiff
+// fileIdx within a Diff's Files. An op-level stop (opID set) addresses an
+// op that contributes no hunks at all — a create_page, an ingest_source,
+// a fully dropped op, or any op whose Diff entry has no hunks — so its
+// row stays reachable with j/k and the Ops panel always has a cursor row
+// (C32/D-3U); y/n refuse it like an ownerless window.
 type cursorStop struct {
 	fileIdx int
 	hunkIdx int
+	opID    string // non-empty: an op-level stop; fileIdx/hunkIdx unused
 }
 
-// buildCursorStops flattens d.Files, in order, and within each file its
-// Hunks, in order, into the review cursor's walk order. d.Files already
-// arrives risk-sorted by the engine (backbone §5.6: "sorted by risk:
+// buildCursorStops walks ops — the Ops panel's render order, dropped ops
+// included — and for each op emits its hunk stops: one per hunk of that
+// op's files in d, in d's own order within the op. d.Files still arrives
+// risk-sorted by the engine (backbone §5.6: "sorted by risk:
 // create/rename/merge/split, then patch, then add_link") — this function
-// must never re-sort it, only walk it.
-func buildCursorStops(d stage.Diff) []cursorStop {
+// must never re-sort it, only filter it per op. An op with no hunks in d
+// — create_page, ingest_source, the derived index.md, a fully dropped op
+// — contributes exactly ONE op-level stop instead, so every Ops-panel row
+// is a stop and the cursor's walk follows the panel's (C32/D-3U).
+func buildCursorStops(d stage.Diff, ops []stage.Op) []cursorStop {
 	var stops []cursorStop
-	for fi, f := range d.Files {
-		for hi := range f.Hunks {
-			stops = append(stops, cursorStop{fileIdx: fi, hunkIdx: hi})
+	for _, op := range ops {
+		n := 0
+		for fi, f := range d.Files {
+			if f.OpID != op.ID {
+				continue
+			}
+			for hi := range f.Hunks {
+				stops = append(stops, cursorStop{fileIdx: fi, hunkIdx: hi})
+				n++
+			}
+		}
+		if n == 0 {
+			stops = append(stops, cursorStop{opID: op.ID})
 		}
 	}
 	return stops
@@ -57,14 +73,21 @@ func clampCursor(i, n int) int {
 }
 
 // resolveCursor returns the (opID, hunkID) that stops[i] addresses within
-// d, and false when i is out of range for stops or the stop it names is
-// out of range for d — an empty diff, or a changeset whose every op has
-// zero hunks, both resolve to ok == false rather than a panic.
+// d, and false when i is out of range for stops or a hunk stop's indices
+// are out of range for d — an empty diff, a changeset with no ops, and
+// stale indices after a reload all resolve to ok == false rather than a
+// panic. An op-level stop resolves to its op with no hunk (hunkID ""): the
+// ops list and the stops are rebuilt together on every load, so the op it
+// names is the op the panels drew, and a consumer that cannot find it
+// handles the miss as it already handles any unknown id.
 func resolveCursor(d stage.Diff, stops []cursorStop, i int) (opID, hunkID string, ok bool) {
 	if i < 0 || i >= len(stops) {
 		return "", "", false
 	}
 	st := stops[i]
+	if st.opID != "" {
+		return st.opID, "", true
+	}
 	if st.fileIdx < 0 || st.fileIdx >= len(d.Files) {
 		return "", "", false
 	}

@@ -1,38 +1,38 @@
 ╭ Ops ─────────────────────────────────╮╭ Diff ───────────────────────────────────────────────────────────── p preview ╮
-│ ● src   baker-percentages-explained… ││ patch  wiki/concepts/autolyse.md                                op3 · 1 hunk │
-│ ● new   baker-percentages.md         ││ The rest line undersold the point of the page: once the flour is fully       │
-│▌● patch autolyse.md  wiki/concepts/  ││ hydrated, the water percentage decides how far the gluten can stretch before │
-│ ✗ patch banneton.md  wiki/entities/  ││ it tears. Point that line at the baker-percentages page so a reader who      │
-│                                      ││ wants the arithmetic behind the rest can follow it.                          │
+│▌● src   baker-percentages-explained… ││ src  raw/articles/baker-percentages-explained.md                op1 · 1 hunk │
+│ ● new   baker-percentages.md         ││ raw source for the new baker-percentages page                                │
+│ ● patch autolyse.md  wiki/concepts/  ││                                                                              │
+│ ✗ patch banneton.md  wiki/entities/  ││ @@ -0,0 +1,21 @@                                                             │
+│                                      ││ + ---                                                                        │
+│                                      ││ + source_url: https://example.org/articles/baker-percentages-explained       │
+│                                      ││ + ingested: 2026-08-29                                                       │
+│                                      ││ + sha256: 01737517844386bdd1e50605eb8b3fbf010b95d47035ff52a4510646dab162b0   │
+│                                      ││ + ---                                                                        │
+│                                      ││ +                                                                            │
+│                                      ││ + # Baker Percentages, Explained                                             │
+│                                      ││ +                                                                            │
+│                                      ││ + Professional bakers rarely write a recipe as a list of ingredient weights. │
+│                                      ││ + They write it as a set of percentages of the flour weight, a convention    │
+│                                      ││ + called baker percentages. Flour is always one hundred percent, and every   │
+│                                      ││ + other ingredient is measured against it, so a dough at seventy percent     │
+│                                      ││ + hydration carries water equal to seven tenths of its flour.                │
+│                                      ││ +                                                                            │
+│                                      ││ + ## Why bakers use it                                                       │
+│                                      ││ +                                                                            │
+│                                      ││ + - A formula written in percentages scales cleanly from one loaf to twenty. │
+│                                      ││ + - Hydration stands out immediately, and hydration drives most of how a     │
+│                                      ││   dough                                                                      │
+│                                      ││ + behaves in the bowl and in the oven.                                       │
+│                                      ││ + - Two recipes become directly comparable, whatever loaf sizes they were    │
+│                                      ││ + written for.                                                               │
 │                                      ││                                                                              │
-│                                      ││▌@@ -18,7 +18,7 @@  h1                                                        │
-│                                      ││▌  ## Why it matters                                                          │
-│                                      ││▌                                                                             │
-│                                      ││▌  - Gives the flour time to hydrate fully before any kneading starts.        │
-│                                      ││▌- - Lets enzymes begin breaking down starches while the dough simply rests.  │
-│                                      ││▌+ - Lets enzymes begin breaking down starches while the dough rests, and the │
-│                                      ││▌  [[baker-percentages]] behind the flour-water ratio starts to matter.       │
-│                                      ││▌  - Shortens the work the dough still needs, which keeps the crumb open.     │
-│                                      ││▌                                                                             │
-│                                      ││▌  ## Related                                                                 │
-│                                      ││                                                                              │
-│                                      ││ ──────────────────────────────────────────────────────────────────────────── │
-│                                      ││                                                                              │
-│                                      ││ patch  wiki/entities/banneton.md                               op4 · dropped │
-│                                      ││ tighten the release line while the page is open                              │
-│                                      ││                                                                              │
-│                                      ││ @@ -18,7 +18,7 @@  h1  dropped                                               │
-│                                      ││   ## Why it matters                                                          │
-│                                      ││                                                                              │
-│                                      ││   - Holds a loose dough in shape through a long, cool overnight proof.       │
-│                                      ││ - - Wicks a little moisture from the dough's surface, so it releases         │
-╰────────────────────────────── 3 of 4 ╯│   cleanly.                                                                   │
-╭ Changeset ───────────────────────────╮│ + - Wicks moisture from the dough's surface so the loaf releases cleanly,    │
-│ source  uitest: add baker percentag… ││   even after a cold overnight proof.                                         │
-│ id      cs-05f94b1f9f613692          ││                                                                              │
-│ ops     4 · 1 dropped · 0 stale      ││   ## Related                                                                 │
+╰────────────────────────────── 1 of 4 ╯│ ──────────────────────────────────────────────────────────────────────────── │
+╭ Changeset ───────────────────────────╮│                                                                              │
+│ source  uitest: add baker percentag… ││ new  wiki/concepts/baker-percentages.md                        op2 · 2 hunks │
+│ id      cs-05f94b1f9f613692          ││ the raw article's ratios section deserves its own page                       │
+│ ops     4 · 1 dropped · 0 stale      ││ sources raw/articles/baker-percentages-explained.md                          │
 │ hunks   4 kept · 1 dropped           ││                                                                              │
-│                                      ││                                                                              │
-│ checks  ✓ schema   ✓ lint            ││                                                                              │
-│         ✓ orphans  ✓ links           ││                                                                              │
-╰──────────────────────────────────────╯╰──────────────────────────────────────────────────────────────────────────────╯
+│                                      ││ @@ -0,0 +1,28 @@                                                             │
+│ checks  ✓ schema   ✓ lint            ││ + ---                                                                        │
+│         ✓ orphans  ✓ links           ││ + title: Baker Percentages                                                   │
+╰──────────────────────────────────────╯╰─────────────────────────────────────────────────────────────────── ↓ 71 more ╯
