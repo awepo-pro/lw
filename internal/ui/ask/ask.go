@@ -59,14 +59,16 @@ func New(d ui.Deps) ui.Pane {
 // Title returns the pane's name for the shell's tab bar (backbone §12).
 func (m *Model) Title() string { return "Ask" }
 
-// footerBindings is the ask footer (s2-screens.md T08): no `q` — Ask takes
-// typing (CapturesText), so quitting from here would eat questions.
+// footerBindings is the ask footer's own bindings (s2-screens.md T08). No
+// `tab screen` and no `q quit`: the shell appends the suffix after this
+// list (ORCH-13/D-3T) — tab always, and q only for panes that do not
+// capture text, which Ask does (CapturesText), so quitting from here would
+// eat questions.
 func footerBindings() []key.Binding {
 	return []key.Binding{
 		key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "send")),
 		key.NewBinding(key.WithKeys("up", "down"), key.WithHelp("↑/↓", "select tool call")),
 		key.NewBinding(key.WithKeys("ctrl+r"), key.WithHelp("ctrl+r", "review")),
-		key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "screen")),
 	}
 }
 
@@ -76,8 +78,9 @@ func footerBindings() []key.Binding {
 func (m *Model) Help() []key.Binding { return footerBindings() }
 
 // FooterHelp implements ui.FooterHelper (contract §5): the footer list the
-// shell renders for this pane, in display order, ending with its own
-// "? help".
+// shell renders for this pane, in display order. The shell appends
+// `tab screen` and `? help` after it — and, because Ask captures text, no
+// `q quit`.
 func (m *Model) FooterHelp() []key.Binding { return footerBindings() }
 
 // OverlayHelp implements ui.OverlayHelper (contract §5): Ask's section of

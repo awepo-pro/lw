@@ -48,19 +48,21 @@ func (m *Model) panelSpec(w, h int) ui.PanelSpec {
 		return ui.PanelSpec{
 			Title:   "Findings",
 			Focused: true,
-			Lines:   []string{m.theme.Muted.Render(ui.Clip("loading lint report…", max(cw, 1)))},
+			Lines:   []string{m.theme.Faint.Render(ui.Clip("loading lint report…", max(cw, 1)))},
 		}
 	}
 
 	findings := m.report.Findings
 	if len(findings) == 0 {
-		// Empty report (T09): `no findings` (faint) on the first content
-		// row, note `clean` on the top border, no FootNote.
+		// Empty report (T09, ORCH-12): `no findings` (faint) on the first
+		// content row, note `clean` on the top border in Good — a clean
+		// report is a good one — and no FootNote.
 		return ui.PanelSpec{
-			Title:   "Findings",
-			Note:    "clean",
-			Focused: true,
-			Lines:   []string{m.theme.Faint.Render(ui.Clip("no findings", max(cw, 1)))},
+			Title:     "Findings",
+			Note:      "clean",
+			NoteLevel: ui.StatusGood,
+			Focused:   true,
+			Lines:     []string{m.theme.Faint.Render(ui.Clip("no findings", max(cw, 1)))},
 		}
 	}
 

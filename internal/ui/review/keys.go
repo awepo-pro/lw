@@ -11,10 +11,11 @@ import (
 )
 
 // FooterHelp returns the review footer's bindings in display order; the
-// shell appends "? help" and drops whole bindings from the end until the
-// row fits (contract §5 frame note 2). The merged movement labels live on
-// the KeyMap (MoveDown is "j/k move", Top is "g/G top/bottom"), so
-// MoveUp and Bottom are omitted here.
+// shell appends `tab screen` and `q quit` (Review does not capture text)
+// after them, then "? help", and drops whole bindings from the end until
+// the row fits (contract §5 frame note 2, ORCH-13/D-3T). The merged
+// movement labels live on the KeyMap (MoveDown is "j/k move", Top is
+// "g/G top/bottom"), so MoveUp and Bottom are omitted here.
 func (m *Model) FooterHelp() []key.Binding {
 	k := m.deps.Keys
 	preview := k.Preview
@@ -34,8 +35,6 @@ func (m *Model) FooterHelp() []key.Binding {
 		k.Commit,     // C commit
 		k.Reject,     // X reject changeset
 		k.Top,        // g/G top/bottom
-		k.NextPane,   // tab screen
-		k.Quit,       // q quit
 	}
 }
 

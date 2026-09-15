@@ -11,10 +11,11 @@ import (
 
 // PanelSpec describes one bordered panel (mockgen.box / foot / draw_lines).
 type PanelSpec struct {
-	Title    string // set into the top border: "╭ Title ───"; clipped to w-6
-	Note     string // right-aligned on the top border, muted: "─ p preview ╮"; omitted if it doesn't fit
-	FootNote string // right-aligned on the bottom border, muted: "─ 3 of 4 ╯"; omitted if it doesn't fit
-	Focused  bool   // border + title in Accent; otherwise border Border, title Bold
+	Title     string      // set into the top border: "╭ Title ───"; clipped to w-6
+	Note      string      // right-aligned on the top border: "─ p preview ╮"; omitted if it doesn't fit
+	NoteLevel StatusLevel // Note colour (ORCH-12/D-3T): zero value StatusInfo = Muted, unchanged; StatusGood/StatusWarn/StatusBad draw it in Good/Warn/Bad
+	FootNote  string      // right-aligned on the bottom border, muted: "─ 3 of 4 ╯"; omitted if it doesn't fit
+	Focused   bool        // border + title in Accent; otherwise border Border, title Bold
 
 	Lines     []string // pre-styled content lines, each at most w-4 cells (clipped otherwise)
 	CursorRow int      // index into Lines drawn with the ▌ gutter + CursorBg tint; -1 for none
@@ -37,7 +38,7 @@ func Panel(t Theme, spec PanelSpec, w, h int) []string {
 	}
 
 	rows := make([]string, h)
-	rows[0] = panelTopBorder(t, w, spec.Title, spec.Note, border, title)
+	rows[0] = panelTopBorder(t, w, spec.Title, spec.Note, noteStyle(t, spec.NoteLevel), border, title)
 
 	innerH := h - 2
 	footNote := spec.FootNote
@@ -58,9 +59,25 @@ func Panel(t Theme, spec PanelSpec, w, h int) []string {
 	return rows
 }
 
+// noteStyle is the style spec's Note is drawn in: Muted at the zero value
+// (StatusInfo — every pre-ORCH-12 panel's rendering, unchanged), or the
+// level's own colour when the spec asks for one.
+func noteStyle(t Theme, level StatusLevel) lipgloss.Style {
+	switch level {
+	case StatusGood:
+		return t.Good
+	case StatusWarn:
+		return t.Warn
+	case StatusBad:
+		return t.Bad
+	default:
+		return t.Muted
+	}
+}
+
 // panelTopBorder draws the rounded top edge, with the title set into it
 // (mockgen.box) and an optional right-aligned note.
-func panelTopBorder(t Theme, w int, titleText, note string, border, title lipgloss.Style) string {
+func panelTopBorder(t Theme, w int, titleText, note string, noteStyle, border, title lipgloss.Style) string {
 	r := newRow(w)
 	r.put(0, "╭", border)
 	for i := 1; i < w-1; i++ {
@@ -77,7 +94,7 @@ func panelTopBorder(t Theme, w int, titleText, note string, border, title lipglo
 		used = cellLen(tt) + 3
 	}
 	if note != "" && used+cellLen(note)+5 <= w {
-		r.put(w-3-cellLen(note), " "+note+" ", t.Muted)
+		r.put(w-3-cellLen(note), " "+note+" ", noteStyle)
 	}
 	return r.render()
 }

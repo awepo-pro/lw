@@ -27,8 +27,10 @@ func defaultTestKeys(t *testing.T) ui.KeyMap {
 }
 
 // TestFooterHelpOrder pins the frozen footer list (s2-screens.md T06):
-// ten bindings in order, the merged movement labels included and the
-// per-key ones (MoveUp, Bottom) omitted.
+// eight bindings in order, the merged movement labels included and the
+// per-key ones (MoveUp, Bottom) omitted. No `tab screen` and no `q quit`:
+// the shell appends those after this list (ORCH-13/D-3T); the rendered
+// footer is unchanged and is the shell's own test.
 func TestFooterHelpOrder(t *testing.T) {
 	m := footerTestModel(t)
 
@@ -41,8 +43,6 @@ func TestFooterHelpOrder(t *testing.T) {
 		{"C", "commit"},
 		{"X", "reject changeset"},
 		{"g/G", "top/bottom"},
-		{"tab", "screen"},
-		{"q", "quit"},
 	}
 	bindings := m.FooterHelp()
 	if len(bindings) != len(want) {
@@ -63,8 +63,8 @@ func TestFooterHelpPreviewSwap(t *testing.T) {
 	m.preview = true
 
 	bindings := m.FooterHelp()
-	if len(bindings) != 10 {
-		t.Fatalf("FooterHelp has %d bindings, want 10", len(bindings))
+	if len(bindings) != 8 {
+		t.Fatalf("FooterHelp has %d bindings, want 8", len(bindings))
 	}
 	h := bindings[3].Help()
 	if h.Key != "p" || h.Desc != "diff" {

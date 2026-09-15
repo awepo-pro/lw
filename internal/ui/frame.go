@@ -118,9 +118,16 @@ func fitPaneLines(content string, w, h int) []string {
 
 // footerContent picks the footer's row for the active pane p (which may be
 // nil): its StatusReporter message when it has one, else its FooterHelper
-// (or Help) bindings (contract §5 frame note 2, and the StatusReporter
-// path).
-func footerContent(t Theme, p Pane, w int) string {
+// (or Help) bindings with the shell's own suffix appended (contract §5
+// frame note 2, and the StatusReporter path).
+//
+// The suffix (ORCH-13/D-3T) is NextPane — "tab screen" — always, and Quit —
+// "q quit" — unless p is taking text input (TextCapturer), appended after
+// the pane's list and before "? help". No pane lists either binding any
+// more: every screen's footer ends the same way, and the drop-from-end rule
+// in footerLine applies to the combined list, so the suffix drops first at
+// narrow widths.
+func footerContent(t Theme, keys KeyMap, p Pane, w int) string {
 	if sr, ok := p.(StatusReporter); ok {
 		if msg, level := sr.Status(); msg != "" {
 			return statusFooterLine(t, w, msg, level)
@@ -133,8 +140,25 @@ func footerContent(t Theme, p Pane, w int) string {
 		} else {
 			bindings = p.Help()
 		}
+		// Copy before appending: a pane may hand back a slice it shares, and
+		// the suffix must never leak into it.
+		combined := make([]key.Binding, 0, len(bindings)+2)
+		combined = append(combined, bindings...)
+		combined = append(combined, keys.NextPane)
+		if !capturesText(p) {
+			combined = append(combined, keys.Quit)
+		}
+		bindings = combined
 	}
 	return footerLine(t, w, bindings)
+}
+
+// capturesText reports whether p is taking text input (contract §5's
+// TextCapturer): it implements the interface and reports true. A pane that
+// types — Ask's input box — keeps `q` out of its footer, because `q` types.
+func capturesText(p Pane) bool {
+	tc, ok := p.(TextCapturer)
+	return ok && tc.CapturesText()
 }
 
 // headerStage is the header's changeset summary (contract §5 frame note 6).

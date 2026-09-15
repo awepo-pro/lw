@@ -382,7 +382,7 @@ func (a *App) render() string {
 		a.pages, a.raw, a.lintErrors,
 		headerStage{ID: a.stageID, Ops: a.stageOps, Checks: a.stageChecks, Has: a.hasStage}))
 	lines = append(lines, fitPaneLines(content, a.width, bodyH)...)
-	lines = append(lines, footerContent(a.deps.Theme, a.activePane(), a.width))
+	lines = append(lines, footerContent(a.deps.Theme, a.deps.Keys, a.activePane(), a.width))
 
 	frame := strings.Join(lines, "\n")
 	if !a.overlayOpen {

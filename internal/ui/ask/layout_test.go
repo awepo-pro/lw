@@ -274,13 +274,14 @@ func scriptedTurnEvents() []agent.Event {
 
 // The footer list is pane state only in the sense that FooterHelp returns
 // it; pin it here so a binding edit shows up in this package's own tests
-// before it shows up in a frozen grid.
+// before it shows up in a frozen grid. `tab screen` is not on the list: the
+// shell appends it after the pane's bindings (ORCH-13/D-3T), so the
+// rendered footer is unchanged.
 func TestAskFooterBindingsExist(t *testing.T) {
 	want := []struct{ key, desc string }{
 		{"enter", "send"},
 		{"↑/↓", "select tool call"},
 		{"ctrl+r", "review"},
-		{"tab", "screen"},
 	}
 	bs := footerBindings()
 	if len(bs) != len(want) {
@@ -297,11 +298,16 @@ func TestAskFooterBindingsExist(t *testing.T) {
 			}
 		}
 	}
-	// No `q`: Ask captures typing, so quit must not be offered here.
+	// No `q` and no `tab` on the pane's own list: the shell appends both
+	// (`q quit` only for panes that do not capture text — Ask does), and a
+	// pane that listed them again would render them twice.
 	for _, b := range bs {
 		for _, k := range b.Keys() {
 			if k == "q" {
 				t.Fatal("the ask footer offers q, but q types into the input")
+			}
+			if k == "tab" {
+				t.Fatal("the ask footer lists tab; the shell appends `tab screen` itself")
 			}
 		}
 	}

@@ -71,8 +71,9 @@ func (m *Model) Title() string { return "Browse" }
 func (m *Model) Help() []key.Binding { return m.FooterHelp() }
 
 // FooterHelp is the footer's binding list, in the frozen order
-// (s2-screens.md T07): the shell appends "? help" and drops whole bindings
-// from the end when the row is too narrow.
+// (s2-screens.md T07); the shell appends `tab screen` and `q quit` (Browse
+// does not capture text) after them, then "? help", and drops whole
+// bindings from the end when the row is too narrow (ORCH-13/D-3T).
 func (m *Model) FooterHelp() []key.Binding {
 	return []key.Binding{
 		m.deps.Keys.MoveDown, // help "j/k", "move"
@@ -80,8 +81,6 @@ func (m *Model) FooterHelp() []key.Binding {
 		key.NewBinding(key.WithKeys("h", "l"), key.WithHelp("h/l", "collapse/expand")),
 		key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "find")),
 		m.deps.Keys.Top, // help "g/G", "top/bottom"
-		m.deps.Keys.NextPane,
-		m.deps.Keys.Quit,
 	}
 }
 

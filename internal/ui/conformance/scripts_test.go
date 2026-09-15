@@ -169,9 +169,10 @@ func panelCursorRow(plain, panel string) (string, bool) {
 }
 
 // legacyCursorRow returns the plain text of the row the pre-redesign
-// screens paint with the cursor-row background from column 0 (Theme.Selected,
-// whose background is the cursor colour by contract §3 note 4), the way
-// the old op list and browse tree marked the cursor.
+// screens paint with the cursor-row background from column 0 (their
+// pre-redesign cursor-row style, whose background was the cursor colour by
+// contract §3 note 4), the way the old op list and browse tree marked the
+// cursor.
 func legacyCursorRow(styled, plain string) (string, bool) {
 	styledRows := strings.Split(styled, "\n")
 	plainRows := strings.Split(plain, "\n")

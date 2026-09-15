@@ -16,7 +16,10 @@ type HelpEntry struct {
 // FooterHelper is implemented by a pane that wants the footer to show a
 // list other than Help()'s.
 type FooterHelper interface {
-	FooterHelp() []key.Binding // in display order; the shell appends "? help"
+	// FooterHelp returns the pane's bindings in display order, WITHOUT
+	// tab/q: the shell appends `tab screen` (always), `q quit` (unless the
+	// pane captures text) and "? help" (ORCH-13/D-3T).
+	FooterHelp() []key.Binding
 }
 
 // OverlayHelper is implemented by a pane that wants its own section in the

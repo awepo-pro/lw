@@ -191,7 +191,7 @@ type Theme struct {
 	Warnings []string
 
 	// Fg, Muted, Faint, Border, Accent, Good, Warn and Bad are foreground-only
-	// styles: no style but Selected ever sets a background (F4).
+	// styles: no Theme style ever sets a background (F4).
 	Fg     lipgloss.Style
 	Muted  lipgloss.Style
 	Faint  lipgloss.Style
@@ -204,18 +204,11 @@ type Theme struct {
 	// the keys the footer prints.
 	Bold lipgloss.Style
 	// CursorBg is the cursor-row tint (plan §4.4) — the one place a
-	// background colour appears at all.
+	// background colour appears at all. It is a color.Color, not a style: a
+	// caller tints exactly the cursor row with it (ui.Panel's CursorRow).
 	CursorBg color.Color
 	// Palette is what markdown.Style is built from.
 	Palette Palette
-
-	// Deprecated: removed by T12. Kept so screens mid-migration still
-	// compile. None of these carries the old accent background (F4 is fixed
-	// immediately, contract §3 note 4).
-	Base      lipgloss.Style
-	Title     lipgloss.Style
-	StatusBar lipgloss.Style
-	Selected  lipgloss.Style
 
 	colors themeColors
 	forced bool // polarity forced by theme = "dark"/"light"; WithDark is then a no-op
@@ -264,11 +257,6 @@ func buildTheme(colors themeColors, isDark, forced bool, warnings []string) Them
 		Bold:     bold,
 		CursorBg: cursorBg,
 		Palette:  paletteFrom(colors, isDark),
-
-		Base:      fg,
-		Title:     accent.Bold(true),
-		StatusBar: bold,
-		Selected:  fg.Background(cursorBg),
 
 		colors: colors,
 		forced: forced,
