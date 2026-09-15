@@ -9,7 +9,19 @@
 
 ── index.md ────────────────────────────────────────────────────────────────────
 
-(deleted in this changeset)
+  Index
+
+  Concepts
+
+▎ • speculative-decoding — Drafting tokens with a small model and verifying them
+▎ with the target model.
+▎ • kv-cache — Caching attention keys/values across decoding steps.
+▎ • flash-attention — Fused, memory-efficient attention kernel.
+▎ • diff-target — Diff Target
+
+  Entities
+
+  • gpt-4 — OpenAI's GPT-4 model.
 
 ── wiki/concepts/kv-cache.md ───────────────────────────────────────────────────
 

@@ -154,12 +154,20 @@ func renderDiff(w io.Writer, e *stage.Engine, d stage.Diff) error {
 		return err
 	}
 	r := markdown.NewRenderer()
-	seen := make(map[string]bool, len(d.Files)) // §8.2: de-duplicate by path
+	// §8.2: de-duplicate by path, in order. A path two ops both write
+	// renders once, from its LAST entry — the write Commit's per-path
+	// materialization lands (apply.go is last-write-wins, C-63) — and
+	// sections keep their first-occurrence order.
+	last := make(map[string]stage.FileDiff, len(d.Files))
+	order := make([]string, 0, len(d.Files))
 	for _, fd := range d.Files {
-		if seen[fd.Path] {
-			continue
+		if _, seen := last[fd.Path]; !seen {
+			order = append(order, fd.Path)
 		}
-		seen[fd.Path] = true
+		last[fd.Path] = fd
+	}
+	for _, path := range order {
+		fd := last[path]
 		fmt.Fprintln(w, diffRule(fd.Path, o.width))
 		fmt.Fprintln(w)
 		lines, err := diffFileBody(e, r, fd, o)
@@ -220,26 +228,26 @@ func diffRule(path string, w int) string {
 	return "── " + path + " " + strings.Repeat("─", n)
 }
 
-// diffFileBody renders one file's body for --render: the staged page
-// through the markdown renderer, or the contract's one-line substitute
-// when the path is not markdown or has no staged content (a path a commit
-// will delete).
+// diffFileBody renders one file's body for --render: the projected
+// post-commit page through the markdown renderer, or the contract's
+// one-line substitute when the path is not markdown or has no projected
+// content (a path commit will delete) — 003 contract §8.3 as amended by
+// C25/D-3P: the body source is FileDiff.New, which Diff computes for
+// every entry it emits, including a derived index.md and a rename's
+// destination that no op targets, so a page commit writes is never
+// misreported as deleted.
 func diffFileBody(e *stage.Engine, r *markdown.Renderer, fd stage.FileDiff, o renderOpts) ([]string, error) {
 	if !strings.HasSuffix(fd.Path, ".md") {
 		return []string{"(not markdown: see lw diff)"}, nil
 	}
-	content, ok, err := e.StagedFile(fd.Path)
-	if err != nil {
-		return nil, err
-	}
-	if !ok {
+	if fd.New == "" {
 		return []string{"(deleted in this changeset)"}, nil
 	}
 	changed, err := changedLines(e, fd)
 	if err != nil {
 		return nil, err
 	}
-	lines, err := r.Render(content, markdown.Options{
+	lines, err := r.Render([]byte(fd.New), markdown.Options{
 		Width:   o.width,
 		Style:   o.style,
 		Plain:   !o.tty,
