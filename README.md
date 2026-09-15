@@ -190,7 +190,7 @@ still quits.
 | `h`/`l` | Browse | collapse / expand a subtree |
 | `f` | Log | cycle the journal filter (all → accepted → rejected → agent → human) |
 | `r` | Log | revert the selected commit into a new changeset |
-| `q` | all but Ask | quit (`ctrl+c` also quits) |
+| `q` | all screens, except while typing in Ask or in Browse's `/` finder | quit (`ctrl+c` also quits) |
 
 Ask's message box takes all typing: `q` and `?` type into the message
 instead of quitting or opening the overlay — quit from Ask with `ctrl+c`.
