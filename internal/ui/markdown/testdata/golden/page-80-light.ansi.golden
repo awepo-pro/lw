@@ -1,0 +1,36 @@
+  [38;2;28;33;40;1mContainer Network Namespaces[m                                                  
+  [38;2;138;146;158mconcept · containers, networking, linux · confidence medium · updated[m         
+  [38;2;138;146;158m2026-08-02[m                                                                    
+                                                                                
+  [38;2;28;33;40;1mContainer network[m[38;2;28;33;40;1m namespaces[m                                                  
+                                                                                
+  [38;2;28;33;40mA network namespace isolates a process's view of the network: its[m[38;2;28;33;40m own[m         
+  [38;2;28;33;40m[m[38;2;28;33;40minterfaces, routing table and firewall rules. Containers typically get[m[38;2;28;33;40m one[m    
+  [38;2;28;33;40m[m[38;2;28;33;40meach, connected to the host through a virtual ethernet[m[38;2;28;33;40m pair.[m                  
+                                                                                
+  [38;2;28;33;40;1mHow it differs from a host[m[38;2;28;33;40;1m network[m                                            
+                                                                                
+  • [38;2;28;33;40mThe container sees only [m[38;2;88;98;112meth0[m[38;2;28;33;40m inside its own[m[38;2;28;33;40m namespace.[m                      
+  • [38;2;28;33;40mThe host sees the other end of the veth pair, usually named like [m[38;2;88;98;112mveth1a2b3c[m[38;2;28;33;40m.[m
+  • [38;2;28;33;40mTraffic between namespaces is routed the same as traffic between[m[38;2;28;33;40m hosts.[m     
+                                                                                
+  [38;2;28;33;40;1mComparison with other isolation[m[38;2;28;33;40;1m levels[m                                        
+                                                                                
+   [38;2;28;33;40mMechanism[m                [38;2;198;205;214m│[m [38;2;28;33;40mIsolates[m[38;2;28;33;40m network[m        [38;2;198;205;214m│[m [38;2;28;33;40mIsolates[m[38;2;28;33;40m filesystem[m     
+  [38;2;198;205;214m──────────────────────────┼─────────────────────────┼─────────────────────────[m
+   [38;2;28;33;40mchroot[m                   [38;2;198;205;214m│[m [38;2;28;33;40mno[m                      [38;2;198;205;214m│[m [38;2;28;33;40myes[m                     
+   [38;2;28;33;40mnetwork[m[38;2;28;33;40m namespace[m        [38;2;198;205;214m│[m [38;2;28;33;40myes[m                     [38;2;198;205;214m│[m [38;2;28;33;40mno[m                      
+   [38;2;28;33;40mfull[m[38;2;28;33;40m VM[m                  [38;2;198;205;214m│[m [38;2;28;33;40myes[m                     [38;2;198;205;214m│[m [38;2;28;33;40myes[m                     
+                                                                                
+  [38;2;28;33;40mSee [38;2;28;33;40;4mnetwork-namespace-egress-isolation[m[38;2;28;33;40m and [38;2;28;33;40;4mveth-pairs[m[38;2;28;33;40m for more[m[38;2;28;33;40m background.[m    
+                                                                                
+  [38;2;28;33;40m[38;2;138;146;158m[netns-tutorial.md][m[38;2;28;33;40m covers the syscalls directly; [38;2;138;146;158m[container-runtime-notes.md][m[38;2;28;33;40m[m
+  [38;2;28;33;40mcovers how runtimes wire it[m[38;2;28;33;40m up.[m                                               
+                                                                                
+  [38;2;88;98;112mip netns add example[m                                                          
+  [38;2;88;98;112m[m[38;2;88;98;112mip netns exec example ip link set lo up[m                                       
+  [38;2;88;98;112m[m[38;2;88;98;112m[m                                                                              
+  [38;2;88;98;112m[m[38;2;88;98;112mip netns exec example ping -c1 10.0.0.1[m                                       
+                                                                                
+  [38;2;28;33;40mSome further detail about routing tables and how they interact with [m[38;2;88;98;112miptables[m[38;2;28;33;40m[m  
+  [38;2;28;33;40mrules in each[m[38;2;28;33;40m namespace.[m                                                      
