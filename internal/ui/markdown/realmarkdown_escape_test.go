@@ -16,7 +16,7 @@ func sentinelEscapeSubtests(t *testing.T) {
 		src := []byte("Some words before a very long link [[a-very-long-wikilink-target-name-that-wraps]] " +
 			"and a provenance ^[raw/articles/a-very-long-provenance-file-name-that-will-wrap.md] after it.\n")
 		fgSGR := "\x1b[38;2;216;221;228m"
-		underlineSGR := "\x1b[38;2;216;221;228;4m"
+		underlineSGR := "\x1b[38;2;122;178;242;4m" // Accent + underline (W5 F3 role)
 		faintSGR := "\x1b[38;2;94;102;114m"
 
 		plain, err := NewRenderer().Render(src, Options{Width: 44, Style: testStyle, Plain: true})
@@ -51,10 +51,10 @@ func sentinelEscapeSubtests(t *testing.T) {
 			}
 		}
 		// Every wikilink word fragment — both the segment before the wrap and
-		// the continuation after it — must carry underline+Fg.
+		// the continuation after it — must carry underline+Accent.
 		for _, frag := range []string{"a-very-", "long-wikilink-target-name-that-wraps"} {
 			if !strings.Contains(joined, underlineSGR+frag) {
-				t.Errorf("wikilink fragment %q is not styled underline+Fg: %q", frag, joined)
+				t.Errorf("wikilink fragment %q is not styled underline+Accent: %q", frag, joined)
 			}
 		}
 		// Every provenance word fragment must carry Faint, including the
@@ -114,7 +114,7 @@ func sentinelEscapeSubtests(t *testing.T) {
 			t.Fatalf("Render styled: %v", err)
 		}
 		joined := strings.Join(styled, "\n")
-		underlineSGR := "\x1b[38;2;216;221;228;4m"
+		underlineSGR := "\x1b[38;2;122;178;242;4m" // Accent + underline (W5 F3 role)
 		if !strings.Contains(joined, underlineSGR+"link") {
 			t.Errorf("wikilink not styled next to preserved sentinel characters: %q", joined)
 		}
@@ -154,13 +154,13 @@ func sentinelEscapeSubtests(t *testing.T) {
 			t.Fatalf("Render styled: %v", err)
 		}
 		joined := strings.Join(styled, "\n")
-		underlineSGR := "\x1b[38;2;216;221;228;4m"
+		underlineSGR := "\x1b[38;2;122;178;242;4m" // Accent + underline (W5 F3 role)
 		faintSGR := "\x1b[38;2;94;102;114m"
 		if !strings.Contains(joined, underlineSGR+"R&D.md") {
-			t.Errorf("wikilink R&D.md not styled underline+Fg: %q", joined)
+			t.Errorf("wikilink R&D.md not styled underline+Accent: %q", joined)
 		}
 		if !strings.Contains(joined, underlineSGR+"a~~b~~c") {
-			t.Errorf("wikilink a~~b~~c not styled underline+Fg: %q", joined)
+			t.Errorf("wikilink a~~b~~c not styled underline+Accent: %q", joined)
 		}
 		if !strings.Contains(joined, faintSGR+"[R&D~~x.md]") {
 			t.Errorf("provenance [R&D~~x.md] not styled Faint: %q", joined)

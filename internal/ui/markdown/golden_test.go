@@ -11,17 +11,20 @@ import (
 )
 
 // darkStyle and lightStyle are the built-in adaptive palette (contract §3
-// note 1), reproduced here rather than imported: this package cannot
-// import internal/ui, and a caller builds markdown.Style from ui.Theme's
-// Palette the same way at runtime (contract §3).
+// note 1, eleven tokens since W5), reproduced here rather than imported:
+// this package cannot import internal/ui, and a caller builds
+// markdown.Style from ui.Theme's Palette the same way at runtime
+// (contract §3).
 var darkStyle = Style{
 	Dark: true, Fg: "#D8DDE4", Muted: "#8C95A2", Faint: "#5E6672", Border: "#353C47",
 	Accent: "#7AB2F2", Good: "#6BC28E", Warn: "#E2B45A", Bad: "#EF7F76",
+	Heading: "#C3A0F0", Code: "#6CC7C9",
 }
 
 var lightStyle = Style{
 	Dark: false, Fg: "#1C2128", Muted: "#586270", Faint: "#8A929E", Border: "#C6CDD6",
 	Accent: "#1D62C2", Good: "#1D7A4B", Warn: "#93660A", Bad: "#B03A33",
+	Heading: "#7A45C2", Code: "#17727A",
 }
 
 // TestRenderGolden renders testdata/page.md at the two checkpoint widths in

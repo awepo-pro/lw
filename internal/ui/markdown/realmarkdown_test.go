@@ -26,8 +26,8 @@ func TestRenderRealMarkdownKeepsMeaning(t *testing.T) {
 			!strings.Contains(joined, ";9m") {
 			t.Errorf("styled output has no SGR 9 (strikethrough) on real ~~struck~~: %q", joined)
 		}
-		if strings.Contains(joined, "38;2;216;221;228;4mstruck") {
-			t.Errorf("real ~~struck~~ still carries SGR 4 (the old wikilink carrier's underline): %q", joined)
+		if strings.Contains(joined, "38;2;122;178;242;4mstruck") {
+			t.Errorf("real ~~struck~~ still carries SGR 4 (the wikilink carrier's underline, now Accent): %q", joined)
 		}
 	})
 
@@ -152,7 +152,7 @@ func TestRenderRealMarkdownKeepsMeaning(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Render: %v", err)
 		}
-		underlineSGR := "\x1b[38;2;216;221;228;4m"
+		underlineSGR := "\x1b[38;2;122;178;242;4m" // Accent + underline (W5 F3 role)
 
 		var endLine, startLine string
 		for _, l := range styled {
@@ -183,7 +183,7 @@ func TestRenderRealMarkdownKeepsMeaning(t *testing.T) {
 		}
 		// Immediately after the 2-cell (unmarked) gutter, the line's first
 		// *visible* content must already be "startmark" — nothing unstyled
-		// in front of it — and the underline+Fg span style must appear
+		// in front of it — and the underline+Accent span style must appear
 		// somewhere in the run of escape sequences ahead of it. Glamour's
 		// own outer Fg wrap for the paragraph's text node can legitimately
 		// sit right before the span's own open (a harmless, same-colour
@@ -196,7 +196,7 @@ func TestRenderRealMarkdownKeepsMeaning(t *testing.T) {
 			t.Errorf("line-starting marker has unstyled text before it: %q", startLine)
 		}
 		if !strings.Contains(prefix, underlineSGR) {
-			t.Errorf("line-starting marker's leading escapes never set underline+Fg: %q", startLine)
+			t.Errorf("line-starting marker's leading escapes never set underline+Accent: %q", startLine)
 		}
 	})
 }

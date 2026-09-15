@@ -7,6 +7,7 @@ import (
 
 	gansi "charm.land/glamour/v2/ansi"
 	"charm.land/lipgloss/v2"
+	"github.com/alecthomas/chroma/v2/lexers"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -15,9 +16,11 @@ import (
 // inserting provenance/wikilink sentinel markers first unless the block is
 // a fence (preprocess.go). It restyles those markers (inline.go), trims
 // every leading and trailing blank line glamour's own margin/spacing adds,
-// recolours a table block's own separators, and clips any line still wider
-// than contentW: glamour never word-wraps a fenced code block, so a long
-// code line is the one realistic case that needs it.
+// recolours the runes glamour cannot style per-role itself — a table's
+// header row and separators, a blockquote's bar, a list's marker — and
+// clips any line still wider than contentW: glamour never word-wraps a
+// fenced code block, so a long code line is the one realistic case that
+// needs it.
 func renderBlock(blk []string, cfg gansi.StyleConfig, contentW int, style Style) ([]string, error) {
 	text := strings.Join(blk, "\n")
 	if isFenceBlock(blk) {
@@ -28,6 +31,8 @@ func renderBlock(blk []string, cfg gansi.StyleConfig, contentW int, style Style)
 	} else {
 		text = insertMarkers(text)
 	}
+
+	cfg = withChromaTheme(cfg, blk, style)
 
 	r, err := newBlockRenderer(cfg, contentW)
 	if err != nil {
@@ -40,14 +45,21 @@ func renderBlock(blk []string, cfg gansi.StyleConfig, contentW int, style Style)
 
 	out = restyleSpans(out, []span{
 		{open: provOpen, close: provClose, openSGR: fgSGR(style.Faint, false)},
-		{open: wikiOpen, close: wikiClose, openSGR: fgSGR(style.Fg, true)},
+		{open: wikiOpen, close: wikiClose, openSGR: fgSGR(style.Accent, true)},
 	})
 	out = unescapeMarkers(out)
 
 	lines := strings.Split(out, "\n")
 	lines = trimBlankEdges(lines)
 	if isTableBlock(blk) {
+		lines = colorizeTableHeader(lines, style)
 		lines = colorizeTableSeparators(lines, style.Border)
+	}
+	if isBlockquoteBlock(blk) {
+		lines = colorizeQuoteBar(lines, style.Border)
+	}
+	if isListBlock(blk) {
+		lines = colorizeListMarkers(lines, style.Accent)
 	}
 	for i, l := range lines {
 		if ansi.StringWidth(l) > contentW {
@@ -55,6 +67,213 @@ func renderBlock(blk []string, cfg gansi.StyleConfig, contentW int, style Style)
 		}
 	}
 	return lines, nil
+}
+
+// withChromaTheme returns a copy of cfg whose CodeBlock.Theme selects s's
+// registered chroma style (chroma.go) when blk is a fence whose language
+// chroma has a lexer for. Otherwise Theme stays "": glamour then renders
+// the block through its fallback path, plain text in the code block's own
+// style primitive (Fg) — an unknown or empty language never reaches chroma,
+// so nothing can be highlighted by accident (contract §2 note 3).
+func withChromaTheme(cfg gansi.StyleConfig, blk []string, s Style) gansi.StyleConfig {
+	cfg.CodeBlock.Theme = ""
+	if lang := fenceLanguage(blk); lang != "" && lexers.Get(lang) != nil {
+		cfg.CodeBlock.Theme = chromaTheme(s)
+	}
+	return cfg
+}
+
+// fenceLanguage returns the language a fenced block declares, extracted the
+// way goldmark's FencedCodeBlock.Language does: the first space-delimited
+// word of the opening fence's info line. "" for a bare or indented fence.
+func fenceLanguage(blk []string) string {
+	if len(blk) == 0 {
+		return ""
+	}
+	info := strings.TrimLeft(blk[0], " \t")
+	info = strings.TrimPrefix(info, "```")
+	if i := strings.IndexByte(info, ' '); i >= 0 {
+		info = info[:i]
+	}
+	return info
+}
+
+// isBlockquoteBlock reports whether blk opens as a blockquote (its first
+// line starts with ">"; a blockquote is one block, and no other block kind
+// opens with ">").
+func isBlockquoteBlock(blk []string) bool {
+	return len(blk) > 0 && strings.HasPrefix(strings.TrimLeft(blk[0], " \t"), ">")
+}
+
+// colorizeTableHeader lifts the table's header row (the first rendered
+// line) from its cells' Fg to Accent + bold (contract §2 note 2). glamour
+// styles every cell with the table's own StylePrimitive, so the header
+// line carries that exact Fg SGR once per cell — head and body cells are
+// styled identically and no other SGR on the line can equal it — and
+// replacing each occurrence leaves the cell content, padding and
+// (recoloured later) separators untouched.
+func colorizeTableHeader(lines []string, s Style) []string {
+	if len(lines) == 0 {
+		return lines
+	}
+	cellSGR := ansi.Style{}.ForegroundColor(lipgloss.Color(s.Fg)).String()
+	headSGR := ansi.Style{}.ForegroundColor(lipgloss.Color(s.Accent)).Bold().String()
+	if cellSGR == "" || headSGR == "" || cellSGR == headSGR || !strings.Contains(lines[0], cellSGR) {
+		return lines
+	}
+	lines[0] = strings.ReplaceAll(lines[0], cellSGR, headSGR)
+	return lines
+}
+
+// colorizeQuoteBar recolours a rendered blockquote's "│" bars to borderHex
+// (contract §2 note 2). glamour draws the IndentToken with the *parent*
+// (document) style, which since the W5 role colours carries Fg — so every
+// bar, including the continuation lines a word-wrap produces, starts its
+// line wrapped in that Fg run, and the quote text after it is left exactly
+// as glamour styled it (Muted + italic via the BlockQuote primitive).
+// Only a bar at the start of a line is touched: a "│" typed inside the
+// quote's own text never sits there.
+func colorizeQuoteBar(lines []string, borderHex string) []string {
+	if borderHex == "" {
+		return lines
+	}
+	st := ansi.Style{}.ForegroundColor(lipgloss.Color(borderHex))
+	out := make([]string, len(lines))
+	for i, l := range lines {
+		rest := l
+		var b strings.Builder
+		for {
+			// The bar arrives wrapped in the document primitive's Fg run
+			// ("[fg]│ [reset]…"); those sequences style the bar itself and
+			// are replaced by the Border style.
+			var sgrs string
+			for {
+				seq, n, _, ok := decodeSGR(rest)
+				if !ok {
+					break
+				}
+				sgrs += seq
+				rest = rest[n:]
+			}
+			if !strings.HasPrefix(rest, "│") {
+				b.WriteString(sgrs)
+				break
+			}
+			b.WriteString(st.Styled("│"))
+			rest = rest[len("│"):]
+			// The IndentToken is "│ ": keep one separating space plain
+			// between nested bars, and stop at the quote text.
+			if strings.HasPrefix(rest, " ") && strings.HasPrefix(rest[1:], "│") {
+				b.WriteByte(' ')
+				rest = rest[1:]
+			}
+		}
+		b.WriteString(rest)
+		out[i] = b.String()
+	}
+	return out
+}
+
+// isListBlock reports whether blk opens as a markdown list: a bullet item
+// ("- ", "* ", "+ ") or an ordered one ("12." / "12)"). Only list blocks
+// get the marker recolour pass, so a "•" or "1." typed at the start of a
+// real paragraph is never touched.
+func isListBlock(blk []string) bool {
+	if len(blk) == 0 {
+		return false
+	}
+	l := strings.TrimLeft(blk[0], " \t")
+	switch {
+	case strings.HasPrefix(l, "- "), strings.HasPrefix(l, "* "), strings.HasPrefix(l, "+ "):
+		return true
+	}
+	d := 0
+	for d < len(l) && l[d] >= '0' && l[d] <= '9' {
+		d++
+	}
+	return d > 0 && d < len(l) && (l[d] == '.' || l[d] == ')') &&
+		(d+1 == len(l) || l[d+1] == ' ' || l[d+1] == '\t')
+}
+
+// colorizeListMarkers recolours the "•" / "N." marker at the start of each
+// rendered list line to accentHex (contract §2 note 2), leaving the item
+// text Fg. glamour renders a marker from Item/Enumeration's BlockPrefix
+// with the enclosing List block's primitive — the same primitive the item
+// text cascades against — so the config cannot colour them differently and
+// this post-render pass does what colorizeTableSeparators does for table
+// rules. Only the marker at the start of a line (after the nested list's
+// indent filler) is touched; the separating space stays plain.
+func colorizeListMarkers(lines []string, accentHex string) []string {
+	if accentHex == "" {
+		return lines
+	}
+	st := ansi.Style{}.ForegroundColor(lipgloss.Color(accentHex))
+	for i, l := range lines {
+		lines[i] = recolorLeadingMarker(l, st)
+	}
+	return lines
+}
+
+// recolorLeadingMarker rewrites the marker at the start of a rendered list
+// line in st, returning l unchanged when the line does not start with one.
+func recolorLeadingMarker(l string, st ansi.Style) string {
+	rest := l
+	var b strings.Builder
+	for strings.HasPrefix(rest, " ") { // nested-list indent filler
+		b.WriteByte(' ')
+		rest = rest[1:]
+	}
+
+	// The marker arrives inside the List primitive's Fg run; those
+	// sequences style the marker and are replaced by the Accent style.
+	var sgrs string
+	for {
+		seq, n, _, ok := decodeSGR(rest)
+		if !ok {
+			break
+		}
+		sgrs += seq
+		rest = rest[n:]
+	}
+
+	marker := ""
+	switch {
+	case strings.HasPrefix(rest, "•"):
+		marker, rest = "•", rest[len("•"):]
+	default:
+		d := 0
+		for d < len(rest) && rest[d] >= '0' && rest[d] <= '9' {
+			d++
+		}
+		// An enumeration marker can be split by glamour's own SGRs
+		// ("[fg]1[reset][fg]. [reset]"): collect digits and dot across
+		// them, dropping the styling runs.
+		var num strings.Builder
+		for {
+			if d > 0 {
+				num.WriteString(rest[:d])
+				rest, d = rest[d:], 0
+			}
+			seq, n, _, ok := decodeSGR(rest)
+			if !ok {
+				break
+			}
+			sgrs += seq
+			rest = rest[n:]
+			if len(rest) == 0 || rest[0] < '0' || rest[0] > '9' {
+				break
+			}
+			d = 1
+		}
+		if num.Len() > 0 && strings.HasPrefix(rest, ".") {
+			marker, rest = num.String()+".", rest[1:]
+		}
+	}
+	if marker == "" {
+		return l
+	}
+	b.WriteString(st.Styled(marker))
+	return b.String() + rest
 }
 
 // colorizeTableSeparators recolours a rendered table block's own separator

@@ -12,15 +12,17 @@ import (
 // in style.go would show up as an unstyled span instead of silently
 // matching an empty default.
 var testStyle = Style{
-	Dark:   true,
-	Fg:     "#D8DDE4",
-	Muted:  "#8C95A2",
-	Faint:  "#5E6672",
-	Border: "#353C47",
-	Accent: "#7AB2F2",
-	Good:   "#6BC28E",
-	Warn:   "#E2B45A",
-	Bad:    "#EF7F76",
+	Dark:    true,
+	Fg:      "#D8DDE4",
+	Muted:   "#8C95A2",
+	Faint:   "#5E6672",
+	Border:  "#353C47",
+	Accent:  "#7AB2F2",
+	Good:    "#6BC28E",
+	Warn:    "#E2B45A",
+	Bad:     "#EF7F76",
+	Heading: "#C3A0F0",
+	Code:    "#6CC7C9",
 }
 
 // stripGutterAndTrim removes a rendered line's 2-cell gutter and trims

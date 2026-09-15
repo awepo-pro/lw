@@ -11,13 +11,16 @@ import (
 const cacheCapacity = 64
 
 // memoKey is Render's cache key (contract §2 note 6): sha256(src), the
-// layout inputs that change line width or wrap, Dark and Plain, and
-// sha256(join(Changed)) so two different change sets never collide.
+// layout inputs that change line width or wrap, the whole Style value —
+// two styles that differ in any token never share an entry (W5 F3,
+// amended from Dark alone) — Plain, and sha256(join(Changed)) so two
+// different change sets never collide. Style is a comparable struct, so it
+// keys the map directly.
 type memoKey struct {
 	srcHash     [32]byte
 	width       int
 	measure     int
-	dark        bool
+	style       Style
 	plain       bool
 	changedHash [32]byte
 }
@@ -27,7 +30,7 @@ func newMemoKey(src []byte, o Options) memoKey {
 		srcHash:     sha256.Sum256(src),
 		width:       o.Width,
 		measure:     o.Measure,
-		dark:        o.Style.Dark,
+		style:       o.Style,
 		plain:       o.Plain,
 		changedHash: sha256.Sum256([]byte(strings.Join(o.Changed, "\n"))),
 	}
