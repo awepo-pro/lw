@@ -1,10 +1,10 @@
 ╭ Findings ────────────────────────────────────────────────────────────────────╮
-│▌✗  index-sync      index.md  wiki/concepts/windowpane…                       │
+│▌✗  index-sync      index.md                        wiki/concepts/windowpane… │
 │ ·  fm-quality      wiki/concepts/windowpane-frag…  confidence is low; corro… │
 │ !  link-min-out    wiki/concepts/windowpane-frag…  only 1 outbound wikilink… │
 │ !  link-orphan     wiki/concepts/windowpane-frag…  no inbound links; link t… │
 │ ✗  link-broken     wiki/concepts/windowpane-frag…  [[gluten-network]] resol… │
-│ !  src-provenance  wiki/entities/banneton.md  cites raw/articles/the-s…      │
+│ !  src-provenance  wiki/entities/banneton.md       cites raw/articles/the-s… │
 │                                                                              │
 │                                                                              │
 │                                                                              │

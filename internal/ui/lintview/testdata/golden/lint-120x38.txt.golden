@@ -1,10 +1,10 @@
 ╭ Findings ────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│▌✗  index-sync      index.md  wiki/concepts/windowpane-fragility.md has no lin…                                       │
-│ ·  fm-quality      wiki/concepts/windowpane-fragility.md  confidence is low; corroborate with another sour…          │
-│ !  link-min-out    wiki/concepts/windowpane-fragility.md  only 1 outbound wikilink; add at least one more            │
-│ !  link-orphan     wiki/concepts/windowpane-fragility.md  no inbound links; link to it from a related page…          │
-│ ✗  link-broken     wiki/concepts/windowpane-fragility.md:4  [[gluten-network]] resolves to nothing; fix the …        │
-│ !  src-provenance  wiki/entities/banneton.md  cites raw/articles/the-science-of-a-good-loaf.md…                      │
+│▌✗  index-sync      index.md                                 wiki/concepts/windowpane-fragility.md has no line in in… │
+│ ·  fm-quality      wiki/concepts/windowpane-fragility.md    confidence is low; corroborate with another source or r… │
+│ !  link-min-out    wiki/concepts/windowpane-fragility.md    only 1 outbound wikilink; add at least one more          │
+│ !  link-orphan     wiki/concepts/windowpane-fragility.md    no inbound links; link to it from a related page or ret… │
+│ ✗  link-broken     wiki/concepts/windowpane-fragility.md:4  [[gluten-network]] resolves to nothing; fix the target … │
+│ !  src-provenance  wiki/entities/banneton.md                cites raw/articles/the-science-of-a-good-loaf.md but ha… │
 │                                                                                                                      │
 │                                                                                                                      │
 │                                                                                                                      │

@@ -168,6 +168,98 @@ func TestFindingRowColumnsAllSeverities(t *testing.T) {
 	}
 }
 
+// TestFindingColumnsAlign pins the screen's core goal (s2-screens.md T09:
+// aligned columns): the path column is one width for the whole report — the
+// longest rendered location capped at 40% of the content width — every path
+// cell is clipped or padded to exactly that width, and the message therefore
+// starts at the same cell column on every row, taking all the width that is
+// left, so it is clipped with `…` only when it really exceeds msgW.
+func TestFindingColumnsAlign(t *testing.T) {
+	d := syntheticDeps(t)
+	m := withReport(t, d, []lint.Finding{
+		{Check: "link-broken", Path: "index.md",
+			Severity: lint.SevError, Message: "short message"},
+		{Check: "src-stale", Path: "wiki/concepts/windowpane-fragility.md", Line: 4,
+			Severity: lint.SevWarn,
+			Message:  "updated 2025-01-01 is more than 90 days before the source was ingested"},
+	})
+
+	// nameW = the longest check ID, link-broken (11, under the 18 cap).
+	// Panel content starts at cell 2 (border + gutter), so: glyph 2, check
+	// 5, path 18. cw is w-4 (ui.Panel's content width); the locations are
+	// index.md (8 cells) and wiki/concepts/windowpane-fragility.md:4 (39),
+	// so the 40% cap binds only at the narrow size.
+	const (
+		nameW   = 11
+		pathCol = 5 + nameW + 2
+	)
+	locations := []string{"index.md", "wiki/concepts/windowpane-fragility.md:4"}
+
+	for _, tc := range []struct {
+		w     int
+		pathW int // min(longest location 39, (40*cw+50)/100)
+	}{
+		{w: 120, pathW: 39}, // cw=116, cap 46: the longest location fits
+		{w: 80, pathW: 30},  // cw=76, cap 30: the longest location clips
+	} {
+		t.Run(fmt.Sprintf("w%d", tc.w), func(t *testing.T) {
+			plain := plainView(m, tc.w, 8)
+			lines := splitRows(plain)
+			cw := tc.w - 4
+			msgW := cw - (1 + 2 + nameW + 2 + tc.pathW + 2)
+			msgCol := pathCol + tc.pathW + 2
+
+			rows, msgStarts := 0, map[int]bool{}
+			for i, line := range lines[1 : len(lines)-1] {
+				cells := rowCells(line)
+				if cells[0] != '│' {
+					t.Fatalf("row %d does not start with the panel border: %q", i+1, line)
+				}
+				if cells[2] == ' ' {
+					continue // blank padding row below the findings
+				}
+				if rows >= len(locations) {
+					t.Fatalf("row %d is an unexpected extra finding row: %q", i+1, line)
+				}
+				loc := locations[rows]
+				rows++
+
+				// The path cell is exactly pathW cells on every row:
+				// clipped with `…` when longer, padded when shorter.
+				if got := string(cells[pathCol : pathCol+tc.pathW]); got != ui.Pad(loc, tc.pathW) {
+					t.Fatalf("row %d path cell = %q, want the location in a %d-cell column: %q",
+						i+1, got, tc.pathW, line)
+				}
+				if got := string(cells[pathCol-2 : pathCol]); got != "  " {
+					t.Fatalf("row %d path column does not start after two spaces: %q", i+1, line)
+				}
+
+				// The message starts right after the path cell's two-space
+				// gap — the same cell on every row.
+				if got := string(cells[pathCol+tc.pathW : msgCol]); got != "  " {
+					t.Fatalf("row %d message column does not start after two spaces: %q", i+1, line)
+				}
+				if cells[msgCol] == ' ' {
+					t.Fatalf("row %d has no message at its column %d: %q", i+1, msgCol, line)
+				}
+				msgStarts[msgCol] = true
+
+				// A message shorter than msgW is never clipped: the short
+				// row carries no `…` anywhere (its path fits too).
+				if rows == 1 && strings.ContainsRune(line, '…') {
+					t.Fatalf("row %d clips a message (%d cells) that fits: %q", i+1, msgW, line)
+				}
+			}
+			if rows != len(locations) {
+				t.Fatalf("rendered %d finding rows, want %d\n%s", rows, len(locations), plain)
+			}
+			if len(msgStarts) != 1 {
+				t.Fatalf("message column is ragged: rows start it at %v cells, want one column", msgStarts)
+			}
+		})
+	}
+}
+
 // TestCheckColumnCappedAt18 pins the 18-cell cap: a report whose longest
 // check ID exceeds it clips the ID into an 18-cell column — ui.Pad's clip
 // puts `…` in the last cell — never wider.

@@ -65,8 +65,10 @@ func (m *Model) panelSpec(w, h int) ui.PanelSpec {
 	}
 
 	lines := make([]string, len(findings))
+	nameW := checkColumnWidth(findings)
+	pathW := pathColumnWidth(findings, cw)
 	for i, f := range findings {
-		lines[i] = m.findingRow(f, checkColumnWidth(findings), cw)
+		lines[i] = m.findingRow(f, nameW, pathW, cw)
 	}
 
 	// The window scrolls under the cursor; ui.Panel draws the slice it is
@@ -83,12 +85,13 @@ func (m *Model) panelSpec(w, h int) ui.PanelSpec {
 
 // findingRow renders one finding as the panel's pre-styled content line
 // (s2-screens.md T09): glyph, two spaces, check name padded to the longest
-// (max 18, muted), two spaces, path (fg, clipped to 40% of cw), two
-// spaces, message (fg, clipped).
-func (m *Model) findingRow(f lint.Finding, nameW, cw int) string {
+// (max 18, muted), two spaces, path (fg, in the report-wide path column),
+// two spaces, message (fg, clipped). nameW and pathW are shared by every
+// row of the report, so the message starts at one cell column and takes all
+// the width that is left.
+func (m *Model) findingRow(f lint.Finding, nameW, pathW, cw int) string {
 	glyph, glyphStyle := m.severityGlyph(f.Severity)
 
-	pathW := pathColumnWidth(cw)
 	fixed := 1 + 2 + nameW + 2 + pathW + 2 // glyph + gaps + both padded columns
 	msgW := max(cw-fixed, 0)
 
@@ -97,7 +100,7 @@ func (m *Model) findingRow(f lint.Finding, nameW, cw int) string {
 	b.WriteString("  ")
 	b.WriteString(m.theme.Muted.Render(ui.Pad(f.Check, nameW)))
 	b.WriteString("  ")
-	b.WriteString(m.theme.Fg.Render(ui.Clip(location(f), pathW)))
+	b.WriteString(m.theme.Fg.Render(ui.Pad(location(f), pathW)))
 	b.WriteString("  ")
 	b.WriteString(m.theme.Fg.Render(ui.Clip(f.Message, msgW)))
 	return b.String()
@@ -130,11 +133,21 @@ func checkColumnWidth(findings []lint.Finding) int {
 	return min(longest, maxCheckColumn)
 }
 
-// pathColumnWidth is the path column's width: 40% of the panel's content
-// width, rounded half-up — the same integer ratio style the review screen's
-// split uses (s2-screens.md T06).
-func pathColumnWidth(cw int) int {
-	return (40*cw + 50) / 100
+// pathColumnWidth is the path column's width: the longest rendered location
+// in the report (including any `:line` suffix) capped at 40% of the panel's
+// content width, rounded half-up — the same integer ratio style the review
+// screen's split uses (s2-screens.md T06). Computed over the whole report,
+// not the visible window, so the column does not re-align while scrolling —
+// the same rule checkColumnWidth follows. Every path cell is then padded or
+// clipped to it, so the message column starts at one cell.
+func pathColumnWidth(findings []lint.Finding, cw int) int {
+	longest := 0
+	for _, f := range findings {
+		if n := lipgloss.Width(location(f)); n > longest {
+			longest = n
+		}
+	}
+	return min(longest, (40*cw+50)/100)
 }
 
 // severityGlyph is a finding's severity glyph and its colour (T09): `✗`
