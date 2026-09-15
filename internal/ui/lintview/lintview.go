@@ -102,6 +102,12 @@ func (m *Model) Update(msg tea.Msg) (ui.Pane, tea.Cmd) {
 		m.theme = m.theme.WithDark(msg.IsDark())
 		return m, nil
 
+	case tea.ColorProfileMsg:
+		// C-81 again, for the profile: the cursor tint is the one token
+		// that depends on it (contract §5 frame note 8, W5 F1).
+		m.theme = m.theme.WithProfile(msg.Profile)
+		return m, nil
+
 	case ui.StageChangedMsg:
 		return m, runReportCmd(m.deps.Engine)
 
