@@ -1,38 +1,25 @@
-// Package browse is the vault browser screen: a directory tree of wiki pages
-// and raw sources alongside a glamour-rendered preview, a backlinks strip,
-// and a `/` fuzzy finder (backbone §12, /docs/design.md §9, s4-tui.md S4-T4).
 package browse
 
 import (
-	"fmt"
-	"strings"
-
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
-	lipgloss "charm.land/lipgloss/v2"
 
 	"github.com/awepo-pro/lw/internal/ui"
+	"github.com/awepo-pro/lw/internal/ui/markdown"
 )
 
-// minTreeWidth is the smallest column width the tree side of the screen is
-// given, so long file names still get some room to render; the column
-// shrinks below this only when the whole pane is narrower still.
-const minTreeWidth = 16
-
-// finderState holds the `/` fuzzy finder's transient state (s4-tui.md S4-T4
-// item 10). It is its own struct, rather than fields on Model, so opening and
-// closing the finder is one assignment.
-type finderState struct {
-	open      bool
-	query     string
-	matches   []findMatch
-	cursor    int // index into matches
-	preCursor int // Model.cursor to restore on esc, leaving the tree where it was
-}
-
-// Model is the browse screen's ui.Pane implementation.
+// Model is the browse screen's ui.Pane implementation (contract §7): the
+// optional shell interfaces — FooterHelper, OverlayHelper, StatusReporter and
+// TextCapturer — are implemented on it; the shell discovers each by type
+// assertion, so none of them appears in the exported constructor surface.
 type Model struct {
 	deps ui.Deps
+
+	// renderer is the shared vault-markdown renderer, created once here and
+	// kept on the model (contract §7: no package-level state). Its own LRU
+	// memo is keyed on source, width and polarity, so a theme flip needs no
+	// invalidation here.
+	renderer *markdown.Renderer
 
 	tree     []*treeNode
 	expanded map[string]bool
@@ -41,23 +28,25 @@ type Model struct {
 
 	finder finderState
 
-	cache            *previewCache
-	renderMarkdownFn func(style string, width int, src string) (string, error)
-
-	width, height int
+	// status is the transient StatusReporter message (contract §5): a finder
+	// error, shown in the footer until the next key press.
+	status      string
+	statusLevel ui.StatusLevel
 }
 
 var _ ui.Pane = (*Model)(nil)
 
-// New constructs the browse screen (backbone §12). d.Engine may be nil (a
-// headless shell with no vault at all, matching S4-T2's own
-// "constructible headless" contract) — the tree is then just the two empty
-// roots, and the preview/backlinks/finder all render their empty states.
+// New constructs the browse screen (contract §7). d.Engine may be nil (a
+// headless shell with no vault at all) — the tree is then just the two empty
+// roots, and the preview, Links panel and finder render their empty states.
+//
+// On open the cursor sits on the first file row, not the first visible node
+// (C8): the selection is a page or raw source, so the preview and Links
+// panels show content immediately.
 func New(d ui.Deps) ui.Pane {
 	m := &Model{
-		deps:             d,
-		cache:            newPreviewCache(),
-		renderMarkdownFn: renderMarkdown,
+		deps:     d,
+		renderer: markdown.NewRenderer(),
 	}
 	if d.Engine != nil {
 		m.rebuildTree()
@@ -76,36 +65,61 @@ func (m *Model) Init() tea.Cmd { return nil }
 // Title returns the screen's name for the shell's tab/help chrome.
 func (m *Model) Title() string { return "Browse" }
 
-// Help returns the browse screen's key bindings (backbone §12). h/l, enter
-// and / have no KeyMap field of their own (s4-tui.md S4-T4 item 4 — ui.KeyMap
-// belongs to the shell and gets no additions here), so they are described
-// with ad-hoc bindings for display purposes only; only MoveDown/MoveUp/
-// Top/Bottom are matched through d.Keys.
-func (m *Model) Help() []key.Binding {
+// Help returns the browse screen's key bindings. The shell shows
+// FooterHelp's list instead while this pane is active (contract §5); Help
+// remains the Pane interface's fallback.
+func (m *Model) Help() []key.Binding { return m.FooterHelp() }
+
+// FooterHelp is the footer's binding list, in the frozen order
+// (s2-screens.md T07): the shell appends "? help" and drops whole bindings
+// from the end when the row is too narrow.
+func (m *Model) FooterHelp() []key.Binding {
 	return []key.Binding{
-		m.deps.Keys.MoveDown,
-		m.deps.Keys.MoveUp,
-		m.deps.Keys.Top,
-		m.deps.Keys.Bottom,
-		key.NewBinding(key.WithKeys("h", "left"), key.WithHelp("h", "collapse")),
-		key.NewBinding(key.WithKeys("l", "right"), key.WithHelp("l", "expand")),
+		m.deps.Keys.MoveDown, // help "j/k", "move"
 		key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "open")),
+		key.NewBinding(key.WithKeys("h", "l"), key.WithHelp("h/l", "collapse/expand")),
 		key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "find")),
-		key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "close find")),
+		m.deps.Keys.Top, // help "g/G", "top/bottom"
+		m.deps.Keys.NextPane,
+		m.deps.Keys.Quit,
 	}
 }
 
-// Update handles the shell's broadcast messages and key presses (backbone
-// §12; C-80: matched against tea.KeyPressMsg, never tea.KeyMsg).
+// OverlayHelp is the Browse section of the shell's `?` overlay
+// (s2-screens.md T07).
+func (m *Model) OverlayHelp() (string, []ui.HelpEntry) {
+	return "Browse", []ui.HelpEntry{
+		{Key: "j/k", Desc: "down / up"},
+		{Key: "enter", Desc: "open / toggle"},
+		{Key: "h/l", Desc: "collapse / expand"},
+		{Key: "/", Desc: "find"},
+		{Key: "g/G", Desc: "top / bottom"},
+	}
+}
+
+// Status is the pane's transient message (contract §5): a finder error,
+// until the next key press clears it.
+func (m *Model) Status() (string, ui.StatusLevel) {
+	return m.status, m.statusLevel
+}
+
+// CapturesText reports whether the finder is taking text input (contract §5
+// TextCapturer, C27): while it is open, the shell delivers every printable
+// key — `q` and `?` included — straight here instead of matching them
+// against the global quit/help bindings.
+func (m *Model) CapturesText() bool {
+	return m.finder.open
+}
+
+// Update handles the shell's broadcast messages and key presses.
 func (m *Model) Update(msg tea.Msg) (ui.Pane, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.BackgroundColorMsg:
-		// C-81: the shell rebuilds its own Theme on this message; Deps.Theme
+		// The shell rebuilds its own Theme on this message; Deps.Theme
 		// handed to New was a copy taken once, so this screen must rebuild
-		// its own copy too and drop anything cached under the old polarity
-		// (s4-tui.md S4-T4 item 6).
+		// its own copy too. The renderer's memo is keyed on polarity, so
+		// nothing cached needs dropping here.
 		m.deps.Theme = m.deps.Theme.WithDark(msg.IsDark())
-		m.cache.invalidate()
 		return m, nil
 
 	case ui.VaultReloadedMsg:
@@ -114,11 +128,9 @@ func (m *Model) Update(msg tea.Msg) (ui.Pane, tea.Cmd) {
 
 	case ui.OpenPathMsg:
 		// C-108/D-CU: Lint's `enter` landing on the right page. selectPath
-		// already does exactly what this needs — force every ancestor
-		// directory open, then move the cursor onto msg.Path if it is in
-		// the tree — and its own no-op-when-absent behavior (a bool return,
-		// never a panic) is exactly the contract this handler must have
-		// for a path the vault no longer holds.
+		// force-opens every ancestor directory, then moves the cursor onto
+		// msg.Path when the tree holds it; a path the vault no longer holds
+		// is a no-op on the cursor.
 		m.selectPath(msg.Path)
 		return m, nil
 
@@ -128,9 +140,17 @@ func (m *Model) Update(msg tea.Msg) (ui.Pane, tea.Cmd) {
 	return m, nil
 }
 
-// handleKey dispatches one key press: the finder, when open, consumes every
-// key itself; otherwise tree navigation.
+// setStatus records the pane's transient footer message.
+func (m *Model) setStatus(msg string, level ui.StatusLevel) {
+	m.status, m.statusLevel = msg, level
+}
+
+// handleKey dispatches one key press. Any key clears the transient status
+// message first; the handlers below may set a new one. The finder, when
+// open, consumes every key that reaches the pane itself.
 func (m *Model) handleKey(msg tea.KeyPressMsg) (ui.Pane, tea.Cmd) {
+	m.status, m.statusLevel = "", ui.StatusInfo
+
 	if m.finder.open {
 		m.handleFinderKey(msg)
 		return m, nil
@@ -191,9 +211,8 @@ func (m *Model) selectedNode() *treeNode {
 	return m.visible[m.cursor]
 }
 
-// collapseCurrent is "h"/"left" (s4-tui.md S4-T4 item 4): it collapses the
-// current node if it is an expanded directory, otherwise moves the cursor up
-// to its parent directory.
+// collapseCurrent is "h"/"left": it collapses the current node if it is an
+// expanded directory, otherwise moves the cursor up to its parent directory.
 func (m *Model) collapseCurrent() {
 	n := m.selectedNode()
 	if n == nil {
@@ -209,8 +228,8 @@ func (m *Model) collapseCurrent() {
 	}
 }
 
-// expandCurrent is "l"/"right" (s4-tui.md S4-T4 item 4): it expands the
-// current node if it is a directory. A file is left untouched.
+// expandCurrent is "l"/"right": it expands the current node if it is a
+// directory. A file is left untouched.
 func (m *Model) expandCurrent() {
 	n := m.selectedNode()
 	if n == nil || !n.IsDir() {
@@ -220,9 +239,9 @@ func (m *Model) expandCurrent() {
 	m.refreshVisible()
 }
 
-// toggleOrOpen is "enter" (s4-tui.md S4-T4 item 4): on a directory it toggles
-// expand/collapse; on a page or raw source it "opens" it — which, since the
-// preview already tracks whatever the cursor sits on, means there is nothing
+// toggleOrOpen is "enter": on a directory it toggles expand/collapse; on a
+// page or raw source it "opens" it — which, since the preview and Links
+// panels already track whatever the cursor sits on, means there is nothing
 // further to change. The branch exists so the directory case is explicit
 // rather than falling through silently.
 func (m *Model) toggleOrOpen() {
@@ -260,21 +279,20 @@ func (m *Model) selectPath(p string) bool {
 	return false
 }
 
-// reload rebuilds the tree from the vault and clears the preview cache,
-// after ui.VaultReloadedMsg (s4-tui.md S4-T4 item 8). It never assumes it saw
-// every reload — TD-4/C-106 means an inactive pane can miss this message
+// reload rebuilds the tree from the vault after ui.VaultReloadedMsg. It
+// never assumes it saw every reload — an inactive pane can miss this message
 // entirely, which is fine: the tree is simply stale until the next one
 // arrives, not wrong in a way that corrupts state.
 func (m *Model) reload() {
-	m.cache.invalidate()
 	if m.deps.Engine != nil {
 		m.rebuildTree()
 	}
 }
 
-// rebuildTree re-reads the vault's page and raw-source paths, rebuilds the
-// tree, and tries to keep the current selection (falling back to the first
-// node when it no longer exists).
+// rebuildTree re-reads the vault's page and raw-source paths and rebuilds
+// the tree. A rebuild that still holds the current selection keeps it;
+// otherwise — the first build included — the cursor lands on the first file
+// row (C8), never on a directory node.
 func (m *Model) rebuildTree() {
 	v := m.deps.Engine.Vault()
 
@@ -299,264 +317,19 @@ func (m *Model) rebuildTree() {
 	m.refreshVisible()
 
 	if selected == "" || !m.selectPath(selected) {
-		m.cursor = 0
-		m.clampCursor()
+		m.cursorToFirstFile()
 	}
 }
 
-// selectedBody returns n's rendered-source body (a page's Body or a raw
-// source's Body) read live from the vault, and whether n resolved to
-// content at all — false for a directory node, or a leaf the vault no longer
-// holds.
-func (m *Model) selectedBody(n *treeNode) (body string, ok bool) {
-	if m.deps.Engine == nil || n == nil {
-		return "", false
-	}
-	v := m.deps.Engine.Vault()
-	switch n.Kind {
-	case nodePage:
-		if p, found := v.Page(n.Path); found {
-			return p.Body, true
-		}
-	case nodeRawSource:
-		if r, found := v.RawSource(n.Path); found {
-			return r.Body, true
-		}
-	}
-	return "", false
-}
-
-// View renders the screen at exactly w columns by h rows (backbone §12): the
-// tree on the left, the preview and backlinks strip on the right — or the
-// finder overlay, full-pane, when it is open.
-func (m *Model) View(w, h int) string {
-	if w < 1 {
-		w = 1
-	}
-	if h < 1 {
-		h = 1
-	}
-	m.width, m.height = w, h
-
-	if m.finder.open {
-		return m.renderFinder(w, h)
-	}
-
-	treeW := w / 3
-	if treeW < minTreeWidth {
-		treeW = minTreeWidth
-	}
-	if treeW > w {
-		treeW = w
-	}
-	sepW := 0
-	if treeW < w {
-		sepW = 1
-	}
-	mainW := w - treeW - sepW
-
-	treeLines := m.renderTreeLines(treeW, h)
-	mainLines := m.renderMainLines(mainW, h)
-
-	rows := make([]string, h)
-	for i := 0; i < h; i++ {
-		var left, right string
-		if i < len(treeLines) {
-			left = treeLines[i]
-		}
-		if i < len(mainLines) {
-			right = mainLines[i]
-		}
-		line := clipPad(left, treeW)
-		if sepW > 0 {
-			line += m.deps.Theme.Border.Render("│")
-		}
-		line += clipPad(right, mainW)
-		rows[i] = line
-	}
-	return strings.Join(rows, "\n")
-}
-
-// renderTreeLines renders the visible tree as one line per node, indented by
-// depth (strings.Count(n.Path, "/") — see treeNode's doc comment) and marked
-// with the cursor's row highlighted, then scrolled so the cursor stays in
-// view within h rows.
-func (m *Model) renderTreeLines(w, h int) []string {
-	lines := make([]string, len(m.visible))
+// cursorToFirstFile moves the cursor onto the first file row of the visible
+// list (C8), leaving it where clampCursor puts it when the tree holds no
+// file at all.
+func (m *Model) cursorToFirstFile() {
 	for i, n := range m.visible {
-		depth := strings.Count(n.Path, "/")
-		indent := strings.Repeat("  ", depth)
-
-		marker := "  "
-		if n.IsDir() {
-			if m.expanded[n.Path] {
-				marker = "▾ "
-			} else {
-				marker = "▸ "
-			}
-		}
-
-		name := n.Name
 		if !n.IsDir() {
-			name = strings.TrimSuffix(name, ".md")
+			m.cursor = i
+			return
 		}
-
-		line := indent + marker + name
-		if i == m.cursor {
-			line = m.deps.Theme.Selected.Render(line)
-		}
-		lines[i] = clipPad(line, w)
 	}
-	return scrollWindow(lines, m.cursor, h)
-}
-
-// clipPad clips s to at most w display columns and pads it with spaces up to
-// exactly w when it is shorter, ANSI-aware via lipgloss so a styled line is
-// never cut mid-escape-sequence.
-func clipPad(s string, w int) string {
-	if w <= 0 {
-		return ""
-	}
-	s = lipgloss.NewStyle().MaxWidth(w).Render(s)
-	if cur := lipgloss.Width(s); cur < w {
-		s += strings.Repeat(" ", w-cur)
-	}
-	return s
-}
-
-// scrollWindow returns at most h consecutive lines from lines, positioned so
-// index cursor is inside the window whenever the full list is longer than h.
-func scrollWindow(lines []string, cursor, h int) []string {
-	if h <= 0 || len(lines) == 0 {
-		return nil
-	}
-	start := 0
-	if cursor >= h {
-		start = cursor - h + 1
-	}
-	if max := len(lines) - h; start > max {
-		start = max
-	}
-	if start < 0 {
-		start = 0
-	}
-	end := start + h
-	if end > len(lines) {
-		end = len(lines)
-	}
-	return lines[start:end]
-}
-
-// openFinder opens the `/` fuzzy finder (s4-tui.md S4-T4 item 10),
-// remembering the current cursor so esc can restore it untouched.
-func (m *Model) openFinder() {
-	m.finder = finderState{open: true, preCursor: m.cursor}
-	m.refreshFinderMatches()
-}
-
-// handleFinderKey handles one key press while the finder is open. Every key
-// not named here is treated as typed text appended to the query.
-func (m *Model) handleFinderKey(msg tea.KeyPressMsg) {
-	switch msg.String() {
-	case "esc":
-		m.cursor = m.finder.preCursor
-		m.clampCursor()
-		m.finder = finderState{}
-		return
-	case "enter":
-		m.commitFinder()
-		return
-	case "backspace":
-		if r := []rune(m.finder.query); len(r) > 0 {
-			m.finder.query = string(r[:len(r)-1])
-			m.refreshFinderMatches()
-		}
-		return
-	case "up":
-		if m.finder.cursor > 0 {
-			m.finder.cursor--
-		}
-		return
-	case "down":
-		if m.finder.cursor < len(m.finder.matches)-1 {
-			m.finder.cursor++
-		}
-		return
-	}
-
-	// A plain printable key (no ctrl/alt) types into the query.
-	if msg.Text != "" && msg.Mod&^tea.ModShift == 0 {
-		m.finder.query += msg.Text
-		m.refreshFinderMatches()
-	}
-}
-
-// commitFinder moves the tree cursor to the selected match and opens it
-// (s4-tui.md S4-T4 item 10), then closes the finder.
-func (m *Model) commitFinder() {
-	if len(m.finder.matches) == 0 {
-		m.finder = finderState{}
-		return
-	}
-	target := m.finder.matches[m.finder.cursor].path
-	m.finder = finderState{}
-	m.selectPath(target)
-}
-
-// refreshFinderMatches re-runs fuzzyFind against the current query and
-// clamps the finder's own cursor back into range.
-func (m *Model) refreshFinderMatches() {
-	m.finder.matches = fuzzyFind(m.finder.query, m.findItems())
-	if m.finder.cursor >= len(m.finder.matches) {
-		m.finder.cursor = len(m.finder.matches) - 1
-	}
-	if m.finder.cursor < 0 {
-		m.finder.cursor = 0
-	}
-}
-
-// findItems returns every page and raw source's (path, display title) pair
-// the finder searches over (s4-tui.md S4-T4 item 10).
-func (m *Model) findItems() []findItem {
-	if m.deps.Engine == nil {
-		return nil
-	}
-	v := m.deps.Engine.Vault()
-	pages := v.Pages()
-	rawSources := v.RawSources()
-
-	items := make([]findItem, 0, len(pages)+len(rawSources))
-	for _, p := range pages {
-		items = append(items, findItem{path: p.Path, title: p.FM.Title})
-	}
-	for _, r := range rawSources {
-		items = append(items, findItem{path: r.Path, title: r.Title})
-	}
-	return items
-}
-
-// renderFinder renders the finder overlay: the query on the first line, then
-// every match with the finder's own cursor highlighted.
-func (m *Model) renderFinder(w, h int) string {
-	lines := make([]string, 0, len(m.finder.matches)+1)
-	lines = append(lines, m.deps.Theme.Title.Render("/"+m.finder.query))
-
-	for i, match := range m.finder.matches {
-		line := match.path
-		if match.title != "" {
-			line = fmt.Sprintf("%s  (%s)", line, match.title)
-		}
-		if i == m.finder.cursor {
-			line = m.deps.Theme.Selected.Render(line)
-		}
-		lines = append(lines, line)
-	}
-
-	if len(lines) > h {
-		lines = lines[:h]
-	}
-	for i, l := range lines {
-		lines[i] = clipPad(l, w)
-	}
-	return strings.Join(lines, "\n")
+	m.cursor = 0
 }
