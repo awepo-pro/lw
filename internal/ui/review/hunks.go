@@ -75,6 +75,25 @@ func resolveCursor(d stage.Diff, stops []cursorStop, i int) (opID, hunkID string
 	return f.OpID, f.Hunks[st.hunkIdx].ID, true
 }
 
+// hasWindow reports whether files holds at least one DisplayHunk whose
+// HunkID is id. An id of "" is never found: ownerless windows (contract
+// §1 note 4 — a create, an ingest, a derived index.md) are display-only
+// and never a y/n target (s2-screens.md T06), so the empty id falls
+// through to false even when ownerless windows exist.
+func hasWindow(files []stage.FileOpDiff, id string) bool {
+	if id == "" {
+		return false
+	}
+	for _, f := range files {
+		for _, w := range f.Hunks {
+			if w.HunkID == id {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // flattenLiveOps returns cs's top-level live ops, each immediately
 // followed by its own live Cascade entries, recursively (backbone §5.3: a
 // cascade sub-op carries its own op<N> id and is independently

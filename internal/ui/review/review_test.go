@@ -1,6 +1,7 @@
 package review
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/awepo-pro/lw/internal/stage"
 	"github.com/awepo-pro/lw/internal/testutil"
 	"github.com/awepo-pro/lw/internal/ui"
+	"github.com/awepo-pro/lw/internal/ui/uitest"
 )
 
 // newTestDeps builds ui.Deps with a real Engine over a private copy of
@@ -288,9 +290,15 @@ func TestAcceptAllRefusedWhenLintDirty(t *testing.T) {
 	m := initModel(t, d)
 	m = send(t, m, keyPress('A'))
 
-	view := m.View(120, 30)
-	if !strings.Contains(view, "accept-all refused") {
-		t.Errorf("View does not show the accept-all refusal:\n%s", view)
+	// The refusal is the StatusReporter message now (contract §5): the
+	// footer shows it styled by level, and the pane draws no status line
+	// of its own.
+	msg, level := statusOf(t, m)
+	if !strings.Contains(msg, "accept-all refused") {
+		t.Errorf("Status does not show the accept-all refusal: %q", msg)
+	}
+	if level != ui.StatusWarn {
+		t.Errorf("accept-all refusal level = %v, want StatusWarn", level)
 	}
 
 	cs, err := e.Current()
@@ -352,9 +360,15 @@ func TestStaleOpBlocksCommit(t *testing.T) {
 	m := initModel(t, d)
 	m = send(t, m, keyPress('C'))
 
-	view := m.View(120, 30)
-	if !strings.Contains(view, "stale") {
-		t.Errorf("View does not show a stale-commit refusal:\n%s", view)
+	// The refusal surfaces through StatusReporter (contract §5); the old
+	// assertion read it out of View, which no longer carries a status
+	// line (00-conventions.md §5, MASTER §8).
+	msg, level := statusOf(t, m)
+	if !strings.Contains(msg, "commit refused") || !strings.Contains(msg, "stale") {
+		t.Errorf("Status does not show the stale-commit refusal: %q", msg)
+	}
+	if level != ui.StatusWarn {
+		t.Errorf("stale-commit refusal level = %v, want StatusWarn", level)
 	}
 
 	if _, err := e.Current(); err != nil {
@@ -405,9 +419,12 @@ func TestCommitRefusedOnFirstCommitLintRegression(t *testing.T) {
 	m := initModel(t, d)
 	m = send(t, m, keyPress('C'))
 
-	view := m.View(120, 30)
-	if !strings.Contains(view, "commit refused: lint regressed: 2 error(s) projected vs 0") {
-		t.Errorf("View does not show the first-commit regression refusal:\n%s", view)
+	msg, level := statusOf(t, m)
+	if !strings.Contains(msg, "commit refused: lint regressed: 2 error(s) projected vs 0") {
+		t.Errorf("Status does not show the first-commit regression refusal: %q", msg)
+	}
+	if level != ui.StatusWarn {
+		t.Errorf("regression refusal level = %v, want StatusWarn", level)
 	}
 
 	if _, err := e.Current(); err != nil {
@@ -471,4 +488,224 @@ func mustDiff(t *testing.T, e *stage.Engine) stage.Diff {
 		t.Fatalf("Diff: %v", err)
 	}
 	return d
+}
+
+// statusOf reads m's StatusReporter message, failing t when the pane
+// implements none (contract §5: a refusal lives in the footer's status
+// path, not in View — panes no longer draw a status line of their own).
+func statusOf(t *testing.T, m ui.Pane) (string, ui.StatusLevel) {
+	t.Helper()
+	sr, ok := m.(ui.StatusReporter)
+	if !ok {
+		t.Fatal("review pane does not implement ui.StatusReporter")
+		return "", 0
+	}
+	return sr.Status()
+}
+
+// appendTwoHunkPatch appends the two-hunk patch_page op on kv-cache.md the
+// review-action tests walk, returning its op id.
+func appendTwoHunkPatch(t *testing.T, e *stage.Engine) string {
+	t.Helper()
+	page, ok := e.Vault().Page("wiki/concepts/kv-cache.md")
+	if !ok {
+		t.Fatal("fixture missing wiki/concepts/kv-cache.md")
+	}
+	const (
+		oldFlash = "- [[flash-attention]] — a kernel design that reduces the memory-bandwidth cost"
+		newFlash = "- [[flash-attention]] — an even better kernel design that reduces bandwidth"
+		oldSpec  = "- [[speculative-decoding]] — both the draft and target model read the cache"
+		newSpec  = "- [[speculative-decoding]] — the draft model proposes; the target model verifies"
+	)
+	if !strings.Contains(page.Body, oldFlash) || !strings.Contains(page.Body, oldSpec) {
+		t.Fatalf("fixture body does not contain the expected lines:\n%s", page.Body)
+	}
+	rewritten := *page
+	rewritten.Body = strings.Replace(page.Body, oldFlash, newFlash, 1)
+	rewritten.Body = strings.Replace(rewritten.Body, oldSpec, newSpec, 1)
+
+	opID, err := e.Append(stage.Op{
+		Kind:      stage.OpPatchPage,
+		Path:      page.Path,
+		Section:   "## Related",
+		Before:    page.SHA256(),
+		Content:   rewritten.Serialize(),
+		Rationale: "sharpen two related-links",
+		Hunks: []stage.Hunk{
+			{ID: "h1", Path: page.Path, Del: []string{oldFlash}, Add: []string{newFlash}},
+			{ID: "h2", Path: page.Path, Del: []string{oldSpec}, Add: []string{newSpec}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	return opID
+}
+
+// TestStaleOpRefusesReviewKeys is s2-screens.md T06's frozen refusal
+// (MASTER §8 ORCH-9): `y`, `n` and `A` on a stale op set the warn status
+// `op <id> is stale: refresh before reviewing its hunks` and call NO
+// engine method — a stale op's OpDiff windows carry HunkID "" (contract
+// §1 note 4), so a key here would act on content the reviewer cannot see
+// as attributed, and DropHunk/UndropHunk have no stale guard to catch it.
+// Each key's refusal is proven against engine state the forbidden call
+// would have changed.
+func TestStaleOpRefusesReviewKeys(t *testing.T) {
+	d, e, root := newTestDeps(t, "minimal")
+
+	if _, err := e.OpenChangeset("goes stale under review", stage.Author{Kind: "agent", Model: "test"}); err != nil {
+		t.Fatalf("OpenChangeset: %v", err)
+	}
+	opID := appendTwoHunkPatch(t, e)
+	if err := e.DropHunk(opID, "h1"); err != nil {
+		t.Fatalf("DropHunk: %v", err)
+	}
+
+	// Race: rewrite the target page out from under the open changeset —
+	// a patch_page goes stale when the path's current sha no longer matches
+	// Before (backbone §5.4).
+	full := filepath.Join(root, filepath.FromSlash("wiki/concepts/kv-cache.md"))
+	body, err := os.ReadFile(full)
+	if err != nil {
+		t.Fatalf("read raced page: %v", err)
+	}
+	if err := os.WriteFile(full, append(body, []byte("\n<!-- raced under the changeset -->\n")...), 0o644); err != nil {
+		t.Fatalf("write raced page: %v", err)
+	}
+	if err := e.Vault().Reload(); err != nil {
+		t.Fatalf("Vault.Reload: %v", err)
+	}
+	if err := e.Refresh(); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+
+	m := initModel(t, d)
+	staleMsg := fmt.Sprintf("op %s is stale: refresh before reviewing its hunks", opID)
+
+	// `y` is refused: h1 stays dropped, which UndropHunk would have undone.
+	m = send(t, m, keyPress('y'))
+	if msg, level := statusOf(t, m); msg != staleMsg || level != ui.StatusWarn {
+		t.Errorf("after y: Status = (%q, %v), want (%q, StatusWarn)", msg, level, staleMsg)
+	}
+	if op, ok := mustOp(t, e, opID); !ok || !op.Hunks[0].Dropped {
+		t.Error("y on a stale op undropped its hunk: an engine method ran")
+	}
+
+	// `n` is refused: h2 stays live, which DropHunk would have dropped.
+	m = send(t, m, keyPress('n'))
+	if msg, level := statusOf(t, m); msg != staleMsg || level != ui.StatusWarn {
+		t.Errorf("after n: Status = (%q, %v), want (%q, StatusWarn)", msg, level, staleMsg)
+	}
+	if op, ok := mustOp(t, e, opID); !ok || op.Hunks[1].Dropped {
+		t.Error("n on a stale op dropped its hunk: an engine method ran")
+	}
+
+	// `A` is refused before any undrop: h1 stays dropped.
+	m = send(t, m, keyPress('A'))
+	if msg, level := statusOf(t, m); msg != staleMsg || level != ui.StatusWarn {
+		t.Errorf("after A: Status = (%q, %v), want (%q, StatusWarn)", msg, level, staleMsg)
+	}
+	if op, ok := mustOp(t, e, opID); !ok || !op.Hunks[0].Dropped {
+		t.Error("A on a changeset with a stale op undropped a hunk: an engine method ran")
+	}
+
+	if _, err := e.Current(); err != nil {
+		t.Errorf("Current after the refusals: %v (the changeset should still be open)", err)
+	}
+}
+
+// TestOwnerlessWindowIsNeverYNCursorTarget pins s2-screens.md T06's
+// second key rule: when the window under the cursor carries no HunkID —
+// a create, an ingest, a derived index.md, or any window whose ownership
+// cannot be proven (contract §1 note 4) — `y` and `n` refuse instead of
+// calling the engine. The model is hand-built with a nil engine
+// deliberately: proceeding past the refusal would nil-panic on the engine
+// call, so the assertion is the proof that no engine method ran.
+func TestOwnerlessWindowIsNeverYNCursorTarget(t *testing.T) {
+	m := &Model{
+		deps:         ui.Deps{Theme: testTheme(t), Keys: defaultTestKeys(t)}, // no engine
+		theme:        testTheme(t),
+		hasChangeset: true,
+		changeset:    &stage.Changeset{ID: "cs-ownerless"},
+		ops:          []stage.Op{{ID: "op1", Kind: stage.OpCreatePage, State: stage.StateProposed}},
+		// The cursor walk has a stop on the op's file hunk...
+		diff:  stage.Diff{Files: []stage.FileDiff{{OpID: "op1", Hunks: []stage.Hunk{{ID: "h1"}}}}},
+		stops: buildCursorStops(stage.Diff{Files: []stage.FileDiff{{OpID: "op1", Hunks: []stage.Hunk{{ID: "h1"}}}}}),
+		// ...but the displayed windows are ownerless, as OpDiff shows them
+		// for an op that persists no hunks.
+		opDiffs: map[string][]stage.FileOpDiff{
+			"op1": {{Path: "wiki/concepts/ownerless.md", Hunks: []stage.DisplayHunk{{HunkID: "", Lines: []stage.DisplayLine{{Kind: '+', Text: "whole file"}}}}}},
+		},
+	}
+
+	const want = "this window has no hunk id — it cannot be accepted or dropped individually"
+
+	p := send(t, m, keyPress('y'))
+	if msg, level := statusOf(t, p); msg != want || level != ui.StatusWarn {
+		t.Errorf("after y: Status = (%q, %v), want (%q, StatusWarn)", msg, level, want)
+	}
+	p = send(t, p, keyPress('n'))
+	if msg, level := statusOf(t, p); msg != want || level != ui.StatusWarn {
+		t.Errorf("after n: Status = (%q, %v), want (%q, StatusWarn)", msg, level, want)
+	}
+}
+
+// TestPreviewTogglesDetailMode presses `p` on the harness vault's patch
+// op and asserts the frozen Detail swap: Diff → Preview with the `p diff`
+// note and the staged page rendered, cursor and Ops footnote kept, and
+// back (s2-screens.md T06).
+func TestPreviewTogglesDetailMode(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	v := uitest.PublicVault(t, "review-preview-toggle")
+	d := uitest.Deps(v, true, nil)
+
+	m := initModel(t, d)
+	// Walk the cursor to op3 (the autolyse patch), the way the conformance
+	// script does: its head note is "op3 · 1 hunk".
+	reached := false
+	for i := 0; i < 10 && !reached; i++ {
+		_, pl := uitest.PaneScreen(m, 100, 28)
+		if strings.Contains(pl, "op3 · 1 hunk") {
+			reached = true
+			break
+		}
+		m = send(t, m, keyPress('j'))
+	}
+	if !reached {
+		t.Fatal("cursor never reached op3 within 10 j presses")
+	}
+
+	m = send(t, m, keyPress('p'))
+	_, pl := uitest.PaneScreen(m, 100, 28)
+	if !strings.Contains(pl, "╭ Preview ") || !strings.Contains(pl, "p diff") {
+		t.Errorf("p did not open Preview with the `p diff` note:\n%s", pl)
+	}
+	if !strings.Contains(pl, "op3 · staged page") {
+		t.Errorf("Preview lacks the op head note:\n%s", pl)
+	}
+	if !strings.Contains(pl, "Autolyse") {
+		t.Errorf("Preview does not render the staged page:\n%s", pl)
+	}
+	if !strings.Contains(pl, "3 of 4") {
+		t.Errorf("toggling Preview moved the Ops cursor off op3:\n%s", pl)
+	}
+
+	m = send(t, m, keyPress('p'))
+	_, pl = uitest.PaneScreen(m, 100, 28)
+	if !strings.Contains(pl, "╭ Diff ") || !strings.Contains(pl, "p preview") {
+		t.Errorf("p did not return to Diff with the `p preview` note:\n%s", pl)
+	}
+	if !strings.Contains(pl, "3 of 4") {
+		t.Errorf("the round trip moved the Ops cursor:\n%s", pl)
+	}
+}
+
+// mustOp fetches opID from the engine's current changeset.
+func mustOp(t *testing.T, e *stage.Engine, opID string) (*stage.Op, bool) {
+	t.Helper()
+	cs, err := e.Current()
+	if err != nil {
+		t.Fatalf("Current: %v", err)
+	}
+	return cs.Op(opID)
 }
