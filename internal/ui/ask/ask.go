@@ -60,6 +60,7 @@ type Model struct {
 }
 
 var _ ui.Pane = (*Model)(nil)
+var _ ui.TextCapturer = (*Model)(nil)
 
 // New constructs the ask screen (backbone §12). It captures a copy of
 // d.Theme and nothing else — there is no vault or engine state to load at
@@ -85,6 +86,12 @@ func (m *Model) Help() []key.Binding {
 		key.NewBinding(key.WithKeys("ctrl+r"), key.WithHelp("ctrl+r", "review")),
 	}
 }
+
+// CapturesText implements ui.TextCapturer (contract §5, C27/D-3Q): the
+// input box always takes typing, so while Ask is the active screen the
+// shell hands every printable key straight here — `q` and `?` type into the
+// question instead of quitting the program or opening the keys overlay.
+func (m *Model) CapturesText() bool { return true }
 
 // Init has nothing to load: the theme is already a copy of d.Theme, and
 // there is no channel to Listen on until a turn starts (s4-tui.md S4-T6).

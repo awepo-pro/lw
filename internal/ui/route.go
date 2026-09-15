@@ -25,6 +25,25 @@ func (a *App) activePane() Pane {
 	return a.panes[a.order[a.cur]]
 }
 
+// paneCapturesKey reports whether msg is a printable keystroke the active
+// pane should type (contract §5's TextCapturer, C27/D-3Q): the pane
+// implements TextCapturer, CapturesText() is true, and the key carries text
+// under no modifier but shift. While it does, handleKey delivers the key
+// straight to the pane without matching the global bindings, so `q` and `?`
+// type into a text-taking pane instead of quitting or opening the overlay.
+func (a *App) paneCapturesKey(msg tea.KeyPressMsg) bool {
+	tc, ok := a.activePane().(TextCapturer)
+	return ok && tc.CapturesText() && printableKey(msg)
+}
+
+// printableKey reports whether msg is a plain printable keystroke: it
+// carries text and no modifier but shift. The same rule the text panes type
+// by (ask.go's input box, browse.go's finder) — one shared rule, so the
+// shell's idea of "typing" cannot drift from a pane's.
+func printableKey(msg tea.KeyPressMsg) bool {
+	return msg.Text != "" && msg.Mod&^tea.ModShift == 0
+}
+
 // propagate forwards msg to the active pane's Update, if one is injected
 // for the current screen, and stores the pane it returns back into the map
 // — Pane.Update returns a (possibly new) Pane the same way tea.Model.Update

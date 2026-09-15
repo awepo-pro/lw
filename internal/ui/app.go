@@ -298,8 +298,8 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // handleKey is tea.KeyPressMsg's own case, split out of Update because it
 // has three modes rather than one: too small (only quit), the `?` overlay
 // open (quit and close only, everything else swallowed) and the ordinary
-// case (the shell's own keys, then the active pane) — contract §5 frame
-// notes 3-4.
+// case (a text-taking pane's printable keys first, C27/D-3Q, then the
+// shell's own keys, then the active pane) — contract §5 frame notes 3-4.
 func (a *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if a.tooSmall() {
 		if key.Matches(msg, a.deps.Keys.Quit) {
@@ -319,6 +319,13 @@ func (a *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		return a, nil
+	}
+
+	// A pane that is taking text input types the printable keys itself: `q`
+	// and `?` belong to its input box, not to Quit and Help (C27/D-3Q). The
+	// non-printable globals — ctrl+c, tab — still match below.
+	if a.paneCapturesKey(msg) {
+		return a, a.propagate(msg)
 	}
 
 	switch {
