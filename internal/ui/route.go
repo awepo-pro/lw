@@ -44,6 +44,36 @@ func printableKey(msg tea.KeyPressMsg) bool {
 	return msg.Text != "" && msg.Mod&^tea.ModShift == 0
 }
 
+// handleWheel routes one mouse-wheel notch to the active pane (contract §5
+// frame note 7, W5 F2/D-3W). Only wheel-up and wheel-down are wheel input;
+// the notch is dropped when the terminal is too small, the ? overlay is
+// open, or it landed on the shell's own header or footer row. Otherwise the
+// pane under focus receives one WheelMsg with pane-local coordinates: Y
+// loses the header row, H loses header and footer, and Delta is -1 for up
+// or +1 for down.
+func (a *App) handleWheel(msg tea.MouseWheelMsg) tea.Cmd {
+	if msg.Button != tea.MouseWheelUp && msg.Button != tea.MouseWheelDown {
+		return nil
+	}
+	if a.tooSmall() || a.overlayOpen {
+		return nil
+	}
+	if msg.Y <= 0 || msg.Y >= a.height-1 {
+		return nil
+	}
+	delta := 1
+	if msg.Button == tea.MouseWheelUp {
+		delta = -1
+	}
+	return a.propagate(WheelMsg{
+		X:     msg.X,
+		Y:     msg.Y - 1,
+		W:     a.width,
+		H:     a.height - 2,
+		Delta: delta,
+	})
+}
+
 // propagate forwards msg to the active pane's Update, if one is injected
 // for the current screen, and stores the pane it returns back into the map
 // — Pane.Update returns a (possibly new) Pane the same way tea.Model.Update

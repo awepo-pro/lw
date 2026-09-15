@@ -9,9 +9,7 @@
 package ui
 
 import (
-	"fmt"
 	"path/filepath"
-	"strings"
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
@@ -234,6 +232,22 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.deps.Theme = a.deps.Theme.WithDark(msg.IsDark())
 		return a, a.propagateAll(msg)
 
+	case tea.ColorProfileMsg:
+		// The terminal's real colour profile is known: re-resolve the
+		// cursor tint for it (contract §5 frame note 8, W5 F1/C35) and let
+		// every pane rebuild its own copy the way it does for polarity.
+		a.deps.Theme = a.deps.Theme.WithProfile(msg.Profile)
+		return a, a.propagateAll(msg)
+
+	case tea.MouseWheelMsg:
+		return a, a.handleWheel(msg)
+
+	case tea.MouseMsg:
+		// Mouse mode is on, so clicks, releases and motion arrive too: the
+		// wheel is the only mouse input a pane sees (contract §5 frame
+		// note 7 — selection is shift+drag, D-3W).
+		return a, nil
+
 	case tea.KeyPressMsg:
 		return a.handleKey(msg)
 
@@ -342,58 +356,9 @@ func (a *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return a, a.propagate(msg)
 }
 
-// switchTo, activePane, propagate, propagateAll, deliverTo, producedBy and
-// shellOwned moved to route.go (Tier-1 review, MASTER §8 ORCH-4/repair-1),
-// so app.go stays under conventions §2's ~400-line guideline. Update's
-// switch above still calls them unchanged — Go methods bind to the type,
-// not the file.
-
-// View renders the shell (backbone §12, C-79: v2's tea.Model returns
-// tea.View, not string). AltScreen is a per-frame field in v2 — there is no
-// tea.WithAltScreen program option (C-82).
-func (a *App) View() tea.View {
-	v := tea.NewView(a.render())
-	v.AltScreen = true
-	return v
-}
-
-// render composes one frame at the shell's current width and height:
-// below D11's minimum, only the too-small notice (contract §5 frame note
-// 3); otherwise the header, the active pane's body and the footer, with the
-// `?` overlay composited on top when it is open (contract §5 frame note 4).
-// Nothing here assumes 80x24 beyond the minimum itself.
-func (a *App) render() string {
-	if a.tooSmall() {
-		return strings.Join(tooSmallView(a.deps.Theme, a.width, a.height), "\n")
-	}
-
-	bodyH := a.height - 2
-
-	s := a.order[a.cur]
-	var content string
-	if p, ok := a.panes[s]; ok && p != nil {
-		content = p.View(a.width, bodyH)
-	} else {
-		content = fmt.Sprintf("(%s screen not loaded yet)", screenNames[s])
-	}
-
-	lines := make([]string, 0, a.height)
-	lines = append(lines, headerLine(a.deps.Theme, a.width, a.vaultName, tabLabels(), screenTabName[s],
-		a.pages, a.raw, a.lintErrors,
-		headerStage{ID: a.stageID, Ops: a.stageOps, Checks: a.stageChecks, Has: a.hasStage}))
-	lines = append(lines, fitPaneLines(content, a.width, bodyH)...)
-	lines = append(lines, footerContent(a.deps.Theme, a.deps.Keys, a.activePane(), a.width))
-
-	frame := strings.Join(lines, "\n")
-	if !a.overlayOpen {
-		return frame
-	}
-
-	var oh OverlayHelper
-	if p := a.activePane(); p != nil {
-		oh, _ = p.(OverlayHelper)
-	}
-	box, bw, bh, x, y := overlayBox(a.deps.Theme, oh, a.width, a.height)
-	plain := stripFrame(frame)
-	return strings.Join(compositeOverlay(a.deps.Theme, plain, box, x, y, bw, bh), "\n")
-}
+// switchTo, activePane, propagate, propagateAll, deliverTo, producedBy,
+// shellOwned and handleWheel live in route.go, and View and render in
+// view.go — file splits so app.go stays under conventions §2's ~400-line
+// guideline (Tier-1 review, MASTER §8 ORCH-4/repair-1). Update's switch
+// above still calls them unchanged — Go methods bind to the type, not the
+// file.

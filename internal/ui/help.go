@@ -56,5 +56,13 @@ type TextCapturer interface {
 	CapturesText() bool
 }
 
+// Scroller is implemented by a pane with scrollable content (added
+// 2026-09-16, W5 F2/D-3W). The ? overlay shows its Scroll group only while
+// the ACTIVE pane implements Scroller and reports true (contract §5 frame
+// note 4).
+type Scroller interface {
+	ScrollsContent() bool
+}
+
 // MinWidth and MinHeight are D11's minimum terminal size.
 const MinWidth, MinHeight = 80, 24

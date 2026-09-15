@@ -42,6 +42,17 @@ type KeyMap struct {
 	// (contract §4).
 	Preview key.Binding // p
 
+	// Content scrolling (added 2026-09-16, W5 F2/D-3W, contract §4): the
+	// six actions Review, Browse and Ask bind their scrollable panels to
+	// (contract §5 note 10). All are non-printable, so they reach a pane
+	// that is taking text input (Ask) like any other key.
+	ScrollPageUp   key.Binding // "pgup"   — toml scroll_page_up;   help "pgup/pgdn", "page"
+	ScrollPageDown key.Binding // "pgdown" — toml scroll_page_down; help "pgdown", "page down"
+	ScrollHalfUp   key.Binding // "ctrl+u" — toml scroll_half_up;   help "ctrl+u/d", "half page"
+	ScrollHalfDown key.Binding // "ctrl+d" — toml scroll_half_down; help "ctrl+d", "half page down"
+	ScrollTop      key.Binding // "home"   — toml scroll_top;       help "home/end", "top / bottom"
+	ScrollBottom   key.Binding // "end"    — toml scroll_bottom;    help "end", "bottom"
+
 	// Shell-wide keys.
 	NextPane key.Binding // tab
 	Quit     key.Binding // q, ctrl+c
@@ -65,12 +76,21 @@ func defaultKeyMap() KeyMap {
 		MoveUp:   key.NewBinding(key.WithKeys("k", "up"), key.WithHelp("k", "up")),
 		// Top's help is likewise the merged "g/G" / "top/bottom" label; a
 		// pane omits Bottom from its own footer list.
-		Top:      key.NewBinding(key.WithKeys("g"), key.WithHelp("g/G", "top/bottom")),
-		Bottom:   key.NewBinding(key.WithKeys("G"), key.WithHelp("G", "bottom")),
-		Preview:  key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "preview")),
-		NextPane: key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "screen")),
-		Quit:     key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
-		Help:     key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
+		Top:     key.NewBinding(key.WithKeys("g"), key.WithHelp("g/G", "top/bottom")),
+		Bottom:  key.NewBinding(key.WithKeys("G"), key.WithHelp("G", "bottom")),
+		Preview: key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "preview")),
+		// The scroll pairs' help is likewise merged labels (contract §4):
+		// the overlay's Scroll group shows one entry per pair, and a pane
+		// omits the down binding of each pair from its footer list.
+		ScrollPageUp:   key.NewBinding(key.WithKeys("pgup"), key.WithHelp("pgup/pgdn", "page")),
+		ScrollPageDown: key.NewBinding(key.WithKeys("pgdown"), key.WithHelp("pgdown", "page down")),
+		ScrollHalfUp:   key.NewBinding(key.WithKeys("ctrl+u"), key.WithHelp("ctrl+u/d", "half page")),
+		ScrollHalfDown: key.NewBinding(key.WithKeys("ctrl+d"), key.WithHelp("ctrl+d", "half page down")),
+		ScrollTop:      key.NewBinding(key.WithKeys("home"), key.WithHelp("home/end", "top / bottom")),
+		ScrollBottom:   key.NewBinding(key.WithKeys("end"), key.WithHelp("end", "bottom")),
+		NextPane:       key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "screen")),
+		Quit:           key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
+		Help:           key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
 	}
 }
 
@@ -78,20 +98,26 @@ func defaultKeyMap() KeyMap {
 // slice means "not present in the file, keep the default"; an explicit
 // empty list (`quit = []`) unbinds the key.
 type keysFile struct {
-	AcceptHunk []string `toml:"accept_hunk"`
-	DropHunk   []string `toml:"drop_hunk"`
-	SplitHunk  []string `toml:"split_hunk"`
-	AcceptAll  []string `toml:"accept_all"`
-	Reject     []string `toml:"reject_changeset"`
-	Commit     []string `toml:"commit"`
-	MoveDown   []string `toml:"move_down"`
-	MoveUp     []string `toml:"move_up"`
-	Top        []string `toml:"top"`
-	Bottom     []string `toml:"bottom"`
-	Preview    []string `toml:"preview"`
-	NextPane   []string `toml:"next_pane"`
-	Quit       []string `toml:"quit"`
-	Help       []string `toml:"help"`
+	AcceptHunk     []string `toml:"accept_hunk"`
+	DropHunk       []string `toml:"drop_hunk"`
+	SplitHunk      []string `toml:"split_hunk"`
+	AcceptAll      []string `toml:"accept_all"`
+	Reject         []string `toml:"reject_changeset"`
+	Commit         []string `toml:"commit"`
+	MoveDown       []string `toml:"move_down"`
+	MoveUp         []string `toml:"move_up"`
+	Top            []string `toml:"top"`
+	Bottom         []string `toml:"bottom"`
+	Preview        []string `toml:"preview"`
+	ScrollPageUp   []string `toml:"scroll_page_up"`
+	ScrollPageDown []string `toml:"scroll_page_down"`
+	ScrollHalfUp   []string `toml:"scroll_half_up"`
+	ScrollHalfDown []string `toml:"scroll_half_down"`
+	ScrollTop      []string `toml:"scroll_top"`
+	ScrollBottom   []string `toml:"scroll_bottom"`
+	NextPane       []string `toml:"next_pane"`
+	Quit           []string `toml:"quit"`
+	Help           []string `toml:"help"`
 }
 
 // applyOverrides replaces the keystrokes of every binding f names, leaving
@@ -113,6 +139,12 @@ func (f keysFile) applyOverrides(km *KeyMap) {
 	set(&km.Top, f.Top)
 	set(&km.Bottom, f.Bottom)
 	set(&km.Preview, f.Preview)
+	set(&km.ScrollPageUp, f.ScrollPageUp)
+	set(&km.ScrollPageDown, f.ScrollPageDown)
+	set(&km.ScrollHalfUp, f.ScrollHalfUp)
+	set(&km.ScrollHalfDown, f.ScrollHalfDown)
+	set(&km.ScrollTop, f.ScrollTop)
+	set(&km.ScrollBottom, f.ScrollBottom)
 	set(&km.NextPane, f.NextPane)
 	set(&km.Quit, f.Quit)
 	set(&km.Help, f.Help)

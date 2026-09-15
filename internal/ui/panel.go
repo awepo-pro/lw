@@ -17,9 +17,10 @@ type PanelSpec struct {
 	FootNote  string      // right-aligned on the bottom border, muted: "─ 3 of 4 ╯"; omitted if it doesn't fit
 	Focused   bool        // border + title in Accent; otherwise border Border, title Bold
 
-	Lines     []string // pre-styled content lines, each at most w-4 cells (clipped otherwise)
-	CursorRow int      // index into Lines drawn with the ▌ gutter + CursorBg tint; -1 for none
-	Overflow  bool     // when len(Lines) > h-2 and FootNote == "", FootNote becomes "↓ N more"
+	Lines      []string // pre-styled content lines, each at most w-4 cells (clipped otherwise)
+	CursorRow  int      // index into Lines drawn with the ▌ gutter + CursorBg tint; -1 for none
+	CursorSpan int      // rows from CursorRow drawn as cursor rows (W5 F1); 0 and 1 both mean one row
+	Overflow   bool     // when len(Lines) > h-2 and FootNote == "", FootNote becomes "↓ N more"
 }
 
 // Panel renders spec as exactly h lines of exactly w cells (w >= 6, h >= 2).
@@ -51,7 +52,7 @@ func Panel(t Theme, spec PanelSpec, w, h int) []string {
 		if i < len(spec.Lines) {
 			content = spec.Lines[i]
 		}
-		rows[1+i] = panelContentRow(t, w, content, i == spec.CursorRow, border)
+		rows[1+i] = panelContentRow(t, w, content, isCursorRow(spec, i), border)
 	}
 
 	rows[h-1] = panelBottomBorder(t, w, footNote, border)
@@ -114,10 +115,26 @@ func panelBottomBorder(t Theme, w int, footNote string, border lipgloss.Style) s
 	return r.render()
 }
 
+// isCursorRow reports whether panel content row i is drawn as a cursor row:
+// from spec.CursorRow through CursorRow+CursorSpan-1, clipped to the panel's
+// visible rows. A span below 1 means one row (contract §5: 0 and 1 both
+// mean one row), and CursorRow below 0 means no cursor rows at all.
+func isCursorRow(spec PanelSpec, i int) bool {
+	if spec.CursorRow < 0 {
+		return false
+	}
+	span := spec.CursorSpan
+	if span < 1 {
+		span = 1
+	}
+	return i >= spec.CursorRow && i < spec.CursorRow+span
+}
+
 // panelContentRow draws one interior row: the two side borders, a blank or
 // "▌" gutter at column 1, the content padded to exactly w-4 cells at column
-// 2, and — on the cursor row — CursorBg tinted across the whole inner width
-// (mockgen.draw_lines / tint).
+// 2, and — on a cursor row — CursorBg tinted cell by cell across the whole
+// inner width, gutter through the trailing blank at w-2 (mockgen.draw_lines
+// / tint; contract §5 frame note 9).
 func panelContentRow(t Theme, w int, content string, cursor bool, border lipgloss.Style) string {
 	inner := w - 4
 	if inner < 0 {
@@ -132,8 +149,13 @@ func panelContentRow(t Theme, w int, content string, cursor bool, border lipglos
 		return left + " " + content + " " + right
 	}
 
-	gutter := t.Accent.Background(t.CursorBg).Render("▌")
-	body := lipgloss.NewStyle().Background(t.CursorBg).Render(content)
-	blank := lipgloss.NewStyle().Background(t.CursorBg).Render(" ")
-	return left + gutter + body + blank + right
+	// The gutter and the full inner span — content, padding and the blank
+	// before the right border — are one tinted run, so a styled run's own
+	// reset inside content cannot end the tint early (C35). With no
+	// CursorBg (a profile below ANSI256) only the accent gutter is drawn.
+	gutter := t.Accent.Render("▌")
+	if t.CursorBg == nil {
+		return left + gutter + content + " " + right
+	}
+	return left + tintSpan(t.CursorBg, gutter+content+" ") + right
 }

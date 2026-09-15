@@ -40,6 +40,7 @@ func TestThemePalette(t *testing.T) {
 	wantDark := Palette{
 		Fg: "#D8DDE4", Muted: "#8C95A2", Faint: "#5E6672", Border: "#353C47",
 		Accent: "#7AB2F2", CursorBg: "#1A2331", Good: "#6BC28E", Warn: "#E2B45A", Bad: "#EF7F76",
+		Heading: "#C3A0F0", Code: "#6CC7C9",
 	}
 	if got := th.WithDark(true).Palette; got != wantDark {
 		t.Fatalf("dark palette = %+v, want %+v", got, wantDark)
@@ -48,6 +49,7 @@ func TestThemePalette(t *testing.T) {
 	wantLight := Palette{
 		Fg: "#1C2128", Muted: "#586270", Faint: "#8A929E", Border: "#C6CDD6",
 		Accent: "#1D62C2", CursorBg: "#E6EEF9", Good: "#1D7A4B", Warn: "#93660A", Bad: "#B03A33",
+		Heading: "#7A45C2", Code: "#17727A",
 	}
 	if got := th.WithDark(false).Palette; got != wantLight {
 		t.Fatalf("light palette = %+v, want %+v", got, wantLight)
@@ -156,6 +158,10 @@ warn_light = "#f0f0f0"
 warn_dark = "#f1f1f1"
 bad_light = "#f2f2f2"
 bad_dark = "#f3f3f3"
+heading_light = "#f4f4f4"
+heading_dark = "#f5f5f5"
+code_light = "#f6f6f6"
+code_dark = "#f7f7f7"
 `)
 		th, err := LoadTheme("")
 		if err != nil {
@@ -167,6 +173,7 @@ bad_dark = "#f3f3f3"
 		want := Palette{
 			Fg: "#222222", Muted: "#444444", Faint: "#666666", Border: "#888888",
 			Accent: "#aaaaaa", CursorBg: "#cccccc", Good: "#eeeeee", Warn: "#f1f1f1", Bad: "#f3f3f3",
+			Heading: "#f5f5f5", Code: "#f7f7f7",
 		}
 		if got := th.WithDark(true).Palette; got != want {
 			t.Fatalf("dark palette = %+v, want %+v", got, want)
@@ -294,7 +301,7 @@ func TestThemeNoBackground(t *testing.T) {
 	styles := map[string]interface{ Render(...string) string }{
 		"Fg": th.Fg, "Muted": th.Muted, "Faint": th.Faint, "Border": th.Border,
 		"Accent": th.Accent, "Good": th.Good, "Warn": th.Warn, "Bad": th.Bad,
-		"Bold": th.Bold,
+		"Bold": th.Bold, "Heading": th.Heading, "Code": th.Code,
 	}
 	names := make([]string, 0, len(styles))
 	for name := range styles {

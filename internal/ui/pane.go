@@ -106,6 +106,18 @@ type SwitchScreenMsg struct {
 	To Screen
 }
 
+// WheelMsg is one mouse-wheel notch, delivered by the shell to the active
+// pane only (added 2026-09-16, W5 F2/D-3W; contract §5 frame note 7).
+// Declared here with the shell's other routed messages because Update
+// produces it and the shell never imports a screen package (backbone §12).
+// X, Y are pane-local cells: X from 0 at the pane's left edge, Y from 0 at
+// the pane's first row (terminal row 1, under the shell's header). W, H
+// are the size the shell passes to the pane's View. Delta is -1 (wheel up)
+// or +1 (wheel down).
+type WheelMsg struct {
+	X, Y, W, H, Delta int
+}
+
 // OpenPathMsg asks the shell to switch to Browse and select a vault-relative
 // path — Lint's `enter` on a finding ("jump to the page in Browse",
 // /docs/design.md §9) is the case it exists for.

@@ -7,6 +7,7 @@ package ui
 import (
 	"strings"
 
+	"charm.land/bubbles/v2/key"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -22,9 +23,11 @@ var everywhereHelp = []HelpEntry{
 
 // overlayBox returns the "Keys" panel's lines (bw×bh, clamped to min(64,
 // w-4) × min(15, h-2)) and where it belongs, centred in a w×h frame
-// (mockgen.keys_overlay). oh may be nil — a pane with no OverlayHelp — in
-// which case the left column is just its (empty) title.
-func overlayBox(t Theme, oh OverlayHelper, w, h int) (lines []string, bw, bh, x, y int) {
+// (mockgen.keys_overlay). p may be nil, and may implement neither optional
+// interface — a pane with no OverlayHelp leaves the left column just its
+// (empty) title, and a pane that is not a Scroller (or reports false)
+// leaves the Scroll group's rows blank (contract §5 frame note 4).
+func overlayBox(t Theme, keys KeyMap, p Pane, w, h int) (lines []string, bw, bh, x, y int) {
 	bw = min(64, w-4)
 	bh = min(15, h-2)
 	x = (w - bw) / 2
@@ -32,8 +35,14 @@ func overlayBox(t Theme, oh OverlayHelper, w, h int) (lines []string, bw, bh, x,
 
 	var title string
 	var entries []HelpEntry
-	if oh != nil {
-		title, entries = oh.OverlayHelp()
+	var scrolls bool
+	if p != nil {
+		if oh, ok := p.(OverlayHelper); ok {
+			title, entries = oh.OverlayHelp()
+		}
+		if sc, ok := p.(Scroller); ok {
+			scrolls = sc.ScrollsContent()
+		}
 	}
 
 	inner := bw - 4
@@ -71,6 +80,24 @@ func overlayBox(t Theme, oh OverlayHelper, w, h int) (lines []string, bw, bh, x,
 		}
 		rows[ri].put(32, e.Key, t.Bold)
 		rows[ri].put(42, e.Desc, t.Muted)
+	}
+	// Rows 8..11 (absolute y+9..y+12): the Scroll group, right column —
+	// shown only while the active pane's content actually scrolls. The key
+	// labels come from the up bindings' help, so a hotkeys.toml rebind
+	// shows (W5 F2/D-3W).
+	if scrolls {
+		if 8 < n {
+			rows[8].put(32, "Scroll", t.Bold)
+		}
+		for i, b := range []key.Binding{keys.ScrollPageUp, keys.ScrollHalfUp, keys.ScrollTop} {
+			ri := 9 + i
+			if ri >= n {
+				break
+			}
+			h := b.Help()
+			rows[ri].put(32, h.Key, t.Bold)
+			rows[ri].put(42, h.Desc, t.Muted)
+		}
 	}
 
 	content := make([]string, n)
