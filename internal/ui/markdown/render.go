@@ -71,6 +71,11 @@ func lineWidth(o Options) int {
 
 // renderPage does the actual, uncached work behind Render.
 func renderPage(src []byte, o Options) ([]string, error) {
+	// One normalization point for the whole render: every token a caller
+	// left empty becomes Fg before the glamour config, the chroma style,
+	// the inline spans or the gutter read it (ORCH-16).
+	o.Style = o.Style.resolved()
+
 	totalW := lineWidth(o)
 	contentW := totalW - 2
 	if contentW < 1 {

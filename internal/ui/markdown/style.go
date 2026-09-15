@@ -18,6 +18,36 @@ type Style struct {
 	Heading, Code                                     string // "#RRGGBB"; added 2026-09-16 (W5 F3/D-3W)
 }
 
+// resolved returns s with every empty role token filled from Fg, and is
+// applied once per render before any token is read (render.go).
+//
+// An empty token must never reach glamour or chroma: they take a colour as
+// a string, and an empty string resolves to BLACK, which is invisible on a
+// dark terminal. That is not hypothetical — W5's first wave rendered
+// Browse's preview headings black for exactly one commit, because the
+// caller had not set the two new tokens yet (ORCH-16). Falling back to Fg
+// degrades a missing token to ordinary prose colour instead. An empty Fg
+// means the caller asked for no colour at all, and stays empty: the
+// per-field builders then set no colour, which is what `Plain` output and
+// a zero Style expect.
+func (s Style) resolved() Style {
+	fill := func(tok *string) {
+		if *tok == "" {
+			*tok = s.Fg
+		}
+	}
+	fill(&s.Muted)
+	fill(&s.Faint)
+	fill(&s.Border)
+	fill(&s.Accent)
+	fill(&s.Good)
+	fill(&s.Warn)
+	fill(&s.Bad)
+	fill(&s.Heading)
+	fill(&s.Code)
+	return s
+}
+
 // strPtr and uintPtr build the *string / *uint fields ansi.StyleConfig
 // wants. Each call owns its own backing variable, so aliasing multiple
 // fields to the same pointer is safe: nothing downstream ever writes
@@ -26,6 +56,19 @@ func strPtr(s string) *string { return &s }
 func uintPtr(u uint) *uint    { return &u }
 func boolPtr(b bool) *bool    { return &b }
 
+// colorPtr is strPtr for a colour token: an empty hex becomes a nil
+// pointer, which glamour reads as "this style sets no colour". A non-nil
+// pointer to "" is not the same thing — glamour passes the empty string on
+// as a colour, and it resolves to RGB 0,0,0 (ORCH-16). Every token is
+// non-empty after Style.resolved() unless the caller set no Fg either,
+// which means "no colour at all".
+func colorPtr(hex string) *string {
+	if hex == "" {
+		return nil
+	}
+	return &hex
+}
+
 // buildGlamourStyle turns Style into the glamour ansi.StyleConfig the
 // per-block renderer uses (contract §2 note 3; s0-foundation.md T02 item 1).
 // Every colour in the result is one of Style's ten colour tokens: no stock
@@ -33,11 +76,11 @@ func boolPtr(b bool) *bool    { return &b }
 // or hard-coded ANSI-256 value ever leaks through (F5). The role mapping is
 // the one W5 F3/D-3W chose (contract §2 note 2), foreground only.
 func buildGlamourStyle(s Style) ansi.StyleConfig {
-	fg := strPtr(s.Fg)
-	muted := strPtr(s.Muted)
-	accent := strPtr(s.Accent)
-	heading := strPtr(s.Heading)
-	code := strPtr(s.Code)
+	fg := colorPtr(s.Fg)
+	muted := colorPtr(s.Muted)
+	accent := colorPtr(s.Accent)
+	heading := colorPtr(s.Heading)
+	code := colorPtr(s.Code)
 
 	return ansi.StyleConfig{
 		// No document margin: the caller (Render) already accounts for the
