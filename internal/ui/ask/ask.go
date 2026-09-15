@@ -1,45 +1,29 @@
-// ask.go implements the ask screen itself (backbone §12 ui.Pane;
-// s4-tui.md S4-T6): an input box plus a scrollback, driven by whatever
-// <-chan agent.Event a StreamMsg (stream.go) hands the pane.
-//
-// Since S5-T5 the pane also starts those turns: when ui.Deps.Agent is
-// non-nil, submitting a question launches one real agent turn (backbone
-// §9, C-105) whose events reach this pane through the same pump as any
-// scripted stream. When Deps.Agent is nil — the config did not load, say —
-// submitting refuses with a visible status line instead of dying, and
-// browse/review/lint/log keep working without a provider (s5-agent-loop.md
-// S5-T5).
-//
-// Since C-124/D-DH (S6) a turn no longer refuses for want of an open
-// changeset: when none is open at submit, runTurn (stream.go) opens one
-// itself, the same seam `lw ingest` already uses, and rejects it afterwards
-// if the turn staged nothing — see stream.go's runTurn/resolveTurnChangeset.
+// ask.go holds the ask screen's ui.Pane itself: the Model, its construction
+// and key handling, the shell-interface surface (footer, overlay, text
+// capture), and the D10 suggested prompts read off index.md. The rendering
+// lives in view.go, the scrollback state machine in state.go, and the
+// agent.Event pump and turn lifecycle in stream.go.
 package ask
 
 import (
-	"context"
-	"strings"
+	"regexp"
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
-	lipgloss "charm.land/lipgloss/v2"
 
 	"github.com/awepo-pro/lw/internal/agent"
 	"github.com/awepo-pro/lw/internal/ui"
-)
-
-// toolArgsPreviewRunes and toolResultPreviewRunes bound a collapsed tool
-// line's inline previews of its args and result — the full text is only
-// ever shown on expand (s4-tui.md S4-T6).
-const (
-	toolArgsPreviewRunes   = 48
-	toolResultPreviewRunes = 60
 )
 
 // Model is the ask screen (backbone §12 ui.Pane).
 type Model struct {
 	deps  ui.Deps
 	theme ui.Theme // C-81: a copy, rebuilt locally on tea.BackgroundColorMsg
+
+	// prompts are the D10 suggested first questions, read off index.md at
+	// New and refreshed on ui.VaultReloadedMsg. They render only while the
+	// transcript is empty (view.go's empty state).
+	prompts []string
 
 	entries    []entry
 	toolIndex  map[string]int // agent event ID -> index into entries
@@ -54,7 +38,7 @@ type Model struct {
 	// changesetGone archives when the changeset is committed or rejected.
 	sessionID string
 	// cancel aborts the running turn's context; nil until startTurn runs.
-	cancel context.CancelFunc
+	cancel func()
 
 	ch <-chan agent.Event // installed by StreamMsg; nil = no stream to re-arm
 }
@@ -63,27 +47,47 @@ var _ ui.Pane = (*Model)(nil)
 var _ ui.TextCapturer = (*Model)(nil)
 
 // New constructs the ask screen (backbone §12). It captures a copy of
-// d.Theme and nothing else — there is no vault or engine state to load at
-// construction, and no channel to listen on until a turn starts
-// (s4-tui.md S4-T6).
+// d.Theme and reads the D10 prompts off index.md — a bounded, local vault
+// read, the same order of work review's construction does — falling back to
+// the generic prompt set when there is no engine or no readable index.
 func New(d ui.Deps) ui.Pane {
-	return &Model{deps: d, theme: d.Theme, selected: -1}
+	m := &Model{deps: d, theme: d.Theme, selected: -1}
+	m.prompts = m.loadPrompts()
+	return m
 }
 
 // Title returns the pane's name for the shell's tab bar (backbone §12).
 func (m *Model) Title() string { return "Ask" }
 
-// Help returns the ask screen's key bindings (backbone §12). None of them
-// have a ui.KeyMap field of their own — s4-tui.md S4-T6 adds nothing to
-// the shell's KeyMap — so they are described with ad-hoc bindings for
-// display purposes only, the same pattern browse.go uses for its own
-// screen-local keys.
-func (m *Model) Help() []key.Binding {
+// footerBindings is the ask footer (s2-screens.md T08): no `q` — Ask takes
+// typing (CapturesText), so quitting from here would eat questions.
+func footerBindings() []key.Binding {
 	return []key.Binding{
-		key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "send / expand tool call")),
+		key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "send")),
 		key.NewBinding(key.WithKeys("up", "down"), key.WithHelp("↑/↓", "select tool call")),
-		key.NewBinding(key.WithKeys("backspace"), key.WithHelp("backspace", "delete")),
 		key.NewBinding(key.WithKeys("ctrl+r"), key.WithHelp("ctrl+r", "review")),
+		key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "screen")),
+	}
+}
+
+// Help returns the ask screen's key bindings (backbone §12). The shell
+// renders the footer from FooterHelp, which returns the same list; Help
+// remains for the Pane interface and any caller that wants the raw map.
+func (m *Model) Help() []key.Binding { return footerBindings() }
+
+// FooterHelp implements ui.FooterHelper (contract §5): the footer list the
+// shell renders for this pane, in display order, ending with its own
+// "? help".
+func (m *Model) FooterHelp() []key.Binding { return footerBindings() }
+
+// OverlayHelp implements ui.OverlayHelper (contract §5): Ask's section of
+// the `?` overlay. There is no `esc cancel turn` entry — Ask binds no esc
+// key today (s2-screens.md T08: "only if bound today").
+func (m *Model) OverlayHelp() (string, []ui.HelpEntry) {
+	return "Ask", []ui.HelpEntry{
+		{Key: "enter", Desc: "send"},
+		{Key: "↑/↓", Desc: "select tool call"},
+		{Key: "ctrl+r", Desc: "open review"},
 	}
 }
 
@@ -93,18 +97,25 @@ func (m *Model) Help() []key.Binding {
 // question instead of quitting the program or opening the keys overlay.
 func (m *Model) CapturesText() bool { return true }
 
-// Init has nothing to load: the theme is already a copy of d.Theme, and
-// there is no channel to Listen on until a turn starts (s4-tui.md S4-T6).
+// Init has nothing to load: the theme is already a copy of d.Theme and the
+// prompts were read at New; there is no channel to Listen on until a turn
+// starts (s4-tui.md S4-T6).
 func (m *Model) Init() tea.Cmd { return nil }
 
 // Update handles the shell's background-colour broadcast, this screen's
 // keymap, the event pump's own messages, the session-closed outcome and the
-// shell's ui.StageChangedMsg broadcast (backbone §12 C-80: matches
-// tea.KeyPressMsg, never tea.KeyMsg).
+// shell's broadcasts (backbone §12 C-80: matches tea.KeyPressMsg, never
+// tea.KeyMsg).
 func (m *Model) Update(msg tea.Msg) (ui.Pane, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.BackgroundColorMsg:
 		m.theme = m.theme.WithDark(msg.IsDark())
+		return m, nil
+
+	case ui.VaultReloadedMsg:
+		// D10: the suggested prompts track the vault, so a re-read (the
+		// shell broadcasts this after a commit) refreshes them.
+		m.prompts = m.loadPrompts()
 		return m, nil
 
 	case StreamMsg:
@@ -210,8 +221,8 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (ui.Pane, tea.Cmd) {
 // immediately no matter how long the model takes (backbone §9, C-105;
 // s5-agent-loop.md S5-T5 "never block Update").
 //
-// Two conditions refuse the submit instead, each as a visible status line
-// rather than a dead input or a silent drop:
+// Two conditions refuse the submit instead, each as a visible transcript
+// entry rather than a dead input or a silent drop:
 //
 //   - a turn is already running. Refused, NOT queued — the documented
 //     choice: a queued question would fire at the agent mid-turn, and the
@@ -288,226 +299,57 @@ func (m *Model) deleteInputRune() {
 	m.input = string(r[:len(r)-1])
 }
 
-// View renders the ask screen at exactly w by h (backbone §12): the
-// scrollback, tail-scrolled so the most recent lines are visible, above a
-// one-line input box.
-func (m *Model) View(w, h int) string {
-	if w < 1 {
-		w = 1
-	}
-	if h < 1 {
-		h = 1
-	}
+// promptEntryRe matches one index.md bullet D10 turns into a suggested
+// prompt: `- [[target]] — description`, with the `|label` form of a
+// wikilink allowed (s2-screens.md T08).
+var promptEntryRe = regexp.MustCompile(`(?m)^- \[\[([^\]|]+)(?:\|[^\]]*)?\]\] — (.+)$`)
 
-	scrollH := h - 1
-	if scrollH < 0 {
-		scrollH = 0
+// fallbackPrompts is the D10 prompt set for a vault whose index has fewer
+// than two entries (or none at all).
+func fallbackPrompts() []string {
+	return []string{
+		"What does the wiki cover so far?",
+		"Which pages were updated most recently?",
+		"Which pages rest on a single source?",
 	}
-
-	lines := m.renderScrollback(w)
-	visible := fitLines(strings.Join(tailLines(lines, scrollH), "\n"), w, scrollH)
-
-	rows := append([]string{}, visible...)
-	rows = append(rows, fitLine(m.theme.Accent.Render("> ")+m.input, w))
-	return strings.Join(rows, "\n")
 }
 
-// renderScrollback renders every entry, in order, to a flat list of
-// display lines at width w.
-func (m *Model) renderScrollback(w int) []string {
-	var lines []string
-	for i, e := range m.entries {
-		lines = append(lines, m.renderEntry(e, i == m.selected, w)...)
-	}
-	return lines
-}
-
-// renderEntry renders one scrollback entry to one or more display lines.
-func (m *Model) renderEntry(e entry, selected bool, w int) []string {
-	switch e.kind {
-	case kindUser:
-		return renderPrefixed("you: ", e.text, w, m.theme.Base)
-	case kindAssistant:
-		return renderPrefixed("assistant: ", e.text, w, m.theme.Base)
-	case kindStatus:
-		return []string{m.theme.Muted.Render(fitLine("— "+e.text+" —", w))}
-	case kindError:
-		return renderPrefixed("error: ", e.text, w, m.theme.Bad)
-	case kindTool:
-		return renderToolEntry(m.theme, e.tool, selected, w)
-	}
-	return nil
-}
-
-// renderPrefixed word-wraps text to fit alongside prefix at width w,
-// indenting every continuation line to align under the first.
-func renderPrefixed(prefix, text string, w int, style lipgloss.Style) []string {
-	avail := w - lipgloss.Width(prefix)
-	if avail < 1 {
-		avail = 1
-	}
-	indent := strings.Repeat(" ", lipgloss.Width(prefix))
-	wrapped := wrapText(text, avail)
-	lines := make([]string, len(wrapped))
-	for i, l := range wrapped {
-		p := prefix
-		if i > 0 {
-			p = indent
-		}
-		lines[i] = style.Render(fitLine(p+l, w))
-	}
-	return lines
-}
-
-// renderToolEntry renders one ToolCallEv/ToolResEv pair as a single
-// collapsed line (s4-tui.md S4-T6: "▸ wiki.search {\"q\":\"…\"}"), or, when
-// expanded, that line followed by the full args and result. An IsError
-// result is visibly marked in both states.
-func renderToolEntry(theme ui.Theme, tc *toolCall, selected bool, w int) []string {
-	marker := "▸"
-	if tc.expanded {
-		marker = "▾"
-	}
-	head := marker + " " + tc.name + " " + truncateRunes(tc.args, toolArgsPreviewRunes)
-	switch {
-	case tc.resolved && tc.isError:
-		head += "  ✗ " + truncateRunes(singleLine(tc.content), toolResultPreviewRunes)
-	case tc.resolved:
-		head += "  → " + truncateRunes(singleLine(tc.content), toolResultPreviewRunes)
-	default:
-		head += "  …"
-	}
-
-	style := theme.Base
-	if tc.resolved && tc.isError {
-		style = theme.Bad
-	}
-	if selected {
-		style = theme.Selected
-	}
-	lines := []string{style.Render(fitLine(head, w))}
-
-	if !tc.expanded {
-		return lines
-	}
-
-	lines = append(lines, theme.Muted.Render(fitLine("    args: "+tc.args, w)))
-	switch {
-	case !tc.resolved:
-		lines = append(lines, theme.Muted.Render(fitLine("    (waiting for result…)", w)))
-	default:
-		resultStyle := theme.Muted
-		if tc.isError {
-			resultStyle = theme.Bad
-		}
-		for _, l := range wrapText(tc.content, maxInt(1, w-4)) {
-			lines = append(lines, resultStyle.Render(fitLine("    "+l, w)))
+// promptsFromIndex computes the D10 prompt set from index.md's content.
+// The first two entries' descriptions become the personalized prompts (T1,
+// T2); anything from the third on is not needed. The frozen grids pin the
+// descriptions — not the wikilink targets — as T1/T2: on the mockup vault
+// the first two entries are `[[vertex-ai]] — Vertex AI` and
+// `[[claude]] — Claude`, and ask-80x24 reads "What does the wiki say about
+// Vertex AI?" / "How is Claude related to Vertex AI?".
+func promptsFromIndex(src []byte) []string {
+	var descs []string
+	for _, match := range promptEntryRe.FindAllStringSubmatch(string(src), -1) {
+		descs = append(descs, match[2])
+		if len(descs) == 2 {
+			break
 		}
 	}
-	return lines
+	if len(descs) < 2 {
+		return fallbackPrompts()
+	}
+	return []string{
+		"What does the wiki say about " + descs[0] + "?",
+		"How is " + descs[1] + " related to " + descs[0] + "?",
+		"Which pages rest on a single source?",
+	}
 }
 
-// maxInt returns the larger of a and b.
-func maxInt(a, b int) int {
-	if a > b {
-		return a
+// loadPrompts reads index.md through the engine's vault (D10) and returns
+// the prompt set for it. Every failure — no engine, unreadable vault,
+// missing index — degrades to fallbackPrompts; suggested questions are
+// never worth an error surface.
+func (m *Model) loadPrompts() []string {
+	if m.deps.Engine == nil {
+		return fallbackPrompts()
 	}
-	return b
-}
-
-// tailLines returns the last n elements of lines, or all of them if there
-// are n or fewer — how the scrollback keeps the most recent activity in
-// view rather than the oldest.
-func tailLines(lines []string, n int) []string {
-	if n <= 0 {
-		return nil
+	src, err := m.deps.Engine.Vault().Read("index.md")
+	if err != nil {
+		return fallbackPrompts()
 	}
-	if len(lines) <= n {
-		return lines
-	}
-	return lines[len(lines)-n:]
-}
-
-// wrapText word-wraps s to width w, breaking a single word longer than w
-// on rune boundaries. It never returns an empty slice, so an empty entry
-// still occupies exactly one blank line.
-func wrapText(s string, w int) []string {
-	if w < 1 {
-		w = 1
-	}
-	var out []string
-	for _, para := range strings.Split(s, "\n") {
-		out = append(out, wrapParagraph(para, w)...)
-	}
-	if len(out) == 0 {
-		out = []string{""}
-	}
-	return out
-}
-
-// wrapParagraph word-wraps one line (no "\n") of text to width w.
-func wrapParagraph(s string, w int) []string {
-	words := strings.Fields(s)
-	if len(words) == 0 {
-		return []string{""}
-	}
-	var lines []string
-	cur := ""
-	for _, word := range words {
-		for len([]rune(word)) > w {
-			if cur != "" {
-				lines = append(lines, cur)
-				cur = ""
-			}
-			r := []rune(word)
-			lines = append(lines, string(r[:w]))
-			word = string(r[w:])
-		}
-		switch {
-		case cur == "":
-			cur = word
-		case len([]rune(cur))+1+len([]rune(word)) <= w:
-			cur += " " + word
-		default:
-			lines = append(lines, cur)
-			cur = word
-		}
-	}
-	if cur != "" {
-		lines = append(lines, cur)
-	}
-	return lines
-}
-
-// fitLine returns s clipped or padded to exactly w display columns
-// (backbone §12: "no line wider than w"). Duplicated from
-// internal/ui/layout.go, which is unexported and not something a screen
-// imports (same pattern as internal/ui/review/diffview.go).
-func fitLine(s string, w int) string {
-	if w <= 0 {
-		return ""
-	}
-	s = lipgloss.NewStyle().MaxWidth(w).Render(s)
-	if cur := lipgloss.Width(s); cur < w {
-		s += strings.Repeat(" ", w-cur)
-	}
-	return s
-}
-
-// fitLines splits s on "\n" and returns exactly n lines, each fitLine'd to
-// w: lines beyond n are dropped, missing ones come back blank.
-func fitLines(s string, w, n int) []string {
-	if n < 0 {
-		n = 0
-	}
-	src := strings.Split(s, "\n")
-	out := make([]string, n)
-	for i := range out {
-		var line string
-		if i < len(src) {
-			line = src[i]
-		}
-		out[i] = fitLine(line, w)
-	}
-	return out
+	return promptsFromIndex(src)
 }

@@ -275,8 +275,13 @@ func TestErrorEventNeverPanics(t *testing.T) {
 }
 
 // TestToolCallExpandToggle proves the collapsed/expanded contract: a
-// truncated preview (with the error visibly marked) collapsed, the full
-// args and result on expand via enter, and back on a second enter.
+// clipped preview (with the error visibly marked) collapsed, the full args
+// and result on expand via enter, and back on a second enter. The 003
+// frozen layout changed the shapes this asserts on: a collapsed row clips
+// its result to the mockup's W = min(content width, 100) with an ellipsis
+// (s2-screens.md T08, mockgen.ask_conversation's clip_cells), and expanding
+// needs the call selected first (↑/↓), because the selection no longer
+// follows the streaming call.
 func TestToolCallExpandToggle(t *testing.T) {
 	d := newTestDeps(t)
 	m := New(d).(*Model)
@@ -288,24 +293,36 @@ func TestToolCallExpandToggle(t *testing.T) {
 	if m.entries[len(m.entries)-1].tool.expanded {
 		t.Fatalf("tool call starts expanded")
 	}
+	// A tool call arrives unselected (state.go): the frozen
+	// ask-conversation grids show a finished transcript with no cursor
+	// gutter, so a selection exists only where the curator put it.
+	if m.selected != -1 {
+		t.Fatalf("tool call auto-selected itself (selected = %d), want -1", m.selected)
+	}
 
-	// A generous width: the assertion is about the truncated-preview
-	// *convention* (a fixed rune budget, s4-tui.md S4-T6), not about
-	// squeezing it into an arbitrarily narrow line — View's own "fits w"
-	// contract at small widths is TestViewNeverPanicsAtExtremeSizes's job.
+	// A generous width: the assertion is about the collapsed row's clip
+	// *convention*, not about squeezing it into an arbitrarily narrow line
+	// — View's own "fits w" contract at small widths is
+	// TestViewNeverPanicsAtExtremeSizes's job.
 	const w = 200
 	collapsed := m.View(w, 10)
-	wantPreview := truncateRunes(singleLine(content), toolResultPreviewRunes)
-	if !strings.Contains(collapsed, wantPreview) {
-		t.Fatalf("collapsed view missing truncated preview %q:\n%s", wantPreview, collapsed)
-	}
-	if strings.Contains(collapsed, "args:") {
-		t.Fatalf("collapsed view already shows the expanded args block:\n%s", collapsed)
-	}
 	if !strings.Contains(collapsed, "✗") {
 		t.Fatalf("collapsed view does not mark the error result:\n%s", collapsed)
 	}
+	// The result clips to the collapsed row's W: 4 of the 10 occurrences
+	// fit before the ellipsis, so the full result is not on screen.
+	if got := strings.Count(collapsed, "result-detail"); got >= 10 {
+		t.Fatalf("collapsed view shows the whole result (%d of 10 occurrences):\n%s", got, collapsed)
+	}
+	if !strings.Contains(collapsed, "…") {
+		t.Fatalf("collapsed view does not clip the result with an ellipsis:\n%s", collapsed)
+	}
+	if strings.Contains(collapsed, "    "+`{"q":"kv cache"}`) {
+		t.Fatalf("collapsed view already shows the expanded args block:\n%s", collapsed)
+	}
 
+	// Select the call, then expand it (enter on an empty input box).
+	m.moveSelection(1)
 	pane, _ := m.Update(specialKey(tea.KeyEnter, 0))
 	m = pane.(*Model)
 	if !m.entries[len(m.entries)-1].tool.expanded {
@@ -313,11 +330,13 @@ func TestToolCallExpandToggle(t *testing.T) {
 	}
 
 	expanded := m.View(w, 10)
-	if !strings.Contains(expanded, "args:") {
-		t.Fatalf("expanded view missing the full args block:\n%s", expanded)
+	if !strings.Contains(expanded, "    "+`{"q":"kv cache"}`) {
+		t.Fatalf("expanded view missing the full args block indented 4:\n%s", expanded)
 	}
-	if !strings.Contains(expanded, "result-detail") {
-		t.Fatalf("expanded view does not show the full result:\n%s", expanded)
+	// The head row keeps its clipped preview; the expanded block below it
+	// shows the whole result.
+	if got := strings.Count(expanded, "result-detail"); got < 10 {
+		t.Fatalf("expanded view shows only %d of 10 result occurrences:\n%s", got, expanded)
 	}
 
 	pane, _ = m.Update(specialKey(tea.KeyEnter, 0))

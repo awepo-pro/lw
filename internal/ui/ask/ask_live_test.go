@@ -273,12 +273,14 @@ func TestSubmitStartsRealTurnAndStreamsScript(t *testing.T) {
 		t.Fatalf("ui.StageChangedMsg = %#v, want {%s 1}", gotStage, csID)
 	}
 
-	// DoneEv closed the turn with its status line.
+	// DoneEv closed the turn with its status line — the frozen
+	// turn-boundary text, `done · N rounds` from DoneEv.Rounds
+	// (s2-screens.md T08).
 	if m.turnActive {
 		t.Fatal("turn still active after DoneEv")
 	}
-	if got := lastEntry(m); got.kind != kindStatus || !strings.Contains(got.text, "done: stop") {
-		t.Fatalf("last entry = %#v, want a \"done: stop\" status line", got)
+	if got := lastEntry(m); got.kind != kindStatus || got.text != "done · 1 rounds" {
+		t.Fatalf("last entry = %#v, want the \"done · 1 rounds\" status line", got)
 	}
 }
 
@@ -407,8 +409,8 @@ func TestSubmitWithNoOpenChangesetRejectsWhenNothingStaged(t *testing.T) {
 		t.Fatal("turn still marked active after DoneEv")
 	}
 	last := lastEntry(m)
-	if last.kind != kindStatus || !strings.Contains(last.text, "done: stop") {
-		t.Fatalf("last entry = %#v, want the \"done: stop\" status line", last)
+	if last.kind != kindStatus || last.text != "done · 1 rounds" {
+		t.Fatalf("last entry = %#v, want the \"done · 1 rounds\" status line", last)
 	}
 	if m.sessionID != "" {
 		t.Fatalf("pane sessionID = %q after the reject, want empty", m.sessionID)
@@ -780,10 +782,11 @@ func TestErrorEventRendersAsAStyledErrorEntry(t *testing.T) {
 		t.Fatalf("view does not render the error visibly:\n%s", view)
 	}
 	// Theme-aware, literally: the same entry, rendered through the pane's
-	// own Bad style.
-	want := renderPrefixed("error: ", got.text, 80, m.theme.Bad)
-	if !strings.Contains(view, strings.TrimRight(want[0], " ")) {
-		t.Fatalf("error entry is not rendered in the theme's Bad style:\nwant %q in\n%s", want[0], view)
+	// own Bad style (view.go renders the boundary as Bad.Render("error: "
+	// + text); the pane's clipped wrap must carry that exact styled run).
+	want := m.theme.Bad.Render("error: " + got.text)
+	if !strings.Contains(view, want) {
+		t.Fatalf("error entry is not rendered in the theme's Bad style:\nwant %q in\n%s", want, view)
 	}
 }
 

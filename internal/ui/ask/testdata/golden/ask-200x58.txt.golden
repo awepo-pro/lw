@@ -1,0 +1,58 @@
+╭ Transcript ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ you                                                                                                                                                                                                  │
+│ How does calling Claude through Vertex AI differ from the Anthropic API?                                                                                                                             │
+│                                                                                                                                                                                                      │
+│ ▸ wiki_search {"query":"claude vertex ai anthropic api"}  → 4 pages: anthropic-api-vs-vertex-ai, cl…                                                                                                 │
+│ ▸ wiki_get {"path":"wiki/comparisons/anthropic-api-vs-vertex-ai.md"}  → Anthropic Official API vs V…                                                                                                 │
+│                                                                                                                                                                                                      │
+│ assistant                                                                                                                                                                                            │
+│ Both paths call the same Claude weights, so the difference is governance, not model quality. The                                                                                                     │
+│ direct API authenticates with static x-api-key keys, goes over the public internet to                                                                                                                │
+│ api.anthropic.com, bills on an Anthropic invoice and gets beta features first. Vertex AI uses GCP                                                                                                    │
+│ IAM and service accounts, can keep traffic on the private GCP backbone (VPC-SC / PSC), bills against                                                                                                 │
+│ GCP commitments and trails new features by a stated 2–4 weeks. See anthropic-api-vs-vertex-ai and                                                                                                    │
+│ claude.                                                                                                                                                                                              │
+│                                                                                                                                                                                                      │
+│ done · 2 rounds                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭ Message ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ › █ Ask about the wiki…                                                                                                                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯

@@ -71,17 +71,22 @@ func TestAskCapturesText(t *testing.T) {
 
 	_, plain := uitest.Screen(m)
 
-	// The input line is the pane's bottom row: "> " + the typed text,
-	// padded to the width. Trim the padding and it must be exactly the
-	// question — nothing eaten (q, ?), nothing swallowed by an overlay.
+	// The input row is the Message panel's one content row (view.go's
+	// messagePanel): accent `›`, the typed text from column 2, the accent
+	// `█` cursor right after it — the only `█` on the frame. Strip the
+	// panel borders and it must be exactly `› ` + question + `█` — nothing
+	// eaten (q, ?), nothing swallowed by an overlay.
 	var input string
 	for _, line := range strings.Split(plain, "\n") {
-		if strings.HasPrefix(line, "> ") {
-			input = strings.TrimRight(line, " ") // the last "> " row is the input box
+		if trimmed := strings.TrimRight(line, " "); strings.Contains(trimmed, "█") {
+			input = trimmed
 		}
 	}
-	if want := "> " + question; input != want {
-		t.Fatalf("ask input line = %q, want %q", input, want)
+	input = strings.TrimPrefix(strings.TrimPrefix(input, "│ "), "› ")
+	input = strings.TrimSuffix(input, " │")
+	input = strings.TrimRight(input, " ") // the content's own padding, in front of the border
+	if want := question + "█"; input != want {
+		t.Fatalf("ask input row = %q, want %q", input, want)
 	}
 
 	// And the keys overlay never opened mid-question.
