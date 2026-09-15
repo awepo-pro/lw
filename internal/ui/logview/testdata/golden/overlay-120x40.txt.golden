@@ -1,0 +1,40 @@
+ ml-notes   Review  Ask  Lint  Log  Browse                      6 pages · 1 raw · 0 lint   cs-05f94b · 4 ops · checks ✓ 
+╭ Events ───────────────────────────────────────────────────────────────────────────────────────────────────────── all ╮
+│ 2026-08-29 12:00  · changeset_opened  uitest: add baker percentages to the bread wiki                                │
+│ 2026-08-29 12:00  · op_proposed       op1 · raw/articles/baker-percentages-explained.md                              │
+│ 2026-08-29 12:00  · op_proposed       op2 · wiki/concepts/baker-percentages.md                                       │
+│ 2026-08-29 12:00  · op_proposed       op3 · wiki/concepts/autolyse.md                                                │
+│ 2026-08-29 12:00  · op_proposed       op4 · wiki/entities/banneton.md                                                │
+│▌2026-08-29 12:00  · hunk_dropped      op4 · h1 · wiki/entities/banneton.md                                           │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                           ╭ Keys ────────────────────────────────────────── esc to close ╮                           │
+│                           │                                                              │                           │
+│                           │  Log                            Everywhere                   │                           │
+│                           │                                                              │                           │
+│                           │  j/k     down / up              tab       next screen        │                           │
+│                           │  g/G     top / bottom           ctrl+r    ask → review       │                           │
+│                           │  f       cycle filter           ?         close              │                           │
+│                           │  r       revert commit          q/ctrl+c  quit               │                           │
+│                           │                                                              │                           │
+│                           │                                                              │                           │
+│                           │                                                              │                           │
+│                           │                                                              │                           │
+│                           │                                                              │                           │
+│                           │                                                              │                           │
+│                           ╰──────────────────────────────────────────────────────────────╯                           │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────── 6 of 6 ╯
+ j/k move  g/G top/bottom  f filter  r revert  ? help                                                                   
