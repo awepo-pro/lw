@@ -65,7 +65,7 @@ Start in an empty directory. `lw` finds the vault by walking up to the nearest
 ancestor containing `SCHEMA.md`, so run the verbs from inside it.
 
 ```bash
-mkdir ml-notes && cd ml-notes
+mkdir ml-wiki && cd ml-wiki
 
 # 1. Scaffold the vault: SCHEMA.md, index.md, log.md, curator-memory.md,
 #    raw/{articles,papers,transcripts,assets}/, wiki/, .llmwiki/
@@ -165,7 +165,7 @@ Review → Ask → Lint → Log → Browse   (wrapping back to Review)
 
 Every screen draws inside the same frame. The header row names the vault,
 the five screens, and — on the right — the vault counts plus the open
-changeset (`cs-09cdb2 · 2 ops · checks ✓`, or `no changeset`). The footer
+changeset (`cs-1c86cb · 1 op · checks ✓`, or `no changeset`). The footer
 row always shows what the current screen's keys actually do, ending with
 `? help` — `?` toggles a help overlay listing every key on the active
 screen. The UI needs a terminal of at least **80×24**; anything smaller
