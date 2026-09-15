@@ -51,20 +51,15 @@ const maxJPresses = 10
 
 // The review script's target: op3, the private-network-access patch the
 // mockup vault stages and the Ops panel's cursor starts on. The vault's
-// op ids are part of the frozen setup — the same reason the contract pins
-// DropHunk("op4", "h1").
+// contents are part of the frozen setup — the same reason the contract
+// pins DropHunk("op4", "h1").
 const (
 	reviewTargetPanel = "Ops"
-	reviewTargetID    = "op3"
 	reviewTargetLabel = "private-network-access.md"
-	reviewTargetPath  = "wiki/concepts/private-network-access.md"
 )
 
 // The browse script's target: the selected comparison page.
-const (
-	browseTargetLabel = "anthropic-api-vs-vertex-ai"
-	browseTargetPath  = "wiki/comparisons/anthropic-api-vs-vertex-ai.md"
-)
+const browseTargetLabel = "anthropic-api-vs-vertex-ai"
 
 // runViewScript drives m through its grid's script (s1-harness-gate.md
 // T13), after the size and background messages have been delivered.
@@ -86,19 +81,19 @@ func runViewScript(t *testing.T, name string, m tea.Model) tea.Model {
 		return pressKeys(t, m, "tab")
 
 	case strings.HasPrefix(name, "review-preview-"):
-		m = driveCursorTo(t, m, reviewTargetPanel, reviewTargetID, reviewTargetLabel, reviewTargetPath)
+		m = driveCursorTo(t, m, reviewTargetPanel, reviewTargetLabel)
 		return pressKeys(t, m, "p")
 
 	case strings.HasPrefix(name, "keys-"):
-		m = driveCursorTo(t, m, reviewTargetPanel, reviewTargetID, reviewTargetLabel, reviewTargetPath)
+		m = driveCursorTo(t, m, reviewTargetPanel, reviewTargetLabel)
 		return pressKeys(t, m, "?")
 
 	case strings.HasPrefix(name, "review-"):
-		return driveCursorTo(t, m, reviewTargetPanel, reviewTargetID, reviewTargetLabel, reviewTargetPath)
+		return driveCursorTo(t, m, reviewTargetPanel, reviewTargetLabel)
 
 	case strings.HasPrefix(name, "browse-"):
 		m = pressKeys(t, m, "tab", "tab", "tab", "tab")
-		return driveCursorTo(t, m, "Pages", "", browseTargetLabel, browseTargetPath)
+		return driveCursorTo(t, m, "Pages", browseTargetLabel)
 	}
 	t.Fatalf("setup: no view script for grid %s", name)
 	return m
@@ -113,25 +108,27 @@ func pressKeys(t *testing.T, m tea.Model, keys ...string) tea.Model {
 	return m
 }
 
-// minTargetRun is how many leading characters of a target's label must be
-// visible on the cursor row to identify it. Panels clip what does not fit
-// — `…`-clipped in the redesigned ones — so identification is
-// clip-tolerant by design; the shortest clip any grid size produces
-// ("private-network-acce…" at 100 columns) is far longer than this floor,
-// and no other op or page shares a run this long with either target.
+// minTargetRun is how many cells of a target's name must survive the
+// panels' `…` clip for a name cell to identify it. Identification is
+// clip-tolerant by design: the shortest clip any grid size produces —
+// `private-network-acce…` at 100 columns — is far longer than this floor,
+// and no other op or page shares a run this long with either target's name.
 const minTargetRun = 12
+
+// opsNameCol is the Ops row's name cell, in content columns: the glyph sits
+// at column 0 and the kind (`patch`, padded to 6) at column 2, so the
+// basename starts at column 8 (s2-screens.md T06 "Ops rows").
+const opsNameCol = 8
 
 // driveCursorTo presses j until panel's cursor row identifies the target,
 // at most maxJPresses times, else the harness failed: the mockup state was
 // not reached, and the subtest must not present that as a layout diff.
-// opID is the target's op id in the pre-redesign op list, which leads the
-// cursor row with it; empty for screens that label rows by name alone.
-func driveCursorTo(t *testing.T, m tea.Model, panel, opID, label, path string) tea.Model {
+func driveCursorTo(t *testing.T, m tea.Model, panel, label string) tea.Model {
 	t.Helper()
 
 	for presses := 0; ; presses++ {
-		styled, plain := uitest.Screen(m)
-		if row, ok := cursorRow(styled, plain, panel); ok && rowIdentifies(row, opID, label, path) {
+		_, plain := uitest.Screen(m)
+		if row, x, ok := cursorRow(plain, panel); ok && rowIdentifies(row, x, panel, label) {
 			return m
 		}
 		if presses == maxJPresses {
@@ -141,74 +138,87 @@ func driveCursorTo(t *testing.T, m tea.Model, panel, opID, label, path string) t
 	}
 }
 
-// cursorRow returns the plain text of the screen's cursor row in panel:
-// the `▌` row inside the `╭ <panel> ` bordered panel, how the redesigned
-// screens mark it, or — while the screens are still the pre-redesign ones,
-// which mark the cursor by painting the whole row from column 0 with the
-// cursor background — that row.
-func cursorRow(styled, plain, panel string) (string, bool) {
-	if row, ok := panelCursorRow(plain, panel); ok {
-		return row, true
-	}
-	return legacyCursorRow(styled, plain)
-}
-
-// panelCursorRow returns the `▌` row inside the named panel.
-func panelCursorRow(plain, panel string) (string, bool) {
+// cursorRow returns the plain text of panel's cursor row — the `▌` row
+// inside the `╭ <panel> ` bordered panel — with the cell column of the
+// panel's left border, where rowIdentifies's column arithmetic starts.
+func cursorRow(plain, panel string) (row string, x int, ok bool) {
 	rows := strings.Split(plain, "\n")
-	p, ok := findPanelWithTitle(rows, panel)
-	if !ok {
-		return "", false
+	p, found := findPanelWithTitle(rows, panel)
+	if !found {
+		return "", 0, false
 	}
 	for i := p.top + 1; i < p.bottom && i < len(rows); i++ {
 		if cellAt(rows[i], p.x+1) == '▌' {
-			return rows[i], true
+			return rows[i], p.x, true
 		}
 	}
-	return "", false
+	return "", 0, false
 }
 
-// legacyCursorRow returns the plain text of the row the pre-redesign
-// screens paint with the cursor-row background from column 0 (their
-// pre-redesign cursor-row style, whose background was the cursor colour by
-// contract §3 note 4), the way the old op list and browse tree marked the
-// cursor.
-func legacyCursorRow(styled, plain string) (string, bool) {
-	styledRows := strings.Split(styled, "\n")
-	plainRows := strings.Split(plain, "\n")
-	if len(styledRows) != len(plainRows) {
+// rowIdentifies reports whether row — a content row of the panel titled
+// panel, whose left border sits at cell x — names target in its name cell.
+// An Ops row carries the basename at content column opsNameCol; a Pages
+// row's name follows the row's indentation and any `▾ `/`▸ ` directory
+// marker (s2-screens.md T07). The cell runs to the row's first run of two
+// spaces, its first border cell, or its end. The row identifies the target
+// when the cell is a prefix of the target's name and either equals it or —
+// one `…` clip stripped — keeps at least minTargetRun cells. Nothing else
+// in the row counts: op2's dir hint `wiki/concepts/` shares a long prefix
+// with the target's path and must not identify it (C34).
+func rowIdentifies(row string, x int, panel, target string) bool {
+	cell, clipped := nameCell(row, nameCellStart(row, x, panel))
+	if cell == "" || !strings.HasPrefix(target, cell) {
+		return false
+	}
+	if clipped {
+		return len([]rune(cell)) >= minTargetRun
+	}
+	return cell == target
+}
+
+// nameCellStart returns the cell column row's name cell starts at. A Pages
+// row puts its name after the row's indentation and its `▾ `/`▸ ` marker;
+// Ops is the only other driven panel, and puts the basename at content
+// column opsNameCol. Columns are cells, from the panel's left border x:
+// content starts two cells in, past the border and the cursor-gutter
+// column.
+func nameCellStart(row string, x int, panel string) int {
+	if panel == "Pages" {
+		rs := []rune(row)
+		c := x + 2
+		for c < len(rs) && rs[c] == ' ' {
+			c++
+		}
+		if c < len(rs) && (rs[c] == '▾' || rs[c] == '▸') {
+			c += 2 // the marker and the space between marker and name
+		}
+		return c
+	}
+	return x + 2 + opsNameCol
+}
+
+// nameCell returns the name cell row carries from cell start: the run of
+// cells up to the row's first run of two spaces, its first `│` border cell
+// or its end, trailing spaces dropped. clipped reports whether a trailing
+// `…` was stripped — the panels' clip mark, which a cell the panel cut to
+// fit ends in.
+func nameCell(row string, start int) (cell string, clipped bool) {
+	rs := []rune(row)
+	if start >= len(rs) {
 		return "", false
 	}
-	for i, row := range styledRows {
-		cells := scanCells(row)
-		if len(cells) > 0 && strings.Contains(cells[0].sgr, darkCursorBg) {
-			return plainRows[i], true
+	end := len(rs)
+	for c := start; c < len(rs); c++ {
+		if rs[c] == '│' || (rs[c] == ' ' && c+1 < len(rs) && rs[c+1] == ' ') {
+			end = c
+			break
 		}
 	}
-	return "", false
-}
-
-// rowIdentifies reports whether row shows enough of the target to be it.
-// The redesigned panels show the label clipped to what fits, so a visible
-// run of at least minTargetRun leading characters of the label — or the
-// full path — identifies it. The pre-redesign op list leads the cursor row
-// with the op's id, which identifies it at any width (a directory prefix
-// alone cannot: two ops share `wiki/concepts/`).
-func rowIdentifies(row, opID, label, path string) bool {
-	if opID != "" && strings.HasPrefix(strings.TrimLeft(row, " ▎▌"), opID+" ") {
-		return true
+	for end > start && rs[end-1] == ' ' {
+		end--
 	}
-	return leadingRun(row, label) >= minTargetRun || leadingRun(row, path) >= minTargetRun
-}
-
-// leadingRun returns the length of the longest prefix of target contained
-// in row.
-func leadingRun(row, target string) int {
-	tr := []rune(target)
-	for n := len(tr); n >= 1; n-- {
-		if strings.Contains(row, string(tr[:n])) {
-			return n
-		}
+	if cell = string(rs[start:end]); strings.HasSuffix(cell, "…") {
+		return strings.TrimSuffix(cell, "…"), true
 	}
-	return 0
+	return cell, false
 }
