@@ -1,3 +1,8 @@
+// view_test.go pins the Findings panel's render against synthetic reports:
+// the four-column row shape and its severity glyphs, the aligned path and
+// message columns, the 18-cell check cap, the empty/clean state, the
+// cursor gutter and FootNote, the scrolled window, and the non-report
+// states.
 package lintview
 
 import (
@@ -7,76 +12,7 @@ import (
 
 	"github.com/awepo-pro/lw/internal/lint"
 	"github.com/awepo-pro/lw/internal/ui"
-	"github.com/awepo-pro/lw/internal/ui/uitest"
 )
-
-// plainView renders m at w×h and returns the plain (ANSI-stripped) text
-// through the harness's PaneScreen — the same render path the goldens take,
-// so column arithmetic in these tests runs on cells, not escape bytes.
-func plainView(m ui.Pane, w, h int) string {
-	_, plain := uitest.PaneScreen(m, w, h)
-	return plain
-}
-
-// syntheticDeps builds ui.Deps with no engine at all: the view tests below
-// install a synthetic lint.Report straight onto the model (reportMsg is
-// this package's own message), so alignment and glyphs are asserted
-// independently of any fixture vault's lint state.
-func syntheticDeps(t *testing.T) ui.Deps {
-	t.Helper()
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	theme, err := ui.LoadTheme("")
-	if err != nil {
-		t.Fatalf("LoadTheme: %v", err)
-	}
-	keys, err := ui.LoadKeys()
-	if err != nil {
-		t.Fatalf("LoadKeys: %v", err)
-	}
-	return ui.Deps{Theme: theme, Keys: keys}
-}
-
-// withReport returns a loaded model showing findings.
-func withReport(t *testing.T, d ui.Deps, findings []lint.Finding) *Model {
-	t.Helper()
-	p := feedMsg(t, New(d), reportMsg{report: lint.Report{
-		Findings: findings,
-		ByCheck:  groupByCheck(findings),
-	}})
-	return p.(*Model)
-}
-
-// groupByCheck rebuilds the ByCheck view a real lint.Run produces.
-func groupByCheck(findings []lint.Finding) map[string][]lint.Finding {
-	by := map[string][]lint.Finding{}
-	for _, f := range findings {
-		by[f.Check] = append(by[f.Check], f)
-	}
-	return by
-}
-
-// splitRows splits a View render into its rows.
-func splitRows(plain string) []string { return strings.Split(plain, "\n") }
-
-// nonPanelLines counts the panel's content rows: the rows between the top
-// and bottom borders that are not blank padding.
-func nonPanelLines(lines []string) []string {
-	if len(lines) < 3 {
-		return nil
-	}
-	var out []string
-	for _, l := range lines[1 : len(lines)-1] {
-		trimmed := strings.Trim(l, "│ ")
-		if trimmed != "" {
-			out = append(out, trimmed)
-		}
-	}
-	return out
-}
-
-// rowCells decodes one rendered row into runes — column arithmetic is in
-// cells, and the glyphs (`✗`, `!`, `·`) are multi-byte.
-func rowCells(row string) []rune { return []rune(row) }
 
 // TestFindingRowColumnsAllSeverities is the brief's synthetic-render check:
 // a report carrying all three severities renders one row per severity with

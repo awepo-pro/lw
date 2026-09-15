@@ -1,20 +1,16 @@
-// harness_test.go is the package's headless driver: ui.Deps over a fixture
-// engine, key messages, and the Update/View loop that stands in for what
-// tea.Program delivers (never Program.Run itself, C-83). The model, view
-// and golden test files share it.
-package lintview
+// harness_test.go is the log tests' shared plumbing: the Deps builder, the
+// key and command drivers, and the seeded commit-then-revert-then-reject
+// journal history the filter and revert tests read. No test lives here.
+package logview
 
 import (
-	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/awepo-pro/lw/internal/lint"
 	"github.com/awepo-pro/lw/internal/stage"
 	"github.com/awepo-pro/lw/internal/testutil"
 	"github.com/awepo-pro/lw/internal/ui"
-	"github.com/awepo-pro/lw/internal/ui/uitest"
 )
 
 // newTestDeps builds ui.Deps with a real Engine over a private copy of
@@ -94,8 +90,7 @@ func feedMsg(t *testing.T, m ui.Pane, msg tea.Msg) ui.Pane {
 // returns every tea.Msg it produces, in the order Batch's own slice holds
 // them — without feeding any of them back through Update. Used where a
 // test must assert exactly which messages a key press emits, rather than
-// their effect once applied (a plain tea.Cmd, a *tea.BatchMsg producing
-// one, and a nil Cmd are all handled).
+// their effect once applied.
 func collectMsgs(t *testing.T, cmd tea.Cmd) []tea.Msg {
 	t.Helper()
 	if cmd == nil {
@@ -112,70 +107,73 @@ func collectMsgs(t *testing.T, cmd tea.Cmd) []tea.Msg {
 	return []tea.Msg{msg}
 }
 
-// plainView renders m at w×h and returns the plain (ANSI-stripped) text
-// through the harness's PaneScreen — the same render path the goldens take,
-// so column arithmetic in these tests runs on cells, not escape bytes.
-func plainView(m ui.Pane, w, h int) string {
-	_, plain := uitest.PaneScreen(m, w, h)
-	return plain
-}
-
-// syntheticDeps builds ui.Deps with no engine at all: the view tests below
-// install a synthetic lint.Report straight onto the model (reportMsg is
-// this package's own message), so alignment and glyphs are asserted
-// independently of any fixture vault's lint state.
-func syntheticDeps(t *testing.T) ui.Deps {
+// initModel constructs a logview.Model over d and drives its Init() to
+// completion (running the first journal query, if an engine is present).
+func initModel(t *testing.T, d ui.Deps) ui.Pane {
 	t.Helper()
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	theme, err := ui.LoadTheme("")
-	if err != nil {
-		t.Fatalf("LoadTheme: %v", err)
-	}
-	keys, err := ui.LoadKeys()
-	if err != nil {
-		t.Fatalf("LoadKeys: %v", err)
-	}
-	return ui.Deps{Theme: theme, Keys: keys}
+	m := New(d)
+	return runCmd(t, m, m.Init())
 }
 
-// withReport returns a loaded model showing findings.
-func withReport(t *testing.T, d ui.Deps, findings []lint.Finding) *Model {
+// conceptPageContent returns a well-formed wiki/concepts page body, valid
+// against the minimal fixture's SCHEMA.md taxonomy and its own
+// validateCreatePage rule (>= 2 outbound wikilinks to pages the minimal
+// fixture already ships) — the same shape internal/stage's own
+// (unexported, different-package) newConceptPageContent test helper
+// builds.
+func conceptPageContent(title string) []byte {
+	return []byte("---\n" +
+		"title: " + title + "\n" +
+		"created: 2026-08-29\n" +
+		"updated: 2026-08-29\n" +
+		"type: concept\n" +
+		"tags: [inference]\n" +
+		"confidence: medium\n" +
+		"---\n" +
+		"\n# " + title + "\n\n" +
+		"See [[kv-cache]] and [[gpt-4]] for background.\n")
+}
+
+// seedHistory drives e through one full commit-then-revert-then-reject
+// cycle, producing at least one event of every kind the five filters
+// (pinned item 4) need to distinguish:
+//
+//   - changeset_opened, op_proposed, commit_begin, commit_end — all
+//     Actor.Kind == "agent", the commit_begin/commit_end pair carrying the
+//     returned commitID.
+//   - changeset_opened, op_proposed (the revert's own inverse op),
+//     reverted, changeset_rejected — all Actor.Kind == "human" (Revert's
+//     own OpenChangeset call, backbone §5.8), the reverted event also
+//     carrying commitID.
+//
+// Returns the commit id so a test can address its commit_begin/commit_end
+// rows directly.
+func seedHistory(t *testing.T, e *stage.Engine) (commitID string) {
 	t.Helper()
-	p := feedMsg(t, New(d), reportMsg{report: lint.Report{
-		Findings: findings,
-		ByCheck:  groupByCheck(findings),
-	}})
-	return p.(*Model)
-}
 
-// groupByCheck rebuilds the ByCheck view a real lint.Run produces.
-func groupByCheck(findings []lint.Finding) map[string][]lint.Finding {
-	by := map[string][]lint.Finding{}
-	for _, f := range findings {
-		by[f.Check] = append(by[f.Check], f)
+	if _, err := e.OpenChangeset("add a page", stage.Author{Kind: "agent", Model: "test-model"}); err != nil {
+		t.Fatalf("OpenChangeset: %v", err)
 	}
-	return by
-}
-
-// splitRows splits a View render into its rows.
-func splitRows(plain string) []string { return strings.Split(plain, "\n") }
-
-// nonPanelLines counts the panel's content rows: the rows between the top
-// and bottom borders that are not blank padding.
-func nonPanelLines(lines []string) []string {
-	if len(lines) < 3 {
-		return nil
+	if _, err := e.Append(stage.Op{
+		Kind:       stage.OpCreatePage,
+		Path:       "wiki/concepts/seed-page.md",
+		Content:    conceptPageContent("Seed Page"),
+		Rationale:  "test seed",
+		Provenance: []string{"raw/papers/leviathan-2023.md"},
+	}); err != nil {
+		t.Fatalf("Append create_page: %v", err)
 	}
-	var out []string
-	for _, l := range lines[1 : len(lines)-1] {
-		trimmed := strings.Trim(l, "│ ")
-		if trimmed != "" {
-			out = append(out, trimmed)
-		}
+	commitID, err := e.Commit("add a page")
+	if err != nil {
+		t.Fatalf("Commit: %v", err)
 	}
-	return out
-}
 
-// rowCells decodes one rendered row into runes — column arithmetic is in
-// cells, and the glyphs (`✗`, `!`, `·`) are multi-byte.
-func rowCells(row string) []rune { return []rune(row) }
+	if _, err := e.Revert(commitID); err != nil {
+		t.Fatalf("Revert(%s): %v", commitID, err)
+	}
+	if err := e.Reject("test reject"); err != nil {
+		t.Fatalf("Reject: %v", err)
+	}
+
+	return commitID
+}
