@@ -213,6 +213,10 @@ func renderOptions() (renderOpts, error) {
 			Good:   theme.Palette.Good,
 			Warn:   theme.Palette.Warn,
 			Bad:    theme.Palette.Bad,
+			// W5 F3/D-3W: the markdown role colours for headings and
+			// code spans ride the same palette.
+			Heading: theme.Palette.Heading,
+			Code:    theme.Palette.Code,
 		},
 	}, nil
 }
