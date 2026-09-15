@@ -37,7 +37,7 @@ keys.
 
 ## Rebindable actions
 
-These are the thirteen actions in the keymap. Defaults are frozen; the
+These are the fourteen actions in the keymap. Defaults are frozen; the
 `toml` key is the only way to change one.
 
 | TOML key | Default | Action | Screens |
@@ -52,9 +52,10 @@ These are the thirteen actions in the keymap. Defaults are frozen; the
 | `move_up` | `k`, `up` | Move the cursor / selection up | Browse, Review, Lint, Log |
 | `top` | `g` | Jump to the first entry | Browse, Review, Lint, Log |
 | `bottom` | `G` | Jump to the last entry | Browse, Review, Lint, Log |
+| `preview` | `p` | Toggle Review's detail panel between the Diff and a rendered Preview of the staged page | Review |
 | `next_pane` | `tab` | Cycle to the next screen | Shell |
 | `quit` | `q`, `ctrl+c` | Quit `lw` | Shell |
-| `help` | `?` | Help — declared and rebindable, but no help overlay exists yet, so no screen consumes it | — |
+| `help` | `?` | Help — open the centred Keys overlay, which lists the current screen's keys beside the shell's global ones; `?` or `esc` closes it, and while it is open every other key except quit is ignored | Shell |
 
 Review's `y`/`n`/`s`/`A`/`X`/`C` letters are the review surface `/docs/design.md`
 §9 fixes, and they are also the defaults above. The keymap is the source of
@@ -73,15 +74,18 @@ move_down = ["n"]
 move_up   = ["p"]
 ```
 
-On Review this is a real collision: `n` is also `drop_hunk`, and `move_down`
-is matched first, so `n` moves the cursor and the only way to drop a hunk is
-to rebind `drop_hunk` too. Browse, Review, Lint and Log all behave this way.
+On Review this is a double collision: `n` is also `drop_hunk` and `p` is
+also `preview`, and `move_down`/`move_up` are matched first, so `n` and `p`
+both just move the cursor — the only way to drop a hunk or flip the detail
+panel to the Preview is to rebind those actions too. Browse, Review, Lint
+and Log all behave this way.
 
 ```toml
-# The collision resolved: move the action off the key you stole.
+# The collisions resolved: move each action off the key you stole.
 move_down = ["n"]
 move_up   = ["p"]
 drop_hunk = ["d"]
+preview   = ["v"]
 ```
 
 ## Keys that are not rebindable
@@ -92,25 +96,38 @@ keymap can be planned around them.
 
 | Keys | Screen | Action |
 |---|---|---|
-| `enter` | Ask | Send the typed question, or expand the selected tool call |
+| `enter` | Ask | Send the typed question, or expand / collapse the selected tool call |
 | `up` / `down` | Ask | Select the previous / next tool call |
 | `backspace` | Ask | Delete a character from the input box |
 | `ctrl+r` | Ask | Jump to Review |
-| `enter` | Browse | Open the selected page |
-| `/` | Browse | Find a page by name |
+| `enter` | Browse | Toggle a directory open/closed; a page or raw source is already open — the preview follows the cursor |
+| `/` | Browse | Find a page or raw source by name |
 | `esc` | Browse | Close the finder |
-| `h` / `left` | Browse | Collapse the tree |
-| `l` / `right` | Browse | Expand the tree |
-| `enter` | Lint | Expand a finding, or jump to the page in Browse |
+| `h` / `left` | Browse | Collapse the selected directory, or move up to its parent |
+| `l` / `right` | Browse | Expand the selected directory |
+| `enter` | Lint | Open the finding's page in Browse |
 | `f` | Lint | Ask the agent to fix — reports that it needs the agent |
 | `f` | Log | Cycle the log filter |
 | `r` | Log | Revert a commit into a new changeset (opens Review) |
 
-Anything the keymap and this table both leave unbound does nothing. The
-footer bar advertises only keys something actually binds — `tab`, `ctrl+r`,
-Review's `y`/`n`/`C`, and `q` — and no longer hints at `?`: nothing renders a
-help overlay, so nothing consumes it (C-124/TD-8; see the `help` row
-above).
+Anything the keymap and this table both leave unbound does nothing.
+
+Two screens take text input: Ask's message box types whenever Ask is the
+active screen, and Browse's `/` finder types while it is open. While a
+screen is taking text like this, printable keys — `q` and `?` included —
+type into the input instead of triggering a keymap action, so an action
+rebound onto a printable key does not fire while you are typing. The
+non-printable globals still work: `ctrl+c` still quits and `tab` still
+switches screens.
+
+The footer shows the active screen's own keys, and the shell appends a
+suffix after them: `tab screen` always, `q quit` unless that screen is
+taking text input, and `? help` last — so every screen's footer ends the
+same way. When the terminal is too narrow to hold the row, whole bindings
+drop from the end to make it fit; `? help` itself is never dropped. While a
+screen is showing a transient message instead (a refused commit, a revert
+result), the footer shows that message and `? help` in place of the key
+list.
 
 Screens are cycled with `tab`, in this order: Review → Ask → Lint → Log →
 Browse, wrapping back to Review.
