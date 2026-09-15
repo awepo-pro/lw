@@ -1,6 +1,7 @@
 package conformance
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -23,6 +24,14 @@ type colourSet struct {
 	polarity string
 	accentFg string
 	cursorBg string
+	// overlay marks the shell's `?` overlay frames (contract §5 note 4):
+	// the frame under the Keys box is stripped of every colour and
+	// rendered faint, so a `▌` behind the overlay has no cursor
+	// background. The overlay rules replace the cursor-background rule
+	// (contract §9 note 6, C30/D-3S) and are selected by the subtest's
+	// view name at the call site — never inferred from the frame's
+	// content.
+	overlay bool
 }
 
 var (
@@ -30,43 +39,79 @@ var (
 	lightColours = colourSet{polarity: "light", accentFg: lightAccentFg, cursorBg: lightCursorBg}
 )
 
-// checkColours runs contract §9 note 6's colour checks on one render.
-// The background-discipline rule — no background SGR on any row without a
-// `▌` cursor gutter — holds on every frame. The focused-panel and
-// cursor-row checks apply to the frames that have a panel or a cursor row
-// at all: the too-small notice, the shell below D11's minimum, has neither.
+// colourSetsFor returns the dark and light colour sets for one view's
+// subtests. The `keys-*` grids render the shell's `?` overlay, so they
+// check the amended overlay rules (contract §9 note 6, C30/D-3S); every
+// other view keeps the original rules unchanged.
+func colourSetsFor(view string) (dark, light colourSet) {
+	dark, light = darkColours, lightColours
+	if strings.HasPrefix(view, "keys-") {
+		dark.overlay = true
+		light.overlay = true
+	}
+	return dark, light
+}
+
+// checkColours reports every violation of contract §9 note 6's colour
+// checks on one render.
 func checkColours(t *testing.T, styled, plain string, cs colourSet) {
 	t.Helper()
+	for _, problem := range colourProblems(styled, plain, cs) {
+		t.Errorf("%s: %s", cs.polarity, problem)
+	}
+}
 
+// colourProblems runs the colour checks over one render and returns one
+// problem per violation, without the polarity prefix. The background
+// rules and the cursor-row rule depend on the frame kind; the
+// focused-accent rule holds on every frame that has a panel border at
+// all — under the overlay the Keys box is the frame's only accent-bearing
+// border — and the too-small notice, the shell below D11's minimum, has
+// neither panel nor cursor row.
+func colourProblems(styled, plain string, cs colourSet) []string {
 	styledRows := strings.Split(styled, "\n")
 	plainRows := strings.Split(plain, "\n")
 	if len(styledRows) != len(plainRows) {
-		t.Errorf("%s: styled and plain row counts differ (%d vs %d)",
-			cs.polarity, len(styledRows), len(plainRows))
-		return
+		return []string{fmt.Sprintf("styled and plain row counts differ (%d vs %d)",
+			len(styledRows), len(plainRows))}
 	}
 
-	badBackgrounds := 0
-	for i := range styledRows {
-		if !strings.Contains(plainRows[i], cursorGutter) && strings.Contains(styledRows[i], backgroundSGR) {
-			if badBackgrounds == 0 {
-				t.Errorf("%s: row %d carries a background colour but shows no %s cursor gutter",
-					cs.polarity, i+1, cursorGutter)
+	var probs []string
+	if cs.overlay {
+		// (i) The dimming stripped every colour, backgrounds included:
+		// not one `48;2;` survives anywhere in the frame — not even on
+		// the `▌` rows the undimmed frames tint.
+		if n := strings.Count(styled, backgroundSGR); n > 0 {
+			probs = append(probs, fmt.Sprintf("the dimmed frame under the overlay carries %d %s background sequence(s)", n, backgroundSGR))
+		}
+	} else {
+		// The background-discipline rule: no background SGR on any row
+		// without a `▌` cursor gutter.
+		badBackgrounds := 0
+		for i := range styledRows {
+			if !strings.Contains(plainRows[i], cursorGutter) && strings.Contains(styledRows[i], backgroundSGR) {
+				if badBackgrounds == 0 {
+					probs = append(probs, fmt.Sprintf("row %d carries a background colour but shows no %s cursor gutter",
+						i+1, cursorGutter))
+				}
+				badBackgrounds++
 			}
-			badBackgrounds++
+		}
+		if badBackgrounds > 1 {
+			probs = append(probs, fmt.Sprintf("%d more rows carry a background colour without a cursor gutter",
+				badBackgrounds-1))
 		}
 	}
-	if badBackgrounds > 1 {
-		t.Errorf("%s: %d more rows carry a background colour without a cursor gutter",
-			cs.polarity, badBackgrounds-1)
-	}
 
+	// (ii) The focused accent, on the Keys box under the overlay and on
+	// the focused panel everywhere else.
 	if hasAnyRune(plainRows, borderRunes) && !cellCarries(styledRows, borderRunes, cs.accentFg) {
-		t.Errorf("%s: no panel border rune carries the focused accent %s", cs.polarity, cs.accentFg)
+		probs = append(probs, fmt.Sprintf("no panel border rune carries the focused accent %s", cs.accentFg))
 	}
-	if hasAnyRune(plainRows, cursorGutter) && !cellCarries(styledRows, cursorGutter, cs.cursorBg) {
-		t.Errorf("%s: no cursor row carries the cursor background %s", cs.polarity, cs.cursorBg)
+	if !cs.overlay && hasAnyRune(plainRows, cursorGutter) && !cellCarries(styledRows, cursorGutter, cs.cursorBg) {
+		probs = append(probs, fmt.Sprintf("no cursor row carries the cursor background %s", cs.cursorBg))
 	}
+	return probs
 }
 
 // hasAnyRune reports whether any line draws a rune from set.
@@ -128,4 +173,150 @@ func scanCells(line string) []styledCell {
 		i += size
 	}
 	return cells
+}
+
+// TestColourRulesOnOverlayFrame proves the amended overlay rules
+// (contract §9 note 6, C30/D-3S) on synthetic frames, no vault: the
+// dimmed frame under the shell's `?` overlay carries no background
+// colour at all and the Keys box's border carries the focused accent,
+// while a `▌` behind the overlay keeps no cursor background. Each
+// non-passing case also checks the problem names the rule that broke, so
+// a red run cannot be a different rule firing by accident.
+func TestColourRulesOnOverlayFrame(t *testing.T) {
+	t.Run("dimmed_background_passes", func(t *testing.T) {
+		for _, cs := range []colourSet{darkColours, lightColours} {
+			cs.overlay = true
+			frame := overlayFrame(cs.accentFg)
+			if problems := colourProblems(renderStyled(frame), renderPlain(frame), cs); len(problems) > 0 {
+				t.Errorf("%s: a faint frame with a %s gutter and an accent Keys border broke %d rule(s): %v",
+					cs.polarity, cursorGutter, len(problems), problems)
+			}
+		}
+	})
+
+	t.Run("background_under_overlay_fails", func(t *testing.T) {
+		// `any 48;2;` fails — on a dimmed content row and on the `▌` row
+		// itself, which outside overlay mode is the one row allowed a
+		// background.
+		for _, cs := range []colourSet{darkColours, lightColours} {
+			cs.overlay = true
+			for _, place := range []struct {
+				row  int
+				what string
+			}{
+				{2, "a dimmed row"},
+				{0, "the gutter row"},
+			} {
+				frame := withBackground(overlayFrame(cs.accentFg), place.row, cs.cursorBg)
+				problems := colourProblems(renderStyled(frame), renderPlain(frame), cs)
+				if !colourRuleFired(problems, backgroundSGR) {
+					t.Errorf("%s: a background colour on %s broke no overlay rule (got %v)",
+						cs.polarity, place.what, problems)
+				}
+			}
+		}
+	})
+
+	t.Run("keys_border_without_accent_fails", func(t *testing.T) {
+		for _, cs := range []colourSet{darkColours, lightColours} {
+			cs.overlay = true
+			frame := overlayFrame("") // the border rendered faint, not accent
+			problems := colourProblems(renderStyled(frame), renderPlain(frame), cs)
+			if !colourRuleFired(problems, cs.accentFg) {
+				t.Errorf("%s: a Keys border without the focused accent broke no overlay rule (got %v)",
+					cs.polarity, problems)
+			}
+		}
+	})
+
+	t.Run("non_overlay_frame_keeps_cursor_rule", func(t *testing.T) {
+		// The same shape, checked with the original rules: there the `▌`
+		// must carry the cursor background, so its absence still fails.
+		frame := overlayFrame(darkAccentFg)
+		problems := colourProblems(renderStyled(frame), renderPlain(frame), darkColours)
+		if !colourRuleFired(problems, "cursor background") {
+			t.Errorf("a %s without the cursor background broke no rule outside overlay mode (got %v)",
+				cursorGutter, problems)
+		}
+	})
+}
+
+// overlayFrame builds a small synthetic `?` overlay frame: dimmed
+// background rows — the first carrying a `▌` cursor gutter, faint, with
+// no background — and a Keys box top border carrying accentFg. An empty
+// accentFg renders the border faint instead, as the
+// keys_border_without_accent_fails case needs.
+func overlayFrame(accentFg string) [][]seg {
+	border := []seg{{sgr: "38;2;" + accentFg, cells: "╭ Keys ─────────╮"}}
+	if accentFg == "" {
+		border = []seg{{sgr: "2", cells: "╭ Keys ─────────╮"}}
+	}
+	return [][]seg{
+		{{sgr: "2", cells: "▌"}, {sgr: "2", cells: " y  accept hunk"}},
+		border,
+		{{sgr: "2", cells: "│"}, {cells: "esc to close"}, {sgr: "2", cells: "│"}},
+	}
+}
+
+// seg is one run of cells sharing one SGR style.
+type seg struct {
+	sgr   string // SGR parameters; "" is unstyled
+	cells string
+}
+
+// renderStyled renders rows to their styled text, `ESC [ params m` …
+// `ESC [ 0 m` around each segment, the shape lipgloss emits and scanCells
+// reads.
+func renderStyled(rows [][]seg) string {
+	var b strings.Builder
+	for i, row := range rows {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		for _, s := range row {
+			if s.sgr != "" {
+				b.WriteString("\x1b[" + s.sgr + "m")
+			}
+			b.WriteString(s.cells)
+			if s.sgr != "" {
+				b.WriteString("\x1b[0m")
+			}
+		}
+	}
+	return b.String()
+}
+
+// renderPlain returns rows' text with every SGR sequence stripped: the
+// same row count, the same cells.
+func renderPlain(rows [][]seg) string {
+	var b strings.Builder
+	for i, row := range rows {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		for _, s := range row {
+			b.WriteString(s.cells)
+		}
+	}
+	return b.String()
+}
+
+// withBackground returns frame with row carrying one extra cell styled
+// bg — the single `48;2;` sequence the background_under_overlay_fails
+// case adds. overlayFrame builds fresh frames, so editing in place is
+// safe.
+func withBackground(frame [][]seg, row int, bg string) [][]seg {
+	frame[row] = append(frame[row], seg{sgr: bg, cells: " "})
+	return frame
+}
+
+// colourRuleFired reports whether problems contains a violation naming
+// token.
+func colourRuleFired(problems []string, token string) bool {
+	for _, p := range problems {
+		if strings.Contains(p, token) {
+			return true
+		}
+	}
+	return false
 }

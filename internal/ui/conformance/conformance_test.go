@@ -112,9 +112,11 @@ func runGridCase(t *testing.T, tc gridCase, vault string, grid []string) {
 	styled, plain := uitest.Screen(m)
 	actual := strings.Split(plain, "\n")
 
+	darkSet, lightSet := colourSetsFor(tc.name)
+
 	compareGrid(t, tc.name, grid, actual)
 	checkMaskRules(t, tc.name, grid, actual)
-	checkColours(t, styled, plain, darkColours)
+	checkColours(t, styled, plain, darkSet)
 
 	// The same subtest re-renders in light polarity; the plain text must
 	// be identical to the dark render (contract §9 note 6).
@@ -124,7 +126,7 @@ func runGridCase(t *testing.T, tc gridCase, vault string, grid []string) {
 		t.Errorf("light polarity changed the plain text: %s",
 			firstLineDiff(strings.Split(plainLight, "\n"), strings.Split(plain, "\n")))
 	}
-	checkColours(t, styledLight, plainLight, lightColours)
+	checkColours(t, styledLight, plainLight, lightSet)
 }
 
 // newConformanceApp mirrors cmd/lw's buildTUIOptions (cmd_tui.go:173),
