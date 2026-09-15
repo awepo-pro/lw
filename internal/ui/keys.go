@@ -38,6 +38,9 @@ type KeyMap struct {
 	MoveUp     key.Binding // k, up
 	Top        key.Binding // g
 	Bottom     key.Binding // G
+	// Preview toggles Review's detail panel between Diff and Preview
+	// (contract §4).
+	Preview key.Binding // p
 
 	// Shell-wide keys.
 	NextPane key.Binding // tab
@@ -55,13 +58,19 @@ func defaultKeyMap() KeyMap {
 		AcceptAll:  key.NewBinding(key.WithKeys("A"), key.WithHelp("A", "accept all")),
 		Reject:     key.NewBinding(key.WithKeys("X"), key.WithHelp("X", "reject changeset")),
 		Commit:     key.NewBinding(key.WithKeys("C"), key.WithHelp("C", "commit")),
-		MoveDown:   key.NewBinding(key.WithKeys("j", "down"), key.WithHelp("j", "down")),
-		MoveUp:     key.NewBinding(key.WithKeys("k", "up"), key.WithHelp("k", "up")),
-		Top:        key.NewBinding(key.WithKeys("g"), key.WithHelp("g", "top")),
-		Bottom:     key.NewBinding(key.WithKeys("G"), key.WithHelp("G", "bottom")),
-		NextPane:   key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "next pane")),
-		Quit:       key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
-		Help:       key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
+		// MoveDown's help is the merged "j/k" / "move" footer label (contract
+		// §4): the footer shows one entry for both movement keys, and a pane
+		// omits MoveUp from its own footer list.
+		MoveDown: key.NewBinding(key.WithKeys("j", "down"), key.WithHelp("j/k", "move")),
+		MoveUp:   key.NewBinding(key.WithKeys("k", "up"), key.WithHelp("k", "up")),
+		// Top's help is likewise the merged "g/G" / "top/bottom" label; a
+		// pane omits Bottom from its own footer list.
+		Top:      key.NewBinding(key.WithKeys("g"), key.WithHelp("g/G", "top/bottom")),
+		Bottom:   key.NewBinding(key.WithKeys("G"), key.WithHelp("G", "bottom")),
+		Preview:  key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "preview")),
+		NextPane: key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "screen")),
+		Quit:     key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
+		Help:     key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
 	}
 }
 
@@ -79,6 +88,7 @@ type keysFile struct {
 	MoveUp     []string `toml:"move_up"`
 	Top        []string `toml:"top"`
 	Bottom     []string `toml:"bottom"`
+	Preview    []string `toml:"preview"`
 	NextPane   []string `toml:"next_pane"`
 	Quit       []string `toml:"quit"`
 	Help       []string `toml:"help"`
@@ -102,6 +112,7 @@ func (f keysFile) applyOverrides(km *KeyMap) {
 	set(&km.MoveUp, f.MoveUp)
 	set(&km.Top, f.Top)
 	set(&km.Bottom, f.Bottom)
+	set(&km.Preview, f.Preview)
 	set(&km.NextPane, f.NextPane)
 	set(&km.Quit, f.Quit)
 	set(&km.Help, f.Help)

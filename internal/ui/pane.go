@@ -1,7 +1,10 @@
 // pane.go implements backbone §12's shared shell vocabulary: the Screen
 // enum, the Pane interface every screen package implements, the Deps and
 // Options a screen (and the shell itself) are constructed with, and the
-// messages the shell broadcasts to panes.
+// messages the shell broadcasts to panes. The interface itself is unchanged
+// by 003's frame redesign (01-contract.md §5: "Pane interface: unchanged")
+// — a screen opts into the new chrome by implementing FooterHelper,
+// OverlayHelper and StatusReporter (help.go) instead, all optional.
 //
 // Nothing here imports a screen package. Options.Panes is injected by
 // cmd/lw once a screen exists (s4-tui.md S4-T2 item 1) — that is what lets

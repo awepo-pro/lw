@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -219,9 +220,13 @@ func TestTUIAgentWiresThroughNewAgentToTheAskPane(t *testing.T) {
 	deps.Agent = wired
 	app := ui.NewApp(buildTUIOptions(deps))
 
-	// Before the turn, the STAGE panel shows the open changeset with no ops.
-	if before := app.View().Content; !strings.Contains(before, "0 op(s)") {
-		t.Fatalf("shell view before the turn = %q, want it to show 0 op(s)", before)
+	// Before the turn, the header's changeset group shows the open
+	// changeset with no ops. The app's default size is 80×24 (ui.NewApp),
+	// where the header drops the page/raw/lint stats group but keeps the
+	// changeset group (contract §5 frame note 1; matches
+	// testdata/frozen/header-review-80.txt).
+	if before := app.View().Content; !strings.Contains(before, "0 ops · checks") {
+		t.Fatalf("shell view before the turn = %q, want it to show 0 ops", before)
 	}
 
 	seen := askQuestion(t, app, "stage a page about the wiring test")
@@ -242,9 +247,10 @@ func TestTUIAgentWiresThroughNewAgentToTheAskPane(t *testing.T) {
 	}
 
 	// The pane's StageEv came back through the shell as a live badge update:
-	// the STAGE panel now shows the op the fake proposed.
-	if after := app.View().Content; !strings.Contains(after, "1 op(s)") {
-		t.Fatalf("shell view after the turn does not show 1 op(s):\n%s", after)
+	// the header's changeset group now shows the op the fake proposed —
+	// singular "1 op" (contract §5 note 1, clarified ORCH-3).
+	if after := app.View().Content; !strings.Contains(after, "1 op · checks") {
+		t.Fatalf("shell view after the turn does not show 1 op:\n%s", after)
 	}
 
 	// And the ask pane's own scrollback — visible because Ask is the active
@@ -365,7 +371,10 @@ func withTUIThemeSeam(t *testing.T, fn func(name string) (ui.Theme, error)) *[]s
 // TestTUIThemeUsesConfigThemeName is the S6 wrap-up's cmd/lw half: `theme`
 // in config.toml is what reaches ui.LoadTheme. LoadTheme("") — the call this
 // replaces — ignores the config, so a curator who set nord got lw's default
-// palette and had no way to tell why.
+// palette and had no way to tell why. "nord" no longer names a compiled
+// palette (contract §3 note 2, 003): it degrades to the default theme with
+// the exact retirement warning, which is itself the proof the config's name
+// reached LoadTheme.
 func TestTUIThemeUsesConfigThemeName(t *testing.T) {
 	dir := configTestEnv(t)
 	writeConfigFile(t, dir, `theme = "nord"
@@ -383,8 +392,9 @@ func TestTUIThemeUsesConfigThemeName(t *testing.T) {
 	if got := (*requested)[0]; got != "nord" {
 		t.Fatalf("LoadTheme was given %q, want the config's \"nord\"", got)
 	}
-	if theme.Warnings != nil {
-		t.Errorf("warnings = %v, want none for a built-in theme name", theme.Warnings)
+	wantWarnings := []string{`theme: "nord" is not available in lw 2; using the default theme`}
+	if !reflect.DeepEqual(theme.Warnings, wantWarnings) {
+		t.Errorf("warnings = %v, want %v", theme.Warnings, wantWarnings)
 	}
 	if keys.Warnings != nil {
 		t.Errorf("keymap warnings = %v, want none with no hotkeys.toml", keys.Warnings)
@@ -432,7 +442,7 @@ func TestTUIThemeGarbageNameDegradesWithAWarning(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("tuiTheme degraded to exit %d, want 0 — a garbage theme name is never fatal", code)
 	}
-	if !strings.Contains(stderr, `unknown theme "solar-flare-9000"`) {
+	if !strings.Contains(stderr, `theme: "solar-flare-9000" is not available in lw 2; using the default theme`) {
 		t.Errorf("stderr = %q, want the unknown-theme warning", stderr)
 	}
 	if !strings.Contains(stderr, "lw tui: warning:") {

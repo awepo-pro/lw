@@ -1,0 +1,84 @@
+{
+  "wrap": [
+    {
+      "text": "aaa bbb ccc",
+      "width": 7,
+      "hang": 0,
+      "want": [
+        "aaa bbb",
+        "ccc"
+      ]
+    },
+    {
+      "text": "aaa bbb ccc",
+      "width": 7,
+      "hang": 2,
+      "want": [
+        "aaa bbb",
+        "  ccc"
+      ]
+    },
+    {
+      "text": "abcdefghij",
+      "width": 4,
+      "hang": 0,
+      "want": [
+        "abcd",
+        "efgh",
+        "ij"
+      ]
+    },
+    {
+      "text": "one two",
+      "width": 20,
+      "hang": 0,
+      "want": [
+        "one two"
+      ]
+    },
+    {
+      "text": "",
+      "width": 5,
+      "hang": 0,
+      "want": [
+        ""
+      ]
+    },
+    {
+      "text": "The new source documents an on-machine egress technique that readers could",
+      "width": 40,
+      "hang": 0,
+      "want": [
+        "The new source documents an on-machine",
+        "egress technique that readers could"
+      ]
+    }
+  ],
+  "clip": [
+    {
+      "text": "abcdef",
+      "width": 4,
+      "want": "abc…"
+    },
+    {
+      "text": "ab",
+      "width": 4,
+      "want": "ab"
+    },
+    {
+      "text": "x",
+      "width": 0,
+      "want": ""
+    },
+    {
+      "text": "abcd",
+      "width": 4,
+      "want": "abcd"
+    },
+    {
+      "text": "network-namespace-egress-isolation.md",
+      "width": 20,
+      "want": "network-namespace-e…"
+    }
+  ]
+}
