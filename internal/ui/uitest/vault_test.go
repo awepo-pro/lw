@@ -136,16 +136,65 @@ func TestPublicVaultShape(t *testing.T) {
 	}
 }
 
+// TestPublicVaultAnyWorkingDir proves the fixture is located from the
+// working directory go test sets — the CALLING package's directory — so the
+// screen packages' tests (internal/ui/ask, cmd/lw, …) can all call
+// PublicVault from their own directories, not only uitest's.
+func TestPublicVaultAnyWorkingDir(t *testing.T) {
+	t.Run("from_ask_package", func(t *testing.T) {
+		t.Chdir("../ask")
+		assertFixtureShape(t, PublicVault(t, "anyworkingdir-ask"))
+	})
+
+	t.Run("from_cmd_lw_package", func(t *testing.T) {
+		t.Chdir("../../../cmd/lw")
+		assertFixtureShape(t, PublicVault(t, "anyworkingdir-cmd"))
+	})
+
+	t.Run("outside_repository_errors", func(t *testing.T) {
+		got, err := publicFixtureDir(t.TempDir())
+		if err == nil {
+			t.Fatalf("publicFixtureDir(%s) = %q, nil; want an error", t.TempDir(), got)
+		}
+		if !strings.Contains(err.Error(), "internal/ui/uitest/testdata/vault") {
+			t.Fatalf("publicFixtureDir outside a repository = %q, want an error naming internal/ui/uitest/testdata/vault", err)
+		}
+	})
+}
+
+// assertFixtureShape asserts the shape facts TestPublicVaultShape checks:
+// the committed vault's counts and the staged changeset's four live ops.
+func assertFixtureShape(t *testing.T, v *Vault) {
+	t.Helper()
+	if got := len(v.Engine.Vault().Pages()); got != 6 {
+		t.Errorf("committed vault has %d pages, want 6", got)
+	}
+	if got := len(v.Engine.Vault().RawSources()); got != 1 {
+		t.Errorf("committed vault has %d raw sources, want 1", got)
+	}
+	c, err := v.Engine.Current()
+	if err != nil {
+		t.Fatalf("Current(): %v", err)
+	}
+	if live := c.Live(); len(live) != 4 {
+		t.Errorf("open changeset has %d live ops, want 4", len(live))
+	}
+}
+
 // TestCopyVault copies the public fixture as a stand-in for an existing
 // vault directory and pins that the copy — not the original — is opened:
 // same page and raw counts, engine state created under the copy and never
 // under the source, and no changeset staged on the bare vault.
 func TestCopyVault(t *testing.T) {
-	src, err := filepath.Abs(fixtureVaultDir)
+	wd, err := os.Getwd()
 	if err != nil {
-		t.Fatalf("Abs(%s): %v", fixtureVaultDir, err)
+		t.Fatalf("getwd: %v", err)
 	}
-	v := CopyVault(t, fixtureVaultDir)
+	src, err := publicFixtureDir(wd)
+	if err != nil {
+		t.Fatalf("publicFixtureDir(%s): %v", wd, err)
+	}
+	v := CopyVault(t, src)
 
 	if got := filepath.Base(v.Root); got != "vault" {
 		t.Errorf("CopyVault root = %q, want its base name to be the source's: %q", v.Root, got)

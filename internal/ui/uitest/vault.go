@@ -35,16 +35,44 @@ type Vault struct {
 	Engine *stage.Engine
 }
 
-// fixtureVaultDir is the public fixture, relative to this package's
-// directory (the working directory go test sets for a package's tests).
-const fixtureVaultDir = "testdata/vault"
+// publicFixtureDir walks up from start looking for the public fixture —
+// internal/ui/uitest/testdata/vault — and returns its absolute path, the way
+// testutil's fixtureRoot locates spec/fixtures. The working directory go
+// test sets is the
+// CALLING package's directory, so PublicVault works from any package's tests
+// only if it walks up. Kept separate from PublicVault so the walk can be
+// tested from outside the repository. Never resolves via runtime.Caller:
+// the nix build runs these tests with -trimpath, where source paths are not
+// real filesystem paths.
+func publicFixtureDir(start string) (string, error) {
+	dir := start
+	for {
+		candidate := filepath.Join(dir, "internal", "ui", "uitest", "testdata", "vault")
+		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+			return candidate, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", fmt.Errorf("uitest: no internal/ui/uitest/testdata/vault directory found above %s", start)
+		}
+		dir = parent
+	}
+}
 
 // PublicVault copies internal/ui/uitest/testdata/vault into t.TempDir()/<name>
 // and stages its fixture changeset (§6 note 2). name is the directory base
 // name (the header shows it). Fails the test on error.
 func PublicVault(t *testing.T, name string) *Vault {
 	t.Helper()
-	root := copyTree(t, fixtureVaultDir, filepath.Join(t.TempDir(), name))
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("uitest: getwd: %v", err)
+	}
+	fixtureDir, err := publicFixtureDir(wd)
+	if err != nil {
+		t.Fatalf("uitest: %v", err)
+	}
+	root := copyTree(t, fixtureDir, filepath.Join(t.TempDir(), name))
 	e := openEngine(t, root)
 	stageFixtureChangeset(t, e)
 	return &Vault{Root: root, Engine: e}
