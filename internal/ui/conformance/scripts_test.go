@@ -14,14 +14,26 @@ import (
 // ask-conversation script types.
 const mockupQuestion = "How does calling Claude through Vertex AI differ from the Anthropic API?"
 
-// mockupAnswer is mockgen.py's ANSWER (line 593), verbatim: the scripted
-// turn's single TextDelta.
-const mockupAnswer = "Both paths call the same Claude weights, so the difference is governance, not model quality. " +
-	"The direct API authenticates with static `x-api-key` keys, goes over the public internet to " +
-	"`api.anthropic.com`, bills on an Anthropic invoice and gets beta features first. Vertex AI uses " +
-	"GCP IAM and service accounts, can keep traffic on the private GCP backbone (VPC-SC / PSC), bills " +
-	"against GCP commitments and trails new features by a stated 2–4 weeks. " +
-	"See [[anthropic-api-vs-vertex-ai]] and [[claude]]."
+// mockupAnswer is askgen.py's ANSWER_MD, verbatim: the answer the user
+// approved in mockup A-5-1, the scripted turn's single TextDelta. Unlike
+// 003's single paragraph it carries markdown structure — a provenance
+// marker, a heading, a list, a fenced block — so it exercises the
+// renderer's markdown line counts.
+const mockupAnswer = `Both paths call the same Claude weights, so the difference is **governance, not model quality**. ` +
+	"^[wiki/comparisons/anthropic-api-vs-vertex-ai.md]\n" +
+	`
+## Where they differ
+
+- **Auth** — static ` + "`x-api-key`" + ` keys, versus GCP IAM and service accounts.
+- **Network** — the public internet to ` + "`api.anthropic.com`" + `, versus the private GCP backbone (VPC-SC / PSC).
+- **Billing** — an Anthropic invoice, versus GCP commitments.
+- **Features** — the direct API gets betas first; Vertex trails by a stated 2-4 weeks.
+
+` + "```python" + `
+client = anthropic.AnthropicVertex(region="us-east5", project_id=PROJECT)
+` + "```" + `
+
+See [[anthropic-api-vs-vertex-ai]] and [[claude]].`
 
 // fakeAgentEvents is s1-harness-gate.md T13's six scripted events, in
 // order: two tool calls with their results, the answer as one TextDelta,

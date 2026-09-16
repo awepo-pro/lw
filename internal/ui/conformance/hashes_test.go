@@ -21,17 +21,19 @@ const (
 const skipReason = "LW_MOCKUP_VAULT not set: the frozen-grid gate runs locally against the private mockup vault"
 
 // gridSHA256 is MASTER §5.0's frozen grid table, embedded as a literal map
-// (contract §9 note 2). Every grid file is verified against it before any
-// comparison runs: a modified grid is a broken gate, not a failing screen.
+// (contract §9 note 2): 003's eighteen grids unchanged, plus the eight
+// ask-* grids of 005's approved mockup A-5-1. Every grid file is verified
+// against it before any comparison runs: a modified grid is a broken gate,
+// not a failing screen.
 var gridSHA256 = map[string]string{
-	"ask-80x24.txt":               "cf176365bd40aec854c5b01e39a370d852675aabf0bd5586438e0b2bf1062920",
-	"ask-100x30.txt":              "43d6acf0e94fbd3450ceb99352a1eda82ded51534aa503c9735385b1794e28bf",
-	"ask-120x40.txt":              "8e3b5b8d7fa34bde8f4d38fa0c064aa26db95e8df8474bfcd7c88497c1cd00ce",
-	"ask-200x60.txt":              "59070f7cec1228e47a6a501ea3bb75874be51c64bad46b8a5fc98c78d0fc903f",
-	"ask-conversation-80x24.txt":  "95f8dc3e3481199e136e07c37438c7229102435d89e60945aba0f016171ffef7",
-	"ask-conversation-100x30.txt": "5bc5fec85e07599df292e297f069c06a5e60558bcca295523c8b7c9b4f280e32",
-	"ask-conversation-120x40.txt": "28147839aaf1d750da1729a352bb4d5888e2be8dccc6f210952808bda20b6ea3",
-	"ask-conversation-200x60.txt": "b307a19aebcd79d3b7947da122bbdde1cd79329142fa4cb19abdb639c095284a",
+	"ask-80x24.txt":               "5743061ef190720705ae10612dedd82831340167531281c36faf594eee89e9b0",
+	"ask-100x30.txt":              "546bcb33044f78361f41354542772a3c74f60d7adc414f51eee0ba1f32e60894",
+	"ask-120x40.txt":              "42f4a041e7d65cf52127708103df53d2237fe9452b76bd46757b8f6f716cdd65",
+	"ask-200x60.txt":              "52b4110f6320cb37ba7ca517ab6711ab66bb845bdac35f166bca12097da89f4e",
+	"ask-conversation-80x24.txt":  "bd06d69c75e52eb6697f23ec8e9f4efa441e53a9d8e03bcded66e49a43c894c4",
+	"ask-conversation-100x30.txt": "95f4bfe5bce49e28ab349b3f1494e05c21136dbcfac417d543700e1cddfc79d9",
+	"ask-conversation-120x40.txt": "73d0049c4cb7eaad4ba56b9eecbabb23c448c70f432ba288a76aba570d7dcc9f",
+	"ask-conversation-200x60.txt": "846e7be1aef71a12ba6e3f2b774931ab69ca7ae9c6919cac57adc1d52949cb13",
 	"browse-80x24.txt":            "68fa572258cd5a279799a7f0baab85c6c0a48a4a406b106f437249ae8334e8e3",
 	"browse-100x30.txt":           "e71b0f99cb61b5ab01f0a1666b76ff2ffaa77f44042c7fd9f50ab50149e64919",
 	"browse-120x40.txt":           "cfc93170a8e09252f37017991c46a8060864943301783583b3917158e8e2bf46",
@@ -53,13 +55,14 @@ var gridSHA256 = map[string]string{
 }
 
 // gridsDir resolves the frozen grids directory: $LW_MOCKUP_GRIDS, or, by
-// default, the metadata tree's plans/003-mockups/ascii, five levels above
-// the private vault (contract §9 note 1).
+// default, the metadata tree's plans/005-mockups/ascii — workflow 005's
+// full approved set (003's 18 grids unchanged plus A-5-1's eight ask-*
+// grids), five levels above the private vault (contract §9 note 1).
 func gridsDir(vault string) string {
 	if dir := os.Getenv(envGrids); dir != "" {
 		return dir
 	}
-	return filepath.Join(vault, "..", "..", "..", "..", "..", "plans", "003-mockups", "ascii")
+	return filepath.Join(vault, "..", "..", "..", "..", "..", "plans", "005-mockups", "ascii")
 }
 
 // loadGrids reads every frozen grid from dir and verifies its sha256
