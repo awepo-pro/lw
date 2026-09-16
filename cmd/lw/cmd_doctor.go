@@ -88,8 +88,15 @@ type doctorCheck struct {
 	Name    string
 	OK      bool
 	Skipped bool
-	Detail  string
-	Remedy  string
+
+	// Warn marks a condition that is true but that lw deliberately refuses
+	// to fix (005 contract §7: a git-tracked .llmwiki/). A warn check keeps
+	// OK: true, so failed() and the exit code treat it as a pass; writeText
+	// marks it visibly and prints its remedy the way it prints a failure's.
+	Warn bool
+
+	Detail string
+	Remedy string
 }
 
 // doctorReport is the whole run: the vault it inspected, the repairs the
@@ -135,9 +142,11 @@ func (r doctorReport) writeText(w io.Writer) {
 		case !c.OK:
 			mark = "✗"
 			failed++
+		case c.Warn:
+			mark = "!"
 		}
 		fmt.Fprintf(w, "%s %-8s %s\n", mark, c.Name, c.Detail)
-		if !c.OK && c.Remedy != "" {
+		if (!c.OK || c.Warn) && c.Remedy != "" {
 			fmt.Fprintf(w, "  fix: %s\n", c.Remedy)
 		}
 	}
@@ -152,6 +161,7 @@ type doctorJSONCheck struct {
 	Name    string `json:"name"`
 	OK      bool   `json:"ok"`
 	Skipped bool   `json:"skipped,omitempty"`
+	Warn    bool   `json:"warn,omitempty"`
 	Detail  string `json:"detail"`
 	Remedy  string `json:"remedy,omitempty"`
 }
@@ -173,6 +183,7 @@ func (r doctorReport) writeJSON(w io.Writer) error {
 			Name:    c.Name,
 			OK:      c.OK,
 			Skipped: c.Skipped,
+			Warn:    c.Warn,
 			Detail:  c.Detail,
 			Remedy:  c.Remedy,
 		})
@@ -247,8 +258,8 @@ type doctorOptions struct {
 }
 
 // runDoctor performs the repairs the flags ask for, then runs every check in
-// the stage file's order: index, objects, journal, recovery, lock, config,
-// provider. The index check reads .llmwiki/index.gob directly rather than
+// the stage file's order: index, objects, journal, recovery, lock, git,
+// config, provider. The index check reads .llmwiki/index.gob directly rather than
 // through stage.OpenEngine, because opening the engine rebuilds that cache
 // as a side effect and would silently repair the very fault doctor exists to
 // report.
@@ -306,6 +317,8 @@ func runDoctor(ctx context.Context, root string, o doctorOptions) doctorReport {
 			checkLock(root),
 		)
 	}
+
+	rep.Checks = append(rep.Checks, checkTracked(root))
 
 	cfg, cfgErr := config.Load()
 	rep.Checks = append(rep.Checks, checkConfig(cfg, cfgErr))

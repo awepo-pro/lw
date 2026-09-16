@@ -388,8 +388,9 @@ type scaffoldResult struct {
 }
 
 // scaffoldVault creates the raw/ and wiki/ directories and writes the four
-// root markdown files. A file that already exists is reported as skipped and
-// left byte-for-byte alone — see this file's package comment.
+// root markdown files plus .gitignore (cmd_init_gitignore.go). A file that
+// already exists is reported as skipped and left byte-for-byte alone — see
+// this file's package comment.
 func scaffoldVault(dir string, a initAnswers, now time.Time) (scaffoldResult, error) {
 	var res scaffoldResult
 
@@ -427,6 +428,20 @@ func scaffoldVault(dir string, a initAnswers, now time.Time) (scaffoldResult, er
 			return res, fmt.Errorf("write %s: %w", f.path, err)
 		}
 		res.createdFiles = append(res.createdFiles, f.path)
+	}
+
+	// .gitignore is not in the table: an existing file must gain the entry,
+	// not be skipped (005 contract §7). It reports through the same two
+	// lists — wrote covers a fresh file and a one-line append alike, and a
+	// file that already covers the entry is skipped.
+	wrote, err := ensureGitignore(dir)
+	if err != nil {
+		return res, err
+	}
+	if wrote {
+		res.createdFiles = append(res.createdFiles, gitignoreName)
+	} else {
+		res.skippedFiles = append(res.skippedFiles, gitignoreName)
 	}
 
 	return res, nil

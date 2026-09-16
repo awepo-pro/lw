@@ -497,8 +497,8 @@ func TestDoctorJSON(t *testing.T) {
 		if !out.OK || out.Vault != root {
 			t.Errorf("report = %+v, want ok with vault %q", out, root)
 		}
-		if len(out.Checks) != 7 {
-			t.Errorf("%d checks, want 7: %+v", len(out.Checks), out.Checks)
+		if len(out.Checks) != 8 {
+			t.Errorf("%d checks, want 8: %+v", len(out.Checks), out.Checks)
 		}
 		for _, c := range out.Checks {
 			if !c.OK || c.Remedy != "" {
