@@ -146,7 +146,7 @@ $ lw init --schema ml-systems
 initialized vault in /home/you/ml-wiki
   domain           ml-systems
   tags             10 (10-20 recommended)
-  files            SCHEMA.md, index.md, log.md, curator-memory.md
+  files            SCHEMA.md, index.md, log.md, curator-memory.md, .gitignore
   directories      raw/{articles,papers,transcripts,assets}, wiki/{entities,concepts,comparisons,queries} (8 of 8 created)
   engine           .llmwiki/ (staging engine state)
 next: lw config — point lw at a provider, then lw ingest <url> to add the first source
@@ -163,12 +163,16 @@ taxonomy, and page-type conventions instead. What it lays down:
 - **`log.md`** — an append-only human-readable log, rotating at 500 entries.
 - **`curator-memory.md`** — the agent's own standing editorial preferences,
   a normal page you can read and edit like any other.
+- **`.gitignore`** — one line, `.llmwiki/`, so the engine's state and the
+  agent conversation transcripts it keeps never commit by accident, even
+  from a vault that is a public git repository.
 - **`raw/{articles,papers,transcripts,assets}/`** — where ingested sources
   land, write-once and immutable.
 - **`wiki/{entities,concepts,comparisons,queries}/`** — where reviewed pages
   land, one directory per page type.
 - **`.llmwiki/`** — engine state: the object store, the changeset buffer,
-  the journal, the search index cache. Not part of the reviewable wiki —
+  the journal, the search index cache, and the session transcripts —
+  git-ignored by the `.gitignore` above. Not part of the reviewable wiki —
   deleting it loses history, not your notes.
 
 See [vault-schema.md](vault-schema.md) for the full layout, the frontmatter
@@ -397,8 +401,11 @@ On a narrow terminal the footer drops keys from its right end until it fits.
 UI needs a terminal of at least **80×24** — anything smaller shows a
 "Terminal too small" notice until the window is enlarged (`q` still quits).
 
-(The screens below were captured against the same vault as §5–§8, moments
-after the query above; rows cut from a capture for length are marked `…`.)
+(The Review screens below were captured against the same vault as §5–§8,
+moments after the query above; the Ask capture and the session captures in
+*Reading a conversation back* come from a separate run against a fresh copy
+of that vault, so their ids differ. Rows cut from a capture for length are
+marked `…`.)
 
 ### Ask, then Review
 
@@ -410,34 +417,34 @@ all typing, so on this screen `q` and `?` type into the message instead of
 quitting or opening the overlay — quit from Ask with `ctrl+c`. A real
 capture, asking the vault to stage a patch to an existing page (the turn is
 abridged; the transcript tail-follows, so the earliest rows have scrolled up
-under the `↑ 76 earlier` note):
+under the `↑ 28 earlier` note):
 
 ```
- ml-wiki   Review  Ask  Lint  Log  Browse    3 pages · 1 raw · 0 lint   cs-1c86cb · 1 op · checks ✓
-╭ Transcript ──────────────────────────────────────────────────────────────────────── ↑ 76 earlier ╮
-│ Stage one patch only, no new pages: add a short Trade-offs section to wiki/concepts/kv-cache.md  │
-│ — what the cache trades compute for, per the ingested source.                                    │
+ ml-wiki   Review  Ask  Lint  Log  Browse    3 pages · 1 raw · 0 lint   cs-fd447f · 1 op · checks ✓
+╭ Transcript — cs-fd447f ──────────────────────────────────────────────────────────── ↑ 28 earlier ╮
 │                                                                                                  │
-│ ▸ vault.orient {}  → # Orientation                                                               │
+│ ▸ stage.close {}  → changeset cs-fd447f752de3e221                                                │
 │                                                                                                  │
 │ assistant                                                                                        │
-│ Oriented. Now let me read the current page to see its structure and the exact raw source path.   │
+│ Done — one staged patch, nothing else in the changeset.                                          │
 │                                                                                                  │
-│ ▸ wiki.get {"page":"wiki/concepts/kv-cache.md"}  → ---                                           │
+│ cs-fd447f752de3e221 — 1 operation, 1 file touched (wiki/concepts/kv-cache.md), schema/lint pass, │
+│ no broken links or orphans.                                                                      │
 │                                                                                                  │
-│ assistant                                                                                        │
-│ The page has two outbound links and cites raw/articles/kv-cache-explained.md. Now let me read    │
-│ the source to ground the Trade-offs section in what it actually says.                            │
+│ The patch inserts a new ## Trade-offs section between "Why it matters" and "Open threads",       │
+│ saying in short:                                                                                 │
 │                                                                                                  │
-│ ▸ raw.get {"source":"raw/articles/kv-cache-explained.md"}  → chunk 1 of 1                        │
+│ • The cache trades compute for memory — it eliminates per-token recomputation of key/value       │
+│   projections (linking autoregressive-decoding) but must store every past token's keys and       │
+│   values, growing linearly with sequence length and batch size. ^[raw/articles/kv-cache-         │
+│   explained.md]                                                                                  │
+│ • Reading the cache back each step costs memory bandwidth, which flash-attention-style kernels   │
+│   reduce. ^[raw/articles/kv-cache-explained.md]                                                  │
 │                                                                                                  │
-│ assistant                                                                                        │
-│ The source's "Why it matters" list directly answers the trade-off: the cache saves O(n)          │
-│ recomputation but pays for it in memory that grows linearly with sequence length and batch size, │
-│ plus the bandwidth cost of reading the cache back each step. Staging one patch, inserted before  │
-│ the ## Related section so it stays last:                                                         │
+│ Both claims trace to the single already-ingested source, marked inline as written; no new pages, │
+│ tags, or sources were introduced. Ready for your review.                                         │
 │                                                                                                  │
-│ ▸ stage.patch_page {"content":"## Trade-offs\n\nThe cache trades memory for compute: it avoids … │
+│ done · 5 rounds                                                                                  │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭ Message ─────────────────────────────────────────────────────────────────────────────────────────╮
 │ › █ Ask about the wiki…                                                                          │
@@ -447,10 +454,14 @@ under the `↑ 76 earlier` note):
 
 Each turn renders in the same shape: your question under a bold `you`, each
 tool call as one collapsed `▸ name args → result` row, the answer under
-`assistant`, and a `done · N rounds` line at the end. `↑`/`↓` select a tool
+`assistant`, and a `done · N rounds` line at the end. The answer is rendered
+as markdown — headings, lists, code, tables, links — through the same
+renderer as Review's and Browse's previews, and the transcript panel's title
+carries the session id (`Transcript — cs-fd447f`), which is how you find the
+conversation again with `lw session show`. `↑`/`↓` select a tool
 call in the transcript and `enter` expands or collapses the selected one.
 The header's right side tracks the buffer the whole time: the moment the
-agent stages something, `no changeset` becomes `cs-1c86cb · 1 op · checks
+agent stages something, `no changeset` becomes `cs-fd447f · 1 op · checks
 ✓`. Pressing `ctrl+r` jumps straight to Review:
 
 ```
@@ -549,6 +560,67 @@ changeset_opened   … message="ask: Which pages exist so far?"
 changeset_rejected … message="ask turn staged nothing"
 ```
 
+### Reading a conversation back
+
+Nothing above is lost when the turn ends. Every agent conversation is
+recorded as it happens, in the vault, under the changeset it opened — a
+session *is* a changeset, and the session id in the Transcript panel's title
+is the changeset id — and the recording stays after the changeset is
+committed or rejected. `lw session list` shows what is on disk, newest first:
+
+```
+$ lw session list
+ID         STATE      STARTED               RECORDS  BYTES
+cs-fd447f  open       2026-09-16T12:00:06Z  10       15379
+cs-bfa09e  rejected   2026-09-16T11:55:44Z  10       16158
+cs-614c83  committed  2026-09-16T11:51:12Z  17       44643
+```
+
+`lw session show [<id>]` prints one back: the question, every tool call with
+its full arguments and full result, and each answer rendered exactly as the
+TUI drew it. It defaults to the open session, and a short prefix of the id
+works (`cs-fd447f` or plain `fd447f`). The model's thinking is folded to one
+line unless you pass `--thinking`; `--plain` strips colour for piping, and
+`--json` prints the transcript file byte for byte. The capture below is
+trimmed in the middle — a full transcript runs long, because nothing in it is
+abbreviated — and its ids come from a separate run from the rest of this
+tutorial, so they will not match the ones above:
+
+```
+$ lw session show --plain
+session cs-fd447f752de3e221 · open · 2026-09-16T12:00:06Z · 10 records
+
+── you ─────────────────────────────────────────────────────────────────────────
+
+Stage one patch only, no new pages: add a short Trade-offs section to wiki/concepts/kv-cache.md — what the cache trades compute for, per the ingested source.
+
+── assistant ───────────────────────────────────────────────────────────────────
+
+(thinking: 20 lines hidden; --thinking shows them)
+
+The orientation is already in context, so I'll go straight to reading the target
+page and its source. First, the current state of kv-cache:
+
+── tool wiki.get ───────────────────────────────────────────────────────────────
+
+args:
+  page: wiki/concepts/kv-cache.md
+result:
+  ---
+  title: KV cache
+  created: 2026-09-16
+  updated: 2026-09-16
+  type: concept
+  tags: [basics, reference]
+  sources: [raw/articles/kv-cache-explained.md]
+  confidence: high
+  ---
+
+  # KV cache
+
+…
+```
+
 ### Review
 
 `j`/`k` move between hunks; `y` accepts (undrops) the selected hunk and
@@ -638,8 +710,8 @@ starting another.
 
 ## 11. Keeping the vault healthy
 
-`lw doctor` runs seven checks — **index, objects, journal, recovery, lock,
-config, provider** — and every failing one prints a `fix:` line. On a fresh
+`lw doctor` runs eight checks — **index, objects, journal, recovery, lock,
+git, config, provider** — and every failing one prints a `fix:` line. On a fresh
 vault with no key exported yet, only `config` fails, and `provider` is
 skipped rather than attempted, because there is nothing to probe with:
 
@@ -651,16 +723,25 @@ lw doctor — /home/you/ml-wiki
 ✓ journal  0 event(s) parse cleanly
 ✓ recovery no interrupted apply
 ✓ lock     no lock held
+- git      skipped: not a git repository
 ✗ config   api_key env:DEEPSEEK_API_KEY (missing) · model deepseek-v4-flash @ https://api.deepseek.com/v1
   fix: export DEEPSEEK_API_KEY, or point llm.api_key at another variable with lw config set llm.api_key env:NAME
 - provider skipped: api_key did not resolve: config: environment variable DEEPSEEK_API_KEY is not set
-1 of 7 check(s) failed
+1 of 8 check(s) failed
 ```
+
+The `git` check looks at the vault's own git repository, if it is one: a
+vault that tracks nothing under `.llmwiki/` passes, and one that *does* track
+it draws a warning — transcripts hold whole file dumps, raw provider output
+and the model's thinking, and a vault may be a public repository. The warning
+names the fix (`git rm -r --cached .llmwiki/ && git commit`); lw never runs
+that command itself, and no `.gitignore` removes what git history already
+holds.
 
 `--unlock` clears a stale single-writer lock (only ever held while a commit
 is applying); `--rebuild-index` rebuilds the disposable search-index cache
 (`.llmwiki/index.gob`) from the vault's pages before checking. It is safe to
-run any time, since the index is a cache, not the source of truth. `--json` emits the same seven checks as one JSON object, for
+run any time, since the index is a cache, not the source of truth. `--json` emits the same eight checks as one JSON object, for
 scripting. `--discard-changeset` is covered in §7 and §10.
 
 `recovery` is the one worth understanding before you need it: a commit
@@ -746,5 +827,6 @@ first. `lw query` never writes pages at all; it only answers.
 **Where the state actually lives.** `.llmwiki/journal.ndjson` is the
 append-only event log; `.llmwiki/changesets/{open,committed,rejected}/`
 holds every changeset, each with the `session.ndjson` transcript that
-produced it, forever. See [changesets.md](changesets.md) for the full
+produced it, forever — git-ignored by the vault `.gitignore`, and readable
+again with `lw session show`. See [changesets.md](changesets.md) for the full
 layout and lifecycle.
