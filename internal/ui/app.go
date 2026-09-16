@@ -1,24 +1,27 @@
-// app.go implements backbone §12's App: the Bubble Tea v2 shell that lays
-// out the title bar, the STAGE sidebar, the active screen and the footer
-// (/docs/design.md §9), cycles screens on tab, and quits cleanly on q/Ctrl-C.
+// app.go implements contract §5's App: the Bubble Tea v2 shell that lays out
+// the header, the active screen's body and the footer (the lazygit-style
+// frame, contract §5 frame notes 1-6), cycles screens on tab, opens the `?`
+// overlay, gates the whole frame below the 80×24 minimum, and quits cleanly
+// on q/Ctrl-C.
 //
 // The shell never constructs a screen and never imports one — Options.Panes
 // is injected by cmd/lw (backbone §12; s4-tui.md S4-T2 item 1).
 package ui
 
 import (
-	"fmt"
 	"path/filepath"
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/awepo-pro/lw/internal/lint"
+	"github.com/awepo-pro/lw/internal/stage"
 )
 
-// screenOrder is the fixed tab cycle — /docs/design.md §9's reading order —
-// deterministic because it is a slice, never a map range.
-var screenOrder = []Screen{ScreenBrowse, ScreenReview, ScreenAsk, ScreenLint, ScreenLog}
+// screenOrder is the fixed tab cycle, in the header's reading order (D1:
+// "Review Ask Lint Log Browse") — deterministic because it is a slice,
+// never a map range.
+var screenOrder = []Screen{ScreenReview, ScreenAsk, ScreenLint, ScreenLog, ScreenBrowse}
 
 // screenNames labels a Screen for the placeholder the shell renders when
 // Options.Panes has no entry for it yet.
@@ -30,9 +33,9 @@ var screenNames = map[Screen]string{
 	ScreenLog:    "log",
 }
 
-// App is the Bubble Tea v2 shell (backbone §12). cmd/lw's cmdTUI is the
-// only constructor of a real one; tests build one directly with NewApp and
-// a fake Pane.
+// App is the Bubble Tea v2 shell (backbone §12, contract §5). cmd/lw's
+// cmdTUI is the only constructor of a real one; tests build one directly
+// with NewApp and a fake Pane.
 type App struct {
 	deps  Deps
 	panes map[Screen]Pane
@@ -46,20 +49,27 @@ type App struct {
 	raw        int
 	lintErrors int
 
-	stageID  string
-	stageOps int
+	// The header's changeset summary (contract §5 frame note 6).
+	stageID     string
+	stageOps    int
+	stageChecks stage.Checks
+	hasStage    bool
+
+	// overlayOpen is the `?` overlay's toggle state (contract §5 frame note 4).
+	overlayOpen bool
 
 	quitting bool
 }
 
 var _ tea.Model = (*App)(nil)
 
-// NewApp constructs the shell from o (backbone §12). When o.Engine is
-// present, it is queried once for the vault counts the title bar shows and
-// the changeset the STAGE panel shows; both are refreshed later by
-// VaultReloadedMsg and StageChangedMsg rather than re-queried every frame.
-// o.Engine may be nil — a headless test with no vault at all — in which
-// case NewApp leaves the counts at zero instead of failing to construct.
+// NewApp constructs the shell from o (contract §5). When o.Engine is
+// present, it is queried once for the vault counts the header shows and the
+// changeset summary the header's right side shows; both are refreshed later
+// by VaultReloadedMsg and StageChangedMsg rather than re-queried every
+// frame. o.Engine may be nil — a headless test with no vault at all — in
+// which case NewApp leaves the counts at zero instead of failing to
+// construct.
 func NewApp(o Options) *App {
 	a := &App{
 		deps:   o.Deps,
@@ -85,7 +95,7 @@ func NewApp(o Options) *App {
 	return a
 }
 
-// refreshVaultCounts recomputes the title bar's page, raw and lint-error
+// refreshVaultCounts recomputes the header's page, raw and lint-error
 // counts from a.deps.Engine's current vault and index. A nil Engine leaves
 // the counts untouched — there is nothing to read.
 func (a *App) refreshVaultCounts() {
@@ -104,20 +114,23 @@ func (a *App) refreshVaultCounts() {
 	a.lintErrors = report.Errors
 }
 
-// refreshStage recomputes the STAGE panel's changeset id and live op count
-// from a.deps.Engine's currently open changeset, or clears both when none
-// is open. A nil Engine leaves the panel showing no changeset.
+// refreshStage recomputes the header's changeset summary — id, live op
+// count and checks — from a.deps.Engine's currently open changeset, or
+// clears it when none is open. A nil Engine leaves the summary as it was
+// (StageChangedMsg's own fields are the only source of truth in that case).
 func (a *App) refreshStage() {
 	if a.deps.Engine == nil {
 		return
 	}
 	c, err := a.deps.Engine.Current()
 	if err != nil {
-		a.stageID, a.stageOps = "", 0
+		a.stageID, a.stageOps, a.stageChecks, a.hasStage = "", 0, stage.Checks{}, false
 		return
 	}
 	a.stageID = c.ID
 	a.stageOps = len(c.Live())
+	a.stageChecks = c.Checks
+	a.hasStage = true
 }
 
 // Init returns tea.RequestBackgroundColor so the shell learns the
@@ -142,12 +155,21 @@ func (a *App) Init() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
+// tooSmall reports whether the current size is below D11's minimum, in
+// which case the shell renders only the too-small notice and refuses every
+// key but quit (contract §5 frame note 3).
+func (a *App) tooSmall() bool {
+	return a.width < MinWidth || a.height < MinHeight
+}
+
 // Update handles the shell-wide messages (resize, background polarity, the
-// two shell-level keys, and the shell's own broadcast/routing messages). A
-// message that arrives in a producer envelope (paneMsg — the answer to some
-// pane's own command) is unwrapped and delivered to the pane that produced
-// it, through the same switch; everything else, including keys the shell
-// does not bind itself, goes to the active pane.
+// shell-level keys, the `?` overlay's toggle, and the shell's own
+// broadcast/routing messages). A message that arrives in a producer
+// envelope (paneMsg — the answer to some pane's own command) is unwrapped
+// and delivered to the pane that produced it, through the same switch;
+// everything else, including keys the shell does not bind itself, goes to
+// the active pane — except while the terminal is too small or the overlay
+// is open, when no key reaches a pane at all (contract §5 frame notes 3-4).
 //
 // Fan-out (backbone §12, s4-tui.md S4-T8, C-106/TD-4, C-117/D-DA): routing
 // is by named type, not by "key or not". A message in the fan-out set goes
@@ -197,26 +219,43 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		a.width, a.height = msg.Width, msg.Height
+		if a.tooSmall() {
+			// Close the `?` overlay rather than let it survive a shrink
+			// below D11's minimum: growing back would otherwise re-show it
+			// unasked, with no key that opened it this time (repair-1,
+			// Tier-1 review Minor finding).
+			a.overlayOpen = false
+		}
 		return a, a.propagateAll(msg)
 
 	case tea.BackgroundColorMsg:
 		a.deps.Theme = a.deps.Theme.WithDark(msg.IsDark())
 		return a, a.propagateAll(msg)
 
+	case tea.ColorProfileMsg:
+		// The terminal's real colour profile is known: re-resolve the
+		// cursor tint for it (contract §5 frame note 8, W5 F1/C35) and let
+		// every pane rebuild its own copy the way it does for polarity.
+		a.deps.Theme = a.deps.Theme.WithProfile(msg.Profile)
+		return a, a.propagateAll(msg)
+
+	case tea.MouseWheelMsg:
+		return a, a.handleWheel(msg)
+
+	case tea.MouseMsg:
+		// Mouse mode is on, so clicks, releases and motion arrive too: the
+		// wheel is the only mouse input a pane sees (contract §5 frame
+		// note 7 — selection is shift+drag, D-3W).
+		return a, nil
+
 	case tea.KeyPressMsg:
-		switch {
-		case key.Matches(msg, a.deps.Keys.Quit):
-			a.quitting = true
-			return a, tea.Quit
-		case key.Matches(msg, a.deps.Keys.NextPane):
-			a.cur = (a.cur + 1) % len(a.order)
-			return a, nil
-		}
-		return a, a.propagate(msg)
+		return a.handleKey(msg)
 
 	case StageChangedMsg:
 		a.stageID = msg.ChangesetID
 		a.stageOps = msg.Ops
+		a.hasStage = msg.ChangesetID != ""
+		a.refreshStage()
 		return a, a.propagateAll(msg)
 
 	case VaultReloadedMsg:
@@ -270,161 +309,56 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 }
 
-// switchTo moves focus to s, a no-op if s is not one of the five screens in
-// a.order.
-func (a *App) switchTo(s Screen) {
-	for i, sc := range a.order {
-		if sc == s {
-			a.cur = i
-			return
+// handleKey is tea.KeyPressMsg's own case, split out of Update because it
+// has three modes rather than one: too small (only quit), the `?` overlay
+// open (quit and close only, everything else swallowed) and the ordinary
+// case (a text-taking pane's printable keys first, C27/D-3Q, then the
+// shell's own keys, then the active pane) — contract §5 frame notes 3-4.
+func (a *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if a.tooSmall() {
+		if key.Matches(msg, a.deps.Keys.Quit) {
+			a.quitting = true
+			return a, tea.Quit
 		}
+		return a, nil
 	}
-}
 
-// propagate forwards msg to the active pane's Update, if one is injected
-// for the current screen, and stores the pane it returns back into the map
-// — Pane.Update returns a (possibly new) Pane the same way tea.Model.Update
-// returns a (possibly new) Model. Whatever command the pane returns comes
-// back tagged with its screen (deliverTo's producedBy), so its answer
-// reaches it however the active screen has moved on in the meantime.
-func (a *App) propagate(msg tea.Msg) tea.Cmd {
-	return a.deliverTo(a.order[a.cur], msg)
-}
-
-// propagateAll forwards msg to every injected pane's Update, active or not
-// (backbone §12, s4-tui.md S4-T8, C-106/TD-4, C-117/D-DA) — used for the
-// named set of messages a pane must never miss regardless of which screen
-// is on top: the shell's own StageChangedMsg, VaultReloadedMsg,
-// tea.WindowSizeMsg and tea.BackgroundColorMsg, and the ask screen's stream
-// pump (StreamMsg, EventMsg, StreamClosedMsg), which pane.go declares so
-// Update can route them by name. Iterates a.order, a fixed slice, rather
-// than ranging a.panes directly, so which pane's Update runs first stays
-// deterministic even though no pane's returned Cmd depends on that order
-// (00-conventions.md §3).
-func (a *App) propagateAll(msg tea.Msg) tea.Cmd {
-	var cmds []tea.Cmd
-	for _, s := range a.order {
-		if cmd := a.deliverTo(s, msg); cmd != nil {
-			cmds = append(cmds, cmd)
+	if a.overlayOpen {
+		switch {
+		case key.Matches(msg, a.deps.Keys.Quit):
+			a.quitting = true
+			return a, tea.Quit
+		case key.Matches(msg, a.deps.Keys.Help), msg.String() == "esc":
+			a.overlayOpen = false
+			return a, nil
 		}
-	}
-	return tea.Batch(cmds...)
-}
-
-// deliverTo forwards msg to the pane at screen s specifically — regardless
-// of which screen is currently active — and stores the (possibly new) pane
-// it returns back into the map. propagate and propagateAll are both built
-// on this; OpenPathMsg's handler in Update also calls it directly so the
-// message reaches the Browse pane even on the frame Browse becomes active
-// (C-108/D-CU).
-//
-// The command the pane returns is enveloped with s (producedBy) before it
-// goes back: a tea.Cmd's result is delivered to App.Update, not to the pane,
-// so without the tag the answer to an off-screen pane's own command would be
-// routed to whichever pane is active — the gap this closes.
-func (a *App) deliverTo(s Screen, msg tea.Msg) tea.Cmd {
-	p, ok := a.panes[s]
-	if !ok || p == nil {
-		return nil
-	}
-	updated, cmd := p.Update(msg)
-	a.panes[s] = updated
-	if cmd == nil {
-		return nil
-	}
-	return producedBy(s, cmd)
-}
-
-// producedBy wraps cmd so the message it produces reaches Update tagged with
-// the screen whose pane produced it (paneMsg). A nil cmd stays nil, and a
-// cmd that produces no message stays a cmd that produces no message — the
-// runtime treats a nil tea.Msg as nothing to deliver, and so does the
-// envelope.
-//
-// A message the shell or the runtime itself consumes (shellOwned) is passed
-// through untouched: it is a command to the shell, not the producing pane's
-// answer, and Update would route it by the same named case either way.
-// Leaving it bare keeps the shell's message stream exactly what it was
-// before the envelope existed — which is what logview's revert, ask's ctrl+r
-// and lintview's enter all depend on, and what anything watching that stream
-// from outside ui is entitled to.
-//
-// A tea.BatchMsg is the one message the envelope must not carry: the runtime
-// expands a batch itself and never hands one to Update, so an enveloped
-// batch would arrive at Update's default branch as an ordinary message and
-// be delivered, unexpanded, to a single pane — three quarters of logview's
-// revert (its query, the StageChangedMsg and the jump to Review) would
-// vanish into the log pane. Each constituent is wrapped with the same
-// producer instead, which is what the runtime would have done with them.
-func producedBy(from Screen, cmd tea.Cmd) tea.Cmd {
-	return func() tea.Msg {
-		msg := cmd()
-		if msg == nil {
-			return nil
-		}
-		if batch, ok := msg.(tea.BatchMsg); ok {
-			var wrapped tea.BatchMsg
-			for _, c := range batch {
-				if c == nil {
-					continue
-				}
-				wrapped = append(wrapped, producedBy(from, c))
-			}
-			if len(wrapped) == 0 {
-				return nil
-			}
-			return wrapped
-		}
-		if shellOwned(msg) {
-			return msg
-		}
-		return paneMsg{from: from, msg: msg}
-	}
-}
-
-// shellOwned reports whether msg is addressed to the shell or the runtime
-// rather than to a pane: the shell's own message vocabulary (pane.go) plus
-// the runtime's key and quit traffic. See producedBy for why those are left
-// bare. A message missing from this set is still routed correctly when it is
-// enveloped — Update unwraps before any of its cases — so this list shapes
-// who may watch the shell's message stream, never where a message goes.
-func shellOwned(msg tea.Msg) bool {
-	switch msg.(type) {
-	case tea.KeyPressMsg, tea.KeyReleaseMsg, tea.WindowSizeMsg,
-		tea.BackgroundColorMsg, tea.QuitMsg,
-		StageChangedMsg, VaultReloadedMsg, StreamMsg, EventMsg,
-		StreamClosedMsg, SwitchScreenMsg, OpenPathMsg:
-		return true
-	default:
-		return false
-	}
-}
-
-// View renders the shell (backbone §12, C-79: v2's tea.Model returns
-// tea.View, not string). AltScreen is a per-frame field in v2 — there is no
-// tea.WithAltScreen program option (C-82).
-func (a *App) View() tea.View {
-	v := tea.NewView(a.render())
-	v.AltScreen = true
-	return v
-}
-
-// render composes one frame at the shell's current width and height. The
-// active pane is given exactly the width and height bodyDimensions carves
-// out for it — nothing may assume 80x24.
-func (a *App) render() string {
-	title := titleBarText(a.vaultName, a.pages, a.raw, a.lintErrors)
-	sidebar := stageLines(a.stageID, a.stageOps)
-
-	_, _, mainW, bodyH := bodyDimensions(a.width, a.height)
-
-	s := a.order[a.cur]
-	var mainContent string
-	if p, ok := a.panes[s]; ok && p != nil {
-		mainContent = p.View(mainW, bodyH)
-	} else {
-		mainContent = fmt.Sprintf("(%s screen not loaded yet)", screenNames[s])
+		return a, nil
 	}
 
-	return composeFrame(a.deps.Theme, a.width, a.height, title, footerBarText, sidebar, mainContent)
+	// A pane that is taking text input types the printable keys itself: `q`
+	// and `?` belong to its input box, not to Quit and Help (C27/D-3Q). The
+	// non-printable globals — ctrl+c, tab — still match below.
+	if a.paneCapturesKey(msg) {
+		return a, a.propagate(msg)
+	}
+
+	switch {
+	case key.Matches(msg, a.deps.Keys.Quit):
+		a.quitting = true
+		return a, tea.Quit
+	case key.Matches(msg, a.deps.Keys.Help):
+		a.overlayOpen = true
+		return a, nil
+	case key.Matches(msg, a.deps.Keys.NextPane):
+		a.cur = (a.cur + 1) % len(a.order)
+		return a, nil
+	}
+	return a, a.propagate(msg)
 }
+
+// switchTo, activePane, propagate, propagateAll, deliverTo, producedBy,
+// shellOwned and handleWheel live in route.go, and View and render in
+// view.go — file splits so app.go stays under conventions §2's ~400-line
+// guideline (Tier-1 review, MASTER §8 ORCH-4/repair-1). Update's switch
+// above still calls them unchanged — Go methods bind to the type, not the
+// file.

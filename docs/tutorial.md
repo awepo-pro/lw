@@ -141,9 +141,9 @@ live session):
 Start in an empty directory:
 
 ```
-$ mkdir ml-notes && cd ml-notes
+$ mkdir ml-wiki && cd ml-wiki
 $ lw init --schema ml-systems
-initialized vault in /home/you/ml-notes
+initialized vault in /home/you/ml-wiki
   domain           ml-systems
   tags             10 (10-20 recommended)
   files            SCHEMA.md, index.md, log.md, curator-memory.md
@@ -196,44 +196,51 @@ markdown, then runs the agent — reading the extracted text, `SCHEMA.md`,
 command with nothing created.
 
 ```bash
-lw ingest /home/you/Downloads/gemini-note.md     # a local file
+lw ingest /home/you/Downloads/kv-cache-explained.md  # a local file
 lw ingest https://example.com/some-post          # or a URL
 ```
 
-A real run, ingesting a 51 KB saved chat transcript about a vLLM prefix-cache
-debugging session. It took about a minute and a half. The agent's streamed
-summary comes first (its wording varies run to run, so it is abridged here);
-the changeset summary at the end is `lw`'s own, fixed output:
+A real run, ingesting a small saved article about the KV cache. It took about
+three minutes. The agent's streamed summary comes first (its wording varies
+run to run, so it is abridged here); the changeset summary at the end is
+`lw`'s own, fixed output:
 
 ```
-$ lw ingest ~/Downloads/gemini-note.md
-Ingested raw/articles/gemini.md (a 4-chunk Gemini chat transcript, exported from a vLLM deployment
-debugging session), then built four pages around it:
-| wiki/entities/vllm.md | entity | …
-| wiki/concepts/prefix-caching.md | concept | …
-| wiki/concepts/multimodal-cache.md | concept | …
-| wiki/queries/why-is-prefix-cache-hit-rate-zero.md | query | …
-…the three mechanism pages carry confidence: low with contested: true.
-opened changeset cs-5cf3e3d030aad754: ingest ~/Downloads/gemini-note.md (5 op(s))
-  op1 ingest_source raw/articles/gemini.md
-  op2 create_page wiki/entities/vllm.md
-  op3 create_page wiki/concepts/prefix-caching.md
-  op4 create_page wiki/concepts/multimodal-cache.md
-  op5 create_page wiki/queries/why-is-prefix-cache-hit-rate-zero.md
+$ lw ingest ~/Downloads/kv-cache-explained.md
+Fresh vault — this ingest will be the first content. Ingesting the source now.
+…
+Empty vault confirmed. The article supports one full concept page ([[kv-cache]]) plus the vocabulary
+it presumes ([[autoregressive-decoding]]), and its "why it matters" techniques naturally form a
+standing [[query]] page. …
+Changeset **cs-92c7d850b461792a** is ready for review — 4 operations, all checks passing (schema ✓,
+lint ✓, 0 orphans, 0 broken links).
+…
+1. **`raw/articles/kv-cache-explained.md`** (ingest) — the article, staged and read in full (1 chunk).
+…
+opened changeset cs-92c7d850b461792a: ingest ~/Downloads/kv-cache-explained.md (4 op(s))
+  op1 ingest_source raw/articles/kv-cache-explained.md
+  op2 create_page wiki/concepts/kv-cache.md
+  op3 create_page wiki/concepts/autoregressive-decoding.md
+  op4 create_page wiki/queries/reducing-kv-cache-memory.md
 ```
 
 `op1` is always the immutable copy of your source, staged (not yet written)
 under `raw/articles/`, `raw/papers/` or `raw/transcripts/` depending on kind.
 It carries the original path or URL forward as `source_url`, and a `sha256`
-of its body that later drives drift detection:
+of its body that later drives drift detection — visible in the projected
+diff:
 
 ```
-$ head -5 raw/articles/gemini.md
----
-source_url: ~/Downloads/gemini-note.md
-ingested: 2026-09-13
-sha256: 8ff0a73248a8b2d1fdf7d56f43256435af3a027431adc769eacb678f2aeeb98e
----
+$ lw diff --op op1
+--- /dev/null
++++ b/raw/articles/kv-cache-explained.md
+@@ -0,0 +1,27 @@
++---
++source_url: ~/Downloads/kv-cache-explained.md
++ingested: 2026-09-15
++sha256: 4f5463061b616c978d23836edd0ceb613d153165b7d9f20c6f0535e76b50c56e
++---
+…
 ```
 
 Every `create_page` op after it is grounded in that same source: it is the
@@ -251,7 +258,7 @@ means nothing has landed:
 $ lw status
 0 pages · 0 raw · 10 tags
 lint: 0 errors, 0 warnings, 0 info
-open changeset cs-5cf3e3d030aad754: ingest ~/Downloads/gemini-note.md (5 op(s), 0 stale; schema=pass lint=pass orphans=0 broken_links=0)
+open changeset cs-92c7d850b461792a: ingest ~/Downloads/kv-cache-explained.md (4 op(s), 0 stale; schema=pass lint=pass orphans=0 broken_links=0)
 ```
 
 The `open changeset` line is where the real state lives: how many ops, how
@@ -263,13 +270,12 @@ checks.
 
 ```
 $ lw diff --stat
-wiki/concepts/multimodal-cache.md | +33 -0
-wiki/concepts/prefix-caching.md | +56 -0
-wiki/entities/vllm.md | +50 -0
-wiki/queries/why-is-prefix-cache-hit-rate-zero.md | +47 -0
-index.md | +7 -0
-raw/articles/gemini.md | +670 -0
-6 file(s) changed, 863 insertion(s)(+), 0 deletion(s)(-)
+wiki/concepts/autoregressive-decoding.md | +30 -0
+wiki/concepts/kv-cache.md | +38 -0
+wiki/queries/reducing-kv-cache-memory.md | +34 -0
+index.md | +5 -0
+raw/articles/kv-cache-explained.md | +27 -0
+5 file(s) changed, 134 insertion(s)(+), 0 deletion(s)(-)
 ```
 
 `lw diff` (no flags) expands that into the full unified diff, one hunk per
@@ -290,7 +296,7 @@ clean
 ## 7. Commit — or throw it away
 
 ```
-$ lw commit -m "first pages from gemini-note"
+$ lw commit -m "first pages from kv-cache-explained"
 committed 000001
 ```
 
@@ -302,24 +308,24 @@ already is; `--force` overrides that, and the override itself is journalled,
 so "we shipped a lint regression on purpose" is part of the permanent record,
 not a quiet exception.
 
-After the commit, `lw status` counts what actually landed:
+After the commit, `lw lint` and `lw status` count what actually landed:
 
 ```
 $ lw lint
-wiki/concepts/multimodal-cache.md:0: info: confidence is low; corroborate with another source or raise the confidence (fm-quality)
-wiki/concepts/prefix-caching.md:0: info: confidence is low; corroborate with another source or raise the confidence (fm-quality)
-wiki/queries/why-is-prefix-cache-hit-rate-zero.md:0: info: confidence is low; corroborate with another source or raise the confidence (fm-quality)
-0 errors, 0 warnings, 3 info
+clean
 $ lw status
-4 pages · 1 raw · 10 tags
-lint: 0 errors, 0 warnings, 3 info
+3 pages · 1 raw · 10 tags
+lint: 0 errors, 0 warnings, 0 info
 no open changeset
 ```
 
-Three `info`-level findings, zero errors: a page synthesized from a single
-source is expected to read `confidence: low` until something else
-corroborates it — that is `fm-quality`, and `lw lint` only exits non-zero on
-an **error**-level finding. See [vault-schema.md](vault-schema.md#the-14-lint-checks)
+Zero findings here: the curator judged this short article strong enough to
+stage every page `confidence: high`. When it is less sure — a page left at
+`confidence: low`, marked `contested: true`, or a single-source page with no
+confidence set at all — the `fm-quality` check reports one **info**-level
+finding per page, suggesting you corroborate with another source or raise the
+confidence. **Info** never fails `lw lint`'s exit code; only an **error**-level
+finding does. See [vault-schema.md](vault-schema.md#the-14-lint-checks)
 for all 14 checks and their severities.
 
 **If you do not want the changeset at all**, there is no `lw reject` verb —
@@ -341,24 +347,31 @@ discarding a changeset opened by `lw revert`.
 never opens, touches, or leaves behind a changeset.
 
 ```
-$ lw query "What is prefix caching in vLLM, and why can the hit rate read 0%? Cite the wiki pages."
-## Why the hit rate can read 0%
-Two distinct stories, and the vault keeps them separate.
-**(a) A real hit that the metric hides** — wiki/concepts/prefix-caching.md, "Observing it", and wiki/queries/why-is-prefix-cache-hit-rate-zero.md: …
-**(b) A hit that genuinely never happens** — the six candidate causes tabled in wiki/queries/why-is-prefix-cache-hit-rate-zero.md: …
-**Overall status:** all four pages carry low/medium confidence … every claim above traces to a single source, raw/articles/gemini.md.
+$ lw query "What is the KV cache, and why does per-token cost drop from O(n) to O(1) during decoding? Cite the wiki pages."
+## What the KV cache is
+The **KV cache** stores the key and value projections a transformer computes during decoding, so
+each new token only requires computing attention *against* the cached keys and values, rather than
+recomputing those projections from scratch (`wiki/concepts/kv-cache.md`). …
+## Why per-token cost drops from O(n) to O(1)
+…
+2. **Caching makes it O(1) incremental work.** By storing the key and value projections from
+earlier steps, the cache removes the recomputation (`wiki/concepts/autoregressive-decoding.md`):
+each new token only pays the constant attention work against the cached keys and values, "turning
+the per-token cost from O(n) attention work back to O(1) incremental work" (`wiki/concepts/kv-cache.md`). …
+**Sources cited:** `wiki/concepts/kv-cache.md`, `wiki/concepts/autoregressive-decoding.md` — both drawn
+from `raw/articles/kv-cache-explained.md`.
 $ lw status
-4 pages · 1 raw · 10 tags
-lint: 0 errors, 0 warnings, 3 info
+3 pages · 1 raw · 10 tags
+lint: 0 errors, 0 warnings, 0 info
 no open changeset
 ```
 
-(The answer, abridged here, took about 12 seconds; `lw status` afterwards
+(The answer, abridged here, took about 36 seconds; `lw status` afterwards
 confirms the query left no changeset behind.)
 
 Note the vault this ran against has exactly one source ingested so far, so
 the answer is honest about that: every claim traces back to the same
-transcript. Ask a question about something you have not ingested yet, and
+article. Ask a question about something you have not ingested yet, and
 the agent has nothing to cite — see §13 for what that refusal looks like.
 
 ## 9. The TUI tour
@@ -370,75 +383,194 @@ the agent has nothing to cite — see §13 for what that refusal looks like.
 Review → Ask → Lint → Log → Browse   (wrapping back to Review)
 ```
 
-The footer always shows what the current screen's keys actually do — for
-example, on Review:
+Every screen draws inside the same frame. The header row names the vault,
+the five screens, and — on the right — the vault counts plus the open
+changeset, or `no changeset`. The footer row always shows what the current
+screen's keys actually do — for example, on Review:
 
 ```
-[tab] next screen · [ctrl+r] ask→review · [y/n] accept/drop · [C] commit · [q] quit
+ y accept hunk  n drop hunk  j/k move  p preview  A accept all  C commit  ? help
 ```
+
+On a narrow terminal the footer drops keys from its right end until it fits.
+`?` toggles a help overlay listing every key on the active screen, and the
+UI needs a terminal of at least **80×24** — anything smaller shows a
+"Terminal too small" notice until the window is enlarged (`q` still quits).
+
+(The screens below were captured against the same vault as §5–§8, moments
+after the query above; rows cut from a capture for length are marked `…`.)
 
 ### Ask, then Review
 
 Type a question and press `enter`. If no changeset is open, an Ask turn
 opens one for you — the intent is literally `ask: <your question>` — and if
 the turn ends without staging anything, that changeset is discarded
-automatically; you never have to clean it up by hand. A real capture, asking
-the vault above to stage a new page:
+automatically; you never have to clean it up by hand. The message box takes
+all typing, so on this screen `q` and `?` type into the message instead of
+quitting or opening the overlay — quit from Ask with `ctrl+c`. A real
+capture, asking the vault to stage a patch to an existing page (the turn is
+abridged; the transcript tail-follows, so the earliest rows have scrolled up
+under the `↑ 76 earlier` note):
 
 ```
- vault — 4 pages · 1 raw · ⚠ 0 lint
-STAGE               │you: From raw/articles/gemini.md, stage one new glossary-style concept page wiki/concepts/kv-cache-block.md …
-no changeset        │▸ stage.create_page {"path": "wiki/concepts/kv-cache-block.md", "ti…  → proposed op1 (create_page)
-                    │▸ stage.close {}  → changeset cs-94394f82d4f6264a intent: ask: From raw/article…
-                    │— done: stop (7 round(s)) —
- [tab] next screen · [ctrl+r] ask→review · [y/n] accept/drop · [C] commit · [q] quit
+ ml-wiki   Review  Ask  Lint  Log  Browse    3 pages · 1 raw · 0 lint   cs-1c86cb · 1 op · checks ✓
+╭ Transcript ──────────────────────────────────────────────────────────────────────── ↑ 76 earlier ╮
+│ Stage one patch only, no new pages: add a short Trade-offs section to wiki/concepts/kv-cache.md  │
+│ — what the cache trades compute for, per the ingested source.                                    │
+│                                                                                                  │
+│ ▸ vault.orient {}  → # Orientation                                                               │
+│                                                                                                  │
+│ assistant                                                                                        │
+│ Oriented. Now let me read the current page to see its structure and the exact raw source path.   │
+│                                                                                                  │
+│ ▸ wiki.get {"page":"wiki/concepts/kv-cache.md"}  → ---                                           │
+│                                                                                                  │
+│ assistant                                                                                        │
+│ The page has two outbound links and cites raw/articles/kv-cache-explained.md. Now let me read    │
+│ the source to ground the Trade-offs section in what it actually says.                            │
+│                                                                                                  │
+│ ▸ raw.get {"source":"raw/articles/kv-cache-explained.md"}  → chunk 1 of 1                        │
+│                                                                                                  │
+│ assistant                                                                                        │
+│ The source's "Why it matters" list directly answers the trade-off: the cache saves O(n)          │
+│ recomputation but pays for it in memory that grows linearly with sequence length and batch size, │
+│ plus the bandwidth cost of reading the cache back each step. Staging one patch, inserted before  │
+│ the ## Related section so it stays last:                                                         │
+│                                                                                                  │
+│ ▸ stage.patch_page {"content":"## Trade-offs\n\nThe cache trades memory for compute: it avoids … │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭ Message ─────────────────────────────────────────────────────────────────────────────────────────╮
+│ › █ Ask about the wiki…                                                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+ enter send  ↑/↓ select tool call  ctrl+r review  tab screen  ? help
 ```
 
-The moment `stage.create_page` succeeds, the left-hand badge changes from
-`no changeset` to `cs-94394f82d4f6264a / 1 op(s)`. Pressing `ctrl+r` jumps
-straight to Review:
+Each turn renders in the same shape: your question under a bold `you`, each
+tool call as one collapsed `▸ name args → result` row, the answer under
+`assistant`, and a `done · N rounds` line at the end. `↑`/`↓` select a tool
+call in the transcript and `enter` expands or collapses the selected one.
+The header's right side tracks the buffer the whole time: the moment the
+agent stages something, `no changeset` becomes `cs-1c86cb · 1 op · checks
+✓`. Pressing `ctrl+r` jumps straight to Review:
 
 ```
-STAGE               │OPS                             |op1  create_page  wiki/concepts/kv-cache-block.md
-                    │op1 create_page wiki/concepts/kv|rationale: New glossary-style concept page defining vLLM's 16-token KV cache block, requested …
-cs-94394f82d4f6264a │                                |provenance: raw/articles/gemini.md
-1 op(s)             │                                |(no hunks — whole-file change)
+ ml-wiki   Review  Ask  Lint  Log  Browse    3 pages · 1 raw · 0 lint   cs-1c86cb · 1 op · checks ✓
+╭ Ops ──────────────────────────╮╭ Diff ──────────────────────────────────────────────── p preview ╮
+│▌● patch kv-cache.md           ││ patch  wiki/concepts/kv-cache.md                   op1 · 1 hunk │
+│                               ││ User-requested short Trade-offs section, grounded in the page's │
+│                               ││ only source (raw/articles/kv-cache-explained.md, "Why it        │
+│                               ││ matters" list): the cache trades compute savings for linear     │
+│                               ││ memory growth and per-step bandwidth cost. Placed after…        │
+│                               ││                                                                 │
+│                               ││▌@@ -32,6 +32,16 @@  h1                                          │
+│                               ││▌  - Flash-attention style kernels reduce the memory-bandwidth   │
+│                               ││▌  cost of reading                                               │
+│                               ││▌  the cache back during each decoding step.                     │
+│                               ││▌  ^[raw/articles/kv-cache-explained.md]                         │
+│                               ││▌                                                                │
+│                               ││▌+ ## Trade-offs                                                 │
+│                               ││▌+                                                               │
+│                               ││▌+ The cache trades memory for compute: it avoids recomputing    │
+│                               ││▌  attention over all                                            │
+│                               ││▌+ previous tokens at every step, but its footprint grows        │
+│                               ││▌  linearly with sequence                                        │
+│                               ││▌+ length and batch size, and each decoding step must read the   │
+│                               ││▌  cache back,                                                   │
+│                               ││▌+ paying a memory-bandwidth cost.                               │
+│                               ││▌  ^[raw/articles/kv-cache-explained.md]                         │
+│                               ││▌+                                                               │
+│                               ││▌+ Techniques for shrinking that footprint are collected under   │
+│                               ││▌+ [[reducing-kv-cache-memory]].                                 │
+│                               ││▌+                                                               │
+│                               ││▌  ## Related                                                    │
+╰─────────────────────── 1 of 1 ╯│▌                                                                │
+╭ Changeset ────────────────────╮│▌  - [[autoregressive-decoding]] — the decoding loop the cache   │
+│ source  ask: Stage one patch… ││▌  serves                                                        │
+│ id      cs-1c86cb57bba9cb8a   ││                                                                 │
+│ ops     1 · 0 dropped · 0 st… ││                                                                 │
+│ hunks   1 kept · 0 dropped    ││                                                                 │
+│                               ││                                                                 │
+│ checks  ✓ schema   ✓ lint     ││                                                                 │
+│         ✓ orphans  ✓ links    ││                                                                 │
+╰───────────────────────────────╯╰─────────────────────────────────────────────────────────────────╯
+ y accept hunk  n drop hunk  j/k move  p preview  A accept all  C commit  ? help
 ```
+
+The left-hand **Ops** panel lists the changeset's operations, each with a
+glyph for its state: `●` untouched, `◐` with some of its hunks dropped, `✗`
+with every hunk dropped, and `!` stale — an op proposed against a file that
+has since changed on disk, which `y`, `n` and `A` refuse to act on. The
+`▌` gutter marks the cursor: the row it names in Ops, and the hunk it names
+in the **Diff** panel on the right, which carries the op's rationale and
+provenance above the hunks themselves. On a terminal tall enough, a third
+panel under Ops summarizes the changeset — where it came from, its id, the
+ops and hunks kept or dropped, and the engine checks.
 
 A brand-new page has no hunks to accept or drop individually — it is shown
 as one whole-file change, with its rationale and provenance right there.
-Pressing `C` commits it: the badge returns to `no changeset`, and the
-journal gets a `commit_end … commit=000002` line.
+
+Pressing `p` flips the Detail panel between the diff and a **Preview** of
+the page under the cursor as it will read after commit:
+
+```
+╭ Ops ──────────────────────────╮╭ Preview ──────────────────────────────────────────────── p diff ╮
+│▌● patch kv-cache.md           ││ patch  wiki/concepts/kv-cache.md              op1 · staged page │
+│                               ││                                                                 │
+│                               ││   KV cache                                                      │
+│                               ││   concept · basics, reference · confidence high · updated       │
+│                               ││   2026-09-15                                                    │
+│                               ││                                                                 │
+│                               ││   KV cache                                                      │
+│                               ││                                                                 │
+│                               ││   The KV cache stores the key and value projections a           │
+│                               ││   transformer computes during autoregressive-decoding, so each  │
+│                               ││   new token only requires computing attention against the       │
+│                               ││   cached keys and values, not recomputing them from scratch.    │
+│                               ││   [kv-cache-explained.md]                                       │
+│                               ││                                                                 │
+…
+│                               ││ ▎ Trade-offs                                                    │
+│ checks  ✓ schema   ✓ lint     ││ ▎                                                               │
+│         ✓ orphans  ✓ links    ││ ▎ The cache trades memory for compute: it avoids recomputing    │
+╰───────────────────────────────╯╰────────────────────────────────────────────────────── ↓ 14 more ╯
+ y accept hunk  n drop hunk  j/k move  p diff  A accept all  C commit  X reject changeset  ? help
+```
+
+Pressing `p` again flips back to the diff. Pressing `C` commits: the footer
+confirms with the commit id — ` committed 000002` — the header's right side
+returns to `no changeset`, and the journal gets its `commit_end` line.
 
 Not every Ask turn stages something. On an empty vault, `lw log` after an
 Ask turn that only answered a question (nothing to cite, nothing to stage)
 reads:
 
 ```
-changeset_opened   … message="ask: Which pages exist…"
+changeset_opened   … message="ask: Which pages exist so far?"
 changeset_rejected … message="ask turn staged nothing"
 ```
 
 ### Review
 
 `j`/`k` move between hunks; `y` accepts (undrops) the selected hunk and
-advances, `n` drops it and advances. `A` accepts every remaining hunk, but is
-refused outright if the changeset does not currently pass lint — you cannot
+advances, `n` drops it and advances; `g`/`G` jump to the start and end of
+the walk. `A` accepts every remaining hunk, but is refused outright if the
+changeset does not currently pass lint — you cannot
 blanket-accept your way past a warning you have not looked at. `X` rejects
 the whole changeset. `C` commits, subject to the same lint-regression rule
 as `lw commit` on the command line.
 
 ### Lint, Log, Browse
 
-Lint lists findings by severity; `enter` expands one or jumps to the page in
+Lint lists findings by severity; `enter` opens the finding's page in
 Browse. Log lists the journal's events; `f` cycles its filter through
 all → accepted → rejected → agent → human, and `r` reverts the selected
 **commit** into a new changeset, which drops you into Review to decide on it. Browse is the page tree: `enter`
 opens a page, `/` finds one by name, `h`/`l` collapse or expand a subtree.
 
 Every key above is the shipped default. All of them except a handful of
-screen-local ones (`enter`, arrows, `ctrl+r` on Ask; `enter`, `/`, `h`/`l` on
-Browse) are rebindable from `~/.config/lw/hotkeys.toml` — see
+screen-local ones (`enter`, the arrow keys and `ctrl+r` on Ask; `enter` on
+Lint; `enter`, `/`, `h`/`l` on Browse) are rebindable from
+`~/.config/lw/hotkeys.toml` — see
 [hotkeys.md](hotkeys.md) for the full table, the file format, and the
 match-order rule that lets a rebound navigation key shadow an action key on
 the same screen.
@@ -449,11 +581,11 @@ the same screen.
 
 ```
 $ lw log --limit 20
-2026-09-13T18:03:49Z changeset_opened changeset=cs-5cf3e3d030aad754 actor=agent message="ingest ~/Downloads/gemini-note.md"
-2026-09-13T18:03:54Z op_proposed changeset=cs-5cf3e3d030aad754 op=op1 actor=agent paths=raw/articles/gemini.md
-2026-09-13T18:04:37Z op_proposed changeset=cs-5cf3e3d030aad754 op=op2 actor=agent paths=wiki/entities/vllm.md
+2026-09-15T20:20:04Z changeset_opened changeset=cs-92c7d850b461792a actor=agent message="ingest ~/Downloads/kv-cache-explained.md"
+2026-09-15T20:20:23Z op_proposed changeset=cs-92c7d850b461792a op=op1 actor=agent paths=raw/articles/kv-cache-explained.md
+2026-09-15T20:22:47Z op_proposed changeset=cs-92c7d850b461792a op=op2 actor=agent paths=wiki/concepts/kv-cache.md
 …
-2026-09-13T18:05:15Z commit_end changeset=cs-5cf3e3d030aad754 commit=000001 actor=agent message="first pages from gemini-note" data={"lint_errors":0,"lint_warns":0}
+2026-09-15T20:25:55Z commit_end changeset=cs-92c7d850b461792a commit=000001 actor=agent message="first pages from kv-cache-explained" data={"lint_errors":0,"lint_warns":0}
 ```
 
 Useful filters: `--agent` (only agent-authored events), `--rejected` (only
@@ -466,19 +598,20 @@ gets exactly the same review it would get on the way in:
 
 ```
 $ lw revert 000001
-opened cs-62c74288e3c4cde2: revert of 000001 (skipped: index.md, raw/articles/gemini.md)
+opened cs-c5b709e6ddbd1832: revert of 000001 (skipped: index.md, raw/articles/kv-cache-explained.md)
+skipped: index.md
+skipped: raw/articles/kv-cache-explained.md
 $ lw diff --stat
-wiki/concepts/multimodal-cache.md | +3 -18
-wiki/concepts/prefix-caching.md | +3 -41
-wiki/entities/vllm.md | +3 -36
-wiki/queries/why-is-prefix-cache-hit-rate-zero.md | +3 -32
-4 file(s) changed, 12 insertion(s)(+), 127 deletion(s)(-)
+wiki/concepts/autoregressive-decoding.md | +2 -14
+wiki/concepts/kv-cache.md | +2 -32
+wiki/queries/reducing-kv-cache-memory.md | +3 -19
+3 file(s) changed, 7 insertion(s)(+), 65 deletion(s)(-)
 ```
 
 Two paths are skipped, and the revert says so rather than dropping them
-silently. `raw/articles/gemini.md` is skipped because `raw/` is write-once and
-immutable: a revert can undo the pages a source produced, but it never
-touches the source itself. `index.md` is skipped because v1 does not
+silently. `raw/articles/kv-cache-explained.md` is skipped because `raw/` is
+write-once and immutable: a revert can undo the pages a source produced, but
+it never touches the source itself. `index.md` is skipped because v1 does not
 reconstruct `index.md` on revert; the reverted pages become retraction
 stubs rather than disappearing, so the index entries that point at them keep
 resolving. From here you either `lw commit -m "revert 000001"` like any
@@ -487,10 +620,17 @@ discard it:
 
 ```
 $ lw doctor --discard-changeset
-discarded open changeset cs-62c74288e3c4cde2 (.llmwiki/changesets/open -> .llmwiki/changesets/rejected)
+lw doctor — /home/you/ml-wiki
+discarded open changeset cs-c5b709e6ddbd1832 (.llmwiki/changesets/open -> .llmwiki/changesets/rejected)
+…
 $ lw log --rejected --limit 5
-2026-09-13T18:05:49Z changeset_rejected changeset=cs-62c74288e3c4cde2 actor=human message="discarded by lw doctor --discard-changeset"
+2026-09-15T20:32:34Z changeset_rejected changeset=cs-2ed04c0ee9cc69bf actor=agent message="rejected in review"
+2026-09-15T20:36:08Z changeset_rejected changeset=cs-c5b709e6ddbd1832 actor=human message="discarded by lw doctor --discard-changeset"
 ```
+
+The first line is an earlier changeset turned down with `X` on the Review
+screen — rejections are journalled too — and the second is the discard
+above.
 
 Only one changeset can be open at a time, whether it came from `ingest`, an
 Ask turn, or `revert` — commit, reject, or discard the current one before
@@ -505,7 +645,7 @@ skipped rather than attempted, because there is nothing to probe with:
 
 ```
 $ lw doctor
-lw doctor — /home/you/ml-notes
+lw doctor — /home/you/ml-wiki
 ✓ index    0 document(s) indexed in .llmwiki/index.gob
 ✓ objects  no objects referenced yet (no open changeset, no snapshot)
 ✓ journal  0 event(s) parse cleanly

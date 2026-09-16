@@ -146,7 +146,7 @@ func TestInactiveAskPaneKeepsPumpingItsStream(t *testing.T) {
 	if !strings.Contains(view, "wiki.search") {
 		t.Fatalf("inactive ask scrollback is missing the tool call:\n%s", view)
 	}
-	if !strings.Contains(view, "done: stop (1 round(s))") {
+	if !strings.Contains(view, "done · 1 rounds") {
 		t.Fatalf("inactive ask scrollback is missing the turn's DoneEv marker:\n%s", view)
 	}
 

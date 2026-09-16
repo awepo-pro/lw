@@ -1,0 +1,20 @@
+                                                                        
+                                                                        
+                                                                        
+                                                                        
+                                                                        
+                                                                        
+                                                                        
+                                                                        
+                           Terminal too small                           
+                                                                        
+              lw needs at least 80×24. This one is 72×20.               
+              Make the window larger, or press q to quit.               
+                                                                        
+                                                                        
+                                                                        
+                                                                        
+                                                                        
+                                                                        
+                                                                        
+                                                                        

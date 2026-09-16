@@ -1,3 +1,7 @@
+// review_test.go drives the review screen's mutation path over a real
+// engine: `y`/`n`/`A` against the changeset's hunk state, and the commit
+// gate `C` runs (lint regression, stale refusal) — asserting engine state
+// and the StatusReporter message, not view text.
 package review
 
 import (
@@ -6,103 +10,9 @@ import (
 	"strings"
 	"testing"
 
-	tea "charm.land/bubbletea/v2"
-
 	"github.com/awepo-pro/lw/internal/stage"
-	"github.com/awepo-pro/lw/internal/testutil"
 	"github.com/awepo-pro/lw/internal/ui"
 )
-
-// newTestDeps builds ui.Deps with a real Engine over a private copy of
-// fixture, and lw's compiled-in Theme/KeyMap. XDG_CONFIG_HOME is pointed
-// at an empty temp dir so these tests never pick up a real user config —
-// mirrors internal/ui's own (unexported, different-package) testDeps
-// helper.
-func newTestDeps(t *testing.T, fixture string) (ui.Deps, *stage.Engine, string) {
-	t.Helper()
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-
-	root := testutil.CopyFixture(t, fixture)
-	e, err := stage.OpenEngine(root)
-	if err != nil {
-		t.Fatalf("OpenEngine: %v", err)
-	}
-	t.Cleanup(func() { e.Close() })
-
-	theme, err := ui.LoadTheme("")
-	if err != nil {
-		t.Fatalf("LoadTheme: %v", err)
-	}
-	keys, err := ui.LoadKeys()
-	if err != nil {
-		t.Fatalf("LoadKeys: %v", err)
-	}
-
-	return ui.Deps{Engine: e, Theme: theme, Keys: keys}, e, root
-}
-
-// keyPress builds a synthetic tea.KeyPressMsg for a single printable rune,
-// the shape internal/ui's own tests use (app_test.go: Code and Text both
-// set) — never via tea.Program.Run(), which does not return on EOF (C-83).
-func keyPress(r rune) tea.KeyPressMsg {
-	return tea.KeyPressMsg{Code: r, Text: string(r)}
-}
-
-// runCmd executes cmd, if non-nil, against m, expanding any tea.BatchMsg it
-// returns into its constituent commands and feeding every resulting
-// message back through m.Update, until nothing is left to run. Headless
-// tests drive Update/View directly; this is the harness's stand-in for
-// what tea.Program's event loop would otherwise do.
-func runCmd(t *testing.T, m ui.Pane, cmd tea.Cmd) ui.Pane {
-	t.Helper()
-	if cmd == nil {
-		return m
-	}
-	return feedMsg(t, m, cmd())
-}
-
-func feedMsg(t *testing.T, m ui.Pane, msg tea.Msg) ui.Pane {
-	t.Helper()
-	if batch, ok := msg.(tea.BatchMsg); ok {
-		for _, c := range batch {
-			m = runCmd(t, m, c)
-		}
-		return m
-	}
-	updated, cmd := m.Update(msg)
-	return runCmd(t, updated, cmd)
-}
-
-// send drives msg through m.Update and drains every tea.Cmd it (and
-// whatever those in turn produce) returns, so a test can send one key and
-// trust the model has fully settled — including its own reload — before
-// asserting anything.
-func send(t *testing.T, m ui.Pane, msg tea.Msg) ui.Pane {
-	t.Helper()
-	updated, cmd := m.Update(msg)
-	return runCmd(t, updated, cmd)
-}
-
-// initModel constructs a review.Model over d and drives its Init() to
-// completion (loading the open changeset and its diff, if any).
-func initModel(t *testing.T, d ui.Deps) ui.Pane {
-	t.Helper()
-	m := New(d)
-	return runCmd(t, m, m.Init())
-}
-
-// findFileDiff returns the FileDiff d carries for opID, failing t if there
-// is none.
-func findFileDiff(t *testing.T, d stage.Diff, opID string) stage.FileDiff {
-	t.Helper()
-	for _, f := range d.Files {
-		if f.OpID == opID {
-			return f
-		}
-	}
-	t.Fatalf("Diff has no FileDiff for op %s (files: %+v)", opID, d.Files)
-	return stage.FileDiff{}
-}
 
 // TestAcceptDropHunk drops one hunk and accepts another (a no-op success,
 // since hunks are live by default — C-89/D-CL) over a two-hunk patch_page
@@ -288,9 +198,15 @@ func TestAcceptAllRefusedWhenLintDirty(t *testing.T) {
 	m := initModel(t, d)
 	m = send(t, m, keyPress('A'))
 
-	view := m.View(120, 30)
-	if !strings.Contains(view, "accept-all refused") {
-		t.Errorf("View does not show the accept-all refusal:\n%s", view)
+	// The refusal is the StatusReporter message now (contract §5): the
+	// footer shows it styled by level, and the pane draws no status line
+	// of its own.
+	msg, level := statusOf(t, m)
+	if !strings.Contains(msg, "accept-all refused") {
+		t.Errorf("Status does not show the accept-all refusal: %q", msg)
+	}
+	if level != ui.StatusWarn {
+		t.Errorf("accept-all refusal level = %v, want StatusWarn", level)
 	}
 
 	cs, err := e.Current()
@@ -352,9 +268,15 @@ func TestStaleOpBlocksCommit(t *testing.T) {
 	m := initModel(t, d)
 	m = send(t, m, keyPress('C'))
 
-	view := m.View(120, 30)
-	if !strings.Contains(view, "stale") {
-		t.Errorf("View does not show a stale-commit refusal:\n%s", view)
+	// The refusal surfaces through StatusReporter (contract §5); the old
+	// assertion read it out of View, which no longer carries a status
+	// line (00-conventions.md §5, MASTER §8).
+	msg, level := statusOf(t, m)
+	if !strings.Contains(msg, "commit refused") || !strings.Contains(msg, "stale") {
+		t.Errorf("Status does not show the stale-commit refusal: %q", msg)
+	}
+	if level != ui.StatusWarn {
+		t.Errorf("stale-commit refusal level = %v, want StatusWarn", level)
 	}
 
 	if _, err := e.Current(); err != nil {
@@ -405,70 +327,15 @@ func TestCommitRefusedOnFirstCommitLintRegression(t *testing.T) {
 	m := initModel(t, d)
 	m = send(t, m, keyPress('C'))
 
-	view := m.View(120, 30)
-	if !strings.Contains(view, "commit refused: lint regressed: 2 error(s) projected vs 0") {
-		t.Errorf("View does not show the first-commit regression refusal:\n%s", view)
+	msg, level := statusOf(t, m)
+	if !strings.Contains(msg, "commit refused: lint regressed: 2 error(s) projected vs 0") {
+		t.Errorf("Status does not show the first-commit regression refusal: %q", msg)
+	}
+	if level != ui.StatusWarn {
+		t.Errorf("regression refusal level = %v, want StatusWarn", level)
 	}
 
 	if _, err := e.Current(); err != nil {
 		t.Errorf("Current after a refused first commit: %v (the changeset should still be open)", err)
 	}
-}
-
-// TestRationaleRendered checks that an op's Rationale and Provenance both
-// show up in View(w, h) — the property that makes this a review of
-// reasoning, not a diff viewer (/docs/design.md §9.2, s4-tui.md S4-T3 item 2).
-func TestRationaleRendered(t *testing.T) {
-	d, e, _ := newTestDeps(t, "minimal")
-
-	if _, err := e.OpenChangeset("with rationale", stage.Author{Kind: "agent", Model: "test"}); err != nil {
-		t.Fatalf("OpenChangeset: %v", err)
-	}
-
-	page, ok := e.Vault().Page("wiki/concepts/kv-cache.md")
-	if !ok {
-		t.Fatal("fixture missing wiki/concepts/kv-cache.md")
-	}
-	oldLine := "- [[flash-attention]] — a kernel design that reduces the memory-bandwidth cost"
-	newLine := "- [[flash-attention]] — an even better kernel design that reduces bandwidth"
-	rewritten := *page
-	rewritten.Body = strings.Replace(page.Body, oldLine, newLine, 1)
-
-	const rationale = "tighten the flash-attention cross-reference for clarity"
-	const provenance = "raw/articles/kv-cache-explained.md"
-
-	if _, err := e.Append(stage.Op{
-		Kind:       stage.OpPatchPage,
-		Path:       page.Path,
-		Section:    "## Related",
-		Before:     page.SHA256(),
-		Content:    rewritten.Serialize(),
-		Rationale:  rationale,
-		Provenance: []string{provenance},
-		Hunks: []stage.Hunk{
-			{ID: "h1", Path: page.Path, Del: []string{oldLine}, Add: []string{newLine}},
-		},
-	}); err != nil {
-		t.Fatalf("Append: %v", err)
-	}
-
-	m := initModel(t, d)
-	view := m.View(120, 30)
-
-	if !strings.Contains(view, rationale) {
-		t.Errorf("View does not show the op's Rationale:\n%s", view)
-	}
-	if !strings.Contains(view, provenance) {
-		t.Errorf("View does not show the op's Provenance:\n%s", view)
-	}
-}
-
-// mustDiff calls e.Diff(), failing t on error.
-func mustDiff(t *testing.T, e *stage.Engine) stage.Diff {
-	t.Helper()
-	d, err := e.Diff()
-	if err != nil {
-		t.Fatalf("Diff: %v", err)
-	}
-	return d
 }

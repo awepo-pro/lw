@@ -7,105 +7,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/awepo-pro/lw/internal/lint"
-	"github.com/awepo-pro/lw/internal/stage"
-	"github.com/awepo-pro/lw/internal/testutil"
 	"github.com/awepo-pro/lw/internal/ui"
 )
-
-// newTestDeps builds ui.Deps with a real Engine over a private copy of
-// fixture, and lw's compiled-in Theme/KeyMap. XDG_CONFIG_HOME is pointed
-// at an empty temp dir so these tests never pick up a real user config
-// (mirrors internal/ui/review's and internal/ui/browse's own helper of the
-// same name, in a different package).
-func newTestDeps(t *testing.T, fixture string) (ui.Deps, *stage.Engine) {
-	t.Helper()
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-
-	root := testutil.CopyFixture(t, fixture)
-	e, err := stage.OpenEngine(root)
-	if err != nil {
-		t.Fatalf("OpenEngine: %v", err)
-	}
-	t.Cleanup(func() { e.Close() })
-
-	theme, err := ui.LoadTheme("")
-	if err != nil {
-		t.Fatalf("LoadTheme: %v", err)
-	}
-	keys, err := ui.LoadKeys()
-	if err != nil {
-		t.Fatalf("LoadKeys: %v", err)
-	}
-
-	return ui.Deps{Engine: e, Theme: theme, Keys: keys}, e
-}
-
-// keyMsg builds a tea.KeyPressMsg for a literal key name this screen
-// matches on, or a bare printable rune — the same shape
-// internal/ui/browse's own (unexported, different-package) helper uses.
-// Never tea.KeyMsg (C-80).
-func keyMsg(s string) tea.KeyPressMsg {
-	switch s {
-	case "enter":
-		return tea.KeyPressMsg{Code: tea.KeyEnter}
-	case "down":
-		return tea.KeyPressMsg{Code: tea.KeyDown}
-	case "up":
-		return tea.KeyPressMsg{Code: tea.KeyUp}
-	default:
-		r := []rune(s)
-		return tea.KeyPressMsg{Code: r[0], Text: s}
-	}
-}
-
-// runCmd executes cmd, if non-nil, against m, expanding any tea.BatchMsg it
-// returns into its constituent commands and feeding every resulting
-// message back through m.Update, until nothing is left to run. Headless
-// tests drive Update/View directly; this is the harness's stand-in for
-// what tea.Program's event loop would otherwise do (mirrors
-// internal/ui/review's own helper of the same name, in a different
-// package — never Program.Run(), which does not return on EOF, C-83).
-func runCmd(t *testing.T, m ui.Pane, cmd tea.Cmd) ui.Pane {
-	t.Helper()
-	if cmd == nil {
-		return m
-	}
-	return feedMsg(t, m, cmd())
-}
-
-func feedMsg(t *testing.T, m ui.Pane, msg tea.Msg) ui.Pane {
-	t.Helper()
-	if batch, ok := msg.(tea.BatchMsg); ok {
-		for _, c := range batch {
-			m = runCmd(t, m, c)
-		}
-		return m
-	}
-	updated, cmd := m.Update(msg)
-	return runCmd(t, updated, cmd)
-}
-
-// collectMsgs runs cmd (which may be a tea.Batch of several commands) and
-// returns every tea.Msg it produces, in the order Batch's own slice holds
-// them — without feeding any of them back through Update. Used where a
-// test must assert exactly which messages a key press emits, rather than
-// their effect once applied (a plain tea.Cmd, a *tea.BatchMsg producing
-// one, and a nil Cmd are all handled).
-func collectMsgs(t *testing.T, cmd tea.Cmd) []tea.Msg {
-	t.Helper()
-	if cmd == nil {
-		return nil
-	}
-	msg := cmd()
-	if batch, ok := msg.(tea.BatchMsg); ok {
-		var out []tea.Msg
-		for _, c := range batch {
-			out = append(out, collectMsgs(t, c)...)
-		}
-		return out
-	}
-	return []tea.Msg{msg}
-}
 
 // initModel constructs a lintview.Model over d and drives its Init() to
 // completion (running the lint report, if an engine is present).
@@ -176,87 +79,101 @@ func TestDirtyFixtureFourteenRowsSixteenFindings(t *testing.T) {
 	if total != 16 {
 		t.Fatalf("sum of ByCheck findings = %d, want 16", total)
 	}
-
-	// Nothing is expanded by default: exactly 14 rows, one per check.
-	if got := len(m.rows); got != 14 {
-		t.Fatalf("len(rows) with nothing expanded = %d, want 14", got)
-	}
 }
 
-// TestExpandCollapseRow drives `enter` on a check-header row and asserts
-// the row list grows by exactly that check's finding count, then shrinks
-// back to 14 when collapsed again.
-func TestExpandCollapseRow(t *testing.T) {
+// TestReportRowsAreFlatFindings replaces v1's expand/collapse test: the 003
+// Findings panel has no check-header rows to expand — every row of the
+// report is one finding, in Report.Findings' frozen order (Path, then
+// Line, then Check), and the pane's row count is the finding count.
+func TestReportRowsAreFlatFindings(t *testing.T) {
 	d, _ := newTestDeps(t, "dirty")
 	p := initModel(t, d)
 	m := p.(*Model)
 
-	// log-rotate is the last of the 14 checks in table order (backbone
-	// §4) and carries exactly one finding on dirty (EXPECTED-LINT.md).
+	if got := len(m.report.Findings); got != 16 {
+		t.Fatalf("len(report.Findings) = %d, want 16", got)
+	}
+
+	// Rendered tall enough to show every row: one content row per finding,
+	// each carrying a severity glyph, with nothing between them.
+	plain := plainView(p, 120, 20)
+	lines := splitRows(plain)
+	if got := len(nonPanelLines(lines)); got != 16 {
+		t.Fatalf("content rows rendered = %d, want 16 (one per finding)\n%s", got, plain)
+	}
+}
+
+// TestCursorNavigation pins the movement keys against the flat list: j
+// moves down one finding, k back up, G to the last, g to the first, and
+// the cursor clamps at both ends instead of escaping the list.
+func TestCursorNavigation(t *testing.T) {
+	d, _ := newTestDeps(t, "dirty")
+	p := initModel(t, d)
+	m := p.(*Model)
+	n := len(m.report.Findings)
+
+	p, _ = m.handleKey(keyMsg("j")) // down
+	if p.(*Model).cursor != 1 {
+		t.Fatalf("cursor after j = %d, want 1", p.(*Model).cursor)
+	}
+	p, _ = p.(*Model).handleKey(keyMsg("k")) // up
+	if p.(*Model).cursor != 0 {
+		t.Fatalf("cursor after k = %d, want 0", p.(*Model).cursor)
+	}
+	p, _ = p.(*Model).handleKey(keyMsg("k")) // clamps at 0
+	if p.(*Model).cursor != 0 {
+		t.Fatalf("cursor after k at top = %d, want 0", p.(*Model).cursor)
+	}
+	p, _ = p.(*Model).handleKey(keyMsg("G")) // bottom
+	if p.(*Model).cursor != n-1 {
+		t.Fatalf("cursor after G = %d, want %d", p.(*Model).cursor, n-1)
+	}
+	p, _ = p.(*Model).handleKey(keyMsg("j")) // clamps at the last finding
+	if p.(*Model).cursor != n-1 {
+		t.Fatalf("cursor after j at bottom = %d, want %d", p.(*Model).cursor, n-1)
+	}
+	p, _ = p.(*Model).handleKey(keyMsg("g")) // top
+	if p.(*Model).cursor != 0 {
+		t.Fatalf("cursor after g = %d, want 0", p.(*Model).cursor)
+	}
+}
+
+// findingIndex returns the index of the one finding check fires on the
+// dirty fixture, failing the test when it is not there exactly once.
+func findingIndex(t *testing.T, m *Model, check string) int {
+	t.Helper()
 	idx := -1
-	for i, c := range m.checks {
-		if c.ID() == "log-rotate" {
+	for i, f := range m.report.Findings {
+		if f.Check == check {
+			if idx >= 0 {
+				t.Fatalf("check %s fires more than once on dirty", check)
+			}
 			idx = i
 		}
 	}
 	if idx < 0 {
-		t.Fatal("lint.All() has no log-rotate check")
+		t.Fatalf("check %s never fires on dirty", check)
 	}
-	m.cursor = idx
-
-	_, cmd := m.handleKey(keyMsg("enter"))
-	p = runCmd(t, m, cmd)
-	m = p.(*Model)
-	if got := len(m.rows); got != 15 {
-		t.Fatalf("len(rows) after expanding log-rotate = %d, want 15 (14 + 1 finding)", got)
-	}
-
-	_, cmd = m.handleKey(keyMsg("enter"))
-	p = runCmd(t, m, cmd)
-	m = p.(*Model)
-	if got := len(m.rows); got != 14 {
-		t.Fatalf("len(rows) after collapsing log-rotate = %d, want 14", got)
-	}
+	return idx
 }
 
-// TestEnterOnFindingEmitsOpenPathAndSwitch expands log-rotate (dirty's one
-// finding with a non-empty, root-level Path — "log.md") and presses enter
-// on its finding row, asserting both messages backbone §12/C-108 promises:
+// TestEnterOnFindingEmitsOpenPathAndSwitch drives enter onto dirty's
+// log-rotate finding (the one with a non-empty, root-level Path —
+// "log.md"), asserting both messages backbone §12/C-108 promise:
 // ui.OpenPathMsg carrying that Path, then ui.SwitchScreenMsg{ScreenBrowse}.
 func TestEnterOnFindingEmitsOpenPathAndSwitch(t *testing.T) {
 	d, _ := newTestDeps(t, "dirty")
 	p := initModel(t, d)
 	m := p.(*Model)
 
-	idx := -1
-	for i, c := range m.checks {
-		if c.ID() == "log-rotate" {
-			idx = i
-		}
-	}
-	if idx < 0 {
-		t.Fatal("lint.All() has no log-rotate check")
-	}
-	findings := m.report.ByCheck["log-rotate"]
-	if len(findings) != 1 {
-		t.Fatalf("log-rotate findings on dirty = %d, want 1", len(findings))
-	}
-	wantPath := findings[0].Path
-	if wantPath == "" {
+	idx := findingIndex(t, m, "log-rotate")
+	f := m.report.Findings[idx]
+	if f.Path == "" {
 		t.Fatal("log-rotate's finding has an empty Path; fixture assumption broken")
 	}
 
 	m.cursor = idx
-	_, cmd := m.handleKey(keyMsg("enter")) // expand
-	if cmd != nil {
-		t.Fatal("expanding a check row returned a non-nil Cmd")
-	}
-	if len(m.rows) != 15 {
-		t.Fatalf("len(rows) after expanding = %d, want 15", len(m.rows))
-	}
-	m.cursor = idx + 1 // the one finding row just inserted
-
-	_, cmd = m.handleKey(keyMsg("enter"))
+	_, cmd := m.handleKey(keyMsg("enter"))
 	msgs := collectMsgs(t, cmd)
 	if len(msgs) != 2 {
 		t.Fatalf("enter on a finding emitted %d messages, want 2: %#v", len(msgs), msgs)
@@ -265,8 +182,8 @@ func TestEnterOnFindingEmitsOpenPathAndSwitch(t *testing.T) {
 	if !ok {
 		t.Fatalf("first message = %#v, want ui.OpenPathMsg", msgs[0])
 	}
-	if open.Path != wantPath {
-		t.Fatalf("OpenPathMsg.Path = %q, want %q", open.Path, wantPath)
+	if open.Path != f.Path {
+		t.Fatalf("OpenPathMsg.Path = %q, want %q", open.Path, f.Path)
 	}
 	sw, ok := msgs[1].(ui.SwitchScreenMsg)
 	if !ok {
@@ -314,25 +231,101 @@ func TestOpenFindingCmdPageScoped(t *testing.T) {
 }
 
 // TestFilterKeyRendersAgentGuidanceNoEngineCall is pinned item 3: `f`
-// renders the literal guidance and never calls the engine — checked here
-// by asserting the loaded report is byte-identical before and after (no
-// reload was triggered, which is the only engine call this screen could
-// make from `f`).
+// reports the literal guidance through StatusReporter — the footer's
+// channel, not a status line this pane draws — and never calls the engine,
+// checked here by asserting the loaded report is byte-identical before and
+// after (no reload was triggered, which is the only engine call this
+// screen could make from `f`).
 func TestFilterKeyRendersAgentGuidanceNoEngineCall(t *testing.T) {
 	d, _ := newTestDeps(t, "dirty")
 	p := initModel(t, d)
 	m := p.(*Model)
 	before := m.report
 
+	if msg, _ := m.Status(); msg != "" {
+		t.Fatalf("Status before any key = %q, want empty", msg)
+	}
+
 	_, cmd := m.handleKey(keyMsg("f"))
 	if cmd != nil {
 		t.Fatal("`f` returned a non-nil Cmd; it must make no engine call")
 	}
-	if m.status != "requires the agent (M5)" {
-		t.Fatalf("status = %q, want %q", m.status, "requires the agent (M5)")
+	msg, level := m.Status()
+	if msg != "requires the agent (M5)" {
+		t.Fatalf("Status after f = %q, want %q", msg, "requires the agent (M5)")
+	}
+	if level != ui.StatusInfo {
+		t.Fatalf("Status level after f = %v, want ui.StatusInfo", level)
 	}
 	if len(m.report.Findings) != len(before.Findings) {
 		t.Fatal("report changed after `f`; an engine call must have been made")
+	}
+}
+
+// TestFooterHelpAndOverlayHelp pins the frozen footer and overlay surface
+// (s2-screens.md T09): today's bindings in today's order, movement labels
+// merged the way the shell's KeyMap carries them (contract §4), one-word
+// labels where the old ones were longer, and the overlay section titled
+// Lint.
+func TestFooterHelpAndOverlayHelp(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	theme, err := ui.LoadTheme("")
+	if err != nil {
+		t.Fatalf("LoadTheme: %v", err)
+	}
+	keys, err := ui.LoadKeys()
+	if err != nil {
+		t.Fatalf("LoadKeys: %v", err)
+	}
+
+	m := New(ui.Deps{Theme: theme, Keys: keys}).(*Model)
+
+	// The pane must implement both optional interfaces by value assertion,
+	// exactly as the shell discovers them (contract §5).
+	var fh ui.FooterHelper = m
+	var oh ui.OverlayHelper = m
+	if fh == nil || oh == nil {
+		t.Fatal("Model does not implement ui.FooterHelper / ui.OverlayHelper")
+	}
+	var sr ui.StatusReporter = m
+	if sr == nil {
+		t.Fatal("Model does not implement ui.StatusReporter")
+	}
+
+	got := m.FooterHelp()
+	want := []struct{ key, desc string }{
+		{"j/k", "move"},
+		{"g/G", "top/bottom"},
+		{"enter", "open"},
+		{"f", "fix"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("FooterHelp has %d bindings, want %d", len(got), len(want))
+	}
+	for i, w := range want {
+		h := got[i].Help()
+		if h.Key != w.key || h.Desc != w.desc {
+			t.Fatalf("FooterHelp[%d] = %q %q, want %q %q", i, h.Key, h.Desc, w.key, w.desc)
+		}
+	}
+
+	title, entries := m.OverlayHelp()
+	if title != "Lint" {
+		t.Fatalf("OverlayHelp title = %q, want %q", title, "Lint")
+	}
+	if len(entries) != 4 {
+		t.Fatalf("OverlayHelp has %d entries, want 4", len(entries))
+	}
+	wantOverlay := []struct{ key, desc string }{
+		{"j/k", "down / up"},
+		{"g/G", "top / bottom"},
+		{"enter", "open"},
+		{"f", "fix"},
+	}
+	for i, w := range wantOverlay {
+		if entries[i].Key != w.key || entries[i].Desc != w.desc {
+			t.Fatalf("OverlayHelp[%d] = %q %q, want %q %q", i, entries[i].Key, entries[i].Desc, w.key, w.desc)
+		}
 	}
 }
 
@@ -347,7 +340,7 @@ func TestViewNeverPanics(t *testing.T) {
 		_ = m.View(s[0], s[1])
 	}
 
-	m = runCmd(t, m, m.Init())
+	m = runCmd(t, m, m.Init()).(*Model)
 	for _, s := range sizes {
 		_ = m.View(s[0], s[1])
 	}

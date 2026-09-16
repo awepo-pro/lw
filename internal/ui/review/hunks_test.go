@@ -6,16 +6,36 @@ import (
 	"github.com/awepo-pro/lw/internal/stage"
 )
 
-func TestBuildCursorStopsFlattensInFileThenHunkOrder(t *testing.T) {
+// TestBuildCursorStopsFollowsOpsOrder replaces the pre-T20 ordering test
+// (which pinned the old Diff-only walk, where an op with zero hunks
+// contributed no stop and the walk followed d.Files across ops): since
+// C32/D-3U the stops follow the Ops panel's op order, each op's hunks in
+// Diff order within that op, and an op with no hunks — no Diff entry at
+// all, or an entry without hunks — contributes exactly one op-level stop.
+func TestBuildCursorStopsFollowsOpsOrder(t *testing.T) {
 	d := stage.Diff{
 		Files: []stage.FileDiff{
-			{OpID: "op1", Hunks: []stage.Hunk{{ID: "h1"}, {ID: "h2"}}},
-			{OpID: "op2", Hunks: nil}, // zero hunks: contributes no stop
+			// Diff's risk order need not match the ops order: here op3's
+			// file comes first.
 			{OpID: "op3", Hunks: []stage.Hunk{{ID: "h1"}}},
+			{OpID: "op1", Hunks: []stage.Hunk{{ID: "h1"}, {ID: "h2"}}},
+			{OpID: "op2", Hunks: nil}, // a Diff entry, but no hunks
 		},
 	}
-	stops := buildCursorStops(d)
-	want := []cursorStop{{fileIdx: 0, hunkIdx: 0}, {fileIdx: 0, hunkIdx: 1}, {fileIdx: 2, hunkIdx: 0}}
+	ops := []stage.Op{
+		{ID: "op1"},
+		{ID: "op2"},
+		{ID: "op3"},
+		{ID: "op4"}, // fully dropped: no Diff entry at all
+	}
+	stops := buildCursorStops(d, ops)
+	want := []cursorStop{
+		{fileIdx: 1, hunkIdx: 0},
+		{fileIdx: 1, hunkIdx: 1},
+		{opID: "op2"},
+		{fileIdx: 0, hunkIdx: 0},
+		{opID: "op4"},
+	}
 	if len(stops) != len(want) {
 		t.Fatalf("len(stops) = %d, want %d (%v)", len(stops), len(want), stops)
 	}
@@ -23,6 +43,11 @@ func TestBuildCursorStopsFlattensInFileThenHunkOrder(t *testing.T) {
 		if s != want[i] {
 			t.Errorf("stops[%d] = %+v, want %+v", i, s, want[i])
 		}
+	}
+
+	// No ops, no stops: the empty-changeset state resolves to nothing.
+	if got := buildCursorStops(d, nil); len(got) != 0 {
+		t.Errorf("buildCursorStops with no ops = %v, want none", got)
 	}
 }
 
@@ -52,11 +77,17 @@ func TestResolveCursor(t *testing.T) {
 			{OpID: "op1", Hunks: []stage.Hunk{{ID: "h1"}, {ID: "h2"}}},
 		},
 	}
-	stops := buildCursorStops(d)
+	stops := buildCursorStops(d, []stage.Op{{ID: "op1"}})
 
 	opID, hunkID, ok := resolveCursor(d, stops, 1)
 	if !ok || opID != "op1" || hunkID != "h2" {
 		t.Errorf("resolveCursor(1) = (%q, %q, %v), want (op1, h2, true)", opID, hunkID, ok)
+	}
+
+	// An op-level stop resolves to its op with no hunk: never a y/n target.
+	opID, hunkID, ok = resolveCursor(d, []cursorStop{{opID: "op9"}}, 0)
+	if !ok || opID != "op9" || hunkID != "" {
+		t.Errorf("resolveCursor(op-level) = (%q, %q, %v), want (op9, \"\", true)", opID, hunkID, ok)
 	}
 
 	if _, _, ok := resolveCursor(d, stops, -1); ok {

@@ -1,0 +1,15 @@
+╭ Keys ────────────────────────────────────────── esc to close ╮
+│                                                              │
+│  Review                         Everywhere                   │
+│                                                              │
+│  y       accept hunk            tab       next screen        │
+│  n       drop hunk              ctrl+r    ask → review       │
+│  A       accept all             ?         close              │
+│  X       reject changeset       q/ctrl+c  quit               │
+│  C       commit                                              │
+│  p       preview / diff         Scroll                       │
+│  j/k     down / up              pgup/pgdn page               │
+│  g/G     top / bottom           ctrl+u/d  half page          │
+│  s       split hunk · not built home/end  top / bottom       │
+│                                                              │
+╰──────────────────────────────────────────────────────────────╯

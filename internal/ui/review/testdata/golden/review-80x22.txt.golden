@@ -1,0 +1,22 @@
+╭ Ops ─────────────────────────────────────────────────────────────────────────╮
+│▌● src   baker-percentages-explained.md  raw/articles/                        │
+│ ● new   baker-percentages.md  wiki/concepts/                                 │
+│ ● patch autolyse.md  wiki/concepts/                                          │
+│ ✗ patch banneton.md  wiki/entities/                                          │
+╰────────────────────────────────────────────────────────────────────── 1 of 4 ╯
+╭ Diff ───────────────────────────────────────────────────────────── p preview ╮
+│ src  raw/articles/baker-percentages-explained.md                op1 · 1 hunk │
+│ raw source for the new baker-percentages page                                │
+│                                                                              │
+│ @@ -0,0 +1,21 @@                                                             │
+│ + ---                                                                        │
+│ + source_url: https://example.org/articles/baker-percentages-explained       │
+│ + ingested: 2026-08-29                                                       │
+│ + sha256: 01737517844386bdd1e50605eb8b3fbf010b95d47035ff52a4510646dab162b0   │
+│ + ---                                                                        │
+│ +                                                                            │
+│ + # Baker Percentages, Explained                                             │
+│ +                                                                            │
+│ + Professional bakers rarely write a recipe as a list of ingredient weights. │
+│ + They write it as a set of percentages of the flour weight, a convention    │
+╰─────────────────────────────────────────────────────────────────── ↓ 93 more ╯

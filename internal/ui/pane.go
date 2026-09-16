@@ -1,7 +1,10 @@
 // pane.go implements backbone §12's shared shell vocabulary: the Screen
 // enum, the Pane interface every screen package implements, the Deps and
 // Options a screen (and the shell itself) are constructed with, and the
-// messages the shell broadcasts to panes.
+// messages the shell broadcasts to panes. The interface itself is unchanged
+// by 003's frame redesign (01-contract.md §5: "Pane interface: unchanged")
+// — a screen opts into the new chrome by implementing FooterHelper,
+// OverlayHelper and StatusReporter (help.go) instead, all optional.
 //
 // Nothing here imports a screen package. Options.Panes is injected by
 // cmd/lw once a screen exists (s4-tui.md S4-T2 item 1) — that is what lets
@@ -101,6 +104,18 @@ type StreamClosedMsg struct{}
 // changeset and switching to Review to show it.
 type SwitchScreenMsg struct {
 	To Screen
+}
+
+// WheelMsg is one mouse-wheel notch, delivered by the shell to the active
+// pane only (added 2026-09-16, W5 F2/D-3W; contract §5 frame note 7).
+// Declared here with the shell's other routed messages because Update
+// produces it and the shell never imports a screen package (backbone §12).
+// X, Y are pane-local cells: X from 0 at the pane's left edge, Y from 0 at
+// the pane's first row (terminal row 1, under the shell's header). W, H
+// are the size the shell passes to the pane's View. Delta is -1 (wheel up)
+// or +1 (wheel down).
+type WheelMsg struct {
+	X, Y, W, H, Delta int
 }
 
 // OpenPathMsg asks the shell to switch to Browse and select a vault-relative

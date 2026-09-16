@@ -3,7 +3,7 @@ VERSION := 1.0.0-dev
 LDFLAGS := -X main.version=$(VERSION)
 BENCHTIME ?= 1x
 
-.PHONY: build test lint check smoke bench stress-scale fixtures install release-snapshot clean
+.PHONY: build test lint fmt-check vet check smoke bench stress-scale fixtures install release-snapshot clean
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/lw
@@ -11,8 +11,24 @@ build:
 test:
 	go test ./...
 
-lint:
-	gofmt -l . && go vet ./...
+# gofmt -l never fails on its own, so lint splits into a check that does
+# (fmt-check) and go vet (vet). git ls-files, not a filesystem walk, so
+# .dev-notes/ (git-ignored, see .git/info/exclude) never gets probed. Names
+# travel NUL-separated (spaces are safe), files deleted but not yet staged are
+# skipped, and gofmt's own failure (a syntax error) fails the check too.
+fmt-check:
+	@bad="$$(git ls-files -z --cached --others --exclude-standard -- '*.go' \
+		| xargs -0 -r sh -c 'for f do [ -e "$$f" ] && printf "%s\0" "$$f"; done; true' sh \
+		| xargs -0 -r gofmt -l)" || { echo "fmt-check: gofmt failed" >&2; exit 1; }; \
+	if [ -n "$$bad" ]; then \
+		echo "$$bad"; \
+		exit 1; \
+	fi
+
+vet:
+	go vet ./...
+
+lint: fmt-check vet
 
 check: lint test
 

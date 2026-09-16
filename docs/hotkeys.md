@@ -31,13 +31,13 @@ bottom = []
 
 Keystrokes are written the way Bubble Tea names them: a single printable
 character (`a`, `A`, `?`), or a named key — `enter`, `esc`, `tab`, `up`,
-`down`, `left`, `right`, `backspace`, or a modifier form such as `ctrl+c`,
-`ctrl+r`, `shift+tab`. Matching is case-sensitive: `a` and `A` are different
-keys.
+`down`, `left`, `right`, `backspace`, `pgup`, `pgdown`, `home`, `end`, or a
+modifier form such as `ctrl+c`, `ctrl+r`, `shift+tab`. Matching is
+case-sensitive: `a` and `A` are different keys.
 
 ## Rebindable actions
 
-These are the thirteen actions in the keymap. Defaults are frozen; the
+These are the twenty actions in the keymap. Defaults are frozen; the
 `toml` key is the only way to change one.
 
 | TOML key | Default | Action | Screens |
@@ -52,14 +52,45 @@ These are the thirteen actions in the keymap. Defaults are frozen; the
 | `move_up` | `k`, `up` | Move the cursor / selection up | Browse, Review, Lint, Log |
 | `top` | `g` | Jump to the first entry | Browse, Review, Lint, Log |
 | `bottom` | `G` | Jump to the last entry | Browse, Review, Lint, Log |
+| `preview` | `p` | Toggle Review's detail panel between the Diff and a rendered Preview of the staged page | Review |
+| `scroll_page_up` | `pgup` | Scroll the content panel up a page | Review, Browse, Ask |
+| `scroll_page_down` | `pgdown` | Scroll the content panel down a page | Review, Browse, Ask |
+| `scroll_half_up` | `ctrl+u` | Scroll the content panel up half a page | Review, Browse, Ask |
+| `scroll_half_down` | `ctrl+d` | Scroll the content panel down half a page | Review, Browse, Ask |
+| `scroll_top` | `home` | Scroll the content panel to its top | Review, Browse, Ask |
+| `scroll_bottom` | `end` | Scroll the content panel to its bottom | Review, Browse, Ask |
 | `next_pane` | `tab` | Cycle to the next screen | Shell |
 | `quit` | `q`, `ctrl+c` | Quit `lw` | Shell |
-| `help` | `?` | Help — declared and rebindable, but no help overlay exists yet, so no screen consumes it | — |
+| `help` | `?` | Help — open the centred Keys overlay, which lists the current screen's keys beside the shell's global ones, plus a `Scroll` group on the screens whose content scrolls; `?` or `esc` closes it, and while it is open every other key except quit is ignored | Shell |
 
 Review's `y`/`n`/`s`/`A`/`X`/`C` letters are the review surface `/docs/design.md`
 §9 fixes, and they are also the defaults above. The keymap is the source of
 truth: rebinding one of them changes what Review matches, so rebind them
 only if you are also prepared to relearn what the documentation says.
+
+### Scrolling and the mouse
+
+Three screens have a panel whose content can be longer than the panel:
+Review's detail panel, Browse's preview, and Ask's transcript. The
+`scroll_*` actions move that content — a page, half a page, or straight to
+its top or bottom — without moving the cursor. On Review and Browse the
+scroll position jumps back to the top whenever the selection changes,
+because the content under the fold belongs to the selection; Ask keeps
+its position, as described below.
+
+The mouse wheel scrolls the panel under the pointer, three lines per
+notch. Over Review's Ops list or Browse's Pages tree it moves the cursor
+instead, exactly like `j`/`k`; Review's Changeset panel and Browse's Links
+panel ignore it. lw holds the mouse while the TUI is open, so select
+terminal text with shift+drag.
+
+On Ask, scrolling up stops following the conversation: the transcript
+leaves the window where it is, marks how many newer lines are below it
+(`↓ N newer` on the panel's bottom border), and folds incoming output in
+without moving what is on screen. Sending a message — or scrolling back
+down to the bottom — follows the conversation again. The scroll keys are
+not printable, so they reach Ask even while the message box is taking
+text: `home` and `end` work there too.
 
 ### Match order inside a screen
 
@@ -73,15 +104,18 @@ move_down = ["n"]
 move_up   = ["p"]
 ```
 
-On Review this is a real collision: `n` is also `drop_hunk`, and `move_down`
-is matched first, so `n` moves the cursor and the only way to drop a hunk is
-to rebind `drop_hunk` too. Browse, Review, Lint and Log all behave this way.
+On Review this is a double collision: `n` is also `drop_hunk` and `p` is
+also `preview`, and `move_down`/`move_up` are matched first, so `n` and `p`
+both just move the cursor — the only way to drop a hunk or flip the detail
+panel to the Preview is to rebind those actions too. Browse, Review, Lint
+and Log all behave this way.
 
 ```toml
-# The collision resolved: move the action off the key you stole.
+# The collisions resolved: move each action off the key you stole.
 move_down = ["n"]
 move_up   = ["p"]
 drop_hunk = ["d"]
+preview   = ["v"]
 ```
 
 ## Keys that are not rebindable
@@ -92,25 +126,38 @@ keymap can be planned around them.
 
 | Keys | Screen | Action |
 |---|---|---|
-| `enter` | Ask | Send the typed question, or expand the selected tool call |
+| `enter` | Ask | Send the typed question, or expand / collapse the selected tool call |
 | `up` / `down` | Ask | Select the previous / next tool call |
 | `backspace` | Ask | Delete a character from the input box |
 | `ctrl+r` | Ask | Jump to Review |
-| `enter` | Browse | Open the selected page |
-| `/` | Browse | Find a page by name |
+| `enter` | Browse | Toggle a directory open/closed; a page or raw source is already open — the preview follows the cursor |
+| `/` | Browse | Find a page or raw source by name |
 | `esc` | Browse | Close the finder |
-| `h` / `left` | Browse | Collapse the tree |
-| `l` / `right` | Browse | Expand the tree |
-| `enter` | Lint | Expand a finding, or jump to the page in Browse |
+| `h` / `left` | Browse | Collapse the selected directory, or move up to its parent |
+| `l` / `right` | Browse | Expand the selected directory |
+| `enter` | Lint | Open the finding's page in Browse |
 | `f` | Lint | Ask the agent to fix — reports that it needs the agent |
 | `f` | Log | Cycle the log filter |
 | `r` | Log | Revert a commit into a new changeset (opens Review) |
 
-Anything the keymap and this table both leave unbound does nothing. The
-footer bar advertises only keys something actually binds — `tab`, `ctrl+r`,
-Review's `y`/`n`/`C`, and `q` — and no longer hints at `?`: nothing renders a
-help overlay, so nothing consumes it (C-124/TD-8; see the `help` row
-above).
+Anything the keymap and this table both leave unbound does nothing.
+
+Two screens take text input: Ask's message box types whenever Ask is the
+active screen, and Browse's `/` finder types while it is open. While a
+screen is taking text like this, printable keys — `q` and `?` included —
+type into the input instead of triggering a keymap action, so an action
+rebound onto a printable key does not fire while you are typing. The
+non-printable globals still work: `ctrl+c` still quits and `tab` still
+switches screens.
+
+The footer shows the active screen's own keys, and the shell appends a
+suffix after them: `tab screen` always, `q quit` unless that screen is
+taking text input, and `? help` last — so every screen's footer ends the
+same way. When the terminal is too narrow to hold the row, whole bindings
+drop from the end to make it fit; `? help` itself is never dropped. While a
+screen is showing a transient message instead (a refused commit, a revert
+result), the footer shows that message and `? help` in place of the key
+list.
 
 Screens are cycled with `tab`, in this order: Review → Ask → Lint → Log →
 Browse, wrapping back to Review.

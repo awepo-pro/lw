@@ -1,34 +1,31 @@
-// theme.go implements backbone §12's Theme, LoadTheme and Theme.WithDark,
-// including S6-T4's four named built-ins ("default", "dark", "light",
-// "nord") and user theme files from <config.ConfigDir()>/themes/.
+// theme.go implements contract §3's Theme, Palette, LoadTheme and
+// Theme.WithDark — the one adaptive palette (plan §4.4), locked to a
+// polarity by the reserved names "dark"/"light", and a user
+// themes/<name>.toml loaded on top of the default palette for anything else.
 //
 // The TOML shape here follows a pattern, not a copy: yorukot/superfile ships
 // a flat key = value theme.toml, one file per colour polarity, and a user
 // picks the file that matches their terminal. lipgloss v2 has no
-// AdaptiveColor (C-81) — colour is resolved by calling a LightDarkFunc at
+// AdaptiveColor — colour is resolved by calling a LightDarkFunc at
 // Style-build time instead — so a theme file stays flat and superfile-style
 // but pairs every semantic colour with explicit "<name>_light" /
 // "<name>_dark" keys, letting any theme render correctly on both
 // polarities. See NOTICE for the full attribution and the MIT licence text
-// this pattern is credited under.
+// this pattern is credited under. The on-disk side — the themeFile shape
+// and the lookup rules — lives in theme_file.go.
 package ui
 
 import (
-	"errors"
 	"fmt"
 	"image/color"
-	"os"
-	"path/filepath"
 
 	lipgloss "charm.land/lipgloss/v2"
-	"github.com/BurntSushi/toml"
-
-	"github.com/awepo-pro/lw/internal/config"
+	"github.com/charmbracelet/colorprofile"
 )
 
 // colorPair is one semantic colour's hex value on a light terminal and on a
-// dark one. lipgloss.LightDarkFunc (backbone §12, C-81) picks between them
-// when a Theme's styles are built.
+// dark one. lipgloss.LightDark picks between them when a Theme's styles are
+// built.
 type colorPair struct {
 	Light string
 	Dark  string
@@ -38,346 +35,266 @@ type colorPair struct {
 // as the "<name>_light" / "<name>_dark" TOML key prefixes a theme file
 // names — see themeFile.
 type themeColors struct {
-	Foreground colorPair
-	Background colorPair
-	Muted      colorPair
-	Faint      colorPair
-	Border     colorPair
-	Accent     colorPair
-	Good       colorPair
-	Warn       colorPair
-	Bad        colorPair
+	Fg       colorPair
+	Muted    colorPair
+	Faint    colorPair
+	Border   colorPair
+	Accent   colorPair
+	CursorBg colorPair
+	Good     colorPair
+	Warn     colorPair
+	Bad      colorPair
+	Heading  colorPair
+	Code     colorPair
 }
 
-// defaultThemeColors is lw's compiled-in adaptive palette: one half for a
-// light terminal, one for a dark one. The hex values are /demo.html's
-// design so the TUI matches the mock the project was designed against.
+// defaultThemeColors is lw 2's one compiled-in palette (contract §3 note 1,
+// mockgen.PALETTE): one half for a light terminal, one for a dark one. Every
+// theme — adaptive, forced-dark, forced-light, or a user file — starts from
+// this; nothing else is compiled in.
 func defaultThemeColors() themeColors {
 	return themeColors{
-		Foreground: colorPair{Light: "#14171D", Dark: "#E4E8EE"},
-		Background: colorPair{Light: "#F5F6F8", Dark: "#0F1217"},
-		Muted:      colorPair{Light: "#5B6675", Dark: "#8E98A7"},
-		Faint:      colorPair{Light: "#8A93A1", Dark: "#6B7482"},
-		Border:     colorPair{Light: "#DCE1E8", Dark: "#252B34"},
-		Accent:     colorPair{Light: "#9C6410", Dark: "#DFA344"},
-		Good:       colorPair{Light: "#1C6E48", Dark: "#57C48C"},
-		Warn:       colorPair{Light: "#8A6410", Dark: "#D9A63F"},
-		Bad:        colorPair{Light: "#A63535", Dark: "#EE7B72"},
+		Fg:       colorPair{Light: "#1C2128", Dark: "#D8DDE4"},
+		Muted:    colorPair{Light: "#586270", Dark: "#8C95A2"},
+		Faint:    colorPair{Light: "#8A929E", Dark: "#5E6672"},
+		Border:   colorPair{Light: "#C6CDD6", Dark: "#353C47"},
+		Accent:   colorPair{Light: "#1D62C2", Dark: "#7AB2F2"},
+		CursorBg: colorPair{Light: "#E6EEF9", Dark: "#1A2331"},
+		Good:     colorPair{Light: "#1D7A4B", Dark: "#6BC28E"},
+		Warn:     colorPair{Light: "#93660A", Dark: "#E2B45A"},
+		Bad:      colorPair{Light: "#B03A33", Dark: "#EF7F76"},
+		Heading:  colorPair{Light: "#7A45C2", Dark: "#C3A0F0"},
+		Code:     colorPair{Light: "#17727A", Dark: "#6CC7C9"},
 	}
 }
 
-// darkThemeColors is the `dark` built-in: a deep neutral-indigo palette for
-// someone who wants a dark UI on a light terminal as much as on a dark one.
-func darkThemeColors() themeColors {
-	return themeColors{
-		Foreground: locked("#E8EBF2"),
-		Background: locked("#0B0E14"),
-		Muted:      locked("#A3ADC2"),
-		Faint:      locked("#5C6577"),
-		Border:     locked("#1E2430"),
-		Accent:     locked("#7AA2F7"),
-		Good:       locked("#9ECE6A"),
-		Warn:       locked("#E0AF68"),
-		Bad:        locked("#F7768E"),
-	}
+// Palette is one polarity's resolved tokens, as "#RRGGBB" (contract §3;
+// Heading and Code added 2026-09-16, W5 F3/D-3W: eleven tokens). It is what
+// markdown.Style is built from — the two structs share field names on
+// purpose (01-contract.md §3).
+type Palette struct {
+	Fg, Muted, Faint, Border, Accent, CursorBg, Good, Warn, Bad string
+	Heading, Code                                               string
 }
 
-// lightThemeColors is the `light` built-in: a warm white palette locked to
-// light rendering, for a terminal whose reported polarity a curator does
-// not want to trust.
-func lightThemeColors() themeColors {
-	return themeColors{
-		Foreground: locked("#1B1F27"),
-		Background: locked("#FBFBFC"),
-		Muted:      locked("#4E5765"),
-		Faint:      locked("#8B94A3"),
-		Border:     locked("#DDE2E9"),
-		Accent:     locked("#1F5FBF"),
-		Good:       locked("#1C6E48"),
-		Warn:       locked("#8A6410"),
-		Bad:        locked("#A63535"),
-	}
-}
-
-// nordThemeColors is the `nord` built-in, from the documented Nord palette
-// (nordtheme.com): polar night for the background, snow storm for text,
-// frost for the accent and the aurora colours for status. Nord ships no
-// light polarity, so it is locked to its own dark one rather than invented
-// into one.
-func nordThemeColors() themeColors {
-	return themeColors{
-		Foreground: locked("#ECEFF4"), // nord6  — snow storm
-		Background: locked("#2E3440"), // nord0  — polar night
-		Muted:      locked("#D8DEE9"), // nord4  — snow storm
-		Faint:      locked("#4C566A"), // nord3  — polar night
-		Border:     locked("#3B4252"), // nord1  — polar night
-		Accent:     locked("#88C0D0"), // nord8  — frost
-		Good:       locked("#A3BE8C"), // nord14 — aurora
-		Warn:       locked("#EBCB8B"), // nord13 — aurora
-		Bad:        locked("#BF616A"), // nord11 — aurora
-	}
-}
-
-// locked collapses one hex colour into a pair that renders identically on
-// both terminal polarities — how a built-in opts out of LightDark
-// resolution (C-81) and says "this theme is this theme, whatever the
-// terminal reports".
-func locked(hex string) colorPair { return colorPair{Light: hex, Dark: hex} }
-
-// builtInThemeColors returns the compiled-in palette for name, and false
-// when name is not one lw ships. The names, in stable order, are
-// "default", "dark", "light" and "nord".
-func builtInThemeColors(name string) (themeColors, bool) {
-	switch name {
-	case "default":
-		return defaultThemeColors(), true
-	case "dark":
-		return darkThemeColors(), true
-	case "light":
-		return lightThemeColors(), true
-	case "nord":
-		return nordThemeColors(), true
-	}
-	return themeColors{}, false
-}
-
-// themeFile is the on-disk shape of a theme file: either
-// <config.ConfigDir()>/theme.toml (the per-machine overlay) or
-// <config.ConfigDir()>/themes/<name>.toml (a named user theme). Every
-// field is a pointer so a partial file overrides only the keys it names —
-// nil means "not present in the file, keep the default".
-type themeFile struct {
-	ForegroundLight *string `toml:"foreground_light"`
-	ForegroundDark  *string `toml:"foreground_dark"`
-	BackgroundLight *string `toml:"background_light"`
-	BackgroundDark  *string `toml:"background_dark"`
-	MutedLight      *string `toml:"muted_light"`
-	MutedDark       *string `toml:"muted_dark"`
-	FaintLight      *string `toml:"faint_light"`
-	FaintDark       *string `toml:"faint_dark"`
-	BorderLight     *string `toml:"border_light"`
-	BorderDark      *string `toml:"border_dark"`
-	AccentLight     *string `toml:"accent_light"`
-	AccentDark      *string `toml:"accent_dark"`
-	GoodLight       *string `toml:"good_light"`
-	GoodDark        *string `toml:"good_dark"`
-	WarnLight       *string `toml:"warn_light"`
-	WarnDark        *string `toml:"warn_dark"`
-	BadLight        *string `toml:"bad_light"`
-	BadDark         *string `toml:"bad_dark"`
-}
-
-// applyOverrides copies every field f names onto colors, leaving the rest of
-// colors untouched.
-func (f themeFile) applyOverrides(colors *themeColors) {
-	set := func(dst *string, v *string) {
-		if v != nil {
-			*dst = *v
+// paletteFrom resolves colors to one polarity's Palette.
+func paletteFrom(colors themeColors, isDark bool) Palette {
+	pick := func(p colorPair) string {
+		if isDark {
+			return p.Dark
 		}
+		return p.Light
 	}
-	set(&colors.Foreground.Light, f.ForegroundLight)
-	set(&colors.Foreground.Dark, f.ForegroundDark)
-	set(&colors.Background.Light, f.BackgroundLight)
-	set(&colors.Background.Dark, f.BackgroundDark)
-	set(&colors.Muted.Light, f.MutedLight)
-	set(&colors.Muted.Dark, f.MutedDark)
-	set(&colors.Faint.Light, f.FaintLight)
-	set(&colors.Faint.Dark, f.FaintDark)
-	set(&colors.Border.Light, f.BorderLight)
-	set(&colors.Border.Dark, f.BorderDark)
-	set(&colors.Accent.Light, f.AccentLight)
-	set(&colors.Accent.Dark, f.AccentDark)
-	set(&colors.Good.Light, f.GoodLight)
-	set(&colors.Good.Dark, f.GoodDark)
-	set(&colors.Warn.Light, f.WarnLight)
-	set(&colors.Warn.Dark, f.WarnDark)
-	set(&colors.Bad.Light, f.BadLight)
-	set(&colors.Bad.Dark, f.BadDark)
+	return Palette{
+		Fg:       pick(colors.Fg),
+		Muted:    pick(colors.Muted),
+		Faint:    pick(colors.Faint),
+		Border:   pick(colors.Border),
+		Accent:   pick(colors.Accent),
+		CursorBg: pick(colors.CursorBg),
+		Good:     pick(colors.Good),
+		Warn:     pick(colors.Warn),
+		Bad:      pick(colors.Bad),
+		Heading:  pick(colors.Heading),
+		Code:     pick(colors.Code),
+	}
 }
 
 // Theme is lw's resolved set of lipgloss v2 styles for one background
-// polarity (backbone §12). Build one with LoadTheme, then call WithDark
-// whenever the terminal's real polarity becomes known.
+// polarity (contract §3). Build one with LoadTheme, then call WithDark
+// whenever the terminal's real polarity becomes known — a no-op when the
+// theme's polarity was forced by name ("dark"/"light").
 type Theme struct {
 	// IsDark is the polarity these styles were built for.
 	IsDark bool
-	// Warnings collects non-fatal problems found while loading a theme —
-	// an unknown key in theme.toml or themes/<name>.toml, or an
-	// unrecognised theme name with no file behind it — so a caller can
-	// surface them without LoadTheme failing (00-conventions.md §2: no
-	// log.Fatal, no printing from a library).
+	// Warnings collects non-fatal problems found while loading a theme — an
+	// unknown key in theme.toml or themes/<name>.toml, a background_* key
+	// (always ignored), or a name with no themes/<name>.toml file behind it
+	// — so a caller can surface them without LoadTheme failing
+	// (00-conventions.md §2: no log.Fatal, no printing from a library).
 	Warnings []string
 
-	// Base is the default foreground-on-background style: plain body text.
-	Base lipgloss.Style
-	// Title is bold and accent-coloured: pane titles, the app masthead.
-	Title lipgloss.Style
-	// Muted is secondary text: help lines, timestamps, provenance.
-	Muted lipgloss.Style
-	// Faint is the least prominent text: disabled entries, placeholders.
-	Faint lipgloss.Style
-	// Border carries only a foreground colour; a caller adds Border(...)
-	// with the border runes it wants (active vs. inactive pane, etc.).
+	// Fg, Muted, Faint, Border, Accent, Good, Warn and Bad are foreground-only
+	// styles: no Theme style ever sets a background (F4).
+	Fg     lipgloss.Style
+	Muted  lipgloss.Style
+	Faint  lipgloss.Style
 	Border lipgloss.Style
-	// Accent highlights the active element: a focused pane, a cursor.
 	Accent lipgloss.Style
-	// Good, Warn and Bad colour status: lint pass/warn/fail, diff
-	// add/context/delete, journal accepted/pending/rejected.
-	Good lipgloss.Style
-	Warn lipgloss.Style
-	Bad  lipgloss.Style
-	// StatusBar reverses fg/bg with the accent colour: footer, title bar.
-	StatusBar lipgloss.Style
-	// Selected reverses fg/bg with the accent colour for a highlighted row.
-	Selected lipgloss.Style
+	Good   lipgloss.Style
+	Warn   lipgloss.Style
+	Bad    lipgloss.Style
+	// Heading and Code are the markdown role colours (W5 F3/D-3W): H1 and
+	// H3+ headings, and inline code. Foreground only, like every other
+	// Theme style.
+	Heading lipgloss.Style
+	Code    lipgloss.Style
+	// Bold is Fg with bold set: the vault name, unfocused panel titles, and
+	// the keys the footer prints.
+	Bold lipgloss.Style
+	// CursorBg is the cursor-row tint (plan §4.4) — the one place a
+	// background colour appears at all. It is a color.Color, not a style: a
+	// caller tints exactly the cursor row with it (ui.Panel's CursorRow).
+	// Its value depends on the colour profile (contract §3 note 7): the
+	// palette hex at TrueColor, a fixed neutral grey at ANSI256, and nil —
+	// no background at all — below that. It starts as the palette hex; the
+	// shell re-resolves it through WithProfile when Bubble Tea reports the
+	// terminal's real profile.
+	CursorBg color.Color
+	// Palette is what markdown.Style is built from.
+	Palette Palette
 
-	colors themeColors
+	colors  themeColors
+	forced  bool                 // polarity forced by theme = "dark"/"light"; WithDark is then a no-op
+	profile colorprofile.Profile // the profile CursorBg was resolved for
 }
 
 // WithDark rebuilds t's styles for the given polarity and returns the new
-// Theme (backbone §12, C-81). The shell calls this when tea.BackgroundColorMsg
-// arrives; Theme itself never queries the terminal or handles messages.
+// Theme, unless t's polarity was forced by name ("dark"/"light"), in which
+// case it is a no-op (contract §3). The colour profile is kept: CursorBg
+// stays resolved for whatever WithProfile last set.
 func (t Theme) WithDark(isDark bool) Theme {
-	return buildTheme(t.colors, isDark, t.Warnings)
+	if t.forced {
+		return t
+	}
+	return buildTheme(t.colors, isDark, t.forced, t.Warnings, t.profile)
+}
+
+// WithProfile re-resolves t's cursor tint for the colour profile p
+// (contract §3 note 7, W5 F1/C35) and returns the new Theme: TrueColor
+// keeps the palette's cursor hex, ANSI256 gets the fixed neutral grey
+// (236 dark / 254 light — a theme file's cursor_* keys set only the
+// TrueColor tint), and any lower profile gets nil, meaning no background
+// at all. The polarity — forced or not — is kept.
+func (t Theme) WithProfile(p colorprofile.Profile) Theme {
+	return buildTheme(t.colors, t.IsDark, t.forced, t.Warnings, p)
+}
+
+// profileCursorBg resolves the cursor tint for one profile (contract §3
+// note 7). below ANSI256 there is no background a terminal could show
+// subtly, so the tint is dropped entirely and Panel draws only the accent
+// gutter.
+func profileCursorBg(colors themeColors, isDark bool, p colorprofile.Profile) color.Color {
+	switch p {
+	case colorprofile.TrueColor:
+		if isDark {
+			return lipgloss.Color(colors.CursorBg.Dark)
+		}
+		return lipgloss.Color(colors.CursorBg.Light)
+	case colorprofile.ANSI256:
+		if isDark {
+			return lipgloss.ANSIColor(236)
+		}
+		return lipgloss.ANSIColor(254)
+	default:
+		return nil
+	}
 }
 
 // buildTheme resolves colors for isDark and constructs every Theme style.
-func buildTheme(colors themeColors, isDark bool, warnings []string) Theme {
+func buildTheme(colors themeColors, isDark, forced bool, warnings []string, profile colorprofile.Profile) Theme {
 	ld := lipgloss.LightDark(isDark)
 	resolve := func(p colorPair) color.Color {
 		return ld(lipgloss.Color(p.Light), lipgloss.Color(p.Dark))
 	}
 
-	fg := resolve(colors.Foreground)
-	bg := resolve(colors.Background)
-	accent := resolve(colors.Accent)
-	base := lipgloss.NewStyle().Foreground(fg).Background(bg)
+	cursorBg := profileCursorBg(colors, isDark, profile)
+
+	fg := lipgloss.NewStyle().Foreground(resolve(colors.Fg))
+	muted := lipgloss.NewStyle().Foreground(resolve(colors.Muted))
+	faint := lipgloss.NewStyle().Foreground(resolve(colors.Faint))
+	border := lipgloss.NewStyle().Foreground(resolve(colors.Border))
+	accent := lipgloss.NewStyle().Foreground(resolve(colors.Accent))
+	good := lipgloss.NewStyle().Foreground(resolve(colors.Good))
+	warn := lipgloss.NewStyle().Foreground(resolve(colors.Warn))
+	bad := lipgloss.NewStyle().Foreground(resolve(colors.Bad))
+	heading := lipgloss.NewStyle().Foreground(resolve(colors.Heading))
+	code := lipgloss.NewStyle().Foreground(resolve(colors.Code))
+	bold := fg.Bold(true)
 
 	return Theme{
-		IsDark:    isDark,
-		Warnings:  warnings,
-		Base:      base,
-		Title:     base.Bold(true).Foreground(accent),
-		Muted:     base.Foreground(resolve(colors.Muted)),
-		Faint:     base.Foreground(resolve(colors.Faint)),
-		Border:    lipgloss.NewStyle().Foreground(resolve(colors.Border)),
-		Accent:    base.Foreground(accent),
-		Good:      base.Foreground(resolve(colors.Good)),
-		Warn:      base.Foreground(resolve(colors.Warn)),
-		Bad:       base.Foreground(resolve(colors.Bad)),
-		StatusBar: lipgloss.NewStyle().Foreground(bg).Background(accent).Bold(true),
-		Selected:  lipgloss.NewStyle().Foreground(bg).Background(accent),
-		colors:    colors,
+		IsDark:   isDark,
+		Warnings: warnings,
+		Fg:       fg,
+		Muted:    muted,
+		Faint:    faint,
+		Border:   border,
+		Accent:   accent,
+		Good:     good,
+		Warn:     warn,
+		Bad:      bad,
+		Heading:  heading,
+		Code:     code,
+		Bold:     bold,
+		CursorBg: cursorBg,
+		Palette:  paletteFrom(colors, isDark),
+
+		colors:  colors,
+		forced:  forced,
+		profile: profile,
 	}
 }
 
-// LoadTheme returns the named theme (backbone §12). name comes from
+// LoadTheme returns the named theme (contract §3). name comes from
 // config.toml's `theme` key, and "" means "default".
 //
-// Four names are compiled in: "default" (adaptive — a light half and a dark
-// half, resolved by the terminal's reported polarity), "dark", "light" and
-// "nord". Any other name is looked up as a user theme file at
-// <config.ConfigDir()>/themes/<name>.toml, which lets a vault's curator add
-// themes — including ones that shadow a built-in name — without
-// recompiling lw.
+// Every theme starts from the one compiled-in palette (defaultThemeColors):
+// there is no second built-in palette to select any more. "" and "default"
+// are adaptive — the terminal's reported polarity (WithDark) picks a half.
+// "dark" and "light" are the same palette with the polarity forced, so
+// WithDark becomes a no-op. Any other name is looked up as a user theme file
+// at <config.ConfigDir()>/themes/<name>.toml, loaded on top of the default
+// palette; a name with no such file warns and falls back to the default
+// theme untouched (contract §3 note 2) — "nord" no longer names a compiled
+// palette, so it takes this path like any unrecognised name.
 //
-// A theme file is the same flat TOML shape <ConfigDir()>/theme.toml has
-// always used: one optional "<colour>_light" / "<colour>_dark" key per
-// semantic colour (foreground, background, muted, faint, border, accent,
-// good, warn, bad), every one of them optional. A user theme file starts
-// from the built-in whose name it shares, or from the default palette when
-// the name is a new one, and overrides only the keys it names — so
-// themes/nord.toml is one tweaked key, not eighteen. theme.toml is applied
-// last, on top of whichever theme was selected, as the per-machine overlay
-// it has always been.
-//
-// A missing file is not an error. A partial file overrides only the keys it
-// names; an unknown key is recorded on the returned Theme's Warnings field,
-// never fatal and never printed here. An unrecognised name with no file
-// behind it is a warning too, and the default theme comes back — an
-// unrecognised Config.Theme value degrades to something usable instead of
-// failing startup.
+// A theme file is the flat TOML shape documented on themeFile: one optional
+// "<colour>_light" / "<colour>_dark" key per semantic colour, every one of
+// them optional. A missing file is not an error. A partial file overrides
+// only the keys it names; an unknown key is recorded on the returned
+// Theme's Warnings field, never fatal and never printed here. theme.toml is
+// applied last, on top of whichever theme was selected, as the per-machine
+// overlay it has always been.
 func LoadTheme(name string) (Theme, error) {
-	if name == "" {
-		name = "default"
+	isDark, forced := true, false
+	reserved := true
+	switch name {
+	case "", "default":
+		// Adaptive: isDark is corrected by WithDark once the terminal's real
+		// polarity is known; dark is the reasonable default until then.
+	case "dark":
+		isDark, forced = true, true
+	case "light":
+		isDark, forced = false, true
+	default:
+		reserved = false
 	}
-	// Resolution order, most specific first: a user theme file is applied on
-	// top of the built-in of the same name when there is one, and on top of
-	// the default palette when there is not — so themes/<name>.toml both
-	// adds new themes and overrides shipped ones, key by key. A name with
-	// neither a file nor a built-in behind it is a warning, not an error.
-	colors, isBuiltIn := builtInThemeColors(name)
-	if !isBuiltIn {
-		colors = defaultThemeColors()
-	}
+
+	colors := defaultThemeColors()
 	var warnings []string
 
-	found, fileWarnings, err := loadThemeFile(userThemePath(name), &colors)
-	if err != nil {
-		return Theme{}, err
-	}
-	warnings = append(warnings, fileWarnings...)
-	if !found && !isBuiltIn {
-		warnings = append(warnings, fmt.Sprintf(
-			"theme: unknown theme %q, and no themes/%s.toml — using default "+
-				"(built in: default, dark, light, nord)", name, name))
+	if !reserved {
+		found, fileWarnings, err := loadThemeFile(userThemePath(name), &colors)
+		if err != nil {
+			return Theme{}, err
+		}
+		warnings = append(warnings, fileWarnings...)
+		if !found {
+			warnings = append(warnings, fmt.Sprintf(
+				"theme: %q is not available in lw 2; using the default theme", name))
+		}
 	}
 
 	// theme.toml stays the last word: it is the per-machine overlay a user
 	// tweaks a single colour with, whichever theme config.toml selects.
-	_, overlayWarnings, err := loadThemeFile(filepath.Join(config.ConfigDir(), "theme.toml"), &colors)
+	_, overlayWarnings, err := loadThemeFile(themeOverlayPath(), &colors)
 	if err != nil {
 		return Theme{}, err
 	}
 	warnings = append(warnings, overlayWarnings...)
 
-	// The shell does not know the terminal's real polarity until
-	// tea.BackgroundColorMsg arrives (backbone §12, C-81); dark is the
-	// reasonable default until then; WithDark corrects it either way. A
-	// locked theme is unaffected: both halves of every pair are the same
-	// colour.
-	return buildTheme(colors, true, warnings), nil
-}
-
-// loadThemeFile reads and applies one theme file onto colors, if path names
-// a file that exists (an empty path, or a missing file, applies nothing and
-// is not an error). It reports whether a file was applied, plus the warnings
-// reading it produced; an existing file that cannot be read or parsed is an
-// error naming that file, because a theme a curator wrote and got wrong is
-// something they have to be told about, not something to paper over.
-func loadThemeFile(path string, colors *themeColors) (applied bool, warnings []string, err error) {
-	if path == "" {
-		return false, nil, nil
-	}
-	b, err := os.ReadFile(path)
-	switch {
-	case errors.Is(err, os.ErrNotExist):
-		return false, nil, nil
-	case err != nil:
-		return false, nil, fmt.Errorf("ui: read %s: %w", path, err)
-	}
-	var f themeFile
-	meta, decErr := toml.Decode(string(b), &f)
-	if decErr != nil {
-		return false, nil, fmt.Errorf("ui: parse %s: %w", path, decErr)
-	}
-	f.applyOverrides(colors)
-	for _, k := range meta.Undecoded() {
-		warnings = append(warnings, fmt.Sprintf("%s: unknown key %q ignored",
-			filepath.Base(path), k.String()))
-	}
-	return true, warnings, nil
-}
-
-// userThemePath returns the file that defines name, if that name can be a
-// user theme: <config.ConfigDir()>/themes/<name>.toml. A name that is not a
-// single safe path element — one that would climb out of the themes
-// directory with "..", or hide a separator — is refused by returning "",
-// rather than looked up, so a config.toml theme value can never make lw
-// read a theme file from outside its own config directory.
-func userThemePath(name string) string {
-	if name == "" || name != filepath.Base(filepath.Clean(name)) {
-		return ""
-	}
-	return filepath.Join(config.ConfigDir(), "themes", name+".toml")
+	// A loaded theme starts TrueColor — the palette's own tints. The shell
+	// re-resolves the cursor tint through WithProfile once Bubble Tea
+	// reports the terminal's real colour profile (contract §3 note 7).
+	return buildTheme(colors, isDark, forced, warnings, colorprofile.TrueColor), nil
 }

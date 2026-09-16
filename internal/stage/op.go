@@ -1,9 +1,9 @@
 // op.go holds Op-level helpers shared by validate.go and
 // engine_changeset.go: the op<N>-id tree walk DropOp/DropHunk/Current need
 // (backbone §5.4), the per-kind path set an op touches, canonical hashing
-// and Refresh's per-kind staleness table (D-AJ, D-BC), hunk application for
-// DropHunk, and the cascade construction algorithm backbone §5.5 calls "how
-// a cascade is actually built" (MASTER §9 D-AM, D-BE).
+// and Refresh's per-kind staleness table (D-AJ, D-BC), and the cascade
+// construction backbone §5.5 calls "how a cascade is actually built"
+// (MASTER §9 D-AM, D-BE). Hunk application lives in opdiff_trace.go.
 package stage
 
 import (
@@ -193,65 +193,6 @@ func sourcesChanged(v *vault.Vault, sources, shas []string) bool {
 	return false
 }
 
-// applyHunks reconstructs a patch_page op's projected content by applying
-// its non-dropped hunks, in order, to before's lines (backbone §5.4
-// DropHunk Contract: "recomputes the op's projected content from Before
-// plus its remaining live hunks").
-//
-// This is deliberately minimal, not diff.ComputeHunks' inverse — that
-// generic Myers/LCS machinery lives in a later wave's diff.go (S2-T5,
-// §5.6), and this subtask's non-goals explicitly exclude hunk computation.
-// Every hunk this package itself constructs (buildCascadeHunks) pairs each
-// Del line with the Add line it becomes, one pair per hunk, so applying a
-// hunk is "find this old line, replace it with this new line"; a hunk
-// with more Del than Add entries removes the extras, and one with more Add
-// than Del inserts the extras after the last matched position (or at the
-// end of the body if nothing matched).
-func applyHunks(before []byte, hunks []Hunk) []byte {
-	lines := strings.Split(string(before), "\n")
-	for _, h := range hunks {
-		if h.Dropped {
-			continue
-		}
-		n := len(h.Del)
-		if len(h.Add) > n {
-			n = len(h.Add)
-		}
-		pos := len(lines)
-		for i := 0; i < n; i++ {
-			switch {
-			case i < len(h.Del) && i < len(h.Add):
-				if idx := indexOfLine(lines, h.Del[i]); idx >= 0 {
-					lines[idx] = h.Add[i]
-					pos = idx + 1
-				}
-			case i < len(h.Del):
-				if idx := indexOfLine(lines, h.Del[i]); idx >= 0 {
-					lines = append(lines[:idx], lines[idx+1:]...)
-					pos = idx
-				}
-			default:
-				ins := h.Add[i]
-				tail := append([]string{ins}, lines[pos:]...)
-				lines = append(lines[:pos], tail...)
-				pos++
-			}
-		}
-	}
-	return []byte(strings.Join(lines, "\n"))
-}
-
-// indexOfLine returns the index of the first element of lines equal to s,
-// or -1.
-func indexOfLine(lines []string, s string) int {
-	for i, l := range lines {
-		if l == s {
-			return i
-		}
-	}
-	return -1
-}
-
 // cascadeRoots are the two vault-root files a cascade must also cover,
 // beyond Graph().Backlinks (backbone §5.5, MASTER §9 D-BE): index.md
 // links to every page in the vault by construction, and BuildGraph walks
@@ -343,38 +284,6 @@ func reverseAddressing(target, from, to string) string {
 		}
 		return dir + "/" + newBase
 	}
-}
-
-// buildCascadeHunks diffs oldBody against newBody line by line and returns
-// one Hunk per changed line ("h1", "h2", … in body order), each pairing the
-// single old line it replaces (Del) with the single new line it becomes
-// (Add). RewriteWikilinks only ever substitutes text within a line — it
-// never inserts or removes a "\n" — so oldBody and newBody always have the
-// same line count and a positional line-by-line diff is exact, not an
-// approximation of a general LCS diff (which is diff.go's job, a later
-// wave — see applyHunks).
-func buildCascadeHunks(p, oldBody, newBody string) []Hunk {
-	oldLines := strings.Split(oldBody, "\n")
-	newLines := strings.Split(newBody, "\n")
-	n := len(oldLines)
-	if len(newLines) < n {
-		n = len(newLines)
-	}
-	var hunks []Hunk
-	id := 1
-	for i := 0; i < n; i++ {
-		if oldLines[i] == newLines[i] {
-			continue
-		}
-		hunks = append(hunks, Hunk{
-			ID:   fmt.Sprintf("h%d", id),
-			Path: p,
-			Del:  []string{oldLines[i]},
-			Add:  []string{newLines[i]},
-		})
-		id++
-	}
-	return hunks
 }
 
 // buildCascadeOp builds the single cascade Op rewriting p's inbound links

@@ -36,6 +36,7 @@ func TestLoadKeysDefaultsWithNoFilePresent(t *testing.T) {
 		{"MoveUp", km.MoveUp, []string{"k", "up"}},
 		{"Top", km.Top, []string{"g"}},
 		{"Bottom", km.Bottom, []string{"G"}},
+		{"Preview", km.Preview, []string{"p"}},
 		{"NextPane", km.NextPane, []string{"tab"}},
 		{"Quit", km.Quit, []string{"q", "ctrl+c"}},
 		{"Help", km.Help, []string{"?"}},
@@ -160,8 +161,52 @@ move_up = ["p"]
 	}
 
 	// Help text survives the rebind, so the footer still says what the
-	// action is rather than what key it used to be on.
-	if got, want := km.MoveDown.Help().Desc, "down"; got != want {
+	// action is rather than what key it used to be on. MoveDown's help is
+	// the merged "j/k" / "move" footer label (contract §4), unaffected by a
+	// hotkeys.toml rebind of the underlying keys.
+	if got, want := km.MoveDown.Help().Desc, "move"; got != want {
 		t.Fatalf("MoveDown.Help().Desc = %q, want %q", got, want)
 	}
+}
+
+// TestKeysPreview covers contract §4's new binding: default "p", help
+// "p"/"preview", and a hotkeys.toml override.
+func TestKeysPreview(t *testing.T) {
+	t.Run("default", func(t *testing.T) {
+		setConfigDir(t)
+		km, err := LoadKeys()
+		if err != nil {
+			t.Fatalf("LoadKeys() error = %v", err)
+		}
+		if got, want := km.Preview.Keys(), []string{"p"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("Preview.Keys() = %v, want %v", got, want)
+		}
+		h := km.Preview.Help()
+		if h.Key != "p" || h.Desc != "preview" {
+			t.Fatalf("Preview.Help() = %+v, want {p preview}", h)
+		}
+	})
+
+	t.Run("hotkeys_toml_override", func(t *testing.T) {
+		configDir := setConfigDir(t)
+		writeConfigFile(t, configDir, "hotkeys.toml", `
+preview = ["v"]
+`)
+		km, err := LoadKeys()
+		if err != nil {
+			t.Fatalf("LoadKeys() error = %v", err)
+		}
+		if len(km.Warnings) != 0 {
+			t.Fatalf("Warnings = %v, want none", km.Warnings)
+		}
+		if got, want := km.Preview.Keys(), []string{"v"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("Preview.Keys() = %v, want %v", got, want)
+		}
+		if !key.Matches(tea.KeyPressMsg{Code: 'v', Text: "v"}, km.Preview) {
+			t.Error("key.Matches(v, Preview) = false, want true after the rebind")
+		}
+		if key.Matches(tea.KeyPressMsg{Code: 'p', Text: "p"}, km.Preview) {
+			t.Error("key.Matches(p, Preview) = true, want false after the rebind")
+		}
+	})
 }

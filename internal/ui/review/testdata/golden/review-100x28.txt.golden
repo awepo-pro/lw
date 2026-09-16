@@ -1,0 +1,28 @@
+╭ Ops ──────────────────────────╮╭ Diff ──────────────────────────────────────────────── p preview ╮
+│▌● src   baker-percentages-ex… ││ src  raw/articles/baker-percentages-explained.md   op1 · 1 hunk │
+│ ● new   baker-percentages.md  ││ raw source for the new baker-percentages page                   │
+│ ● patch autolyse.md           ││                                                                 │
+│ ✗ patch banneton.md           ││ @@ -0,0 +1,21 @@                                                │
+│                               ││ + ---                                                           │
+│                               ││ + source_url:                                                   │
+│                               ││   https://example.org/articles/baker-percentages-explained      │
+│                               ││ + ingested: 2026-08-29                                          │
+│                               ││ + sha256:                                                       │
+│                               ││   01737517844386bdd1e50605eb8b3fbf010b95d47035ff52a4510646dab16 │
+│                               ││   2b0                                                           │
+│                               ││ + ---                                                           │
+│                               ││ +                                                               │
+│                               ││ + # Baker Percentages, Explained                                │
+│                               ││ +                                                               │
+│                               ││ + Professional bakers rarely write a recipe as a list of        │
+│                               ││   ingredient weights.                                           │
+│                               ││ + They write it as a set of percentages of the flour weight, a  │
+│                               ││   convention                                                    │
+│                               ││ + called baker percentages. Flour is always one hundred         │
+│                               ││   percent, and every                                            │
+│                               ││ + other ingredient is measured against it, so a dough at        │
+│                               ││   seventy percent                                               │
+│                               ││ + hydration carries water equal to seven tenths of its flour.   │
+│                               ││ +                                                               │
+│                               ││ + ## Why bakers use it                                          │
+╰─────────────────────── 1 of 4 ╯╰───────────────────────────────────────────────────── ↓ 105 more ╯

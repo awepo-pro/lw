@@ -1,0 +1,348 @@
+// view_test.go pins the Findings panel's render against synthetic reports:
+// the four-column row shape and its severity glyphs, the aligned path and
+// message columns, the 18-cell check cap, the empty/clean state, the
+// cursor gutter and FootNote, the scrolled window, and the non-report
+// states.
+package lintview
+
+import (
+	"fmt"
+	"strings"
+	"testing"
+
+	"github.com/awepo-pro/lw/internal/lint"
+	"github.com/awepo-pro/lw/internal/ui"
+)
+
+// TestFindingRowColumnsAllSeverities is the brief's synthetic-render check:
+// a report carrying all three severities renders one row per severity with
+// the frozen glyphs (`✗` error, `!` warn, `·` info) and every column of
+// every row starting at the same cell — glyph, check name, path, message.
+func TestFindingRowColumnsAllSeverities(t *testing.T) {
+	d := syntheticDeps(t)
+	m := withReport(t, d, []lint.Finding{
+		{Check: "link-broken", Path: "wiki/concepts/kv-cache.md", Line: 12,
+			Severity: lint.SevError, Message: "[[missing]] resolves to nothing; fix the target or create the page"},
+		{Check: "src-stale", Path: "wiki/entities/bench.md",
+			Severity: lint.SevWarn, Message: "updated 2025-01-01 is more than 90 days before the source was ingested"},
+		{Check: "fm-quality", Path: "wiki/comparisons/one.md",
+			Severity: lint.SevInfo, Message: "confidence is low; corroborate with another source or raise the confidence"},
+		{Check: "log-rotate", Path: "",
+			Severity: lint.SevInfo, Message: "log.md exceeds 500 entries; rotate it"},
+	})
+
+	plain := plainView(m, 120, 8)
+	lines := splitRows(plain)
+	if len(lines) != 8 {
+		t.Fatalf("View(120, 8) rendered %d rows, want 8", len(lines))
+	}
+
+	// The check column pads to the longest ID in the report: log-rotate,
+	// at 10 cells (under the 18 cap). Panel content starts at cell 2
+	// (border + gutter), so the columns sit at: glyph 2, check 5, path 17.
+	const (
+		glyphCol = 2
+		nameCol  = 5
+		pathCol  = nameCol + 10 + 2
+	)
+	// The render keeps the report's own order; each row's glyph follows its
+	// severity and every column starts at the same cell.
+	want := []struct {
+		glyph rune
+		check string
+	}{
+		{'✗', "link-broken"},
+		{'!', "src-stale"},
+		{'·', "fm-quality"},
+		{'·', "log-rotate"},
+	}
+
+	rows := 0
+	for i, line := range lines[1 : len(lines)-1] {
+		cells := rowCells(line)
+		if cells[0] != '│' {
+			t.Fatalf("row %d does not start with the panel border: %q", i+1, line)
+		}
+		if cells[glyphCol] == ' ' {
+			continue // blank padding row below the findings
+		}
+		if rows >= len(want) {
+			t.Fatalf("row %d is an unexpected extra finding row: %q", i+1, line)
+		}
+		w := want[rows]
+		rows++
+		if got := cells[glyphCol]; got != w.glyph {
+			t.Fatalf("row %d glyph = %q, want %q", i+1, got, w.glyph)
+		}
+		if got := string(cells[nameCol : nameCol+len(w.check)]); got != w.check {
+			t.Fatalf("row %d check column = %q, want %q at cell %d", i+1, got, w.check, nameCol)
+		}
+		if cells[nameCol-1] != ' ' || cells[nameCol+len(w.check)] != ' ' {
+			t.Fatalf("row %d check column is not surrounded by the two-space gaps: %q", i+1, line)
+		}
+		if cells[pathCol-1] != ' ' {
+			t.Fatalf("row %d path column does not start after two spaces at cell %d: %q", i+1, pathCol, line)
+		}
+		if got := string(cells[pathCol : pathCol+5]); got == "     " {
+			t.Fatalf("row %d has an empty path column at %d; alignment broke", i+1, pathCol)
+		}
+	}
+	if rows != len(want) {
+		t.Fatalf("rendered %d finding rows, want %d\n%s", rows, len(want), plain)
+	}
+
+	// The vault-wide finding has no path to show: its location column reads
+	// (vault-wide) rather than an empty run of cells.
+	foundVaultWide := false
+	for _, line := range lines {
+		if strings.Contains(line, "(vault-wide)") {
+			foundVaultWide = true
+		}
+	}
+	if !foundVaultWide {
+		t.Fatalf("the vault-wide finding's location is not rendered:\n%s", plain)
+	}
+}
+
+// TestFindingColumnsAlign pins the screen's core goal (s2-screens.md T09:
+// aligned columns): the path column is one width for the whole report — the
+// longest rendered location capped at 40% of the content width — every path
+// cell is clipped or padded to exactly that width, and the message therefore
+// starts at the same cell column on every row, taking all the width that is
+// left, so it is clipped with `…` only when it really exceeds msgW.
+func TestFindingColumnsAlign(t *testing.T) {
+	d := syntheticDeps(t)
+	m := withReport(t, d, []lint.Finding{
+		{Check: "link-broken", Path: "index.md",
+			Severity: lint.SevError, Message: "short message"},
+		{Check: "src-stale", Path: "wiki/concepts/windowpane-fragility.md", Line: 4,
+			Severity: lint.SevWarn,
+			Message:  "updated 2025-01-01 is more than 90 days before the source was ingested"},
+	})
+
+	// nameW = the longest check ID, link-broken (11, under the 18 cap).
+	// Panel content starts at cell 2 (border + gutter), so: glyph 2, check
+	// 5, path 18. cw is w-4 (ui.Panel's content width); the locations are
+	// index.md (8 cells) and wiki/concepts/windowpane-fragility.md:4 (39),
+	// so the 40% cap binds only at the narrow size.
+	const (
+		nameW   = 11
+		pathCol = 5 + nameW + 2
+	)
+	locations := []string{"index.md", "wiki/concepts/windowpane-fragility.md:4"}
+
+	for _, tc := range []struct {
+		w     int
+		pathW int // min(longest location 39, (40*cw+50)/100)
+	}{
+		{w: 120, pathW: 39}, // cw=116, cap 46: the longest location fits
+		{w: 80, pathW: 30},  // cw=76, cap 30: the longest location clips
+	} {
+		t.Run(fmt.Sprintf("w%d", tc.w), func(t *testing.T) {
+			plain := plainView(m, tc.w, 8)
+			lines := splitRows(plain)
+			cw := tc.w - 4
+			msgW := cw - (1 + 2 + nameW + 2 + tc.pathW + 2)
+			msgCol := pathCol + tc.pathW + 2
+
+			rows, msgStarts := 0, map[int]bool{}
+			for i, line := range lines[1 : len(lines)-1] {
+				cells := rowCells(line)
+				if cells[0] != '│' {
+					t.Fatalf("row %d does not start with the panel border: %q", i+1, line)
+				}
+				if cells[2] == ' ' {
+					continue // blank padding row below the findings
+				}
+				if rows >= len(locations) {
+					t.Fatalf("row %d is an unexpected extra finding row: %q", i+1, line)
+				}
+				loc := locations[rows]
+				rows++
+
+				// The path cell is exactly pathW cells on every row:
+				// clipped with `…` when longer, padded when shorter.
+				if got := string(cells[pathCol : pathCol+tc.pathW]); got != ui.Pad(loc, tc.pathW) {
+					t.Fatalf("row %d path cell = %q, want the location in a %d-cell column: %q",
+						i+1, got, tc.pathW, line)
+				}
+				if got := string(cells[pathCol-2 : pathCol]); got != "  " {
+					t.Fatalf("row %d path column does not start after two spaces: %q", i+1, line)
+				}
+
+				// The message starts right after the path cell's two-space
+				// gap — the same cell on every row.
+				if got := string(cells[pathCol+tc.pathW : msgCol]); got != "  " {
+					t.Fatalf("row %d message column does not start after two spaces: %q", i+1, line)
+				}
+				if cells[msgCol] == ' ' {
+					t.Fatalf("row %d has no message at its column %d: %q", i+1, msgCol, line)
+				}
+				msgStarts[msgCol] = true
+
+				// A message shorter than msgW is never clipped: the short
+				// row carries no `…` anywhere (its path fits too).
+				if rows == 1 && strings.ContainsRune(line, '…') {
+					t.Fatalf("row %d clips a message (%d cells) that fits: %q", i+1, msgW, line)
+				}
+			}
+			if rows != len(locations) {
+				t.Fatalf("rendered %d finding rows, want %d\n%s", rows, len(locations), plain)
+			}
+			if len(msgStarts) != 1 {
+				t.Fatalf("message column is ragged: rows start it at %v cells, want one column", msgStarts)
+			}
+		})
+	}
+}
+
+// TestCheckColumnCappedAt18 pins the 18-cell cap: a report whose longest
+// check ID exceeds it clips the ID into an 18-cell column — ui.Pad's clip
+// puts `…` in the last cell — never wider.
+func TestCheckColumnCappedAt18(t *testing.T) {
+	d := syntheticDeps(t)
+	m := withReport(t, d, []lint.Finding{
+		{Check: "a-very-long-check-id", Path: "wiki/x.md", Severity: lint.SevWarn, Message: "boom"},
+	})
+
+	plain := plainView(m, 120, 5)
+	lines := splitRows(plain)
+	cells := rowCells(lines[1])
+	nameCol := 5
+	// Cells nameCol..nameCol+17 are the clipped 18-cell name, then the
+	// two-space gap, then the path.
+	if got := string(cells[nameCol : nameCol+18]); got != "a-very-long-check…" {
+		t.Fatalf("check column = %q, want the ID clipped into 18 cells", got)
+	}
+	if got := string(cells[nameCol+18 : nameCol+25]); got != "  wiki/" {
+		t.Fatalf("path column starts at cell %d, got %q", nameCol+20, got)
+	}
+}
+
+// TestEmptyReportShowsCleanNote pins the empty-report state (T09): the
+// first content row reads `no findings` (faint), the top border's note is
+// `clean`, and the bottom border carries no FootNote.
+func TestEmptyReportShowsCleanNote(t *testing.T) {
+	d := syntheticDeps(t)
+	m := withReport(t, d, nil)
+
+	plain := plainView(m, 80, 10)
+	lines := splitRows(plain)
+	if len(lines) != 10 {
+		t.Fatalf("View(80, 10) rendered %d rows, want 10", len(lines))
+	}
+	if !strings.HasPrefix(lines[0], "╭ Findings ") {
+		t.Fatalf("top border = %q, want the Findings title", lines[0])
+	}
+	if !strings.HasSuffix(lines[0], "─ clean ╮") {
+		t.Fatalf("top border note = %q, want a right-aligned `clean`", lines[0])
+	}
+	if !strings.Contains(lines[1], "no findings") {
+		t.Fatalf("first content row = %q, want `no findings`", lines[1])
+	}
+	if got := nonPanelLines(lines); len(got) != 1 {
+		t.Fatalf("empty report rendered %d content rows, want 1", len(got))
+	}
+	if bottom := lines[len(lines)-1]; !strings.HasPrefix(bottom, "╰") || strings.Contains(bottom, "of") {
+		t.Fatalf("bottom border = %q, want a bare border with no FootNote", bottom)
+	}
+}
+
+// TestFootNoteAndCursorGutter pins the frame chrome on a non-empty report:
+// the bottom border reads `i of N` and the gutter cell of the cursor's
+// content row is ▌ while every other row keeps a blank one.
+func TestFootNoteAndCursorGutter(t *testing.T) {
+	d := syntheticDeps(t)
+	m := withReport(t, d, []lint.Finding{
+		{Check: "aaa", Path: "wiki/a.md", Severity: lint.SevWarn, Message: "first"},
+		{Check: "bbb", Path: "wiki/b.md", Severity: lint.SevError, Message: "second"},
+		{Check: "ccc", Path: "wiki/c.md", Severity: lint.SevInfo, Message: "third"},
+	})
+
+	p, _ := m.handleKey(keyMsg("j")) // cursor to the second finding
+	m = p.(*Model)
+
+	plain := plainView(m, 80, 10)
+	lines := splitRows(plain)
+	if !strings.HasSuffix(lines[len(lines)-1], "─ 2 of 3 ╯") {
+		t.Fatalf("bottom border = %q, want the `2 of 3` FootNote", lines[len(lines)-1])
+	}
+	for i, line := range lines[1 : len(lines)-1] {
+		cells := rowCells(line)
+		want := ' '
+		if i == 1 {
+			want = '▌'
+		}
+		if cells[1] != want {
+			t.Fatalf("content row %d gutter = %q, want %q", i+1, cells[1], want)
+		}
+	}
+}
+
+// TestFindingsScrollKeepsCursorVisible pins the scrolled window: with more
+// findings than the panel holds rows, the window keeps the cursor row
+// visible and the FootNote keeps reporting the absolute position.
+func TestFindingsScrollKeepsCursorVisible(t *testing.T) {
+	d := syntheticDeps(t)
+	var findings []lint.Finding
+	for i := 0; i < 40; i++ {
+		findings = append(findings, lint.Finding{
+			Check:    fmt.Sprintf("check-%02d", i),
+			Path:     fmt.Sprintf("wiki/page-%02d.md", i),
+			Severity: lint.SevWarn,
+			Message:  fmt.Sprintf("finding %02d", i),
+		})
+	}
+	m := withReport(t, d, findings)
+
+	p, _ := m.handleKey(keyMsg("G")) // to the last finding
+	m = p.(*Model)
+
+	plain := plainView(m, 80, 12) // innerH = 10, half the list
+	lines := splitRows(plain)
+	if !strings.HasSuffix(lines[len(lines)-1], "─ 40 of 40 ╯") {
+		t.Fatalf("bottom border = %q, want `40 of 40`", lines[len(lines)-1])
+	}
+	if !strings.Contains(lines[1], "check-30") {
+		t.Fatalf("first visible row = %q, want the window to have scrolled to check-30", lines[1])
+	}
+	if strings.Contains(plain, "check-00") {
+		t.Fatal("the list did not scroll: finding 00 is still visible past the cursor")
+	}
+
+	// j walks down one row within the same window; the FootNote follows.
+	p, _ = m.handleKey(keyMsg("j"))
+	m = p.(*Model)
+	if got := plainView(m, 80, 12); !strings.Contains(splitRows(got)[len(splitRows(got))-1], "─ 40 of 40 ╯") {
+		t.Fatalf("FootNote after j = %q, want `40 of 40`", splitRows(got)[len(splitRows(got))-1])
+	}
+}
+
+// TestLoadErrorAndLoadingStates pins the two non-report states: a pane with
+// no engine shows the error as the panel's first content row, and a pane
+// whose report has not landed shows `loading lint report…`.
+func TestLoadErrorAndLoadingStates(t *testing.T) {
+	d := syntheticDeps(t)
+
+	m := feedMsg(t, New(d), reportMsg{err: errNoEngine}).(*Model)
+	plain := m.View(80, 6)
+	if !strings.Contains(plain, "lint: lintview: no engine loaded") {
+		t.Fatalf("error state = %q, want the load error as a content row", firstContentRow(t, plain))
+	}
+
+	m = New(d).(*Model) // no report yet
+	if got := plainView(m, 80, 6); !strings.Contains(got, "loading lint report…") {
+		t.Fatalf("loading state = %q, want `loading lint report…`", firstContentRow(t, got))
+	}
+}
+
+// firstContentRow returns the second row of a render (the panel's first
+// content row) for message assertions.
+func firstContentRow(t *testing.T, plain string) string {
+	t.Helper()
+	lines := splitRows(plain)
+	if len(lines) < 2 {
+		t.Fatalf("render has %d rows, want at least 2:\n%s", len(lines), plain)
+	}
+	return lines[1]
+}

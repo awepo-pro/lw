@@ -2,225 +2,148 @@ package browse
 
 import (
 	"image/color"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
-	"github.com/awepo-pro/lw/internal/testutil"
-	"github.com/awepo-pro/lw/internal/vault"
+	"github.com/awepo-pro/lw/internal/ui"
+	"github.com/awepo-pro/lw/internal/ui/uitest"
 )
 
-// TestTruncateBodyLeavesShortBodyUnchanged: a body at or under
-// previewMaxLines is untouched — no marker, no truncation.
-func TestTruncateBodyLeavesShortBodyUnchanged(t *testing.T) {
-	body := "line1\nline2\nline3\n"
-	if got := truncateBody(body); got != body {
-		t.Fatalf("truncateBody(%q) = %q, want it unchanged", body, got)
-	}
-}
-
-// TestTruncateBodyMarksOverflowOnTheLongPageFixture is s4-tui.md S4-T4's
-// pinned expectation: "preview of a 250-line page truncates rather than
-// blocking", proved against the real fixture — 250 file lines, well past
-// previewMaxLines once the frontmatter is stripped.
-func TestTruncateBodyMarksOverflowOnTheLongPageFixture(t *testing.T) {
-	root := testutil.FixtureRoot(t)
-	src := filepath.Join(root, "dirty", "wiki", "concepts", "long-page.md")
-	b, err := os.ReadFile(src)
-	if err != nil {
-		t.Fatalf("read fixture: %v", err)
-	}
-	page, err := vault.ParsePage("wiki/concepts/long-page.md", b)
-	if err != nil {
-		t.Fatalf("ParsePage: %v", err)
-	}
-
-	got := truncateBody(page.Body)
-	if !strings.Contains(got, "more lines") {
-		t.Fatalf("truncateBody(long-page.md's body) has no truncation marker:\n%s", got)
-	}
-	gotLines := strings.Split(got, "\n")
-	// previewMaxLines kept lines, plus a blank separator and the marker line.
-	if len(gotLines) > previewMaxLines+3 {
-		t.Fatalf("truncateBody kept %d lines, want at most %d", len(gotLines), previewMaxLines+3)
-	}
-}
-
-// TestPreviewCacheHitsOnSecondRender is s4-tui.md S4-T4 item 8: a second call
-// at the same (path, width) must not invoke renderFn again.
-func TestPreviewCacheHitsOnSecondRender(t *testing.T) {
-	cache := newPreviewCache()
-	var calls int
-	renderFn := func(src string) string {
-		calls++
-		return "RENDERED:" + src
-	}
-
-	first := cache.render("wiki/concepts/kv-cache.md", 80, "hello", renderFn)
-	second := cache.render("wiki/concepts/kv-cache.md", 80, "hello", renderFn)
-
-	if calls != 1 {
-		t.Fatalf("renderFn called %d times across two identical (path,width) renders, want 1", calls)
-	}
-	if first != second {
-		t.Fatalf("render() = %q then %q, want the cached value both times", first, second)
-	}
-}
-
-// TestPreviewCacheDistinguishesWidth: a different width is a different cache
-// entry — reflow depends on width, so this must not be a cache hit.
-func TestPreviewCacheDistinguishesWidth(t *testing.T) {
-	cache := newPreviewCache()
-	var calls int
-	renderFn := func(src string) string { calls++; return src }
-
-	cache.render("p", 80, "x", renderFn)
-	cache.render("p", 100, "x", renderFn)
-
-	if calls != 2 {
-		t.Fatalf("renderFn called %d times for two different widths, want 2", calls)
-	}
-}
-
-// TestPreviewCacheInvalidate: after invalidate, the next render call misses
-// the cache again (s4-tui.md S4-T4 items 6, 8).
-func TestPreviewCacheInvalidate(t *testing.T) {
-	cache := newPreviewCache()
-	var calls int
-	renderFn := func(src string) string { calls++; return src }
-
-	cache.render("p", 80, "x", renderFn)
-	cache.invalidate()
-	cache.render("p", 80, "x", renderFn)
-
-	if calls != 2 {
-		t.Fatalf("renderFn called %d times across an invalidate, want 2", calls)
-	}
-}
-
-// TestGlamourStylePicksDarkOrLight: there is no glamour.WithAutoStyle in v2
-// (s4-tui.md S4-T4 item 5) — the caller must choose explicitly.
-func TestGlamourStylePicksDarkOrLight(t *testing.T) {
-	if got := glamourStyle(true); got != "dark" {
-		t.Errorf("glamourStyle(true) = %q, want %q", got, "dark")
-	}
-	if got := glamourStyle(false); got != "light" {
-		t.Errorf("glamourStyle(false) = %q, want %q", got, "light")
-	}
-}
-
-// TestRenderMarkdownRejectsUnknownStyle exercises the error path
-// Model.renderBody's fallback depends on.
-func TestRenderMarkdownRejectsUnknownStyle(t *testing.T) {
-	if _, err := renderMarkdown("not-a-real-glamour-style", 80, "# hi"); err == nil {
-		t.Fatal("renderMarkdown with an unknown style returned no error")
-	}
-}
-
-// TestRenderBodyTruncatesAndCachesLongPage is s4-tui.md S4-T4's pinned
-// expectation, run through the real Model and the real glamour renderer:
-// the 250-line dirty page's preview carries the truncation marker, and
-// rendering it twice at the same width calls the renderer only once.
-func TestRenderBodyTruncatesAndCachesLongPage(t *testing.T) {
-	d, engine := newTestDeps(t, "dirty")
-	defer engine.Close()
-
-	m := New(d).(*Model)
-	page, ok := d.Engine.Vault().Page("wiki/concepts/long-page.md")
-	if !ok {
-		t.Fatal("wiki/concepts/long-page.md not found in the dirty fixture's vault")
-	}
-
-	var calls int
-	real := m.renderMarkdownFn
-	m.renderMarkdownFn = func(style string, width int, src string) (string, error) {
-		calls++
-		return real(style, width, src)
-	}
-
-	first := m.renderBody(page.Path, 80, page.Body)
-	second := m.renderBody(page.Path, 80, page.Body)
-
-	if calls != 1 {
-		t.Fatalf("glamour renderer ran %d times for two renderBody calls at the same (path, width), want 1", calls)
-	}
-	if first != second {
-		t.Fatal("renderBody output changed between two calls at the same size, want the cached value both times")
-	}
-	if !strings.Contains(first, "more") || !strings.Contains(first, "lines") {
-		t.Fatalf("renderBody(long-page.md) does not carry the truncation marker:\n%s", first)
-	}
-}
-
-// TestRenderBodyFallsBackToPlainTextOnRendererError: a broken renderFn must
-// never surface as a panic or an empty preview (00-conventions.md §2).
-func TestRenderBodyFallsBackToPlainTextOnRendererError(t *testing.T) {
+// TestPreviewLinesPadsToWidth: the preview is the shared renderer's output,
+// so every line is exactly min(width, Measure+2) cells — here width is the
+// panel's content area and is under the 100-cell measure, so exactly width.
+func TestPreviewLinesPadsToWidth(t *testing.T) {
 	d, engine := newTestDeps(t, "minimal")
 	defer engine.Close()
 
 	m := New(d).(*Model)
-	m.renderMarkdownFn = func(style string, width int, src string) (string, error) {
-		return "", errBoom
+	n := m.selectedNode() // the C8 open state: a file
+	lines, err := m.previewLines(n, 48)
+	if err != nil {
+		t.Fatalf("previewLines(%s, 48): %v", n.Path, err)
 	}
-
-	got := m.renderBody("wiki/concepts/kv-cache.md", 80, "# KV Cache\n\nplain body\n")
-	if !strings.Contains(got, "plain body") {
-		t.Fatalf("renderBody with a failing renderer = %q, want the plain body preserved", got)
+	if len(lines) == 0 {
+		t.Fatal("previewLines returned no lines")
+	}
+	for i, l := range lines {
+		if got := ansi.StringWidth(l); got != 48 {
+			t.Fatalf("previewLines line %d is %d cells, want 48: %q", i, got, l)
+		}
 	}
 }
 
-// TestBackgroundColorMsgInvalidatesPreviewCache is s4-tui.md S4-T4 item 6
-// (C-81): a polarity flip must drop cached renders, since the same body now
-// renders with different colors.
-func TestBackgroundColorMsgInvalidatesPreviewCache(t *testing.T) {
+// TestPreviewLinesRendersFrontmatterHeader: the preview goes through the
+// shared renderer's frontmatter handling — the page's title is the first
+// line (its bold styling carries no text change), and the meta line names
+// the page's type and updated date — with no raw `---` block anywhere.
+func TestPreviewLinesRendersFrontmatterHeader(t *testing.T) {
 	d, engine := newTestDeps(t, "minimal")
 	defer engine.Close()
 
 	m := New(d).(*Model)
 	if !m.selectPath("wiki/concepts/kv-cache.md") {
-		t.Fatal("selectPath: kv-cache.md not found")
+		t.Fatal("selectPath: kv-cache.md not found in tree")
 	}
-
-	var calls int
-	real := m.renderMarkdownFn
-	m.renderMarkdownFn = func(style string, width int, src string) (string, error) {
-		calls++
-		return real(style, width, src)
+	lines, err := m.previewLines(m.selectedNode(), 60)
+	if err != nil {
+		t.Fatalf("previewLines: %v", err)
 	}
-
-	m.View(80, 24)
-	m.View(80, 24)
-	if calls != 1 {
-		t.Fatalf("calls = %d before any BackgroundColorMsg, want 1", calls)
+	plain := ansi.Strip(strings.Join(lines, "\n"))
+	if !strings.Contains(plain, "KV Cache") {
+		t.Fatalf("preview does not carry the page's frontmatter title:\n%s", plain)
 	}
-
-	wasDark := m.deps.Theme.IsDark
-	newColor := color.White
-	if wasDark {
-		// Flip to the opposite polarity from whatever LoadTheme("") defaulted to.
-		newColor = color.White
-	} else {
-		newColor = color.Black
-	}
-	next, _ := m.Update(tea.BackgroundColorMsg{Color: newColor})
-	m2 := next.(*Model)
-
-	if m2.deps.Theme.IsDark == wasDark {
-		t.Fatalf("Theme.IsDark unchanged (%v) after a polarity-flipping BackgroundColorMsg", wasDark)
-	}
-
-	m2.View(80, 24)
-	if calls != 2 {
-		t.Fatalf("calls = %d after the polarity flip, want 2 (cache must be invalidated)", calls)
+	if strings.Contains(plain, "---") {
+		t.Fatalf("preview leaks the raw frontmatter delimiters:\n%s", plain)
 	}
 }
 
-// errBoom is a sentinel used only to exercise renderBody's error fallback.
-var errBoom = renderErr("boom")
+// TestPreviewLinesOnRawSource: a raw source renders through the same
+// renderer, its body's first heading drawn without the `#` mark.
+func TestPreviewLinesOnRawSource(t *testing.T) {
+	d, engine := newTestDeps(t, "minimal")
+	defer engine.Close()
 
-type renderErr string
+	m := New(d).(*Model)
+	if !m.selectPath("raw/papers/leviathan-2023.md") {
+		t.Fatal("selectPath: leviathan-2023.md not found in tree")
+	}
+	lines, err := m.previewLines(m.selectedNode(), 60)
+	if err != nil {
+		t.Fatalf("previewLines: %v", err)
+	}
+	plain := ansi.Strip(strings.Join(lines, "\n"))
+	if !strings.Contains(plain, "Speculative decoding proposes drafting") {
+		t.Fatalf("raw-source preview does not carry its body:\n%s", plain)
+	}
+}
 
-func (e renderErr) Error() string { return string(e) }
+// TestPreviewLinesMissingPageIsAnError: a node the vault no longer holds
+// reports an error (which View draws as a `preview failed` line), never a
+// panic and never a silently empty panel.
+func TestPreviewLinesMissingPageIsAnError(t *testing.T) {
+	d, engine := newTestDeps(t, "minimal")
+	defer engine.Close()
+
+	m := New(d).(*Model)
+	n := &treeNode{Path: "wiki/concepts/deleted.md", Name: "deleted.md", Kind: nodePage}
+	if _, err := m.previewLines(n, 48); err == nil {
+		t.Fatal("previewLines on a path the vault does not hold returned no error")
+	}
+}
+
+// TestPreviewHeadlessEngineIsEmpty: with no engine at all the preview has
+// nothing to read and renders nothing, matching the headless constructor.
+func TestPreviewHeadlessEngineIsEmpty(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	theme, err := ui.LoadTheme("")
+	if err != nil {
+		t.Fatalf("LoadTheme: %v", err)
+	}
+	keys, err := ui.LoadKeys()
+	if err != nil {
+		t.Fatalf("LoadKeys: %v", err)
+	}
+
+	m := New(ui.Deps{Theme: theme, Keys: keys}).(*Model)
+	lines, err := m.previewLines(&treeNode{Path: "wiki/x.md", Name: "x.md", Kind: nodePage}, 48)
+	if err != nil {
+		t.Fatalf("previewLines with no engine: %v", err)
+	}
+	if len(lines) != 0 {
+		t.Fatalf("previewLines with no engine = %v, want empty", lines)
+	}
+}
+
+// TestBackgroundColorMsgFlipsPreviewPolarity (C-81): after a polarity flip
+// the same page renders with the other palette's SGR — the renderer's memo
+// is keyed on polarity, so the flip is visible immediately.
+func TestBackgroundColorMsgFlipsPreviewPolarity(t *testing.T) {
+	d, engine := newTestDeps(t, "minimal")
+	defer engine.Close()
+
+	p := New(d)
+	m := p.(*Model)
+	if !m.selectPath("wiki/concepts/kv-cache.md") {
+		t.Fatal("selectPath: kv-cache.md not found in tree")
+	}
+
+	styledBefore, _ := uitest.PaneScreen(m, 80, 24)
+	wasDark := m.deps.Theme.IsDark
+	flip := color.White
+	if !wasDark {
+		flip = color.Black
+	}
+	next, _ := m.Update(tea.BackgroundColorMsg{Color: flip})
+	m2 := next.(*Model)
+	styledAfter, _ := uitest.PaneScreen(m2, 80, 24)
+
+	if m2.deps.Theme.IsDark == wasDark {
+		t.Fatal("Theme.IsDark unchanged after a polarity-flipping BackgroundColorMsg")
+	}
+	if styledBefore == styledAfter {
+		t.Fatal("preview styled output unchanged across the polarity flip, want the other palette")
+	}
+}

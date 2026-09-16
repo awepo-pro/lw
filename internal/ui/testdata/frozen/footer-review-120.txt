@@ -1,0 +1,1 @@
+ y accept hunk  n drop hunk  j/k move  p preview  A accept all  C commit  X reject changeset  g/G top/bottom  ? help    

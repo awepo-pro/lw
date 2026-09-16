@@ -1,0 +1,35 @@
+  Container Network Namespaces                                                                      
+  concept · containers, networking, linux · confidence medium · updated 2026-08-02                  
+                                                                                                    
+  Container network namespaces                                                                      
+                                                                                                    
+  A network namespace isolates a process's view of the network: its own interfaces, routing table   
+  and firewall rules. Containers typically get one each, connected to the host through a virtual    
+  ethernet pair.                                                                                    
+                                                                                                    
+  How it differs from a host network                                                                
+                                                                                                    
+  • The container sees only eth0 inside its own namespace.                                          
+  • The host sees the other end of the veth pair, usually named like veth1a2b3c.                    
+  • Traffic between namespaces is routed the same as traffic between hosts.                         
+                                                                                                    
+  Comparison with other isolation levels                                                            
+                                                                                                    
+   Mechanism                      │ Isolates network               │ Isolates filesystem            
+  ────────────────────────────────┼────────────────────────────────┼────────────────────────────────
+   chroot                         │ no                             │ yes                            
+   network namespace              │ yes                            │ no                             
+   full VM                        │ yes                            │ yes                            
+                                                                                                    
+  See network-namespace-egress-isolation and veth-pairs for more background.                        
+                                                                                                    
+  [netns-tutorial.md] covers the syscalls directly; [container-runtime-notes.md] covers how runtimes
+  wire it up.                                                                                       
+                                                                                                    
+  ip netns add example                                                                              
+  ip netns exec example ip link set lo up                                                           
+                                                                                                    
+  ip netns exec example ping -c1 10.0.0.1                                                           
+                                                                                                    
+  Some further detail about routing tables and how they interact with iptables rules in each        
+  namespace.                                                                                        

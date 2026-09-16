@@ -1,0 +1,58 @@
+╭ Ops ─────────────────────────────────────────────────╮╭ Diff ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── p preview ╮
+│▌● src   baker-percentages-explained.md  articles/    ││ src  raw/articles/baker-percentages-explained.md                                                                                op1 · 1 hunk │
+│ ● new   baker-percentages.md  wiki/concepts/         ││ raw source for the new baker-percentages page                                                                                                │
+│ ● patch autolyse.md  wiki/concepts/                  ││                                                                                                                                              │
+│ ✗ patch banneton.md  wiki/entities/                  ││ @@ -0,0 +1,21 @@                                                                                                                             │
+│                                                      ││ + ---                                                                                                                                        │
+│                                                      ││ + source_url: https://example.org/articles/baker-percentages-explained                                                                       │
+│                                                      ││ + ingested: 2026-08-29                                                                                                                       │
+│                                                      ││ + sha256: 01737517844386bdd1e50605eb8b3fbf010b95d47035ff52a4510646dab162b0                                                                   │
+│                                                      ││ + ---                                                                                                                                        │
+│                                                      ││ +                                                                                                                                            │
+│                                                      ││ + # Baker Percentages, Explained                                                                                                             │
+│                                                      ││ +                                                                                                                                            │
+│                                                      ││ + Professional bakers rarely write a recipe as a list of ingredient weights.                                                                 │
+│                                                      ││ + They write it as a set of percentages of the flour weight, a convention                                                                    │
+│                                                      ││ + called baker percentages. Flour is always one hundred percent, and every                                                                   │
+│                                                      ││ + other ingredient is measured against it, so a dough at seventy percent                                                                     │
+│                                                      ││ + hydration carries water equal to seven tenths of its flour.                                                                                │
+│                                                      ││ +                                                                                                                                            │
+│                                                      ││ + ## Why bakers use it                                                                                                                       │
+│                                                      ││ +                                                                                                                                            │
+│                                                      ││ + - A formula written in percentages scales cleanly from one loaf to twenty.                                                                 │
+│                                                      ││ + - Hydration stands out immediately, and hydration drives most of how a dough                                                               │
+│                                                      ││ + behaves in the bowl and in the oven.                                                                                                       │
+│                                                      ││ + - Two recipes become directly comparable, whatever loaf sizes they were                                                                    │
+│                                                      ││ + written for.                                                                                                                               │
+│                                                      ││                                                                                                                                              │
+│                                                      ││ ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── │
+│                                                      ││                                                                                                                                              │
+│                                                      ││ new  wiki/concepts/baker-percentages.md                                                                                        op2 · 2 hunks │
+│                                                      ││ the raw article's ratios section deserves its own page                                                                                       │
+│                                                      ││ sources raw/articles/baker-percentages-explained.md                                                                                          │
+│                                                      ││                                                                                                                                              │
+│                                                      ││ @@ -0,0 +1,28 @@                                                                                                                             │
+│                                                      ││ + ---                                                                                                                                        │
+│                                                      ││ + title: Baker Percentages                                                                                                                   │
+│                                                      ││ + created: 2026-08-29                                                                                                                        │
+│                                                      ││ + updated: 2026-08-29                                                                                                                        │
+│                                                      ││ + type: concept                                                                                                                              │
+│                                                      ││ + tags: [method, hydration]                                                                                                                  │
+│                                                      ││ + sources: [raw/articles/baker-percentages-explained.md]                                                                                     │
+│                                                      ││ + confidence: high                                                                                                                           │
+│                                                      ││ + ---                                                                                                                                        │
+│                                                      ││ +                                                                                                                                            │
+│                                                      ││ + # Baker Percentages                                                                                                                        │
+│                                                      ││ +                                                                                                                                            │
+│                                                      ││ + Baker percentages describe a dough as a set of percentages of the flour                                                                    │
+│                                                      ││ + weight, with the flour itself at one hundred percent. Written this way, a                                                                  │
+╰────────────────────────────────────────────── 1 of 4 ╯│ + formula states its hydration directly and scales to any amount of flour                                                                    │
+╭ Changeset ───────────────────────────────────────────╮│ + without surprises.^[raw/articles/baker-percentages-explained.md]                                                                           │
+│ source  uitest: add baker percentages to the bread … ││ +                                                                                                                                            │
+│ id      cs-05f94b1f9f613692                          ││ + ## Why it matters                                                                                                                          │
+│ ops     4 · 1 dropped · 0 stale                      ││ +                                                                                                                                            │
+│ hunks   4 kept · 1 dropped                           ││ + - Makes two recipes comparable at a glance, whatever loaf size each was                                                                    │
+│                                                      ││ + written for.                                                                                                                               │
+│ checks  ✓ schema   ✓ lint                            ││ + - Puts hydration, the number that shapes a dough's behaviour most, in the                                                                  │
+│         ✓ orphans  ✓ links                           ││ + open instead of inside gram counts.                                                                                                        │
+╰──────────────────────────────────────────────────────╯╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── ↓ 46 more ╯
