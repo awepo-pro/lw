@@ -237,9 +237,14 @@ func TestSubmitWithNoOpenChangesetRejectsWhenNothingStaged(t *testing.T) {
 	if m.turnActive {
 		t.Fatal("turn still marked active after DoneEv")
 	}
-	last := lastEntry(m)
-	if last.kind != kindStatus || last.text != "done · 1 rounds" {
-		t.Fatalf("last entry = %#v, want the \"done · 1 rounds\" status line", last)
+	// R-509: the `nothing staged` hint follows the turn's terminal line, so
+	// the status line this test has always seen last is now second to last.
+	if n := len(m.entries); n < 2 {
+		t.Fatalf("the scrollback holds %d entries, want at least the done line and its hint", n)
+	}
+	done := m.entries[len(m.entries)-2]
+	if done.kind != kindStatus || done.text != "done · 1 rounds" {
+		t.Fatalf("entry before the last = %#v, want the \"done · 1 rounds\" status line", done)
 	}
 	if m.sessionID != "" {
 		t.Fatalf("pane sessionID = %q after the reject, want empty", m.sessionID)

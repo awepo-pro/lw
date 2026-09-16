@@ -458,7 +458,10 @@ tool call as one collapsed `▸ name args → result` row, the answer under
 as markdown — headings, lists, code, tables, links — through the same
 renderer as Review's and Browse's previews, and the transcript panel's title
 carries the session id (`Transcript — cs-fd447f`), which is how you find the
-conversation again with `lw session show`. `↑`/`↓` select a tool
+conversation again with `lw session show`; once review commits or rejects
+that changeset the title keeps the id with its state, and a turn that staged
+nothing adds a `nothing staged · conversation kept · lw session show <id>`
+line saying so. `↑`/`↓` select a tool
 call in the transcript and `enter` expands or collapses the selected one.
 The header's right side tracks the buffer the whole time: the moment the
 agent stages something, `no changeset` becomes `cs-fd447f · 1 op · checks

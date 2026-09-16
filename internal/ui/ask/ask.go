@@ -62,8 +62,23 @@ type Model struct {
 	// ui.StageChangedMsg / ui.VaultReloadedMsg / turnStartedMsg — all
 	// Update-thread — because Engine.Current both does filesystem I/O and
 	// writes the engine's unlocked open/nextOp fields, and the turn
-	// goroutine calls Current concurrently with rendering frames.
+	// goroutine calls Current concurrently with rendering frames. The kept
+	// id and the hint below are the rest of the title's state machine
+	// (title.go).
 	titleID string
+
+	// keptID and keptState hold the session the title keeps after its
+	// changeset stops being open (005 contract §6, as amended by R-509):
+	// keptState is resolved by a tea.Cmd (title.go fateCmd) and is "" — no
+	// suffix — until the answer lands, and after a failure or an "open"
+	// answer. Update-thread fields the render path only reads.
+	keptID, keptState string
+
+	// hintAfterTurn is the session id of a turn the pane just auto-rejected
+	// for staging nothing — the empty StageEv seen while turnActive — whose
+	// `nothing staged` hint is owed once that turn's terminal line lands
+	// (title.go appendKeptHint). "" when no hint is owed.
+	hintAfterTurn string
 
 	// cancel aborts the running turn's context; nil until startTurn runs.
 	cancel func()
@@ -168,10 +183,11 @@ func (m *Model) Update(msg tea.Msg) (ui.Pane, tea.Cmd) {
 		// D10: the suggested prompts track the vault, so a re-read (the
 		// shell broadcasts this after a commit) refreshes them. The title's
 		// changeset id refreshes here too — the same two messages the
-		// shell's own stage summary refreshes on (app.go refreshStage).
+		// shell's own stage summary refreshes on (app.go refreshStage) —
+		// and the reload decides the kept id's fate the same way (title.go
+		// refreshTitleID).
 		m.prompts = m.loadPrompts()
-		m.refreshTitleID()
-		return m, nil
+		return m, m.refreshTitleID()
 
 	case StreamMsg:
 		// repair-1: the exported injection point for a caller that holds
@@ -197,6 +213,8 @@ func (m *Model) Update(msg tea.Msg) (ui.Pane, tea.Cmd) {
 		}
 		m.sessionID = msg.sessionID
 		m.titleID = msg.sessionID // the turn's changeset is the open one now
+		m.dropKeptTitle()         // it replaces whatever the title kept
+		m.hintAfterTurn = ""      // a new turn owes nothing to the old one's hint
 		m.ch = msg.ch
 		return m, m.rearm()
 
@@ -207,6 +225,7 @@ func (m *Model) Update(msg tea.Msg) (ui.Pane, tea.Cmd) {
 	case StreamClosedMsg:
 		m.ch = nil
 		m.turnActive = false
+		m.hintAfterTurn = "" // a turn cancelled before its terminal line owes no hint
 		// The turn is over either way, so its context has nothing left to
 		// cancel; releasing it here (rather than waiting for a later
 		// changesetGone) is what keeps one turn's cancel from being mistaken
@@ -221,6 +240,13 @@ func (m *Model) Update(msg tea.Msg) (ui.Pane, tea.Cmd) {
 		if msg.err != nil {
 			m.appendStatus("closing the session failed: " + msg.err.Error())
 		}
+		return m, m.fateIfOwed()
+
+	case titleFateMsg:
+		// The kept id's state lookup came back (title.go noteTitleFate);
+		// recording it is all there is to do — the next View renders the
+		// suffix from the field.
+		m.noteTitleFate(msg)
 		return m, nil
 
 	case ui.StageChangedMsg:
@@ -229,10 +255,16 @@ func (m *Model) Update(msg tea.Msg) (ui.Pane, tea.Cmd) {
 		// empty form is how review says "no changeset is open any more" —
 		// Commit and Reject both emit it — and that is when this pane's
 		// session has to close (backbone §9; s5-agent-loop.md S5-T5). The
-		// title's id rides the same message: populated names the changeset
-		// now open, empty means none is.
-		m.titleID = msg.ChangesetID
-		return m, m.changesetGone(msg.ChangesetID)
+		// title's id rides the same message, and the empty form is also what
+		// keeps it (title.go noteStageChanged). The archive's command is the
+		// one Update returns — the session lifecycle pins it — and the kept
+		// id's state lookup rides the archive's outcome instead of batching
+		// beside it (fateIfOwed).
+		fate := m.noteStageChanged(msg.ChangesetID)
+		if close := m.changesetGone(msg.ChangesetID); close != nil {
+			return m, close
+		}
+		return m, fate
 
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
@@ -346,23 +378,6 @@ func (m *Model) submitInput() tea.Cmd {
 	// same as before.
 	m.sessionID = sessionID
 	return m.startTurn(sessionID, msg)
-}
-
-// echoUser appends text as a kindUser scrollback entry and clears the input
-// box — the submit path's one shared "the curator said this" step.
-func (m *Model) echoUser(text string) {
-	m.entries = append(m.entries, entry{kind: kindUser, text: text})
-	m.input = ""
-}
-
-// appendStatus appends one kindStatus line: a pane-local notice (a refused
-// submit, a failed Close) rather than a turn boundary, which endTurn and
-// endTurnError own. Through mutateEntries, the notice lands below a
-// scrolled-up window instead of moving it.
-func (m *Model) appendStatus(text string) {
-	m.mutateEntries(func() {
-		m.entries = append(m.entries, entry{kind: kindStatus, text: text})
-	})
 }
 
 // deleteInputRune removes the last rune of the input box, if any.

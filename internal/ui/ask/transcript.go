@@ -204,19 +204,6 @@ func (m *Model) mdStyle() markdown.Style {
 	}
 }
 
-// transcriptTitle is the Transcript panel's title (005 contract §6):
-// `Transcript — <short id>` for the open changeset — the same ShortID the
-// frame header's cs9 uses, so the two spellings cannot drift — and plain
-// `Transcript` when no changeset is open (or there is no engine, both
-// supported states). It reads m.titleID, which Update maintains off the
-// render path (session.go refreshTitleID): the engine is not read here.
-func (m *Model) transcriptTitle() string {
-	if m.titleID == "" {
-		return "Transcript"
-	}
-	return "Transcript — " + ui.ShortID(m.titleID)
-}
-
 // toolLines renders one tool call: the collapsed `▸ name args  → result`
 // row clipped to W, or — expanded — that row plus the args and the full
 // result indented 4, muted (s2-screens.md T08). A failed result keeps the

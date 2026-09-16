@@ -30,6 +30,33 @@ func (e *Engine) changesetCommittedDir() string {
 	return filepath.Join(e.llmwikiDir(), "changesets", "committed")
 }
 
+// ChangesetState reports which of the three changeset state directories
+// holds id: "open", "committed" or "rejected" — the directory's name IS the
+// state in backbone §9's frozen layout, and the same words `lw session
+// list` prints from cmd/lw's sessionStates. An id in none of them returns
+// an error matching ErrNoChangeset, the sentinel Current already owns.
+//
+// It is deliberately a read-only stat and nothing more (005 contract §6, as
+// amended by R-509): Current writes the engine's unlocked open/nextOp
+// fields, and the ask pane's turn goroutine calls Current while the pane's
+// frames are rendering, so a title lookup that went through Current — or
+// touched any Engine field beyond the root path — would race it.
+// ChangesetState reads directory entries under e.root and nothing else.
+func (e *Engine) ChangesetState(id string) (string, error) {
+	for _, d := range []struct{ dir, state string }{
+		{e.changesetOpenDir(), "open"},
+		{e.changesetCommittedDir(), "committed"},
+		{e.changesetRejectedDir(), "rejected"},
+	} {
+		if info, err := os.Stat(filepath.Join(d.dir, id)); err == nil && info.IsDir() {
+			return d.state, nil
+		} else if err != nil && !os.IsNotExist(err) {
+			return "", fmt.Errorf("stage: changeset state of %s: %w", id, err)
+		}
+	}
+	return "", fmt.Errorf("stage: changeset state of %s: %w", id, ErrNoChangeset)
+}
+
 // maxIDAttempts bounds OpenChangeset's retry loop for drawing a free
 // changeset id (MASTER §9 D-CI).
 const maxIDAttempts = 8

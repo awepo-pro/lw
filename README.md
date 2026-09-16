@@ -203,7 +203,10 @@ instead of quitting or opening the overlay — quit from Ask with `ctrl+c`.
 Its answers render as markdown — headings, lists, code, tables, links —
 through the same renderer as the previews and `lw diff --render`, and the
 Transcript panel's title carries the session id (`╭ Transcript — cs-1a2b3c ──…`),
-so `lw session show` can read the same conversation back later. Keys rebind
+so `lw session show` can read the same conversation back later. When that
+changeset is committed or rejected the title keeps the id with its state
+(`Transcript — cs-1a2b3c · rejected`), and a turn that staged nothing says
+so and names `lw session show <id>`. Keys rebind
 from `~/.config/lw/hotkeys.toml`; see
 [docs/hotkeys.md](docs/hotkeys.md) for the table and the file format.
 
