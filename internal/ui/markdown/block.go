@@ -74,6 +74,9 @@ func renderBlock(blk []string, cfg gansi.StyleConfig, contentW int, style Style)
 		lines = colorizeQuoteBar(lines, style.Border)
 	case isListBlock(blk):
 		lines = reflowListLines(lines, contentW, style.Accent)
+		// A blockquote nested in an item keeps the bar on every line,
+		// recoloured Border exactly like a top-level quote's (R-508).
+		lines = colorizeQuoteBar(lines, style.Border)
 	}
 	// Safety clip: a fenced code line longer than the content width (the
 	// indent counts toward it) and a table wider than it end in "…". Every
