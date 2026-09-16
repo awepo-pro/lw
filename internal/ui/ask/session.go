@@ -16,6 +16,27 @@ import (
 	"github.com/awepo-pro/lw/internal/stage"
 )
 
+// refreshTitleID re-reads the open changeset's id off the engine into
+// m.titleID (005 contract §6) — the pane's copy of what app.go's
+// refreshStage computes for the header. It runs on the Update thread only
+// (New, ui.StageChangedMsg, ui.VaultReloadedMsg): Engine.Current both does
+// filesystem I/O and writes the engine's unlocked open/nextOp fields, and
+// the turn goroutine calls Current concurrently with frames rendering, so
+// the render path reads the field and never the engine. A nil engine or no
+// open changeset clears the title, which is the supported no-session state
+// (the title is plain `Transcript` there, never a partial id).
+func (m *Model) refreshTitleID() {
+	if m.deps.Engine == nil {
+		m.titleID = ""
+		return
+	}
+	if cs, err := m.deps.Engine.Current(); err == nil {
+		m.titleID = cs.ID
+	} else {
+		m.titleID = ""
+	}
+}
+
 // resolveTurnChangeset opens a changeset for a turn that started with none
 // open (C-124/D-DH), or falls back to whatever is open if something raced
 // ahead of it. It never returns an empty id without a non-nil err.
