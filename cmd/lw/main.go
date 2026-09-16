@@ -28,6 +28,7 @@ var verbs = []verb{
 	{"diff", cmdDiff},
 	{"commit", cmdCommit},
 	{"log", cmdLog},
+	{"session", cmdSession},
 	{"revert", cmdRevert},
 	{"query", cmdQuery},
 	{"lint", cmdLint},
@@ -110,6 +111,9 @@ commands:
   diff [--op <id>]             show the projected diff of the open changeset
   commit -m "..." [--force]    commit the open changeset
   log [--rejected] [--agent]   show changeset history
+  session list [--json]        list recorded agent sessions
+  session show [<id>] [--plain] [--json] [--thinking]
+                               print one session's transcript
   revert <commit-id>           open a reverse changeset for review
   query "..."                  ask the curator agent a question
   lint [--fix]                 run the lint checks
