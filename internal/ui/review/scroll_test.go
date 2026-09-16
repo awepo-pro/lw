@@ -16,6 +16,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/awepo-pro/lw/internal/stage"
 	"github.com/awepo-pro/lw/internal/ui"
 	"github.com/awepo-pro/lw/internal/ui/uitest"
 )
@@ -274,6 +275,54 @@ func TestReviewScroll(t *testing.T) {
 		m2 = sendM(t, m2, ui.WheelMsg{X: 5, Y: 3, W: scrollPaneW, H: scrollPaneH, Delta: -1})
 		if got := m2.View(scrollPaneW, scrollPaneH); got != wantUp {
 			t.Errorf("a wheel-up notch over Ops differs from k:\n%s", firstPlainDiff(wantUp, got))
+		}
+	})
+
+	t.Run("refused_yn_keeps_scroll", func(t *testing.T) {
+		// The ownerless-window refusal (s2-screens.md T06 keys, MASTER §8
+		// ORCH-9), hand-built the way TestOwnerlessWindowIsNeverYNCursorTarget
+		// is: y/n refuse before any engine call, so the engine is nil —
+		// proceeding past the refusal would nil-panic, which is itself the
+		// proof that no engine method ran. s2-screens.md T06 Scroll resets
+		// the offset on the y/n ADVANCE only, so a refused key must leave
+		// the scrolled Detail exactly where it was.
+		lines := make([]stage.DisplayLine, 0, 120)
+		for i := 0; i < 120; i++ {
+			lines = append(lines, stage.DisplayLine{Kind: '+', Text: fmt.Sprintf("added line %03d of the ownerless window", i+1)})
+		}
+		ops := []stage.Op{{ID: "op1", Kind: stage.OpCreatePage, State: stage.StateProposed}}
+		d := stage.Diff{Files: []stage.FileDiff{{OpID: "op1", Hunks: []stage.Hunk{{ID: "h1"}}}}}
+		m := &Model{
+			deps:         ui.Deps{Theme: testTheme(t), Keys: defaultTestKeys(t)}, // no engine
+			theme:        testTheme(t),
+			hasChangeset: true,
+			changeset:    &stage.Changeset{ID: "cs-ownerless"},
+			ops:          ops,
+			diff:         d,
+			stops:        buildCursorStops(d, ops),
+			opDiffs: map[string][]stage.FileOpDiff{
+				"op1": {{Path: "wiki/concepts/ownerless.md", Hunks: []stage.DisplayHunk{{HunkID: "", Lines: lines}}}},
+			},
+		}
+		m = sendM(t, m, tea.WindowSizeMsg{Width: scrollPaneW, Height: scrollPaneH + 2})
+
+		all := detailLines(m, findDetail(t, plainRows(m)))
+		off := max(1, findDetail(t, plainRows(m)).innerH()-1)
+		if len(all) <= off+3 {
+			t.Fatalf("hand-built window too short to scroll: %d content lines", len(all))
+		}
+		m = sendM(t, m, uitest.Key("pgdown"))
+		assertRows(t, m, all, off, 4)
+
+		const want = "this window has no hunk id — it cannot be accepted or dropped individually"
+		for _, key := range []string{"y", "n"} {
+			m = sendM(t, m, keyPress(rune(key[0])))
+			if msg, level := statusOf(t, m); msg != want || level != ui.StatusWarn {
+				t.Fatalf("%s was not refused: Status = (%q, %v), want (%q, StatusWarn)", key, msg, level, want)
+			}
+			// The refusal reset nothing: the first content rows are still
+			// the ones the pgdown put there.
+			assertRows(t, m, all, off, 4)
 		}
 	})
 }

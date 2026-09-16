@@ -189,8 +189,10 @@ func (m *Model) previewSpec(w, h int) ui.PanelSpec {
 	// between frames — then hand the Panel the window it selects. Overflow
 	// keeps counting the lines below `↓ N more`; once nothing is below and
 	// lines were dropped above, the foot note counts those instead
-	// (`↑ N above`, N = off).
-	m.previewCount, m.previewInner = len(lines), h-2
+	// (`↑ N above`, N = off). The inner height clamps at 0 like Review's
+	// paneLayout guard (review/scroll.go): a 1-row pane would otherwise
+	// make maxPreviewOff count+1 and lines[m.off:] sliceable past the end.
+	m.previewCount, m.previewInner = len(lines), max(0, h-2)
 	m.clampPreviewOff()
 	spec.Lines = lines[m.off:]
 	if m.off > 0 && m.off >= m.maxPreviewOff() {

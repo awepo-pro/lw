@@ -215,6 +215,87 @@ func TestBrowsePreviewScroll(t *testing.T) {
 				ansi.Strip(before), ansi.Strip(after))
 		}
 	})
+
+	t.Run("tiny_pane_never_slices_out_of_range", func(t *testing.T) {
+		m := newScrollModel(t)
+		previewRows(t, m, scrollW, scrollH) // a normal frame establishes the page
+
+		// A 1-row pane drives the guard directly: the shell's minimum-size
+		// gate (80×24) never lays one out, which is exactly why the guard
+		// must hold on its own. Unclamped, inner would store -1, making
+		// maxPreviewOff count+1 — the end key could then push m.off past
+		// the rendered lines and the next render would slice lines[m.off:]
+		// out of range. The clamp pins inner at 0, so the end key lands on
+		// off = count and the slice stays empty, not invalid.
+		m.View(scrollW, 1)
+		if m.previewInner != 0 {
+			t.Fatalf("after View(%d, 1) previewInner = %d, want the clamped 0", scrollW, m.previewInner)
+		}
+		m = pressKey(t, m, "end")
+		m.View(scrollW, 1) // lines[m.off:] must stay in range — no panic
+	})
+
+	t.Run("reload_resets_scroll", func(t *testing.T) {
+		m := newScrollModel(t)
+		rendered := renderedPreview(t, m, scrollW)
+		firstRowIs(t, m, scrollW, scrollH, rendered, 0) // the first frame
+
+		m = pressKey(t, m, "pgdown")
+		step := max(1, (scrollH-2)-1)
+		firstRowIs(t, m, scrollW, scrollH, rendered, step)
+
+		// ui.VaultReloadedMsg resets the offset unconditionally (s2-screens
+		// .md T07): a reload can swap content under a surviving selection,
+		// so the loaf renders from its first line again.
+		m = updateMsg(t, m, ui.VaultReloadedMsg{})
+		if m.off != 0 {
+			t.Fatalf("after VaultReloadedMsg off = %d, want the reset 0", m.off)
+		}
+		firstRowIs(t, m, scrollW, scrollH, rendered, 0)
+	})
+
+	t.Run("finder_selection_resets_scroll", func(t *testing.T) {
+		m := newScrollModel(t)
+		before := m.selectedPath()
+		previewRows(t, m, scrollW, scrollH) // the first frame establishes the geometry
+
+		m = pressKey(t, m, "pgdown")
+		step := max(1, (scrollH-2)-1)
+		rendered := renderedPreview(t, m, scrollW)
+		firstRowIs(t, m, scrollW, scrollH, rendered, step)
+
+		// Commit a finder result on another page: commitFinder routes
+		// through selectPath, which resets the offset with the selection.
+		const target = "wiki/concepts/autolyse.md"
+		m = pressKey(t, m, "/")
+		for _, r := range "autolyse" {
+			m = pressKey(t, m, string(r))
+		}
+		idx := -1
+		for i, match := range m.finder.matches {
+			if match.path == target {
+				idx = i
+				break
+			}
+		}
+		if idx < 0 {
+			t.Fatalf("query %q has no match for %s (matches: %v)",
+				m.finder.query, target, m.finder.matches)
+		}
+		for i := 0; i < idx; i++ {
+			m = pressKey(t, m, "down")
+		}
+		m = pressKey(t, m, "enter")
+		if m.finder.open {
+			t.Fatal("enter did not close the finder")
+		}
+		if got := m.selectedPath(); got == before || got != target {
+			t.Fatalf("after committing, selection = %q, want %q", got, target)
+		}
+		// The new page renders from its first line: the offset did not ride
+		// over from the old selection.
+		firstRowIs(t, m, scrollW, scrollH, renderedPreview(t, m, scrollW), 0)
+	})
 }
 
 // TestBrowseStyleTokens pins T27's two theme jobs: the renderer's style is
