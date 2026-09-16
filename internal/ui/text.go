@@ -10,9 +10,25 @@ package ui
 
 import (
 	"strings"
+	"unicode/utf8"
 
 	lipgloss "charm.land/lipgloss/v2"
 )
+
+// ShortID returns a changeset id truncated to at most 9 runes: the short
+// form every surface shows for a session, because a session IS a changeset
+// (design D9). One truncation, two callers — the frame header's cs9 and,
+// from workflow 005's W1, the Ask panel's "Transcript — <id>" title — so the
+// two spellings of the same id can never drift. The cut is by rune, not
+// byte: a header must never emit a broken UTF-8 sequence. Every real
+// changeset id is hex, so for input that can reach a header this is
+// byte-identical to the inline slice it replaces.
+func ShortID(id string) string {
+	if utf8.RuneCountInString(id) <= 9 {
+		return id
+	}
+	return string([]rune(id)[:9])
+}
 
 // cellLen returns s's visible width in terminal cells, ANSI-aware.
 func cellLen(s string) int {

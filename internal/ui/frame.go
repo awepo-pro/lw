@@ -205,10 +205,7 @@ func headerLine(t Theme, w int, vault string, tabs []string, active string,
 
 	var right []seg
 	if stg.Has {
-		cs9 := stg.ID
-		if len(cs9) > 9 {
-			cs9 = cs9[:9]
-		}
+		cs9 := ShortID(stg.ID)
 		glyph, style := "✗", t.Bad
 		if stg.Checks.Schema == "pass" && stg.Checks.Lint == "pass" &&
 			stg.Checks.Orphans == 0 && stg.Checks.BrokenLinks == 0 {
