@@ -44,7 +44,10 @@ func renderBlock(blk []string, cfg gansi.StyleConfig, contentW int, style Style)
 	}
 
 	out = restyleSpans(out, []span{
-		{open: provOpen, close: provClose, openSGR: fgSGR(style.Faint, false)},
+		// Provenance is Muted, not Faint (A-5-1 change 3 / D-5C): Faint is
+		// unreadable on a transparent terminal, and Ask's answers render
+		// here, so the marker must match ask/inline.go's Muted.
+		{open: provOpen, close: provClose, openSGR: fgSGR(style.Muted, false)},
 		{open: wikiOpen, close: wikiClose, openSGR: fgSGR(style.Accent, true)},
 	})
 	out = unescapeMarkers(out)
