@@ -177,6 +177,8 @@ still quits.
 | `tab` | all | next screen |
 | `?` | all | toggle the keys overlay |
 | `j`/`k`, `g`/`G` | list screens | move the cursor; jump to top/bottom |
+| `pgup`/`pgdn`, `ctrl+u`/`ctrl+d`, `home`/`end` | Review, Browse, Ask | scroll the content panel — Review's detail, Browse's preview, Ask's transcript — a page, half a page, or to its top / bottom |
+| mouse wheel | Review, Browse, Ask | scroll the panel under the pointer; over Review's Ops list or Browse's Pages tree it moves the cursor |
 | `y` / `n` | Review | accept (undrop) / drop the selected hunk and advance |
 | `p` | Review | toggle the detail panel between the diff and a preview of the page as it will read after commit |
 | `A` | Review | accept every remaining hunk; refused unless lint is clean |
@@ -213,10 +215,22 @@ To recolour, drop a TOML file in the config directory (`~/.config/lw/`):
 applied last, as the per-machine word. Both files are partial: a key you
 omit keeps the value it would otherwise have, and every colour comes in a
 light and a dark spelling — `fg_light`/`fg_dark`, `muted_*`, `faint_*`,
-`border_*`, `accent_*`, `cursor_*`, `good_*`, `warn_*`, `bad_*` — as
-`#RRGGBB` values. The pre-2 `foreground_*` spelling still sets `fg_*`, and
+`border_*`, `accent_*`, `cursor_*`, `good_*`, `warn_*`, `bad_*`,
+`heading_*`, `code_*` — as `#RRGGBB` values. The last two colour the
+rendered markdown's headings and code, in Review's and Browse's previews
+and in `lw diff --render` (a level-2 heading keeps the accent colour).
+The pre-2 `foreground_*` spelling still sets `fg_*`, and
 `background_*` is accepted but ignored: lw draws only foregrounds and uses
 the terminal's own background.
+
+One colour note: lw draws its exact `#RRGGBB` palette only on a truecolor
+terminal. Inside tmux, tmux has to advertise that — e.g.
+`set -as terminal-features ',*:RGB'` in `tmux.conf` — or the terminal
+reports 256 colours, foregrounds come out approximated, and the cursor
+highlight falls back to a neutral grey (the `cursor_*` keys colour the
+cursor only at truecolor). On a terminal below 256 colours lw drops the
+cursor background entirely and marks the cursor row with the accent bar
+alone.
 
 ## MCP setup
 
@@ -278,11 +292,13 @@ Stated plainly, because a tool asking for this much trust should not oversell.
   and because every post-image is already in the content-addressed store the
   commit is **rolled forward** from `objects/` rather than repaired by hand.
   See [docs/changesets.md](docs/changesets.md#recovery--and-the-honest-boundary).
-- **Dependencies.** lw depends on **10 direct Go modules** (39 including
-  transitive ones); [NOTICE](NOTICE) names every one with its licence. The
-  build's dependency allowlist has 11 entries — the eleventh,
-  `github.com/alecthomas/chroma/v2`, arrives transitively through glamour and
-  is never imported directly.
+- **Dependencies.** lw depends on **14 direct Go modules** (39 including
+  transitive ones); [NOTICE](NOTICE) names every one with its licence. Two
+  of the fourteen became direct with the colour work rather than being
+  added: `github.com/alecthomas/chroma/v2`, which syntax-highlights code in
+  rendered markdown, and `github.com/charmbracelet/colorprofile`, which
+  resolves the terminal's colour profile. Both already arrived through
+  glamour and Bubble Tea, so the module set is unchanged.
 - **The MCP Go SDK is young.** `github.com/modelcontextprotocol/go-sdk` is
   pinned at `v1.7.0`; its API is still settling upstream, and lw tracks it as
   an ordinary module rather than shipping a fork.

@@ -31,13 +31,13 @@ bottom = []
 
 Keystrokes are written the way Bubble Tea names them: a single printable
 character (`a`, `A`, `?`), or a named key — `enter`, `esc`, `tab`, `up`,
-`down`, `left`, `right`, `backspace`, or a modifier form such as `ctrl+c`,
-`ctrl+r`, `shift+tab`. Matching is case-sensitive: `a` and `A` are different
-keys.
+`down`, `left`, `right`, `backspace`, `pgup`, `pgdown`, `home`, `end`, or a
+modifier form such as `ctrl+c`, `ctrl+r`, `shift+tab`. Matching is
+case-sensitive: `a` and `A` are different keys.
 
 ## Rebindable actions
 
-These are the fourteen actions in the keymap. Defaults are frozen; the
+These are the twenty actions in the keymap. Defaults are frozen; the
 `toml` key is the only way to change one.
 
 | TOML key | Default | Action | Screens |
@@ -53,14 +53,44 @@ These are the fourteen actions in the keymap. Defaults are frozen; the
 | `top` | `g` | Jump to the first entry | Browse, Review, Lint, Log |
 | `bottom` | `G` | Jump to the last entry | Browse, Review, Lint, Log |
 | `preview` | `p` | Toggle Review's detail panel between the Diff and a rendered Preview of the staged page | Review |
+| `scroll_page_up` | `pgup` | Scroll the content panel up a page | Review, Browse, Ask |
+| `scroll_page_down` | `pgdown` | Scroll the content panel down a page | Review, Browse, Ask |
+| `scroll_half_up` | `ctrl+u` | Scroll the content panel up half a page | Review, Browse, Ask |
+| `scroll_half_down` | `ctrl+d` | Scroll the content panel down half a page | Review, Browse, Ask |
+| `scroll_top` | `home` | Scroll the content panel to its top | Review, Browse, Ask |
+| `scroll_bottom` | `end` | Scroll the content panel to its bottom | Review, Browse, Ask |
 | `next_pane` | `tab` | Cycle to the next screen | Shell |
 | `quit` | `q`, `ctrl+c` | Quit `lw` | Shell |
-| `help` | `?` | Help — open the centred Keys overlay, which lists the current screen's keys beside the shell's global ones; `?` or `esc` closes it, and while it is open every other key except quit is ignored | Shell |
+| `help` | `?` | Help — open the centred Keys overlay, which lists the current screen's keys beside the shell's global ones, plus a `Scroll` group on the screens whose content scrolls; `?` or `esc` closes it, and while it is open every other key except quit is ignored | Shell |
 
 Review's `y`/`n`/`s`/`A`/`X`/`C` letters are the review surface `/docs/design.md`
 §9 fixes, and they are also the defaults above. The keymap is the source of
 truth: rebinding one of them changes what Review matches, so rebind them
 only if you are also prepared to relearn what the documentation says.
+
+### Scrolling and the mouse
+
+Three screens have a panel whose content can be longer than the panel:
+Review's detail panel, Browse's preview, and Ask's transcript. The
+`scroll_*` actions move that content — a page, half a page, or straight to
+its top or bottom — without moving the cursor. On Review and Browse the
+scroll position jumps back to the top whenever the selection changes,
+because the content under the fold belongs to the selection; Ask keeps
+its position, as described below.
+
+The mouse wheel scrolls the panel under the pointer, three lines per
+notch. Over Review's Ops list or Browse's Pages tree it moves the cursor
+instead, exactly like `j`/`k`; Review's Changeset panel and Browse's Links
+panel ignore it. lw holds the mouse while the TUI is open, so select
+terminal text with shift+drag.
+
+On Ask, scrolling up stops following the conversation: the transcript
+leaves the window where it is, marks how many newer lines are below it
+(`↓ N newer` on the panel's bottom border), and folds incoming output in
+without moving what is on screen. Sending a message — or scrolling back
+down to the bottom — follows the conversation again. The scroll keys are
+not printable, so they reach Ask even while the message box is taking
+text: `home` and `end` work there too.
 
 ### Match order inside a screen
 
