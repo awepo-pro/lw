@@ -102,6 +102,80 @@ func TestRenderFragment(t *testing.T) {
 		}
 	})
 
+	t.Run("width_is_the_fragments_own_width", func(t *testing.T) {
+		// A fragment draws no gutter and no padding — the hosting panel owns
+		// both — so Width must be the prose width itself, not a page width
+		// two cells of which silently vanish (C-502).
+		for _, width := range []int{40, 80} {
+			frag, err := NewRenderer().RenderFragment(fillPara(width), Options{Width: width, Plain: true})
+			if err != nil {
+				t.Fatalf("RenderFragment(Width %d): %v", width, err)
+			}
+			if len(frag) <= 1 {
+				t.Fatalf("Width %d: got %d lines, want the paragraph wrapped onto several", width, len(frag))
+			}
+			widest := 0
+			for _, l := range frag {
+				if n := len(ansi.Strip(l)); n > widest {
+					widest = n
+				}
+			}
+			if widest != width {
+				t.Errorf("Width %d: widest line = %d, want exactly %d", width, widest, width)
+			}
+		}
+	})
+
+	t.Run("measure_caps_below_width", func(t *testing.T) {
+		frag, err := NewRenderer().RenderFragment(fillPara(60), Options{Width: 200, Measure: 60, Plain: true})
+		if err != nil {
+			t.Fatalf("RenderFragment: %v", err)
+		}
+		widest := 0
+		for _, l := range frag {
+			if n := len(ansi.Strip(l)); n > widest {
+				widest = n
+			}
+		}
+		if widest != 60 {
+			t.Errorf("widest line = %d, want exactly the Measure 60 (not a gutter's 58, not 62)", widest)
+		}
+	})
+
+	t.Run("measure_zero_caps_at_100", func(t *testing.T) {
+		frag, err := NewRenderer().RenderFragment(fillPara(100), Options{Width: 200, Plain: true})
+		if err != nil {
+			t.Fatalf("RenderFragment: %v", err)
+		}
+		widest := 0
+		for _, l := range frag {
+			if n := len(ansi.Strip(l)); n > widest {
+				widest = n
+			}
+		}
+		if widest != 100 {
+			t.Errorf("widest line = %d, want exactly the Measure-0 cap 100 (not a gutter's 98)", widest)
+		}
+	})
+
+	t.Run("degenerate_width_still_renders", func(t *testing.T) {
+		src := []byte(strings.Repeat("lorem ipsum dolor sit amet ", 10))
+		for _, width := range []int{1, 0} {
+			frag, err := NewRenderer().RenderFragment(src, Options{Width: width, Plain: true})
+			if err != nil {
+				t.Fatalf("RenderFragment(Width %d): %v", width, err)
+			}
+			if len(frag) == 0 {
+				t.Errorf("Width %d: no lines returned, want a render anyway", width)
+			}
+			for i, l := range frag {
+				if n := len(ansi.Strip(l)); n > 1 {
+					t.Errorf("Width %d: line %d = %d cells, want nothing wider than 1", width, i+1, n)
+				}
+			}
+		}
+	})
+
 	t.Run("changed_is_ignored", func(t *testing.T) {
 		changed := "This block was added by the change."
 		src := []byte(changed + "\n")
@@ -212,6 +286,31 @@ func TestRenderFragment(t *testing.T) {
 			t.Errorf("unset Heading degraded to %q, want Fg+bold %q", active, roleSGR(st.Fg, ";1"))
 		}
 	})
+}
+
+// fillPara returns a plain-words paragraph (no markdown constructs) whose
+// first wrapped line lands exactly on width cells under greedy word wrap —
+// "into" is 4 cells and every further word costs 4 (word + space), so the
+// first line fills any width that is a multiple of 4 exactly, and the tail
+// pushes the rest past line one. Width-cap assertions then measure the wrap
+// width itself, not the luck of a fixed word grid.
+func fillPara(width int) []byte {
+	var b strings.Builder
+	w := 0
+	write := func(word string) {
+		if w > 0 {
+			b.WriteByte(' ')
+			w++
+		}
+		b.WriteString(word)
+		w += len(word)
+	}
+	write("into")
+	for width-w >= 4 {
+		write("one")
+	}
+	b.WriteString(" and then a few more words follow, so the paragraph wraps past line one")
+	return []byte(b.String())
 }
 
 // TestFragmentCacheKey pins the cache-key rule (workflow 005 contract §1

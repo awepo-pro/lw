@@ -35,11 +35,11 @@ func (r *Renderer) RenderFragment(src []byte, o Options) ([]string, error) {
 
 // renderFragment does the actual, uncached work behind RenderFragment. It
 // is renderPage minus the page shape: the same Style.resolved()
-// normalization (ORCH-16), the same contentWidth, the same renderBody,
-// chroma setup and glamour configuration — but splitFrontmatter and
-// pageHeader never run (a leading "---" is rendered as the thematic break
-// CommonMark says it is), and no line is gutter-prefixed or padded, because
-// the panel hosting a fragment owns its own padding and cursor gutter.
+// normalization (ORCH-16), the same renderBody, chroma setup and glamour
+// configuration — but splitFrontmatter and pageHeader never run (a leading
+// "---" is rendered as the thematic break CommonMark says it is), and no
+// line is gutter-prefixed or padded, because the panel hosting a fragment
+// owns its own padding and cursor gutter.
 func renderFragment(src []byte, o Options) ([]string, error) {
 	// The same one normalization point as renderPage: every token a caller
 	// left empty becomes Fg before anything reads it (ORCH-16).
@@ -47,17 +47,22 @@ func renderFragment(src []byte, o Options) ([]string, error) {
 
 	// Changed is ignored: pass no change set, so no block is ever marked —
 	// and the ▎ gutter lives only in the page path's pad loop anyway.
-	bodyLines, err := renderBody(strings.Trim(string(src), "\n"), o.Style, contentWidth(o), nil)
+	bodyLines, err := renderBody(strings.Trim(string(src), "\n"), o.Style, fragmentWidth(o), nil)
 	if err != nil {
 		return nil, fmt.Errorf("markdown: render fragment: %w", err)
 	}
 
 	lines := make([]string, len(bodyLines)) // non-nil even at len 0
 	for i, l := range bodyLines {
-		lines[i] = l.text // no gutter prefix, no padCells
+		line := l.text // no gutter prefix, no padCells
 		if o.Plain {
-			lines[i] = ansi.Strip(lines[i])
+			line = ansi.Strip(line)
 		}
+		// glamour still pads a block's lines out to the wrap width
+		// internally; that padding belongs to the hosting panel, so it is
+		// cut back — through ansi.Truncate, because the pad cells can sit
+		// inside a styled run where a plain TrimRight would miss them.
+		lines[i] = ansi.Truncate(line, ansi.StringWidth(strings.TrimRight(ansi.Strip(line), " ")), "")
 	}
 	return lines, nil
 }

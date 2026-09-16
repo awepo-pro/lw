@@ -81,6 +81,29 @@ func contentWidth(o Options) int {
 	return w
 }
 
+// fragmentWidth is the width a fragment's body renders at, and it is NOT
+// contentWidth: contentWidth subtracts the page's 2-cell gutter, which the
+// page then re-adds as gutterPrefix and pads over — a fragment draws
+// neither, because the panel hosting it owns its own padding and cursor
+// gutter, so subtracting 2 here would just lose two columns. Width is
+// therefore the fragment's own width. Measure keeps the reading lineWidth
+// gives it: 0 means a 100-column cap outright, not 0+2. Floored at 1, as
+// contentWidth is, so a degenerate Width still renders.
+func fragmentWidth(o Options) int {
+	capW := 100
+	if o.Measure > 0 {
+		capW = o.Measure
+	}
+	w := o.Width
+	if capW < w {
+		w = capW
+	}
+	if w < 1 {
+		w = 1
+	}
+	return w
+}
+
 // renderPage does the actual, uncached work behind Render.
 func renderPage(src []byte, o Options) ([]string, error) {
 	// One normalization point for the whole render: every token a caller
