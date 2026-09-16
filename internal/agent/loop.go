@@ -125,27 +125,38 @@ func (l *Loop) runRound(ctx context.Context, sessionID string, msgs []llm.Messag
 		return nil, false, l.fail(ctx, out, fmt.Errorf("agent: stream: %w", err))
 	}
 
-	var roundText strings.Builder      // every Text delta this round, in full — becomes the round's one assistant message Content.
-	var pendingText strings.Builder    // text since the last flushRecord; drives session Record order only, not the wire message.
-	var roundReasoning strings.Builder // every Reasoning delta this round, in full — becomes the round's one ReasoningContent.
-	var roundToolCalls []llm.ToolCall  // every ToolCall this round completes, in stream order.
-	var roundToolMsgs []llm.Message    // the matching tool-result messages, in call order.
+	var roundText strings.Builder        // every Text delta this round, in full — becomes the round's one assistant message Content.
+	var pendingText strings.Builder      // text since the last flushRecord; drives session Record order only, not the wire message.
+	var pendingReasoning strings.Builder // reasoning since the last flushRecord; same session-Record view as pendingText (005).
+	var roundReasoning strings.Builder   // every Reasoning delta this round, in full — becomes the round's one ReasoningContent.
+	var roundToolCalls []llm.ToolCall    // every ToolCall this round completes, in stream order.
+	var roundToolMsgs []llm.Message      // the matching tool-result messages, in call order.
 	toolCalled := false
 
-	// flushRecord writes any text accumulated since the last flush as an
-	// assistant Record, in the position it arrived — before the next tool
-	// call's own Record (backbone §9 item 3: session history still orders
-	// text before the tool result that followed it). It never touches
-	// roundText, the round-wide total that becomes the eventual wire
-	// message's Content: history and the outbound message are two
-	// different views of the same text now, tracked separately.
+	// flushRecord writes any text and/or reasoning accumulated since the
+	// last flush as ONE assistant Record, in the position it arrived —
+	// before the next tool call's own Record (backbone §9 item 3: session
+	// history still orders text before the tool result that followed it).
+	// It never touches roundText or roundReasoning, the round-wide totals
+	// that become the eventual wire message's Content and
+	// ReasoningContent: history and the outbound message are two different
+	// views of the same round, tracked separately.
+	//
+	// Contract — reasoning is persisted here (005, contract §3 note 2 as
+	// amended by C-501/D-5F): it fires when EITHER buffer is non-empty, so
+	// a round that thinks and then calls a tool with no text — the most
+	// common tool round there is — still writes one assistant Record, with
+	// empty Content and Reasoning set. Under the original text-only rule
+	// that round's thinking was dropped entirely.
 	flushRecord := func() error {
-		if pendingText.Len() == 0 {
+		if pendingText.Len() == 0 && pendingReasoning.Len() == 0 {
 			return nil
 		}
 		text := pendingText.String()
+		reasoning := pendingReasoning.String()
 		pendingText.Reset()
-		rec := Record{TS: time.Now().UTC(), Role: "assistant", Content: text}
+		pendingReasoning.Reset()
+		rec := Record{TS: time.Now().UTC(), Role: "assistant", Content: text, Reasoning: reasoning}
 		if err := l.sessions.Append(sessionID, rec); err != nil {
 			return fmt.Errorf("agent: append assistant record: %w", err)
 		}
@@ -176,6 +187,7 @@ func (l *Loop) runRound(ctx context.Context, sessionID string, msgs []llm.Messag
 			}
 			if chunk.Reasoning != "" {
 				roundReasoning.WriteString(chunk.Reasoning)
+				pendingReasoning.WriteString(chunk.Reasoning)
 			}
 			if chunk.Text != "" {
 				if !l.send(ctx, out, TextDelta{Text: chunk.Text}) {
