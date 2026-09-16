@@ -27,11 +27,12 @@ func (m *Model) View(w, h int) string {
 		h = 1
 	}
 
-	ih := 3
-	th := h - ih
-	if th < 2 {
-		th, ih = h, 0
-	}
+	// Remember the size the shell drew, so the scroll keys' steps and
+	// clamps are expressed in the Transcript panel's real lines (scroll.go)
+	// — a key can only arrive between frames, and every frame renders.
+	m.vw, m.vh = w, h
+
+	th, ih := paneLayout(w, h)
 
 	rows := m.transcriptPanel(w, th)
 	if ih > 0 {

@@ -52,30 +52,35 @@ type entry struct {
 // applyEvent folds one agent.Event into m's scrollback (backbone §9's six
 // event types) and returns the extra tea.Cmd a StageEv needs to notify the
 // shell — nil for every other kind. It never panics, including on
-// ErrorEv{Err: nil}.
+// ErrorEv{Err: nil}. The fold runs through mutateEntries, so an event that
+// lands while the pane is scrolled up appends its lines below the visible
+// window instead of moving it (scroll.go, W5 F2/C36).
 func (m *Model) applyEvent(ev agent.Event) tea.Cmd {
-	switch e := ev.(type) {
-	case agent.TextDelta:
-		m.appendAssistantText(e.Text)
-	case agent.ToolCallEv:
-		m.startToolCall(e)
-	case agent.ToolResEv:
-		m.resolveToolCall(e)
-	case agent.StageEv:
-		return stageChangedCmd(e)
-	case agent.DoneEv:
-		// The frozen conversation grids render the turn boundary as
-		// `done · N rounds` (s2-screens.md T08, from DoneEv.Rounds); the
-		// stop reason stays in the session transcript.
-		m.endTurn(fmt.Sprintf("done · %d rounds", e.Rounds))
-	case agent.ErrorEv:
-		msg := "unknown error"
-		if e.Err != nil {
-			msg = e.Err.Error()
+	var cmd tea.Cmd
+	m.mutateEntries(func() {
+		switch e := ev.(type) {
+		case agent.TextDelta:
+			m.appendAssistantText(e.Text)
+		case agent.ToolCallEv:
+			m.startToolCall(e)
+		case agent.ToolResEv:
+			m.resolveToolCall(e)
+		case agent.StageEv:
+			cmd = stageChangedCmd(e)
+		case agent.DoneEv:
+			// The frozen conversation grids render the turn boundary as
+			// `done · N rounds` (s2-screens.md T08, from DoneEv.Rounds); the
+			// stop reason stays in the session transcript.
+			m.endTurn(fmt.Sprintf("done · %d rounds", e.Rounds))
+		case agent.ErrorEv:
+			msg := "unknown error"
+			if e.Err != nil {
+				msg = e.Err.Error()
+			}
+			m.endTurnError(msg)
 		}
-		m.endTurnError(msg)
-	}
-	return nil
+	})
+	return cmd
 }
 
 // stageChangedCmd reports e as a ui.StageChangedMsg (s4-tui.md S4-T6

@@ -19,24 +19,39 @@ const introSentence = "Ask the wiki a question. Answers cite the pages they come
 
 // transcriptPanel draws the scrollback panel at w×th. An empty transcript
 // shows the intro and prompts from the top (mockgen.ask_empty, overflow as
-// the panel's own `↓ N more`); a conversation shows the turn shape,
-// tail-following once it outgrows the panel, with `↑ N earlier` on the top
-// border (s2-screens.md T08 Overflow).
+// the panel's own `↓ N more`); a conversation shows the turn shape, with
+// the scrollback window `lines[len-inner-back : len-back]` (scroll.go):
+// `↑ N earlier` on the top border for the lines above the window (N = the
+// window's start, omitted at 0) and `↓ N newer` on the bottom border for
+// the lines hidden below it (N = back, omitted at 0) (s2-screens.md T08
+// "Scroll", W5 F2/C36).
 func (m *Model) transcriptPanel(w, th int) []string {
 	cw := w - 4
 	note := ""
+	footNote := ""
 	cursor := -1
 
 	lines := m.emptyTranscriptLines(cw, th)
 	if len(m.entries) > 0 {
 		lines, cursor = m.conversationLines(min(cw, 100))
 		// inner > 0 keeps the degenerate sizes (th < 3) away from the
-		// tail math; Panel clamps those, and View normalizes the result.
+		// scroll math; Panel clamps those, and View normalizes the result.
 		if inner := th - 2; inner > 0 && len(lines) > inner {
-			hidden := len(lines) - inner
-			note = fmt.Sprintf("↑ %d earlier", hidden)
-			lines = lines[hidden:]
-			cursor -= hidden
+			// Clamp here too — the offset is clamped at every render and
+			// every key (contract §5 note 10), and an expand/collapse or an
+			// in-place result can shrink the line count under a stored
+			// back.
+			maxBack := len(lines) - inner
+			m.back = min(m.back, maxBack)
+			start := len(lines) - inner - m.back
+			if start > 0 {
+				note = fmt.Sprintf("↑ %d earlier", start)
+			}
+			if m.back > 0 {
+				footNote = fmt.Sprintf("↓ %d newer", m.back)
+			}
+			lines = lines[start : len(lines)-m.back]
+			cursor -= start
 		}
 	}
 	if cursor < 0 || cursor >= len(lines) {
@@ -46,11 +61,13 @@ func (m *Model) transcriptPanel(w, th int) []string {
 	return ui.Panel(m.theme, ui.PanelSpec{
 		Title:     "Transcript",
 		Note:      note,
+		FootNote:  footNote,
 		Lines:     lines,
 		CursorRow: cursor,
 		// The empty state reports top-overflow through the panel's own
-		// FootNote (mockgen.draw_lines + foot); a conversation never
-		// overflows the bottom — it follows the tail instead.
+		// FootNote (mockgen.draw_lines + foot); a conversation reports its
+		// scroll position through the same slot instead — it never uses
+		// `↓ N more`.
 		Overflow: len(m.entries) == 0,
 	}, w, th)
 }

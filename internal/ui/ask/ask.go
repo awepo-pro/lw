@@ -32,6 +32,17 @@ type Model struct {
 
 	input string // the box's current, unsent text
 
+	// back is the transcript's scroll position (scroll.go, W5 F2/C36): the
+	// number of conversation lines hidden BELOW the panel. 0 — the zero
+	// value — is following the tail, today's behaviour.
+	back int
+
+	// vw, vh is the size View last rendered at. The scroll keys' step sizes
+	// and clamps are expressed in Transcript-panel lines, so they read the
+	// layout off the size the shell actually drew (the wheel carries its
+	// own W×H and does not need these).
+	vw, vh int
+
 	// sessionID is the changeset id the running (or most recent) turn ran
 	// under — a session is keyed by its changeset (backbone §9, C-102) —
 	// and "" when no turn of this pane's has a session to close. It is what
@@ -105,14 +116,28 @@ func (m *Model) CapturesText() bool { return true }
 // starts (s4-tui.md S4-T6).
 func (m *Model) Init() tea.Cmd { return nil }
 
-// Update handles the shell's background-colour broadcast, this screen's
-// keymap, the event pump's own messages, the session-closed outcome and the
-// shell's broadcasts (backbone §12 C-80: matches tea.KeyPressMsg, never
-// tea.KeyMsg).
+// Update handles the shell's background-colour and colour-profile
+// broadcasts, the wheel, this screen's keymap, the event pump's own
+// messages, the session-closed outcome and the shell's broadcasts
+// (backbone §12 C-80: matches tea.KeyPressMsg, never tea.KeyMsg).
 func (m *Model) Update(msg tea.Msg) (ui.Pane, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.BackgroundColorMsg:
 		m.theme = m.theme.WithDark(msg.IsDark())
+		return m, nil
+
+	case tea.ColorProfileMsg:
+		// Frame note 8 (W5 F1/C35): the terminal's real profile is known,
+		// so the pane's own theme copy re-resolves — the cursor tint for
+		// it, exactly as WithDark rebuilds for polarity.
+		m.theme = m.theme.WithProfile(msg.Profile)
+		return m, nil
+
+	case ui.WheelMsg:
+		// Frame note 7 (W5 F2): the shell already decided this notch is
+		// ours — active pane, no overlay, not the header/footer rows. The
+		// pane's only remaining decision is which panel it landed on.
+		m.wheel(msg)
 		return m, nil
 
 	case ui.VaultReloadedMsg:
@@ -186,7 +211,8 @@ func (m *Model) Update(msg tea.Msg) (ui.Pane, tea.Cmd) {
 
 // handleKey dispatches one tea.KeyPressMsg: Ctrl-R switches to Review
 // (s4-tui.md S4-T6 pinned item 3), enter sends the typed message or
-// expands the selected tool call, and everything else edits the input
+// expands the selected tool call, the shell's scroll bindings move the
+// transcript (scroll.go, W5 F2/C36), and everything else edits the input
 // box.
 func (m *Model) handleKey(msg tea.KeyPressMsg) (ui.Pane, tea.Cmd) {
 	switch msg.String() {
@@ -206,6 +232,13 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (ui.Pane, tea.Cmd) {
 		return m, nil
 	case "backspace":
 		m.deleteInputRune()
+		return m, nil
+	}
+
+	// Content scrolling (contract §5 note 10): the shell's six scroll
+	// bindings target the Transcript panel. They are non-printable, so they
+	// can never type into the input box.
+	if m.scrollKeys(msg) {
 		return m, nil
 	}
 
@@ -252,6 +285,11 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (ui.Pane, tea.Cmd) {
 func (m *Model) submitInput() tea.Cmd {
 	msg := m.input
 
+	// Submitting re-attaches the tail (W5 F2/C36): the question is about
+	// to land at the bottom of the transcript, so the pane follows it
+	// again. Scrolling back down to back 0 re-attaches the same way.
+	m.back = 0
+
 	if m.turnActive {
 		m.appendStatus("a turn is already running — submit refused, not queued")
 		return nil
@@ -288,9 +326,12 @@ func (m *Model) echoUser(text string) {
 
 // appendStatus appends one kindStatus line: a pane-local notice (a refused
 // submit, a failed Close) rather than a turn boundary, which endTurn and
-// endTurnError own.
+// endTurnError own. Through mutateEntries, the notice lands below a
+// scrolled-up window instead of moving it.
 func (m *Model) appendStatus(text string) {
-	m.entries = append(m.entries, entry{kind: kindStatus, text: text})
+	m.mutateEntries(func() {
+		m.entries = append(m.entries, entry{kind: kindStatus, text: text})
+	})
 }
 
 // deleteInputRune removes the last rune of the input box, if any.

@@ -1,8 +1,8 @@
 // inline.go is the ask screen's inline renderer — a port of mockgen.inline
 // plus the styled-cell word-wrap its callers use (mockgen.ask_conversation
 // wraps inline(ANSWER), so markers are consumed before the text wraps):
-// `**b**` bold, “ `c` “ muted with backticks removed, `[[x]]` underlined
-// x, `^[p]` faint `[base]`, `*i*` italic.
+// `**b**` bold, `c` in the Code token with backticks removed, `[[x]]`
+// Accent + underlined x (W5 F3/D-3W), `^[p]` faint `[base]`, `*i*` italic.
 package ask
 
 import (
@@ -27,15 +27,16 @@ var inlineRe = regexp.MustCompile(`\*\*(.+?)\*\*|` + "`" + `([^` + "`" + `]+)` +
 
 // inlineStyleTable is the per-render style table the cell ids index. It
 // mirrors mockgen.inline's styles against the theme tokens: base fg, bold,
-// muted code, underlined link, faint provenance, italic.
+// Code-token code span and Accent-underlined wikilink (W5 F3/D-3W), faint
+// provenance, italic.
 func (m *Model) inlineStyleTable() []lipgloss.Style {
 	return []lipgloss.Style{
-		{},                         // 1: base (unstyled fg)
-		m.theme.Bold,               // 2: **bold**
-		m.theme.Muted,              // 3: `code`
-		m.theme.Fg.Underline(true), // 4: [[wikilink]]
-		m.theme.Faint,              // 5: ^[provenance]
-		m.theme.Fg.Italic(true),    // 6: *italic*
+		{},                             // 1: base (unstyled fg)
+		m.theme.Bold,                   // 2: **bold**
+		m.theme.Code,                   // 3: `code`
+		m.theme.Accent.Underline(true), // 4: [[wikilink]]
+		m.theme.Faint,                  // 5: ^[provenance]
+		m.theme.Fg.Italic(true),        // 6: *italic*
 	}
 }
 
