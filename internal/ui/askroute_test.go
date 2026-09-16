@@ -16,6 +16,7 @@ import (
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/awepo-pro/lw/internal/agent"
 	"github.com/awepo-pro/lw/internal/stage"
@@ -140,7 +141,7 @@ func TestInactiveAskPaneKeepsPumpingItsStream(t *testing.T) {
 	if closed != 1 {
 		t.Fatalf("saw %d StreamClosedMsg, want exactly one (the turn must close)", closed)
 	}
-	if !strings.Contains(view, "alpha beta") {
+	if !strings.Contains(ansi.Strip(view), "alpha beta") {
 		t.Fatalf("inactive ask scrollback is missing the streamed text:\n%s", view)
 	}
 	if !strings.Contains(view, "wiki.search") {
