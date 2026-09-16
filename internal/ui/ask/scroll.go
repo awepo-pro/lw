@@ -3,9 +3,10 @@
 // conversation lines hidden BELOW the Transcript panel — 0 means following
 // the tail, which is how the pane has always rendered. The six shell scroll
 // bindings and the wheel move back; submitting re-attaches the tail; and
-// while the pane is scrolled up, lines appended by new events are absorbed
-// into back so the rows on screen never move. transcript.go draws the
-// window this state names.
+// while the pane is scrolled up, entries mutations are accounted for so the
+// rows on screen never move — growth at or below the window is absorbed
+// into back, growth above it moves the window with the content
+// (mutateEntries). transcript.go draws the window this state names.
 package ask
 
 import (
@@ -130,22 +131,52 @@ func (m *Model) wheel(msg ui.WheelMsg) {
 }
 
 // mutateEntries runs mut — anything that appends to or rewrites the
-// entries — and, while the pane is scrolled up (back > 0), absorbs any
-// lines the transcript grew by into back (W5 F2/C36). The window the
-// panel draws is lines[len-inner-back : len-back]; growing both len and
-// back by the same amount leaves it naming the same rows, so an event
-// that lands mid-scroll never moves what is on screen. Following the tail
-// (back == 0) skips the counting entirely.
+// entries — and, while the pane is scrolled up (back > 0), accounts for
+// the lines the mutation added or removed (W5 F2/C36; the above-window
+// half is W5d/T34). The window the panel draws is
+// lines[len-inner-back : len-back] — named from BOTH ends — so where the
+// mutation's first changed line lands relative to the window's start
+// decides whether back absorbs the line delta:
+//
+//   - at or after the window start: back += added, floored at 0. Pinning
+//     the start is what keeps the rows the curator is reading still while
+//     an answer streams in below them — growing len and back together
+//     leaves the window naming the same rows. back+added stays within the
+//     new max, since the max moves by the same added.
+//   - above the window start: back unchanged. The delta shifted every row
+//     the window names by the same amount, and a window named from the end
+//     rides that shift on its own — absorbing it here would pin the old
+//     indexes over rows that have moved.
+//
+// A zero delta — the common in-place ToolResEv on a collapsed call — is a
+// no-op. The one shape neither branch pins is a mutation straddling the
+// window start (a huge expanded entry collapsed across it): its rows
+// change no matter the anchor, and the render-side clamp
+// (transcript.go) stays the backstop that keeps back in bounds. Following
+// the tail (back == 0) skips the counting entirely.
 func (m *Model) mutateEntries(mut func()) {
-	pinned := m.back > 0
-	var before int
-	if pinned {
-		before = len(m.transcriptLines())
+	if m.back <= 0 {
+		mut()
+		return
 	}
+	before := m.transcriptLines()
+	start := len(before) - m.transcriptInner() - m.back
 	mut()
-	if pinned {
-		if added := len(m.transcriptLines()) - before; added > 0 {
-			m.back += added
+	after := m.transcriptLines()
+	if added := len(after) - len(before); added != 0 && firstChangedLine(before, after) >= start {
+		m.back = max(0, m.back+added)
+	}
+}
+
+// firstChangedLine returns the first index at which a and b differ — the
+// line the mutation landed on. When one is a prefix of the other (a pure
+// append or a pure tail truncation) that is the first line past the
+// shorter slice, which is where the change begins.
+func firstChangedLine(a, b []string) int {
+	for i := range min(len(a), len(b)) {
+		if a[i] != b[i] {
+			return i
 		}
 	}
+	return min(len(a), len(b))
 }

@@ -3,165 +3,20 @@
 // hidden BELOW the panel, 0 means following the tail, and the six shell
 // scroll bindings plus the wheel move it. Every assertion is on what the
 // pane renders — the notes on the panel borders and the visible rows — the
-// way the user actually sees a scroll.
+// way the user actually sees a scroll. The render-and-measure plumbing
+// lives in scroll_stability_test.go.
 package ask
 
 import (
-	"fmt"
 	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/charmbracelet/x/ansi"
 
 	"github.com/awepo-pro/lw/internal/agent"
 	"github.com/awepo-pro/lw/internal/ui"
 	"github.com/awepo-pro/lw/internal/ui/uitest"
 )
-
-// scrollW/scrollH is the pane size every scroll test renders at. It is a
-// pane size, not a terminal size: the shell would pass terminal h-2. At
-// 80×22 the Transcript panel is 19 rows tall, so its inner height — the
-// number of conversation lines a full window shows — is 17.
-const (
-	scrollW = 80
-	scrollH = 22
-	// scrollInner is the Transcript panel's inner height at scrollW×scrollH
-	// (panel height h-3, minus the two borders).
-	scrollInner = scrollH - 3 - 2
-)
-
-// newScrollModel builds an ask pane on the fixture vault with a FakeAgent
-// and runs n scripted turns through it — each turn one typed question, one
-// one-line answer, one done boundary — so the transcript overflows the
-// panel. The pane is rendered once, the way the shell renders every frame,
-// so the scroll math sees the size the window really has.
-func newScrollModel(t *testing.T, n int) *Model {
-	t.Helper()
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	v := uitest.PublicVault(t, "scroll-vault")
-	ag := &uitest.FakeAgent{Events: scrollTurnEvents(n), Store: agent.NewFileSessions(v.Root)}
-	m := New(uitest.Deps(v, true, ag)).(*Model)
-	for i := 1; i <= n; i++ {
-		m = runScriptedTurn(t, m, fmt.Sprintf("question %d?", i))
-	}
-	_, _ = uitest.PaneScreen(m, scrollW, scrollH)
-	return m
-}
-
-// runScriptedTurn types q and submits it, draining every command the turn
-// produces (the FakeAgent replays synchronously) — the same drive
-// TestAskGolden uses.
-func runScriptedTurn(t *testing.T, m *Model, q string) *Model {
-	t.Helper()
-	var pane ui.Pane = m
-	for _, r := range q {
-		var cmd tea.Cmd
-		pane, cmd = pane.Update(keyPress(r))
-		if cmd != nil {
-			t.Fatalf("typing %q produced a command", string(r))
-		}
-	}
-	pane, cmd := pane.Update(specialKey(tea.KeyEnter, 0))
-	if cmd == nil {
-		t.Fatal("submit produced no command")
-	}
-	return runCmd(t, pane, cmd, new([]tea.Msg)).(*Model)
-}
-
-// scrollTurnEvents is one turn's event script: a one-line answer and the
-// done boundary. The questions come from the typing, not the events.
-func scrollTurnEvents(n int) []agent.Event {
-	evs := make([]agent.Event, 0, 2*n)
-	for i := 1; i <= n; i++ {
-		evs = append(evs,
-			agent.TextDelta{Text: fmt.Sprintf("answer %d", i)},
-			agent.DoneEv{Reason: "stop", Rounds: 1},
-		)
-	}
-	return evs
-}
-
-// renderPane renders the pane at the test size and returns its styled and
-// plain rows (failing if the grid invariant broke). Row 0 is the
-// Transcript panel's top border; rows 1..scrollInner its content; row
-// scrollInner+1 its bottom border; the last three rows are the Message
-// panel.
-func renderPane(t *testing.T, m *Model) (styled, plain []string) {
-	t.Helper()
-	styledText, plainText := uitest.PaneScreen(m, scrollW, scrollH)
-	styled, plain = strings.Split(styledText, "\n"), strings.Split(plainText, "\n")
-	if len(styled) != scrollH || len(plain) != scrollH {
-		t.Fatalf("pane rendered %d/%d rows, want %d", len(styled), len(plain), scrollH)
-	}
-	return styled, plain
-}
-
-// contentRow strips one plain panel row down to its content: the two
-// border cells and the gutter column off, trailing padding trimmed. Only
-// meaningful for rows without a cursor gutter (no selection is live in
-// these tests).
-func contentRow(plainRow string) string {
-	return strings.TrimRight(strings.TrimPrefix(strings.TrimSuffix(plainRow, " │"), "│ "), " ")
-}
-
-// transcriptContent is the transcript's scrollInner plain content rows.
-func transcriptContent(plain []string) []string {
-	rows := make([]string, scrollInner)
-	for i := 0; i < scrollInner; i++ {
-		rows[i] = contentRow(plain[1+i])
-	}
-	return rows
-}
-
-// footnote reads the `↓ N newer` count off the transcript's bottom border;
-// ok is false when the border carries no footnote.
-func footnote(t *testing.T, styled []string) (int, bool) {
-	t.Helper()
-	return noteNumber(t, scrollInner+1, styled[scrollInner+1], "↓ ")
-}
-
-// noteNumber reads the N out of a border note like `↑ 27 earlier` or
-// `↓ 18 newer` on one rendered row; ok is false when the note is absent.
-// The row is styled, so the digits are picked out past whatever SGR runs
-// sit between the marker and the number.
-func noteNumber(t *testing.T, row int, rowText, marker string) (int, bool) {
-	t.Helper()
-	i := strings.Index(rowText, marker)
-	if i < 0 {
-		return 0, false
-	}
-	rest := rowText[i+len(marker):]
-	j := 0
-	for j < len(rest) && !('0' <= rest[j] && rest[j] <= '9') {
-		j++
-	}
-	k := j
-	for k < len(rest) && '0' <= rest[k] && rest[k] <= '9' {
-		k++
-	}
-	if j == k {
-		t.Fatalf("row %d carries %q but no number after %q", row, rowText, marker)
-	}
-	n := 0
-	for _, d := range rest[j:k] {
-		n = n*10 + int(d-'0')
-	}
-	return n, true
-}
-
-// requireOverflow asserts the precondition every scrolled subtest leans on:
-// the scripted conversation overflows the panel by more than a page, so a
-// pgup neither pins the window at the top nor falls off it.
-func requireOverflow(t *testing.T, m *Model) int {
-	t.Helper()
-	total := len(m.transcriptLines())
-	if step := max(1, scrollInner-1); total <= scrollInner+step {
-		t.Fatalf("test conversation is %d lines; want more than inner(%d) + a page step(%d) so pgup stays mid-transcript",
-			total, scrollInner, step)
-	}
-	return total
-}
 
 func TestAskTranscriptScroll(t *testing.T) {
 	// pgup_leaves_tail is the C36 correction: after pgup the pane must
@@ -369,24 +224,175 @@ func TestAskTranscriptScroll(t *testing.T) {
 			}
 		}
 	})
-}
 
-// tailLine is content row i (0-based) of the tail-following window: the
-// conversation's last inner lines, styles stripped, padding trimmed.
-func tailLine(t *testing.T, m *Model, i int) string {
-	t.Helper()
-	lines := m.transcriptLines()
-	return strings.TrimRight(ansi.Strip(lines[len(lines)-scrollInner+i]), " ")
-}
+	// tool_result_growth_above_window_keeps_view (W5d/T34): a ToolResEv
+	// that grows an expanded tool call ABOVE the window must not move a
+	// single visible row — the growth shifted every row the window names,
+	// and a window named from the end rides that shift with back unchanged.
+	// (Absorbing the growth into back pins the window's indexes over rows
+	// that have moved — the pre-fix behaviour this is written against.) The
+	// notes stay consistent with the window shown: `↓ N newer` is back,
+	// unchanged; `↑ N earlier` is the window's start, grown by exactly the
+	// lines the result added above it.
+	t.Run("tool_result_growth_above_window_keeps_view", func(t *testing.T) {
+		m := newToolScrollModel(t)
+		if _, cmd := m.Update(uitest.Key("down")); cmd != nil {
+			t.Fatalf("down produced a command (%v), want nil", cmd)
+		}
+		if _, cmd := m.Update(specialKey(tea.KeyEnter, 0)); cmd != nil {
+			t.Fatalf("enter produced a command (%v), want nil", cmd)
+		}
+		if _, cmd := m.Update(uitest.Key("pgup")); cmd != nil {
+			t.Fatalf("pgup produced a command (%v), want nil", cmd)
+		}
+		start := len(m.transcriptLines()) - scrollInner - m.back
+		if head := toolHeadIndex(t, m); head+3 > start {
+			t.Fatalf("precondition failed: the expanded tool call (head %d) is not wholly above the window start %d",
+				head, start)
+		}
 
-// mustFootnote renders m and returns the `↓ N newer` count, failing when
-// the pane is not scrolled up.
-func mustFootnote(t *testing.T, m *Model) (int, bool) {
-	t.Helper()
-	styled, _ := renderPane(t, m)
-	n, ok := footnote(t, styled)
-	if !ok {
-		t.Fatalf("the bottom border has no `↓ N newer`: %q", styled[scrollInner+1])
-	}
-	return n, true
+		styledBefore, _ := renderPane(t, m)
+		n0, ok := footnote(t, styledBefore)
+		if !ok {
+			t.Fatal("precondition failed: the pane is not scrolled up (no `↓ N newer`)")
+		}
+		top0, ok := noteNumber(t, 0, styledBefore[0], "↑ ")
+		if !ok {
+			t.Fatalf("precondition failed: the top border has no `↑ N earlier`: %q", styledBefore[0])
+		}
+
+		before := len(m.transcriptLines())
+		pane, _ := m.Update(ui.EventMsg{Ev: agent.ToolResEv{ID: "t1", Name: "wiki.search", Content: "r1\nr2\nr3"}})
+		m = pane.(*Model)
+		added := len(m.transcriptLines()) - before
+		if added <= 0 {
+			t.Fatal("the delivered ToolResEv added no lines; the test is not exercising the growth")
+		}
+
+		styledAfter, _ := renderPane(t, m)
+		for i := 0; i < scrollInner; i++ {
+			if styledAfter[1+i] != styledBefore[1+i] {
+				t.Fatalf("a result landing above the window moved content row %d:\nbefore %q\nafter  %q",
+					i+1, styledBefore[1+i], styledAfter[1+i])
+			}
+		}
+		if n1, ok := footnote(t, styledAfter); !ok || n1 != n0 {
+			t.Fatalf("`↓ N newer` = %d (ok=%v) after the result, want the unchanged %d", n1, ok, n0)
+		}
+		if top1, ok := noteNumber(t, 0, styledAfter[0], "↑ "); !ok || top1 != top0+added {
+			t.Fatalf("`↑ N earlier` = %d (ok=%v) after the result, want %d (%d +%d added above the window)",
+				top1, ok, top0+added, top0, added)
+		}
+	})
+
+	// expand_above_window_keeps_view (W5d/T34): enter on a tool call above
+	// the window — expand, then collapse — must leave every visible row
+	// byte-identical both times. The toggle changes the rendered line
+	// count; the accounting every entries mutation goes through, not the
+	// render-side clamp, is what decides what the window does about it.
+	t.Run("expand_above_window_keeps_view", func(t *testing.T) {
+		m := newToolScrollModel(t)
+		if _, cmd := m.Update(uitest.Key("down")); cmd != nil {
+			t.Fatalf("down produced a command (%v), want nil", cmd)
+		}
+		if _, cmd := m.Update(uitest.Key("pgup")); cmd != nil {
+			t.Fatalf("pgup produced a command (%v), want nil", cmd)
+		}
+		start := len(m.transcriptLines()) - scrollInner - m.back
+		if head := toolHeadIndex(t, m); head+3 > start {
+			t.Fatalf("precondition failed: the tool call (head %d) is not wholly above the window start %d",
+				head, start)
+		}
+
+		styledBefore, _ := renderPane(t, m)
+		if _, ok := footnote(t, styledBefore); !ok {
+			t.Fatal("precondition failed: the pane is not scrolled up (no `↓ N newer`)")
+		}
+
+		press := func(phase string) {
+			t.Helper()
+			if _, cmd := m.Update(specialKey(tea.KeyEnter, 0)); cmd != nil {
+				t.Fatalf("%s produced a command (%v), want nil", phase, cmd)
+			}
+			styledAfter, _ := renderPane(t, m)
+			for i := 0; i < scrollInner; i++ {
+				if styledAfter[1+i] != styledBefore[1+i] {
+					t.Fatalf("%s of the above-window tool call moved content row %d:\nbefore %q\nafter  %q",
+						phase, i+1, styledBefore[1+i], styledAfter[1+i])
+				}
+			}
+		}
+		press("expanding")
+		press("collapsing")
+	})
+
+	// expand_inside_window_keeps_view (W5d/T34, second pass): enter on a
+	// tool call INSIDE a scrolled-up window — expand, then collapse — must
+	// leave every window row above the call byte-identical and the window
+	// starting on the same conversation line. This is the behaviour the
+	// mutateEntries routing actually changed: the above-window case was
+	// already safe by construction (its subtest passed before the fix),
+	// while expanding in-window moved four of the seventeen visible rows —
+	// measured by a probe that was deleted with the fix. This subtest is
+	// that probe's permanent form.
+	t.Run("expand_inside_window_keeps_view", func(t *testing.T) {
+		m := newInsideToolScrollModel(t)
+		if _, cmd := m.Update(uitest.Key("down")); cmd != nil {
+			t.Fatalf("down produced a command (%v), want nil", cmd)
+		}
+		if _, cmd := m.Update(uitest.Key("pgup")); cmd != nil {
+			t.Fatalf("pgup produced a command (%v), want nil", cmd)
+		}
+		total := len(m.transcriptLines())
+		start := total - scrollInner - m.back
+		head := toolHeadIndex(t, m)
+		if m.back <= 0 {
+			t.Fatal("precondition failed: the pane is not scrolled up (back = 0)")
+		}
+		if head <= start || head+3 > start+scrollInner {
+			t.Fatalf("precondition failed: the tool call (head %d) is not wholly inside the window [%d,%d)",
+				head, start, start+scrollInner)
+		}
+
+		styledBefore, _ := renderPane(t, m)
+		n0, ok := footnote(t, styledBefore)
+		if !ok {
+			t.Fatal("precondition failed: the pane is not scrolled up (no `↓ N newer`)")
+		}
+		top0, ok := noteNumber(t, 0, styledBefore[0], "↑ ")
+		if !ok {
+			t.Fatalf("precondition failed: the top border has no `↑ N earlier`: %q", styledBefore[0])
+		}
+		above := head - start // window rows above the call's head line
+
+		press := func(phase string, wantTotal, wantBack int) {
+			t.Helper()
+			if _, cmd := m.Update(specialKey(tea.KeyEnter, 0)); cmd != nil {
+				t.Fatalf("%s produced a command (%v), want nil", phase, cmd)
+			}
+			if got := len(m.transcriptLines()); got != wantTotal {
+				t.Fatalf("%s left the conversation at %d lines, want %d — the toggle did not land", phase, got, wantTotal)
+			}
+			if s := len(m.transcriptLines()) - scrollInner - m.back; s != start {
+				t.Fatalf("%s moved the window start from %d to %d, want it pinned on the same conversation line", phase, start, s)
+			}
+			styledAfter, _ := renderPane(t, m)
+			for i := 0; i < above; i++ {
+				if styledAfter[1+i] != styledBefore[1+i] {
+					t.Fatalf("%s the in-window tool call moved content row %d, above the call:\nbefore %q\nafter  %q",
+						phase, i+1, styledBefore[1+i], styledAfter[1+i])
+				}
+			}
+			if n1, ok := footnote(t, styledAfter); !ok || n1 != wantBack {
+				t.Fatalf("%s: `↓ N newer` = %d (ok=%v), want %d", phase, n1, ok, wantBack)
+			}
+			if top1, ok := noteNumber(t, 0, styledAfter[0], "↑ "); !ok || top1 != top0 {
+				t.Fatalf("%s: `↑ N earlier` = %d (ok=%v), want the unchanged %d", phase, top1, ok, top0)
+			}
+		}
+		// Expanding the unresolved call adds two lines (args + `…`) that the
+		// accounting absorbs into back; collapsing gives them back.
+		press("expanding", total+2, n0+2)
+		press("collapsing", total, n0)
+	})
 }

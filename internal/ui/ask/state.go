@@ -215,7 +215,11 @@ func (m *Model) moveSelection(delta int) {
 }
 
 // toggleSelectedExpand flips the expanded flag of the currently selected
-// tool-call entry, if any (s4-tui.md S4-T6: "expandable with enter").
+// tool-call entry, if any (s4-tui.md S4-T6: "expandable with enter"). The
+// flip runs through mutateEntries (W5d/T34): expanding or collapsing
+// changes the rendered line count, and the accounting — not the render-side
+// clamp — decides what the window does about it. Without it, expanding a
+// call on screen pushed the window's top rows out of view.
 func (m *Model) toggleSelectedExpand() {
 	if m.selected < 0 || m.selected >= len(m.entries) {
 		return
@@ -224,7 +228,7 @@ func (m *Model) toggleSelectedExpand() {
 	if e.kind != kindTool || e.tool == nil {
 		return
 	}
-	e.tool.expanded = !e.tool.expanded
+	m.mutateEntries(func() { e.tool.expanded = !e.tool.expanded })
 }
 
 // rearm returns a tea.Cmd that resumes Listen on the channel most recently
