@@ -51,7 +51,7 @@
   Related
 
 ▎ • gpt-4 — an unrelated edit for TestDiffRender's fixture.
-▎ • flash-attention — a kernel design that reduces the memory-bandwidth cost
-▎ of reading the cache.
-▎ • speculative-decoding — both the draft and target model read the cache
-▎ during verification.
+▎ • flash-attention — a kernel design that reduces the memory-bandwidth cost of
+▎   reading the cache.
+▎ • speculative-decoding — both the draft and target model read the cache during
+▎   verification.

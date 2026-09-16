@@ -44,87 +44,173 @@ func trimLinePadding(l string) string {
 	return ansi.Truncate(l, ansi.StringWidth(visible), "")
 }
 
+// reflowCfg tells reflowSoftWrapped which block kind it is laying out.
+type reflowCfg struct {
+	quote     bool    // lines lead with quote bars; paragraph runs join by style
+	accentHex string  // list markers recolour to this (list blocks only)
+	quoteKey  styleID // the leading style of quote paragraph text (quote blocks only)
+}
+
 // reflowListLines lays a rendered list block out to the approved design:
 // an item's continuation lines hang under the item's TEXT column, wrapping
 // with the same ANSI-aware wrap a paragraph uses, so a hyphenated token or
 // a styled span breaks exactly as it would in prose and no text is ever
-// clipped. Every item's marker is recoloured accentHex — including a
-// nested item's, which the indent filler's own styling runs used to hide
-// from a leading-marker recolour pass. A line that does not open with a
-// marker (a loose list's further paragraph, a lazy continuation) keeps its
-// own leading indentation as its hang.
+// clipped (C-508). The source's soft line breaks are paragraphs too: a
+// rendered line without a marker continues the item's text and the whole
+// paragraph re-wraps as one (R-507). Every item's marker is recoloured
+// accentHex — including a nested item's. A blank line stays blank.
 func reflowListLines(lines []string, contentW int, accentHex string) []string {
-	out := make([]string, 0, len(lines))
-	for _, l := range lines {
-		l = trimLinePadding(l)
-		if isBlankLine(l) {
-			out = append(out, "")
-			continue
-		}
-		ind, filler, marker, rest, ok := splitListItem(l)
-		if !ok {
-			out = append(out, reflowIndented(l, ind, contentW)...)
-			continue
-		}
-		// The hang is the item's text column: its indent filler plus the
-		// marker plus the separating space.
-		hang := ind + ansi.StringWidth(marker) + 1
-		sep := ""
-		if strings.HasPrefix(rest, " ") {
-			sep, rest = " ", rest[1:]
-		}
-		if accentHex != "" {
-			// The marker's own styling runs are replaced by the accent
-			// style, so the filler carries only the plain indent spaces.
-			filler += ansi.Style{}.ForegroundColor(lipgloss.Color(accentHex)).Styled(marker)
-		} else {
-			filler += marker
-		}
-		for i, c := range wrapChunks(rest, hang, contentW) {
-			if i == 0 {
-				out = append(out, filler+sep+c)
-				continue
-			}
-			out = append(out, strings.Repeat(" ", hang)+c)
-		}
-	}
-	return out
+	return reflowSoftWrapped(lines, contentW, reflowCfg{accentHex: accentHex})
 }
 
 // reflowQuoteLines lays a rendered blockquote out: the bar stays on every
 // line — continuations included — and the text after the bars wraps like a
-// paragraph at whatever room the bars leave (C-508: glamour wraps the bars
-// and the text together, and the overflow used to be clipped away). The
-// bars are split off and re-attached raw — pad trimming runs on the text
-// side only, so a bar's separating space survives for colorizeQuoteBar's
-// "│ " token lookahead — which recolours them on every line afterwards.
-func reflowQuoteLines(lines []string, contentW int) []string {
+// paragraph at whatever room the bars leave (C-508). A soft-wrapped quote
+// paragraph's rendered lines are re-joined and re-wrapped as ONE paragraph
+// (R-507): glamour itself loses the bar on such a line mid-paragraph, so
+// every line takes the run's own depth. Only quote paragraph text —
+// glamour's Muted-italic primitive, quoteKey — joins across lines; a
+// heading, a fence or a nested list item keeps its own line(s).
+func reflowQuoteLines(lines []string, contentW int, quoteKey styleID) []string {
+	return reflowSoftWrapped(lines, contentW, reflowCfg{quote: true, quoteKey: quoteKey})
+}
+
+// reflowSoftWrapped lays a rendered list or quote block out. It walks the
+// block's rendered lines accumulating one paragraph at a time: a marker
+// line opens an item paragraph; any further line whose leading style
+// matches the open paragraph's (always, in a list block) joins its text;
+// a blank line — or a quote line that is bare bars — closes the paragraph.
+// Each closed paragraph is then re-wrapped at the room its bars and hang
+// leave, the first line carrying its raw marker run and every continuation
+// line hanging under the item's text column.
+func reflowSoftWrapped(lines []string, contentW int, cfg reflowCfg) []string {
 	out := make([]string, 0, len(lines))
-	for _, l := range lines {
-		prefix, depth := splitQuotePrefix(l)
-		text := trimLinePadding(l[len(prefix):])
-		if depth == 0 && isBlankLine(text) {
-			out = append(out, "")
-			continue
-		}
-		for _, c := range wrapChunks(text, depth*2, contentW) {
-			out = append(out, prefix+c)
+	var cur *blockPara
+	flush := func() {
+		if cur != nil {
+			out = append(out, cur.emit(contentW)...)
+			cur = nil
 		}
 	}
+	for _, line := range lines {
+		bars, depth := "", 0
+		var text string
+		if cfg.quote {
+			// The bars are split off the RAW line: on a bars-only margin
+			// line the token's separating space is the line's last visible
+			// cell, and padding-trimming the line first would eat it —
+			// leaving a bar colorizeQuoteBar's bar-token lookahead no
+			// longer recognises.
+			bars, depth = splitQuotePrefix(line)
+			text = trimLinePadding(line[len(bars):])
+		} else {
+			text = trimLinePadding(line)
+		}
+		if isBlankLine(text) {
+			// A blank line, or a quote line that is nothing but bars:
+			// glamour's own margin. Paragraph boundary, kept as-is.
+			flush()
+			if depth > 0 {
+				out = append(out, bars)
+			} else {
+				out = append(out, "")
+			}
+			continue
+		}
+		item, ok := splitListItem(text)
+		key, styled := leadingStyleKey(text)
+		switch {
+		case ok:
+			flush()
+			cur = newItemPara(cfg, bars, depth, item, key)
+		case cur != nil && cur.absorbs(cfg, key, styled):
+			// The line's own indent is dropped: it joins the item's
+			// paragraph, whose hang decides every column. The indent may be
+			// styled cells, not plain spaces, so skip exactly that many
+			// cells — never the line's own styling runs.
+			cur.text += " " + skipIndentCells(item.rest, item.ind)
+		default:
+			flush()
+			cur = &blockPara{
+				bars: bars, depth: depth, hang: item.ind,
+				filler: strings.Repeat(" ", item.ind), text: skipIndentCells(item.rest, item.ind),
+				key: key, absorb: !styled || key == cfg.quoteKey,
+			}
+		}
+	}
+	flush()
 	return out
 }
 
-// reflowIndented wraps a line that has no marker of its own: the first
-// line is kept verbatim, its continuation lines are prefixed with width
-// spaces — the line's own leading indentation, kept as its hang.
-func reflowIndented(l string, width, contentW int) []string {
-	out := make([]string, 0, 2)
-	for i, c := range wrapChunks(l, width, contentW) {
+// blockPara is one accumulated paragraph of a list or quote block: the
+// quote bars every line re-attaches, the hang its continuations indent to,
+// the first line's raw marker run, and the text its soft line breaks
+// joined into.
+type blockPara struct {
+	bars   string  // the quote bars re-attached to every line ("" in a list)
+	depth  int     // how many bars that is
+	hang   int     // text column beyond the bars: indent + marker + separator
+	filler string  // the first line's indent spaces plus its raw marker run
+	sep    string  // the marker's separating space (quote paras keep it in filler)
+	text   string  // the paragraph's text, soft breaks joined with spaces
+	key    styleID // the paragraph's leading text style (quote-run matching)
+	absorb bool    // whether further lines may join
+}
+
+// newItemPara opens an item paragraph from a marker line: the hang is the
+// item's text column, the first line keeps the marker's raw bytes (a list
+// block recolours them accent, which is the one rebuild the marker
+// recolour pass may make), and continuations always join — a soft-wrapped
+// item's every line belongs to it.
+func newItemPara(cfg reflowCfg, bars string, depth int, item listItem, key styleID) *blockPara {
+	p := &blockPara{
+		bars: bars, depth: depth,
+		hang: item.ind + ansi.StringWidth(item.marker) + 1,
+		text: strings.TrimLeft(item.rest, " "),
+		key:  key, absorb: true,
+		sep: item.sep,
+	}
+	p.filler = strings.Repeat(" ", item.ind)
+	if cfg.quote {
+		// The raw run already carries the marker's separating space, so
+		// the paragraph's own sep stays empty.
+		p.filler += strings.TrimLeft(item.raw, " ")
+		p.sep = ""
+		return p
+	}
+	if cfg.accentHex != "" {
+		item.marker = ansi.Style{}.ForegroundColor(lipgloss.Color(cfg.accentHex)).Styled(item.marker)
+	}
+	p.filler += item.marker
+	return p
+}
+
+// absorbs reports whether a line with the given leading style may join the
+// paragraph: a list block's continuations always join, and so does any
+// line that carries no styling runs of its own; a quote paragraph joins
+// only its own kind of text, so a heading's, a fence's or a nested list
+// item's lines never merge into prose.
+func (p *blockPara) absorbs(cfg reflowCfg, key styleID, styled bool) bool {
+	if !p.absorb {
+		return false
+	}
+	if !cfg.quote || !styled {
+		return true
+	}
+	return key == p.key
+}
+
+// emit lays the paragraph out: its text re-wrapped at the room the bars
+// and the hang leave, the first line carrying the raw marker run, every
+// continuation line hung under the item's text column.
+func (p *blockPara) emit(contentW int) []string {
+	var out []string
+	for i, c := range wrapChunks(p.text, p.depth*2+p.hang, contentW) {
 		if i == 0 {
-			out = append(out, c)
+			out = append(out, p.bars+p.filler+p.sep+c)
 			continue
 		}
-		out = append(out, strings.Repeat(" ", width)+c)
+		out = append(out, p.bars+strings.Repeat(" ", p.hang)+c)
 	}
 	return out
 }
@@ -139,16 +225,30 @@ func wrapChunks(s string, width, contentW int) []string {
 	return strings.Split(lipgloss.Wrap(s, budget, ""), "\n")
 }
 
-// splitListItem splits a rendered list line into its leading indent cells,
-// the plain-space filler those cells rebuild into, the visible marker text
-// and the text region after the marker. ok is false when the line does not
-// open with a marker; rest is then the whole line.
-func splitListItem(l string) (ind int, filler, marker, rest string, ok bool) {
-	ind, i := scanIndent(l)
-	rest = l[i:]
+// listItem is one rendered list line's parts: the leading indent cells,
+// the marker's raw byte run from its first byte through its separating
+// space (styling included — the quote pass re-attaches it verbatim), the
+// separating space on its own, the visible marker text and the text after
+// the separator.
+type listItem struct {
+	ind    int
+	raw    string
+	sep    string
+	marker string
+	rest   string
+}
+
+// splitListItem splits a rendered list line into its parts; ok is false
+// when the line does not open with a marker, and rest is then the whole
+// line.
+func splitListItem(l string) (item listItem, ok bool) {
+	item = listItem{}
+	var i int
+	item.ind, i = scanIndent(l)
+	rest := l[i:]
 	switch {
 	case strings.HasPrefix(rest, "•"):
-		marker, rest = "•", rest[len("•"):]
+		item.marker, rest = "•", rest[len("•"):]
 	default:
 		var num strings.Builder
 		for {
@@ -167,13 +267,18 @@ func splitListItem(l string) (ind int, filler, marker, rest string, ok bool) {
 			rest = rest[n:]
 		}
 		if num.Len() > 0 && strings.HasPrefix(rest, ".") {
-			marker, rest = num.String()+".", rest[1:]
+			item.marker, rest = num.String()+".", rest[1:]
 		}
 	}
-	if marker == "" {
-		return ind, "", "", l, false
+	if item.marker == "" {
+		return listItem{ind: item.ind, rest: l}, false
 	}
-	return ind, strings.Repeat(" ", ind), marker, rest, true
+	if strings.HasPrefix(rest, " ") {
+		item.sep, rest = " ", rest[1:]
+	}
+	item.raw = l[i : len(l)-len(rest)]
+	item.rest = rest
+	return item, true
 }
 
 // decodeSGROnly returns the byte length of the SGR sequence at the front of
@@ -184,6 +289,29 @@ func decodeSGROnly(s string) int {
 		return 0
 	}
 	return n
+}
+
+// skipIndentCells returns s with its leading `cells` visible space cells
+// removed. Styling runs between the spaces are skipped byte-wise without
+// counting, and with zero cells the string is returned untouched — a line
+// that opens with runs but no indent keeps every one of them.
+func skipIndentCells(s string, cells int) string {
+	for i := 0; i < len(s); {
+		if cells == 0 {
+			return s[i:]
+		}
+		if s[i] == ' ' {
+			cells--
+			i++
+			continue
+		}
+		if n := decodeSGROnly(s[i:]); n > 0 {
+			i += n
+			continue
+		}
+		break
+	}
+	return s
 }
 
 // scanIndent walks a rendered line's leading indent: space cells counted,

@@ -70,7 +70,7 @@ func renderBlock(blk []string, cfg gansi.StyleConfig, contentW int, style Style)
 		lines = colorizeTableHeader(lines, style)
 		lines = colorizeTableSeparators(lines, style.Border)
 	case isBlockquoteBlock(blk):
-		lines = reflowQuoteLines(lines, contentW)
+		lines = reflowQuoteLines(lines, contentW, quoteTextStyleKey(style))
 		lines = colorizeQuoteBar(lines, style.Border)
 	case isListBlock(blk):
 		lines = reflowListLines(lines, contentW, style.Accent)
