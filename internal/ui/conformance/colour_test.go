@@ -108,8 +108,13 @@ func colourProblems(styled, plain string, cs colourSet) []string {
 	if hasAnyRune(plainRows, borderRunes) && !cellCarries(styledRows, borderRunes, cs.accentFg) {
 		probs = append(probs, fmt.Sprintf("no panel border rune carries the focused accent %s", cs.accentFg))
 	}
-	if !cs.overlay && hasAnyRune(plainRows, cursorGutter) && !cellCarries(styledRows, cursorGutter, cs.cursorBg) {
-		probs = append(probs, fmt.Sprintf("no cursor row carries the cursor background %s", cs.cursorBg))
+	// Rule (g), full-width cursor rows (contract §9 note 6, W5 F1/C35):
+	// the cursor-colour check for non-overlay frames. It subsumes the
+	// "some `▌` cell carries the background" check it replaces — the
+	// required span starts at the gutter itself, and a gutter whose panel
+	// cannot be located is its own problem, never a silent pass.
+	if !cs.overlay {
+		probs = append(probs, cursorWidthProblems(styledRows, plainRows, cs)...)
 	}
 	return probs
 }
@@ -230,12 +235,14 @@ func TestColourRulesOnOverlayFrame(t *testing.T) {
 	})
 
 	t.Run("non_overlay_frame_keeps_cursor_rule", func(t *testing.T) {
-		// The same shape, checked with the original rules: there the `▌`
-		// must carry the cursor background, so its absence still fails.
+		// The same shape, checked with the non-overlay rules: the cursor
+		// check there is rule (g) (contract §9 note 6, W5 F1/C35), and a
+		// `▌` with no panel around it — no `╭` above its border column —
+		// fails it instead of passing silently.
 		frame := overlayFrame(darkAccentFg)
 		problems := colourProblems(renderStyled(frame), renderPlain(frame), darkColours)
-		if !colourRuleFired(problems, "cursor background") {
-			t.Errorf("a %s without the cursor background broke no rule outside overlay mode (got %v)",
+		if !colourRuleFired(problems, "rule (g)") {
+			t.Errorf("a %s without a panel around it broke no rule outside overlay mode (got %v)",
 				cursorGutter, problems)
 		}
 	})
