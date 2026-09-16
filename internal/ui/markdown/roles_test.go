@@ -153,6 +153,23 @@ func TestRoleColours(t *testing.T) {
 		}
 	})
 
+	t.Run("ordered_marker_accent_item_fg", func(t *testing.T) {
+		got := renderRoles(t, "1. first\n2. second\n\n12. twelfth\n", roleStyle)
+		// glamour splits the marker across styling runs ("[fg]1[reset][fg].
+		// [reset]"), so assert the SGR in force at each marker and each
+		// item word, not a whole-line substring.
+		for _, num := range []string{"1.", "2.", "12."} {
+			if active := activeSGR(got, num); active != roleSGR(roleStyle.Accent, "") {
+				t.Errorf("ordered marker %q active SGR = %q, want Accent %q: %q", num, active, roleSGR(roleStyle.Accent, ""), got)
+			}
+		}
+		for _, word := range []string{"first", "second", "twelfth"} {
+			if active := activeSGR(got, word); active != roleSGR(roleStyle.Fg, "") {
+				t.Errorf("ordered item word %q active SGR = %q, want Fg %q: %q", word, active, roleSGR(roleStyle.Fg, ""), got)
+			}
+		}
+	})
+
 	t.Run("table_header_accent_bold_rules_border", func(t *testing.T) {
 		src := "| dev | role |\n|---|---|\n| eth0 | up |\n"
 		got := renderRoles(t, src, roleStyle)
@@ -233,6 +250,27 @@ func TestRoleColours(t *testing.T) {
 			if strings.Contains(got, m) {
 				t.Errorf("output contains a classic background SGR %q: %q", m, got)
 			}
+		}
+	})
+}
+
+// TestQuoteBarColours pins the blockquote bar's Border colour across every
+// bar on a line, not just the first (contract §2 note 2: the blockquote bar
+// is Border, full stop — a nested quote's inner bars included).
+func TestQuoteBarColours(t *testing.T) {
+	t.Run("nested_bars_are_all_border", func(t *testing.T) {
+		got := renderRoles(t, "> outer quote\n> > nested quote\n", roleStyle)
+		for i := 0; i < len(got); {
+			j := strings.Index(got[i:], "│")
+			if j < 0 {
+				break
+			}
+			pos := i + j
+			at := func(string, string) int { return pos }
+			if active := activeSGROccurrence(got, "│", at); active != roleSGR(roleStyle.Border, "") {
+				t.Errorf("bar at byte %d active SGR = %q, want Border %q: %q", pos, active, roleSGR(roleStyle.Border, ""), got)
+			}
+			i = pos + len("│")
 		}
 	})
 }

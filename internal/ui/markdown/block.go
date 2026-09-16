@@ -125,55 +125,6 @@ func colorizeTableHeader(lines []string, s Style) []string {
 	return lines
 }
 
-// colorizeQuoteBar recolours a rendered blockquote's "│" bars to borderHex
-// (contract §2 note 2). glamour draws the IndentToken with the *parent*
-// (document) style, which since the W5 role colours carries Fg — so every
-// bar, including the continuation lines a word-wrap produces, starts its
-// line wrapped in that Fg run, and the quote text after it is left exactly
-// as glamour styled it (Muted + italic via the BlockQuote primitive).
-// Only a bar at the start of a line is touched: a "│" typed inside the
-// quote's own text never sits there.
-func colorizeQuoteBar(lines []string, borderHex string) []string {
-	if borderHex == "" {
-		return lines
-	}
-	st := ansi.Style{}.ForegroundColor(lipgloss.Color(borderHex))
-	out := make([]string, len(lines))
-	for i, l := range lines {
-		rest := l
-		var b strings.Builder
-		for {
-			// The bar arrives wrapped in the document primitive's Fg run
-			// ("[fg]│ [reset]…"); those sequences style the bar itself and
-			// are replaced by the Border style.
-			var sgrs string
-			for {
-				seq, n, _, ok := decodeSGR(rest)
-				if !ok {
-					break
-				}
-				sgrs += seq
-				rest = rest[n:]
-			}
-			if !strings.HasPrefix(rest, "│") {
-				b.WriteString(sgrs)
-				break
-			}
-			b.WriteString(st.Styled("│"))
-			rest = rest[len("│"):]
-			// The IndentToken is "│ ": keep one separating space plain
-			// between nested bars, and stop at the quote text.
-			if strings.HasPrefix(rest, " ") && strings.HasPrefix(rest[1:], "│") {
-				b.WriteByte(' ')
-				rest = rest[1:]
-			}
-		}
-		b.WriteString(rest)
-		out[i] = b.String()
-	}
-	return out
-}
-
 // isListBlock reports whether blk opens as a markdown list: a bullet item
 // ("- ", "* ", "+ ") or an ordered one ("12." / "12)"). Only list blocks
 // get the marker recolour pass, so a "•" or "1." typed at the start of a
@@ -242,17 +193,20 @@ func recolorLeadingMarker(l string, st ansi.Style) string {
 		marker, rest = "•", rest[len("•"):]
 	default:
 		d := 0
-		for d < len(rest) && rest[d] >= '0' && rest[d] <= '9' {
-			d++
-		}
-		// An enumeration marker can be split by glamour's own SGRs
-		// ("[fg]1[reset][fg]. [reset]"): collect digits and dot across
-		// them, dropping the styling runs.
+		// An enumeration marker is split by glamour's own styling runs
+		// ("[fg]1[reset][fg]. [reset]" — a reset AND a re-set between the
+		// digits and the dot): collect the digits, swallow EVERY SGR
+		// sequence that follows, and stop only on the first non-SGR byte
+		// that is neither a digit nor the dot itself.
 		var num strings.Builder
 		for {
+			d = 0
+			for d < len(rest) && rest[d] >= '0' && rest[d] <= '9' {
+				d++
+			}
 			if d > 0 {
 				num.WriteString(rest[:d])
-				rest, d = rest[d:], 0
+				rest = rest[d:]
 			}
 			seq, n, _, ok := decodeSGR(rest)
 			if !ok {
@@ -260,10 +214,6 @@ func recolorLeadingMarker(l string, st ansi.Style) string {
 			}
 			sgrs += seq
 			rest = rest[n:]
-			if len(rest) == 0 || rest[0] < '0' || rest[0] > '9' {
-				break
-			}
-			d = 1
 		}
 		if num.Len() > 0 && strings.HasPrefix(rest, ".") {
 			marker, rest = num.String()+".", rest[1:]

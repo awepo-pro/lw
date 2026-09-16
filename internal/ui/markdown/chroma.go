@@ -10,12 +10,17 @@ import (
 	"github.com/alecthomas/chroma/v2/styles"
 )
 
-// chromaRegMu guards registration in chroma's style registry. The registry
-// is a process-global map by design (glamour's own codeblock.go guards its
-// registration the same way): two Render calls with different Styles must
-// not race on styles.Register/styles.Registry, which is exactly what the
-// -race run in the T25 gate exercises. It guards only this registration
-// step — no rendered output or renderer state is memoized under it.
+// chromaRegMu serialises registration in chroma's style registry — and
+// nothing else. chroma's styles.Registry is a plain unlocked map, and every
+// fenced-code render reads it unprotected (quick.Highlight → styles.Get),
+// so the mutex does NOT make a render safe against a concurrent
+// registration; it only keeps two Render calls with different Styles from
+// racing on styles.Register/styles.Registry with each other. Safety against
+// a registry read inside a render comes from lw's usage, not from this
+// mutex: rendering happens on one goroutine (the Bubble Tea UI goroutine;
+// `lw diff --render` is single-threaded), and registration happens once per
+// distinct Style, at the first render of that palette. No rendered output
+// or renderer state is memoized under the mutex.
 var chromaRegMu sync.Mutex
 
 // chromaStyleName returns the registry name for s: "lw-" plus the first 16

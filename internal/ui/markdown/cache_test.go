@@ -9,9 +9,12 @@ import (
 // goroutines at once (contract §2: "Renderer ... memoized"); run under
 // -race this is the test that would catch an unguarded cache access. Half
 // the goroutines use a second Style whose Heading/Code differ, so the
-// per-Style chroma style registration (chroma.go's registry lock) races
-// too: distinct palettes must be able to register and render concurrently
-// without a data race in chroma's process-global registry.
+// per-Style chroma style registration (chroma.go's registry lock) is
+// exercised concurrently too: the mutex guarantees Register-vs-Register is
+// serialised. It does NOT cover render-vs-Register — chroma's registry is
+// an unlocked map every render reads — that is safe in lw only because
+// production renders on one goroutine (see chroma.go), not because of this
+// lock or this test.
 func TestRenderConcurrentAccess(t *testing.T) {
 	other := testStyle
 	other.Heading = "#7A45C2" // the light palette's tokens: a distinct
