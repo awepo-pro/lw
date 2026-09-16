@@ -103,9 +103,8 @@ func buildGlamourStyle(s Style) ansi.StyleConfig {
 		// Fg, not Accent: item text renders against the List primitive (a
 		// tight list's TextBlock pushes no block of its own), so the marker
 		// and the item text can't take different colours from the config.
-		// block.go recolours the leading "•" / "N." Accent afterwards
-		// (colorizeListMarkers), the same post-render pass tables and
-		// blockquotes get.
+		// reflowListLines recolours every "•" / "N." marker Accent after
+		// the render, the same post-render pass tables and blockquotes get.
 		List: ansi.StyleList{
 			StyleBlock:  ansi.StyleBlock{Indent: uintPtr(0), StylePrimitive: ansi.StylePrimitive{Color: fg}},
 			LevelIndent: 2,
