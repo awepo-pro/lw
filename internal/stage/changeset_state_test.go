@@ -8,6 +8,8 @@ package stage
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -170,4 +172,30 @@ func TestChangesetState(t *testing.T) {
 		}
 		wg.Wait()
 	})
+}
+
+// TestChangesetStateNeverLeavesTheStateDirs pins the guard the lookup's
+// stats depend on: id is joined straight onto each state directory's path,
+// so a name carrying a separator — or "." / "..", which stat the container
+// directories themselves — must be refused with ErrNoChangeset rather than
+// answered from whatever directory the escaped path happens to name.
+func TestChangesetStateNeverLeavesTheStateDirs(t *testing.T) {
+	e, root := newTestEngine(t)
+	if _, err := e.OpenChangeset("the lookup's guard", testAuthor); err != nil {
+		t.Fatalf("OpenChangeset: %v", err)
+	}
+
+	// A real directory outside .llmwiki/changesets/ that a traversing id
+	// would otherwise reach and answer from.
+	outside := filepath.Join(root, "outside-target")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatalf("MkdirAll %s: %v", outside, err)
+	}
+
+	for _, id := range []string{"", ".", "..", "../../../outside-target", "cs-x/../cs-y", "/etc"} {
+		got, err := e.ChangesetState(id)
+		if !errors.Is(err, ErrNoChangeset) {
+			t.Fatalf("ChangesetState(%q) = %q, %v; want an ErrNoChangeset refusal, not an answer from outside the state dirs", id, got, err)
+		}
+	}
 }

@@ -42,7 +42,17 @@ func (e *Engine) changesetCommittedDir() string {
 // frames are rendering, so a title lookup that went through Current — or
 // touched any Engine field beyond the root path — would race it.
 // ChangesetState reads directory entries under e.root and nothing else.
+//
+// id must be a bare directory name, as every id newChangesetID draws is:
+// a name carrying a path separator or one of "." / ".." would make the
+// stat below reach outside the three state dirs (or answer from a
+// container dir), so it is refused with ErrNoChangeset — no id any
+// changeset ever had is lost to this, and no id can answer from a
+// directory that is not a changeset.
 func (e *Engine) ChangesetState(id string) (string, error) {
+	if id == "" || id == "." || id == ".." || filepath.Base(id) != id {
+		return "", fmt.Errorf("stage: changeset state of %s: %w", id, ErrNoChangeset)
+	}
 	for _, d := range []struct{ dir, state string }{
 		{e.changesetOpenDir(), "open"},
 		{e.changesetCommittedDir(), "committed"},
