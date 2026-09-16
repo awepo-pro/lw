@@ -69,6 +69,18 @@ func lineWidth(o Options) int {
 	return w
 }
 
+// contentWidth is the width body blocks are rendered at: the total line
+// width minus the 2-cell gutter every page line carries, floored at 1 so a
+// degenerate Width still renders. Shared by the page and the fragment path
+// (workflow 005 contract §1) so the two cannot drift apart in arithmetic.
+func contentWidth(o Options) int {
+	w := lineWidth(o) - 2
+	if w < 1 {
+		w = 1
+	}
+	return w
+}
+
 // renderPage does the actual, uncached work behind Render.
 func renderPage(src []byte, o Options) ([]string, error) {
 	// One normalization point for the whole render: every token a caller
@@ -77,10 +89,7 @@ func renderPage(src []byte, o Options) ([]string, error) {
 	o.Style = o.Style.resolved()
 
 	totalW := lineWidth(o)
-	contentW := totalW - 2
-	if contentW < 1 {
-		contentW = 1
-	}
+	contentW := contentWidth(o)
 
 	fm, body, found := splitFrontmatter(src)
 	body = strings.Trim(body, "\n") // mockgen.page_lines: body.strip('\n')

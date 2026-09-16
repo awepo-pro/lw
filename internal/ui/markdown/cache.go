@@ -23,6 +23,11 @@ type memoKey struct {
 	style       Style
 	plain       bool
 	changedHash [32]byte
+	// fragment separates the two entry points: Render splits frontmatter
+	// and pads every line to the full cell width, RenderFragment does
+	// neither (workflow 005 contract §1 note 3), so identical bytes and
+	// Options rendered through the two must never share an entry.
+	fragment bool
 }
 
 func newMemoKey(src []byte, o Options) memoKey {
@@ -34,6 +39,14 @@ func newMemoKey(src []byte, o Options) memoKey {
 		plain:       o.Plain,
 		changedHash: sha256.Sum256([]byte(strings.Join(o.Changed, "\n"))),
 	}
+}
+
+// newFragmentMemoKey is newMemoKey for RenderFragment calls: the same
+// inputs, keyed under the fragment side of the distinction.
+func newFragmentMemoKey(src []byte, o Options) memoKey {
+	key := newMemoKey(src, o)
+	key.fragment = true
+	return key
 }
 
 // renderCache is a mutex-guarded, bounded LRU of rendered line slices.
