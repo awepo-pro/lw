@@ -89,6 +89,9 @@ func stageChangedCmd(e *stage.Engine) tea.Cmd {
 // round trip back through this message. The Preview mode is likewise left
 // alone: p belongs to the reviewer, not to the changeset's churn.
 func (m *Model) applyLoaded(msg loadedMsg) {
+	// A reload resets the Detail scroll (s2-screens.md T06 Scroll): what
+	// the fresh load holds below the fold is its own.
+	m.resetScroll()
 	if msg.err != nil {
 		if errors.Is(msg.err, stage.ErrNoChangeset) {
 			m.hasChangeset = false

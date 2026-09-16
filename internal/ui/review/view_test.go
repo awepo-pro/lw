@@ -28,73 +28,15 @@ func mustRenderer(t *testing.T) *markdown.Renderer {
 	return markdown.NewRenderer()
 }
 
-// TestCursorRowsMatchPanelCursorBranch is the load-bearing guarantee
-// behind panelcursor.go: re-rendering a ui.Panel row as a cursor row must
-// produce the same bytes ui.Panel itself produces for that row when it is
-// the one CursorRow. Every colour and layout property of the frozen grids'
-// multi-row cursor window rests on this.
-func TestCursorRowsMatchPanelCursorBranch(t *testing.T) {
-	th := testTheme(t)
-
-	content := []string{
-		"",
-		"plain text row",
-		th.Muted.Render("muted text row"),
-		ui.Wrap("a longer row that wraps nowhere but is wide, plus … and · glyphs", 30, 0)[0],
-		th.Good.Render("+ added"),
-		"",
-	}
-	for _, focused := range []bool{true, false} {
-		for _, cursor := range []int{1, 3, 5} {
-			want := ui.Panel(th, ui.PanelSpec{
-				Title:     "Diff",
-				Note:      "p preview",
-				Focused:   focused,
-				Lines:     content,
-				CursorRow: cursor,
-			}, 40, 8)
-
-			got := ui.Panel(th, ui.PanelSpec{
-				Title:     "Diff",
-				Note:      "p preview",
-				Focused:   focused,
-				Lines:     content,
-				CursorRow: -1,
-			}, 40, 8)
-			got = applyCursorRows(got, th, []int{cursor})
-
-			for i := range want {
-				if want[i] != got[i] {
-					t.Errorf("focused=%v cursor=%d row %d:\n want %q\n  got %q", focused, cursor, i, want[i], got[i])
-				}
-			}
-		}
-	}
-}
-
-// TestCursorRowsLeaveOtherRowsAlone shows the splice is scoped: only the
-// marked rows change, and an empty mark set is the panel verbatim.
-func TestCursorRowsLeaveOtherRowsAlone(t *testing.T) {
-	th := testTheme(t)
-	content := []string{"one", "two", "three"}
-
-	base := ui.Panel(th, ui.PanelSpec{Title: "Ops", Lines: content, CursorRow: -1}, 30, 5)
-	if got := applyCursorRows(base, th, nil); len(got) != len(base) {
-		t.Fatalf("empty mark set changed the row count: %d", len(got))
-	}
-
-	marked := applyCursorRows(base, th, []int{1})
-	for i := range base {
-		// Marked line 1 is panel row 2 (the top border takes row 0); every
-		// other panel row must be the panel verbatim.
-		if i == 2 {
-			continue
-		}
-		if marked[i] != base[i] {
-			t.Errorf("row %d changed though only line 1 was marked", i+1)
-		}
-	}
-}
+// The two panelcursor-splice tests this file once carried —
+// TestCursorRowsMatchPanelCursorBranch and TestCursorRowsLeaveOtherRowsAlone
+// — went with panelcursor.go itself (W5 F1/C35): the cursor window is now
+// drawn by ui.Panel through PanelSpec.CursorRow + CursorSpan, so there is
+// no splice left to prove byte-equal or scoped. The property those tests
+// protected — the window's rows carry exactly ui.Panel's own cursor-row
+// treatment, and only those rows — is TestReviewCursorSpan's
+// window_rows_tinted_full_width (scroll_test.go), which walks the rendered
+// Detail panel itself.
 
 // layoutModel builds a loaded-looking model from hand-set fields, enough
 // for the layout composition tests (no engine).

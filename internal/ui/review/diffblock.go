@@ -223,6 +223,27 @@ func (m *Model) previewLines(cw int) []panelLine {
 	return out
 }
 
+// detailContent is the Detail panel's content at content width cw: the
+// panel title and note, and the lines — Diff mode (the current op through
+// the last) or Preview mode (the current op's staged page), or the one
+// empty-state line. The content-building half of detailPanel, shared with
+// the scroll keys' clamping (scroll.go).
+func (m *Model) detailContent(cw int) (title, note string, lines []panelLine) {
+	title, note = "Diff", "p preview"
+	lines = m.diffLines(cw)
+	if !m.hasChangeset {
+		msg := "(nothing staged)"
+		if m.loadErr != nil {
+			msg = "review: " + m.loadErr.Error()
+		}
+		return title, note, []panelLine{{text: m.theme.Faint.Render(msg)}}
+	}
+	if m.preview {
+		return "Preview", "p diff", m.previewLines(cw)
+	}
+	return title, note, lines
+}
+
 // addedTexts collects the text of every '+' line in the op's non-dropped
 // windows, blanks excluded — the Changed set the renderer marks the ▎
 // gutter from (mockgen.preview_block: `p == '+' and t.strip()`).
@@ -245,19 +266,23 @@ func addedTexts(files []stage.FileOpDiff) []string {
 
 // markdownStyle builds the renderer's palette from the theme (contract
 // §3: a plain struct literal; markdown.Style and ui.Palette share field
-// names on purpose).
+// names on purpose). Heading and Code are set from the palette too (W5
+// F3/D-3W): left empty, glamour reads them as an empty colour and
+// renders headings black — the bug T27 found in Browse.
 func (m *Model) markdownStyle() markdown.Style {
 	p := m.theme.Palette
 	return markdown.Style{
-		Dark:   m.theme.IsDark,
-		Fg:     p.Fg,
-		Muted:  p.Muted,
-		Faint:  p.Faint,
-		Border: p.Border,
-		Accent: p.Accent,
-		Good:   p.Good,
-		Warn:   p.Warn,
-		Bad:    p.Bad,
+		Dark:    m.theme.IsDark,
+		Fg:      p.Fg,
+		Muted:   p.Muted,
+		Faint:   p.Faint,
+		Border:  p.Border,
+		Accent:  p.Accent,
+		Heading: p.Heading,
+		Code:    p.Code,
+		Good:    p.Good,
+		Warn:    p.Warn,
+		Bad:     p.Bad,
 	}
 }
 

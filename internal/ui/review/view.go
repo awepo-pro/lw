@@ -7,6 +7,7 @@
 package review
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/awepo-pro/lw/internal/stage"
@@ -29,6 +30,73 @@ const (
 	stackedOpsMaxH = 6
 )
 
+// panelRect is one panel's rectangle in pane-local cells — the units
+// ui.Panel draws in and ui.WheelMsg reports (contract §5 frame note 7).
+type panelRect struct {
+	x, y, w, h int
+}
+
+// contains reports whether the pane-local cell (x, y) lies inside r.
+func (r panelRect) contains(x, y int) bool {
+	return x >= r.x && x < r.x+r.w && y >= r.y && y < r.y+r.h
+}
+
+// reviewLayout is the screen's panel geometry at one pane size: the three
+// panels' rectangles, and whether the Changeset panel exists at this
+// height at all.
+type reviewLayout struct {
+	ops, changeset, detail panelRect
+	hasChangeset           bool
+}
+
+// layout is the review screen's frozen split, in one place so View's
+// drawing and the wheel's hit-testing (scroll.go) cannot drift apart.
+// Below 100 columns the Ops panel of min(len(ops)+2, 6) rows stacks over
+// Detail (only Detail when the pane is too short for both); otherwise Ops
+// takes width clamp((33*w+50)/100, 28, 56) beside a full-height Detail,
+// with the Changeset panel under Ops from 30 rows.
+func (m *Model) layout(w, h int) reviewLayout {
+	if w < sideBySideMinW {
+		opsH := len(m.ops) + 2
+		if opsH > stackedOpsMaxH {
+			opsH = stackedOpsMaxH
+		}
+		if opsH < 2 {
+			opsH = 2
+		}
+		if h-opsH < 2 {
+			return reviewLayout{detail: panelRect{0, 0, w, h}}
+		}
+		return reviewLayout{
+			ops:    panelRect{0, 0, w, opsH},
+			detail: panelRect{0, opsH, w, h - opsH},
+		}
+	}
+
+	opsW := (33*w + 50) / 100
+	if opsW < 28 {
+		opsW = 28
+	}
+	if opsW > 56 {
+		opsW = 56
+	}
+	if opsW > w-6 {
+		opsW = w - 6
+	}
+	if h < changesetMinH {
+		return reviewLayout{
+			ops:    panelRect{0, 0, opsW, h},
+			detail: panelRect{opsW, 0, w - opsW, h},
+		}
+	}
+	return reviewLayout{
+		ops:          panelRect{0, 0, opsW, h - changesetPanelH},
+		changeset:    panelRect{0, h - changesetPanelH, opsW, changesetPanelH},
+		detail:       panelRect{opsW, 0, w - opsW, h},
+		hasChangeset: true,
+	}
+}
+
 // View renders the review screen at exactly w by h cells (backbone §12):
 // h lines, each exactly w cells, every border drawn by ui.Panel.
 func (m *Model) View(w, h int) string {
@@ -46,117 +114,72 @@ func (m *Model) View(w, h int) string {
 	return strings.Join(m.body(w, h), "\n")
 }
 
-// body lays the screen out. An empty model flows through the same shape —
-// m.ops is nil, so the Ops panel is empty and the Detail panel carries
-// the one line that says why.
+// body lays the screen out from the shared layout. An empty model flows
+// through the same shape — m.ops is nil, so the Ops panel is empty and
+// the Detail panel carries the one line that says why.
 func (m *Model) body(w, h int) []string {
-	if w < sideBySideMinW {
-		return m.stacked(w, h)
-	}
-
-	opsW := (33*w + 50) / 100
-	if opsW < 28 {
-		opsW = 28
-	}
-	if opsW > 56 {
-		opsW = 56
-	}
-	if opsW > w-6 {
-		opsW = w - 6
-	}
-
-	opsH := h
-	if h >= changesetMinH {
-		opsH = h - changesetPanelH
-	}
-	return m.compose(w, h, opsW, w-opsW, opsH, h)
-}
-
-// stacked draws the narrow layout: an Ops panel of min(len(ops)+2, 6)
-// rows over the Detail panel for the rest, both full-width — no
-// Changeset panel, which only exists in the side-by-side column. When the
-// pane is too short for both, only the Detail panel is drawn.
-func (m *Model) stacked(w, h int) []string {
-	opsH := len(m.ops) + 2
-	if opsH > stackedOpsMaxH {
-		opsH = stackedOpsMaxH
-	}
-	if opsH < 2 {
-		opsH = 2
-	}
-	if h-opsH < 2 {
-		return m.detailPanel(w, h)
-	}
-
+	l := m.layout(w, h)
 	rows := make([]string, h)
-	ops := m.opsPanel(w, opsH)
-	for i := 0; i < opsH; i++ {
-		rows[i] = ops[i]
+	if l.ops.w > 0 && l.ops.h > 0 {
+		ops := m.opsPanel(l.ops.w, l.ops.h)
+		for i := 0; i < l.ops.h; i++ {
+			rows[l.ops.y+i] = ops[i]
+		}
 	}
-	detail := m.detailPanel(w, h-opsH)
-	for i := 0; i < h-opsH; i++ {
-		rows[opsH+i] = detail[i]
-	}
-	return rows
-}
-
-// compose draws the wide layout: the left column — Ops at opsW for opsH
-// rows, plus the Changeset panel of the remaining rows when opsH < h —
-// and the Detail panel at detailW for the full height.
-func (m *Model) compose(w, h, opsW, detailW, opsH, detailH int) []string {
-	rows := make([]string, h)
-	ops := m.opsPanel(opsW, opsH)
-	for i := 0; i < opsH; i++ {
-		rows[i] = ops[i]
-	}
-	if opsH < h {
-		changeset := m.changesetPanel(opsW, h-opsH)
-		for i := 0; i < h-opsH; i++ {
-			rows[opsH+i] = changeset[i]
+	if l.hasChangeset {
+		changeset := m.changesetPanel(l.changeset.w, l.changeset.h)
+		for i := 0; i < l.changeset.h; i++ {
+			rows[l.changeset.y+i] = changeset[i]
 		}
 	}
 
-	detail := m.detailPanel(detailW, detailH)
-	for i := 0; i < detailH; i++ {
-		rows[i] += detail[i]
+	detail := m.detailPanel(l.detail.w, l.detail.h)
+	for i := 0; i < l.detail.h; i++ {
+		rows[l.detail.y+i] += detail[i]
 	}
 	return rows
 }
 
 // detailPanel renders the focused Detail panel — Diff or Preview — with
-// every row of the cursor's hunk window marked (panelcursor.go).
+// the cursor's hunk window marked through PanelSpec.CursorRow + CursorSpan
+// (contract §5 frame note 9, W5 F1/C35: ui.Panel tints every cursor-row
+// cell itself, so this screen never splices rows) and the scroll offset
+// applied (contract §5 frame note 10, W5 F2/C36): the offset is clamped
+// here again, lines[off:] is what the panel draws, and with nothing below
+// the fold the bottom border counts the lines hidden above instead.
 func (m *Model) detailPanel(w, h int) []string {
-	cw := w - 4
-	title, note := "Diff", "p preview"
-	lines := m.diffLines(cw)
-	if !m.hasChangeset {
-		msg := "(nothing staged)"
-		if m.loadErr != nil {
-			msg = "review: " + m.loadErr.Error()
-		}
-		lines = []panelLine{{text: m.theme.Faint.Render(msg)}}
-	} else if m.preview {
-		title, note, lines = "Preview", "p diff", m.previewLines(cw)
+	title, note, lines := m.detailContent(w - 4)
+	inner := h - 2
+	maxOff := max(0, len(lines)-inner)
+	off := clampScroll(m.off, maxOff)
+	if off > 0 {
+		lines = lines[off:]
 	}
 
 	strs := make([]string, len(lines))
-	var marked []int
 	for i, l := range lines {
 		strs[i] = l.text
-		if l.cursor {
-			marked = append(marked, i)
-		}
 	}
 
-	rows := ui.Panel(m.theme, ui.PanelSpec{
+	spec := ui.PanelSpec{
 		Title:     title,
 		Note:      note,
 		Focused:   true,
 		Lines:     strs,
 		Overflow:  true,
-		CursorRow: -1, // the cursor window marks its own rows
-	}, w, h)
-	return applyCursorRows(rows, m.theme, marked)
+		CursorRow: -1, // no cursor window on screen
+	}
+	if first, last, ok := cursorWindow(lines); ok {
+		spec.CursorRow = first
+		spec.CursorSpan = last - first + 1
+	}
+	if off > 0 && off >= maxOff {
+		// Nothing below: Overflow's ↓ note would count zero, so the
+		// bottom border says how much is hidden above (s2-screens.md
+		// T06 Scroll).
+		spec.FootNote = fmt.Sprintf("↑ %d above", off)
+	}
+	return ui.Panel(m.theme, spec, w, h)
 }
 
 // currentOp returns the op holding the current cursor stop, and false

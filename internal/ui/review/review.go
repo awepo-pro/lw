@@ -14,14 +14,12 @@
 package review
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/awepo-pro/lw/internal/lint"
 	"github.com/awepo-pro/lw/internal/stage"
 	"github.com/awepo-pro/lw/internal/ui"
 	"github.com/awepo-pro/lw/internal/ui/markdown"
@@ -44,6 +42,14 @@ type Model struct {
 	cursor       int
 	preview      bool // p toggles the Detail panel between Diff and Preview
 
+	// off is the Detail panel's scroll offset: the content lines hidden
+	// above the panel (scroll.go; contract §5 frame note 10, W5 F2/C36).
+	off int
+	// paneW and paneH are the pane's last known View size, from the
+	// shell's tea.WindowSizeMsg (View receives w, h-2). The scroll keys'
+	// steps and clamps read the Detail panel's geometry from it.
+	paneW, paneH int
+
 	status string         // transient StatusReporter message; "" shows the bindings
 	level  ui.StatusLevel // the level the footer styles status with
 }
@@ -53,6 +59,7 @@ var (
 	_ ui.FooterHelper   = (*Model)(nil)
 	_ ui.OverlayHelper  = (*Model)(nil)
 	_ ui.StatusReporter = (*Model)(nil)
+	_ ui.Scroller       = (*Model)(nil)
 )
 
 // New constructs the review screen (backbone §12). It captures d and
@@ -95,6 +102,22 @@ func (m *Model) Update(msg tea.Msg) (ui.Pane, tea.Cmd) {
 		m.theme = m.theme.WithDark(msg.IsDark())
 		return m, nil
 
+	case tea.ColorProfileMsg:
+		// Contract §5 frame note 8 (W5 F1): rebuild the theme for the
+		// terminal's real colour profile — the cursor tint re-resolves,
+		// exactly as WithDark rebuilds it for polarity.
+		m.theme = m.theme.WithProfile(msg.Profile)
+		return m, nil
+
+	case tea.WindowSizeMsg:
+		// The shell gives the pane View(w, h-2); the scroll keys read the
+		// Detail panel's geometry from that size (scroll.go).
+		m.paneW, m.paneH = msg.Width, msg.Height-2
+		return m, nil
+
+	case ui.WheelMsg:
+		return m.handleWheel(msg)
+
 	case ui.StageChangedMsg:
 		return m, loadCmd(m.deps.Engine)
 
@@ -122,16 +145,23 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (ui.Pane, tea.Cmd) {
 	switch {
 	case key.Matches(msg, k.MoveDown):
 		m.cursor = clampCursor(m.cursor+1, len(m.stops))
+		m.resetScroll()
 	case key.Matches(msg, k.MoveUp):
 		m.cursor = clampCursor(m.cursor-1, len(m.stops))
+		m.resetScroll()
 	case key.Matches(msg, k.Top):
 		m.cursor = 0
+		m.resetScroll()
 	case key.Matches(msg, k.Bottom):
 		m.cursor = clampCursor(len(m.stops)-1, len(m.stops))
+		m.resetScroll()
 	case key.Matches(msg, k.Preview):
 		// s2-screens.md T06: p toggles Diff ↔ Preview and keeps the
 		// cursor; the Preview follows whatever op the cursor lands on.
+		// The toggle resets the Detail scroll too — different content
+		// under the fold (s2-screens.md T06 Scroll).
 		m.preview = !m.preview
+		m.resetScroll()
 	case key.Matches(msg, k.AcceptHunk):
 		return m.acceptHunk()
 	case key.Matches(msg, k.DropHunk):
@@ -146,6 +176,20 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (ui.Pane, tea.Cmd) {
 		return m.reject()
 	case key.Matches(msg, k.Commit):
 		return m.commit()
+	case key.Matches(msg, k.ScrollPageDown):
+		// The Detail panel scrolls, whichever mode p has it in
+		// (contract §5 frame note 10).
+		m.scrollPage(1)
+	case key.Matches(msg, k.ScrollPageUp):
+		m.scrollPage(-1)
+	case key.Matches(msg, k.ScrollHalfDown):
+		m.scrollHalf(1)
+	case key.Matches(msg, k.ScrollHalfUp):
+		m.scrollHalf(-1)
+	case key.Matches(msg, k.ScrollTop):
+		m.resetScroll()
+	case key.Matches(msg, k.ScrollBottom):
+		m.off = m.maxScrollOff()
 	}
 	return m, nil
 }
@@ -188,6 +232,7 @@ func (m *Model) acceptHunk() (ui.Pane, tea.Cmd) {
 	}
 	m.setStatus(ui.StatusInfo, "")
 	m.cursor = clampCursor(m.cursor+1, len(m.stops))
+	m.resetScroll() // the y advance is a cursor-stop change (T06 Scroll)
 	return m, tea.Batch(loadCmd(m.deps.Engine), stageChangedCmd(m.deps.Engine))
 }
 
@@ -207,6 +252,7 @@ func (m *Model) dropHunk() (ui.Pane, tea.Cmd) {
 	}
 	m.setStatus(ui.StatusInfo, "")
 	m.cursor = clampCursor(m.cursor+1, len(m.stops))
+	m.resetScroll() // the n advance is a cursor-stop change (T06 Scroll)
 	return m, tea.Batch(loadCmd(m.deps.Engine), stageChangedCmd(m.deps.Engine))
 }
 
@@ -268,56 +314,6 @@ func (m *Model) reject() (ui.Pane, tea.Cmd) {
 	}
 	m.setStatus(ui.StatusInfo, "")
 	return m, tea.Batch(loadCmd(m.deps.Engine), func() tea.Msg { return ui.StageChangedMsg{} })
-}
-
-// commitEndData is the wire shape of a commit_end event's Data (backbone
-// §5.7 D-AG): the counts of the report computed for that commit.
-type commitEndData struct {
-	LintErrors int `json:"lint_errors"`
-	LintWarns  int `json:"lint_warns"`
-}
-
-// LintBaseline computes the lint-regression baseline the commit gate
-// compares a projected report against (backbone §5.7 D-AG; S6-C127). It is
-// exported and lives here — rather than duplicated a second time — because
-// cmd/lw already imports this package (cmd_tui.go, to wire the review
-// screen into the shell), which is what closes TD-3's "the gate is
-// implemented twice" for this half of it: cmd/lw's cmdCommit calls
-// review.LintBaseline directly instead of running its own copy of this
-// journal query.
-//
-// When the journal already holds a commit_end event, its counts ARE the
-// baseline — the tree exactly as it was committed, decoded from Data
-// exactly as Commit wrote it. Filter.Limit selects the most recent N
-// events and returns them oldest-first (backbone §5.7 D-AU), so Limit:1
-// is read as evs[0]; a larger Limit read as evs[0] would silently compare
-// every future commit against the FIRST commit ever made.
-//
-// When it does not — a vault that has never been committed — the baseline
-// becomes the lint.Report of the CURRENT COMMITTED working tree
-// (e.Vault(), e.Index() and e.Vault().Graph(), the same {Vault, Index,
-// Graph} shape `lw lint` builds), so a vault's first commit is refused
-// exactly like every later one and a vault that already carries N lint
-// errors is not penalized for them: only a NEW error, added by the
-// changeset being committed, regresses.
-func LintBaseline(e *stage.Engine) (lint.Report, error) {
-	evs, err := e.Journal().Query(stage.Filter{
-		Kinds: []stage.EventKind{stage.EvCommitEnd},
-		Limit: 1,
-	})
-	if err != nil {
-		return lint.Report{}, err
-	}
-	if len(evs) > 0 {
-		var data commitEndData
-		if err := json.Unmarshal(evs[0].Data, &data); err != nil {
-			return lint.Report{}, fmt.Errorf("review: parse commit_end data: %w", err)
-		}
-		return lint.Report{Errors: data.LintErrors, Warns: data.LintWarns}, nil
-	}
-
-	ctx := &lint.Context{Vault: e.Vault(), Index: e.Index(), Graph: e.Vault().Graph()}
-	return lint.Run(ctx, nil), nil
 }
 
 // commitMessage is the changeset's Intent, falling back to "review: <id>"
