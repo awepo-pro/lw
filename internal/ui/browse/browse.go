@@ -28,6 +28,14 @@ type Model struct {
 
 	finder finderState
 
+	// Preview scroll state (W5 F2/C36, scroll.go): off is the number of
+	// rendered preview lines hidden above the panel, clamped at every
+	// render (previewSpec) and every key against the last render's
+	// geometry — previewCount lines at previewInner content rows.
+	off          int
+	previewCount int
+	previewInner int
+
 	// status is the transient StatusReporter message (contract §5): a finder
 	// error, shown in the footer until the next key press.
 	status      string
@@ -121,6 +129,23 @@ func (m *Model) Update(msg tea.Msg) (ui.Pane, tea.Cmd) {
 		m.deps.Theme = m.deps.Theme.WithDark(msg.IsDark())
 		return m, nil
 
+	case tea.ColorProfileMsg:
+		// The terminal's real colour profile is known: re-resolve the
+		// cursor tint for it (contract §5 frame note 8, W5 F1/C35), exactly
+		// as WithDark above rebuilds for polarity. The renderer's memo is
+		// keyed on polarity, so nothing cached needs dropping here either.
+		m.deps.Theme = m.deps.Theme.WithProfile(msg.Profile)
+		return m, nil
+
+	case ui.WheelMsg:
+		// One wheel notch, pane-local (contract §5 frame note 7): hit-test
+		// it against the layout View draws. While the finder is open every
+		// notch is ignored (s2-screens.md T07).
+		if !m.finder.open {
+			m.handleWheel(msg)
+		}
+		return m, nil
+
 	case ui.VaultReloadedMsg:
 		m.reload()
 		return m, nil
@@ -161,9 +186,24 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (ui.Pane, tea.Cmd) {
 	case key.Matches(msg, m.deps.Keys.MoveUp):
 		m.moveCursor(-1)
 	case key.Matches(msg, m.deps.Keys.Top):
-		m.cursor = 0
+		m.cursorTo(0)
 	case key.Matches(msg, m.deps.Keys.Bottom):
-		m.cursor = len(m.visible) - 1
+		m.cursorTo(len(m.visible) - 1)
+	case key.Matches(msg, m.deps.Keys.ScrollPageDown):
+		// The scroll keys always target the preview (contract §5 note 10,
+		// s2-screens.md T07): j/k stay tree movement, so the Pages panel
+		// never scrolls by key, and there is nothing else to move here.
+		m.scrollPreview(m.previewPage())
+	case key.Matches(msg, m.deps.Keys.ScrollPageUp):
+		m.scrollPreview(-m.previewPage())
+	case key.Matches(msg, m.deps.Keys.ScrollHalfDown):
+		m.scrollPreview(m.previewHalf())
+	case key.Matches(msg, m.deps.Keys.ScrollHalfUp):
+		m.scrollPreview(-m.previewHalf())
+	case key.Matches(msg, m.deps.Keys.ScrollTop):
+		m.off = 0
+	case key.Matches(msg, m.deps.Keys.ScrollBottom):
+		m.off = m.maxPreviewOff()
 	default:
 		switch msg.String() {
 		case "h", "left":
@@ -181,9 +221,22 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (ui.Pane, tea.Cmd) {
 }
 
 // moveCursor shifts the tree cursor by delta, clamped to the visible list.
+// The preview scroll resets when the move lands on another node.
 func (m *Model) moveCursor(delta int) {
+	before := m.selectedPath()
 	m.cursor += delta
 	m.clampCursor()
+	m.scrollResetOnSelection(before)
+}
+
+// cursorTo moves the tree cursor onto index i (clamped to the visible
+// list), resetting the preview scroll when the node under it changes —
+// g/G are reset points like any other selection change.
+func (m *Model) cursorTo(i int) {
+	before := m.selectedPath()
+	m.cursor = i
+	m.clampCursor()
+	m.scrollResetOnSelection(before)
 }
 
 // clampCursor keeps m.cursor inside [0, len(m.visible)-1], or 0 when the
@@ -263,8 +316,11 @@ func (m *Model) refreshVisible() {
 
 // selectPath moves the tree cursor onto p, forcing every ancestor directory
 // open first so p is guaranteed to be in the visible list. It reports
-// whether p was found in the tree at all.
+// whether p was found in the tree at all. The preview scroll resets when
+// the cursor lands on another node — this is the path h-to-parent, the
+// finder's commit and OpenPathMsg all take.
 func (m *Model) selectPath(p string) bool {
+	before := m.selectedPath()
 	for _, d := range ancestorDirs(p) {
 		m.expanded[d] = true
 	}
@@ -272,6 +328,7 @@ func (m *Model) selectPath(p string) bool {
 	for i, n := range m.visible {
 		if n.Path == p {
 			m.cursor = i
+			m.scrollResetOnSelection(before)
 			return true
 		}
 	}
@@ -281,8 +338,11 @@ func (m *Model) selectPath(p string) bool {
 // reload rebuilds the tree from the vault after ui.VaultReloadedMsg. It
 // never assumes it saw every reload — an inactive pane can miss this message
 // entirely, which is fine: the tree is simply stale until the next one
-// arrives, not wrong in a way that corrupts state.
+// arrives, not wrong in a way that corrupts state. A reload resets the
+// preview scroll unconditionally (s2-screens.md T07): even a selection that
+// survives may have new content under it.
 func (m *Model) reload() {
+	m.off = 0
 	if m.deps.Engine != nil {
 		m.rebuildTree()
 	}

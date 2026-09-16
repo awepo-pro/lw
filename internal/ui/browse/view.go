@@ -167,25 +167,35 @@ func (m *Model) previewSpec(w, h int) ui.PanelSpec {
 	// CursorRow -1: the preview has no cursor of its own (the tree holds it).
 	spec := ui.PanelSpec{Overflow: true, CursorRow: -1}
 
-	n := m.selectedNode()
-	if n == nil {
-		return spec
-	}
-	spec.Title = n.Name
-	spec.Note = filepath.Dir(n.Path) + "/"
+	var lines []string
+	if n := m.selectedNode(); n != nil {
+		spec.Title = n.Name
+		spec.Note = filepath.Dir(n.Path) + "/"
 
-	if n.IsDir() {
-		// A directory has nothing to preview; say so rather than draw a
-		// stale page under a directory's name.
-		spec.Lines = []string{m.deps.Theme.Faint.Render("(select a page to preview)")}
-		return spec
+		if n.IsDir() {
+			// A directory has nothing to preview; say so rather than draw a
+			// stale page under a directory's name.
+			lines = []string{m.deps.Theme.Faint.Render("(select a page to preview)")}
+		} else {
+			var err error
+			if lines, err = m.previewLines(n, w-4); err != nil {
+				lines = []string{m.deps.Theme.Bad.Render("preview failed: " + err.Error())}
+			}
+		}
 	}
 
-	lines, err := m.previewLines(n, w-4)
-	if err != nil {
-		lines = []string{m.deps.Theme.Bad.Render("preview failed: " + err.Error())}
+	// Preview scroll (contract §5 note 10, W5 F2/C36): clamp the offset to
+	// this render's geometry — remembered so the key handlers can clamp
+	// between frames — then hand the Panel the window it selects. Overflow
+	// keeps counting the lines below `↓ N more`; once nothing is below and
+	// lines were dropped above, the foot note counts those instead
+	// (`↑ N above`, N = off).
+	m.previewCount, m.previewInner = len(lines), h-2
+	m.clampPreviewOff()
+	spec.Lines = lines[m.off:]
+	if m.off > 0 && m.off >= m.maxPreviewOff() {
+		spec.FootNote = fmt.Sprintf("↑ %d above", m.off)
 	}
-	spec.Lines = lines
 	return spec
 }
 
@@ -229,18 +239,22 @@ func scrollWindow(lines []string, cursor, h int) ([]string, int) {
 
 // mdStyle builds the renderer's palette from the current theme (contract §3:
 // a plain struct literal; markdown.Style and ui.Palette share field names on
-// purpose).
+// purpose). Heading and Code ride along (W5 F3): without them the renderer
+// sees an empty hex and draws the preview's headings in the fallback colour
+// instead of the palette's.
 func (m *Model) mdStyle() markdown.Style {
 	p := m.deps.Theme.Palette
 	return markdown.Style{
-		Dark:   m.deps.Theme.IsDark,
-		Fg:     p.Fg,
-		Muted:  p.Muted,
-		Faint:  p.Faint,
-		Border: p.Border,
-		Accent: p.Accent,
-		Good:   p.Good,
-		Warn:   p.Warn,
-		Bad:    p.Bad,
+		Dark:    m.deps.Theme.IsDark,
+		Fg:      p.Fg,
+		Muted:   p.Muted,
+		Faint:   p.Faint,
+		Border:  p.Border,
+		Accent:  p.Accent,
+		Good:    p.Good,
+		Warn:    p.Warn,
+		Bad:     p.Bad,
+		Heading: p.Heading,
+		Code:    p.Code,
 	}
 }
