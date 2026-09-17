@@ -90,21 +90,25 @@ func (e *Engine) changesetIDTaken(id string) (bool, error) {
 
 // writeChangesetJSON persists c to dir/changeset.json, atomically (temp +
 // fsync + rename inside dir), per §14: json.MarshalIndent(cs, "", "  "),
-// trailing "\n".
-func writeChangesetJSON(dir string, c *Changeset) error {
+// trailing "\n". It returns the (size, mtime) fingerprint the renamed file
+// carries, captured off the temp file after the final sync — rename(2)
+// preserves size and mtime, so this is exactly the stamp the A-803
+// coherence check compares against on the next write, with no post-rename
+// stat and no window in which a foreign write could be recorded as ours.
+func writeChangesetJSON(dir string, c *Changeset) (journalStamp, error) {
 	b, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
-		return fmt.Errorf("stage: marshal changeset %s: %w", c.ID, err)
+		return journalStamp{}, fmt.Errorf("stage: marshal changeset %s: %w", c.ID, err)
 	}
 	b = append(b, '\n')
 
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("stage: write changeset %s: %w", c.ID, err)
+		return journalStamp{}, fmt.Errorf("stage: write changeset %s: %w", c.ID, err)
 	}
 
 	tmp, err := os.CreateTemp(dir, "tmp-*")
 	if err != nil {
-		return fmt.Errorf("stage: write changeset %s: %w", c.ID, err)
+		return journalStamp{}, fmt.Errorf("stage: write changeset %s: %w", c.ID, err)
 	}
 	tmpPath := tmp.Name()
 
@@ -117,19 +121,24 @@ func writeChangesetJSON(dir string, c *Changeset) error {
 	}()
 
 	if _, err := tmp.Write(b); err != nil {
-		return fmt.Errorf("stage: write changeset %s: %w", c.ID, err)
+		return journalStamp{}, fmt.Errorf("stage: write changeset %s: %w", c.ID, err)
 	}
 	if err := tmp.Sync(); err != nil {
-		return fmt.Errorf("stage: write changeset %s: %w", c.ID, err)
+		return journalStamp{}, fmt.Errorf("stage: write changeset %s: %w", c.ID, err)
 	}
+	info, err := tmp.Stat()
+	if err != nil {
+		return journalStamp{}, fmt.Errorf("stage: write changeset %s: %w", c.ID, err)
+	}
+	stamp := journalStamp{size: info.Size(), mtime: info.ModTime()}
 	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("stage: write changeset %s: %w", c.ID, err)
+		return journalStamp{}, fmt.Errorf("stage: write changeset %s: %w", c.ID, err)
 	}
 	if err := os.Rename(tmpPath, filepath.Join(dir, "changeset.json")); err != nil {
-		return fmt.Errorf("stage: write changeset %s: %w", c.ID, err)
+		return journalStamp{}, fmt.Errorf("stage: write changeset %s: %w", c.ID, err)
 	}
 	ok = true
-	return nil
+	return stamp, nil
 }
 
 // OpenChangeset opens a new changeset with the given intent and author.
@@ -142,7 +151,17 @@ func writeChangesetJSON(dir string, c *Changeset) error {
 // Checks computed over the projection with an empty override set — which
 // at zero ops is definitionally the current vault, the same code path
 // Append uses. Journals changeset_opened.
+//
+// A-803: the whole body holds writeMu, so two goroutines of one process
+// can no longer both pass the empty-directory check and race two
+// directories into open/ — the second serializes behind the first and
+// sees its directory. The cache is published with the coherence stamp of
+// the changeset.json just written, so the next mutating verb's check
+// matches until someone else writes the file.
 func (e *Engine) OpenChangeset(intent string, a Author) (*Changeset, error) {
+	e.writeMu.Lock()
+	defer e.writeMu.Unlock()
+
 	openDir := e.changesetOpenDir()
 	entries, err := os.ReadDir(openDir)
 	if err != nil {
@@ -201,7 +220,8 @@ func (e *Engine) OpenChangeset(intent string, a Author) (*Changeset, error) {
 	c.Checks = checks
 
 	dir := filepath.Join(openDir, id)
-	if err := writeChangesetJSON(dir, c); err != nil {
+	stamp, err := writeChangesetJSON(dir, c)
+	if err != nil {
 		return nil, fmt.Errorf("stage: open changeset: %w", err)
 	}
 
@@ -217,9 +237,10 @@ func (e *Engine) OpenChangeset(intent string, a Author) (*Changeset, error) {
 
 	// D-8H copy rule: the value escapes the package, so the caller gets a
 	// clone and the cache keeps its own. The clone is taken before the
-	// cache pointer moves — from that moment on, engine mutators own c.
+	// cache pointer moves — from that moment on, the changeset is the
+	// engine's published state, never mutated in place again (A-803).
 	clone := c.clone()
-	e.cacheOpenAt(c, 1)
+	e.cacheOpenAt(c, 1, stamp)
 	return clone, nil
 }
 
@@ -227,16 +248,22 @@ func (e *Engine) OpenChangeset(intent string, a Author) (*Changeset, error) {
 // is open.
 //
 // Contract (backbone §5.4, MASTER §9 D-BB; cache behaviour amended 008
-// D-8H): while the engine holds a cached open changeset, Current returns a
-// deep COPY of it and touches neither the cache, the op counter nor the
-// filesystem — an Append that has drawn an id but not yet persisted must
-// never be rewound, and a display read must never overwrite the cache with
-// the on-disk copy it temporarily trails. Only when nothing is cached does
-// it read changesets/open/<id>/changeset.json (rehydrateOpen), which raises
+// D-8H, reader side restated by A-803): while the engine holds a cached
+// open changeset, Current returns a deep COPY of it and touches neither
+// the cache, the op counter nor the filesystem — an Append that has drawn
+// an id but not yet persisted must never be rewound, and a display read
+// must never overwrite the cache with the on-disk copy it temporarily
+// trails. Only when nothing is cached does it read
+// changesets/open/<id>/changeset.json (rehydrateOpen), which raises
 // e.nextOp to 1+max(N) over every op<N> in the loaded changeset, cascade
 // sub-ops included — raised, never lowered, since disk cannot see an
-// in-flight Append's id (cacheOpenRehydrated). OpenEngine populates neither
-// field, so a fresh engine derives both on its first Current.
+// in-flight Append's id (cacheOpenRehydrated). OpenEngine populates
+// neither field, so a fresh engine derives both on its first Current.
+//
+// Under A-803 a mutating verb never edits the published changeset in
+// place — it works on a private copy and swaps the pointer once persisted
+// — so this copy always shows one whole published state: the previous one
+// or the next, never a half-applied field set.
 //
 // The returned changeset is the caller's to mutate; no mutation of it can
 // reach the cache.
@@ -252,55 +279,37 @@ func (e *Engine) Current() (*Changeset, error) {
 // never write through this object), and the returned changeset is therefore
 // unshared: in-package callers may mutate it freely, and the exported
 // Current hands out exactly this object as the copy its contract promises.
-// ErrNoChangeset when changesets/open/ holds no changeset.
+// The coherence stamp is recorded beside the cache (A-803), taken before
+// the read so it can never describe a newer state than the bytes the cache
+// holds. ErrNoChangeset when changesets/open/ holds no changeset.
 func (e *Engine) rehydrateOpen() (*Changeset, error) {
-	openDir := e.changesetOpenDir()
-	entries, err := os.ReadDir(openDir)
+	c, stamp, err := e.readOpenFromDisk()
 	if err != nil {
-		return nil, fmt.Errorf("stage: current: %w", err)
-	}
-
-	var id string
-	for _, ent := range entries {
-		if ent.IsDir() {
-			id = ent.Name()
-			break
-		}
-	}
-	if id == "" {
-		return nil, ErrNoChangeset
-	}
-
-	b, err := os.ReadFile(filepath.Join(openDir, id, "changeset.json"))
-	if err != nil {
-		return nil, fmt.Errorf("stage: current: %w", err)
-	}
-	var c Changeset
-	if err := json.Unmarshal(b, &c); err != nil {
-		return nil, fmt.Errorf("stage: current: %w", err)
+		return nil, err
 	}
 
 	// c is unshared until cacheOpenRehydrated, so the counter derivation
 	// and the cache's own clone both read it before the engine takes
 	// ownership of its copy.
 	nextOp := 1 + maxOpN(c.Ops)
-	e.cacheOpenRehydrated(c.clone(), nextOp)
-	return &c, nil
+	e.cacheOpenRehydrated(c.clone(), nextOp, stamp)
+	return c, nil
 }
 
 // currentOpen returns the cached open changeset, rehydrating it from disk
-// first when nothing is cached — the seam that lets
-// Append/DropHunk/DropOp/Refresh/Reject work correctly whether or not the
-// caller already called Current in this process (backbone §5.4, MASTER §9
-// D-BB). The cache pointer moves under openMu (008 A-802), so a concurrent
-// ReloadIfChanged clearing it is either seen whole or not at all.
+// first when nothing is cached — the seam that lets read-side surfaces
+// (Diff, OpDiff, StagedFile, ProjectedReport) and Reject work correctly
+// whether or not the caller already called Current in this process
+// (backbone §5.4, MASTER §9 D-BB). The cache pointer moves under openMu
+// (008 A-802), so a concurrent ReloadIfChanged clearing it is either seen
+// whole or not at all.
 //
-// In-package use only (D-8H): on the cache hit the result is the live cache
-// object, and the package's mutators are its intended writers; on the
-// rehydrate path it is rehydrateOpen's unshared object, which every mutator
-// tail re-publishes with cacheOpen. It and its slices must not escape
-// internal/stage — exported surfaces hand out copies (Current,
-// cachedOpenCopy, OpenChangeset).
+// In-package use only: the result is the published cache object, which
+// since A-803 is never mutated in place — writers work on private copies
+// (writerOpen) — so a reader may hold it and read its fields freely. It
+// and its slices must not escape internal/stage; exported surfaces hand
+// out copies (Current, cachedOpenCopy, OpenChangeset). Mutating verbs do
+// not come through here: they call writerOpen for the coherence check.
 func (e *Engine) currentOpen() (*Changeset, error) {
 	if c := e.cachedOpen(); c != nil {
 		return c, nil
@@ -379,11 +388,12 @@ func (e *Engine) captureSourceSHAs(op *Op) error {
 // (backbone §5.4, MASTER §9 D-AK), so DropOp can address a cascade entry by
 // id.
 //
-// The caller must hold openMu (008 A-802, D-8H): stageAppendOp numbers and
-// inserts the op in one critical section, so the id draw cannot be
-// separated from the cache insert by a concurrent Current's rehydration.
-// The counter is read and advanced directly rather than through a helper —
-// sync.Mutex is not reentrant, and the lock is already held.
+// The caller must hold openMu (008 A-802, D-8H, A-803): drawAppendIDs runs
+// the whole draw — the op's and every cascade sub-op's — in one critical
+// section, so the counter cannot move under a drawn id and a concurrent
+// Current's rehydration can only lift it, never lower it. The counter is
+// read and advanced directly rather than through a helper — sync.Mutex is
+// not reentrant, and the lock is already held.
 func (e *Engine) assignIDs(op *Op) {
 	op.ID = fmt.Sprintf("op%d", e.nextOp)
 	e.nextOp++
@@ -401,15 +411,24 @@ func (e *Engine) assignIDs(op *Op) {
 // Contract (backbone §5.4): validate (§5.5) -> store pre/post images in
 // the CAS, writing After (and SHA256 for ingest_source), then clear
 // Content -> capture SourceSHAs for rename_page/merge_pages/split_page ->
-// assign op<N> (recursively through Cascade, MASTER §9 D-AK) and insert the
-// numbered op into the CACHED changeset, in one openMu critical section
-// (stageAppendOp, 008 D-8H) -> recompute Checks by materializing the
-// projected tree in memory and running lint -> persist changeset.json
-// atomically -> journal op_proposed with TS: e.now().UTC(). Like every
-// §5.4 method except Commit it never takes the vault lock (§5.2), and the
-// cache lock is held only for the stage step — never across I/O. A failure
-// between staging and the persist removes the op from the cache again
-// (unstageAppendOp), so the cache always equals what will be on disk.
+// assign op<N> (recursively through Cascade, MASTER §9 D-AK; the draw is
+// one openMu critical section, drawAppendIDs) -> recompute Checks by
+// materializing the projected tree in memory and running lint -> persist
+// changeset.json atomically -> journal op_proposed with TS: e.now().UTC().
+// Like every §5.4 method except Commit it never takes the vault lock
+// (§5.2), and openMu is held only for the id draw and the publish — never
+// across I/O.
+//
+// A-803: the whole body holds writeMu, and every step after writerOpen
+// works on a PRIVATE copy of the open changeset — the published cache is
+// only swapped at the persist (persistAndPublish). A failure anywhere
+// before that persist therefore publishes nothing, and the cache still
+// equals what is on disk; there is no unstage step to get right. The id
+// counter never rewinds (R-804/R-805), so the drawn id stays valid across
+// a cache invalidation. A journal failure after the persist keeps the op
+// in cache and disk alike — the error still reports, since an op_proposed
+// that never landed is a pre-existing inconsistency this method does not
+// widen.
 //
 // For rename_page and merge_pages, Append computes op.Cascade itself from
 // From/To (or Sources/To) before validating — the rewrite algorithm needs
@@ -418,7 +437,10 @@ func (e *Engine) assignIDs(op *Op) {
 // corruption backbone §5.5's Contract exists to prevent (MASTER §9 D-AM,
 // D-Y). Any Cascade the caller supplied is replaced, not merged.
 func (e *Engine) Append(op Op) (string, error) {
-	c, err := e.currentOpen()
+	e.writeMu.Lock()
+	defer e.writeMu.Unlock()
+
+	c, err := e.writerOpen()
 	if err != nil {
 		return "", err
 	}
@@ -479,54 +501,44 @@ func (e *Engine) Append(op Op) (string, error) {
 		return "", fmt.Errorf("stage: append: %w", err)
 	}
 
-	// D-8H: the id draw and the cache insert are one openMu critical
-	// section, so no concurrent Current can rewind the counter under the
-	// drawn id or repopulate the cache from a disk copy that lacks this op.
-	// staged is the cached changeset the op landed in — the object the
-	// whole persist tail below reads and writes, so cache and disk stay the
-	// same thing. prevChecks is what disk still holds if the tail fails.
-	prevChecks := c.Checks
-	staged, err := e.stageAppendOp(c, &op)
-	if err != nil {
+	// The id draw is one openMu critical section (A-803: the counter is
+	// openMu state, and a reader-side rehydration lifts it without holding
+	// writeMu). The op is inserted into the private copy below — the cache
+	// only sees it at the persist.
+	if err := e.drawAppendIDs(c, &op); err != nil {
 		return "", err
 	}
+	c.Ops = append(c.Ops, op)
 
-	checks, err := e.recomputeChecks(staged)
+	// Checks are recomputed over the whole projected tree with the new op
+	// in place, on the private copy — a recompute failure publishes
+	// nothing, which is what the old unstage step was for.
+	checks, err := e.recomputeChecks(c)
 	if err != nil {
-		e.unstageAppendOp(staged, op.ID, prevChecks)
 		return "", fmt.Errorf("stage: append: %w", err)
 	}
-	// Checks lands under openMu: a concurrent Current's copy
-	// (cachedOpenCopy) reads the cached struct under the same lock, and
-	// this write must not tear against it (008 D-8H). The recompute above
-	// only reads the cached ops, so it can stay outside the lock.
-	e.openMu.Lock()
-	staged.Checks = checks
-	e.openMu.Unlock()
+	c.Checks = checks
 
-	if err := writeChangesetJSON(filepath.Join(e.changesetOpenDir(), staged.ID), staged); err != nil {
-		e.unstageAppendOp(staged, op.ID, prevChecks)
+	if err := e.persistAndPublish(c); err != nil {
 		return "", fmt.Errorf("stage: append: %w", err)
 	}
 
 	if err := e.appendJournal(Event{
 		TS:        e.now().UTC(),
 		Kind:      EvOpProposed,
-		Changeset: staged.ID,
+		Changeset: c.ID,
 		Op:        op.ID,
-		Actor:     staged.Author,
+		Actor:     c.Author,
 		Paths:     opTouches(op),
 	}); err != nil {
-		// changeset.json already carries the op, so the cache must keep it
-		// too — and hold this object, in case a mid-tail invalidation left
-		// the pointer elsewhere. The error still reports: the journal is
-		// the audit trail, and an op_proposed that never landed is a
-		// pre-existing inconsistency this method does not widen.
-		e.cacheOpen(staged)
+		// changeset.json already carries the op and the cache was already
+		// published with it, so cache and disk agree — nothing to undo.
+		// The error still reports: the journal is the audit trail, and an
+		// op_proposed that never landed is a pre-existing inconsistency
+		// this method does not widen.
 		return "", fmt.Errorf("stage: append: %w", err)
 	}
 
-	e.cacheOpen(staged)
 	return op.ID, nil
 }
 
@@ -536,9 +548,16 @@ func (e *Engine) Append(op Op) (string, error) {
 // Checks, persists, and journals hunk_dropped.
 //
 // Contract (backbone §5.4): After always describes what Commit will
-// actually write, never the pre-drop proposal.
+// actually write, never the pre-drop proposal. A-803: the whole body
+// holds writeMu and mutates writerOpen's private copy — the R-805 review's
+// gap (a failure between the field write and the persist left the cache
+// ahead of disk) cannot recur, because the field write lands on the copy
+// and the copy is published only by the persist itself.
 func (e *Engine) DropHunk(opID, hunkID string) error {
-	c, err := e.currentOpen()
+	e.writeMu.Lock()
+	defer e.writeMu.Unlock()
+
+	c, err := e.writerOpen()
 	if err != nil {
 		return err
 	}
@@ -599,9 +618,13 @@ func (e *Engine) DropHunk(opID, hunkID string) error {
 // just because the reviewer agreed with the default — recomputing an
 // already-live hunk's content reproduces the same After sha, so nothing
 // observable changes. An unknown op or hunk id is still an error, worded
-// exactly as DropHunk's.
+// exactly as DropHunk's. Like DropHunk it holds writeMu for its whole
+// body and mutates a private copy (A-803).
 func (e *Engine) UndropHunk(opID, hunkID string) error {
-	c, err := e.currentOpen()
+	e.writeMu.Lock()
+	defer e.writeMu.Unlock()
+
+	c, err := e.writerOpen()
 	if err != nil {
 		return err
 	}
@@ -651,8 +674,17 @@ func (e *Engine) UndropHunk(opID, hunkID string) error {
 
 // DropOp marks op opID (and, transitively, everything it projects) as
 // dropped, recomputes Checks, persists, and journals op_dropped.
+//
+// A-803: the whole body holds writeMu and mutates writerOpen's private
+// copy. This is the verb F-805-2's probe caught writing a cached field
+// with no lock at all; under the single-writer model the field write lands
+// on a copy no reader can observe until the publish, so the DropOp-vs-
+// Current pair is race-free by construction rather than by discipline.
 func (e *Engine) DropOp(opID string) error {
-	c, err := e.currentOpen()
+	e.writeMu.Lock()
+	defer e.writeMu.Unlock()
+
+	c, err := e.writerOpen()
 	if err != nil {
 		return err
 	}
@@ -745,7 +777,9 @@ func (e *Engine) refreshCascadeStates(c *Changeset) error {
 }
 
 // persistAfterMutation recomputes c.Checks and persists c to disk — the
-// shared tail of DropHunk and DropOp.
+// shared tail of DropHunk, UndropHunk and DropOp. The caller holds
+// writeMu and owns c as a private copy (A-803); persistAndPublish
+// publishes it only once the write has landed.
 func (e *Engine) persistAfterMutation(c *Changeset) error {
 	if err := e.refreshCascadeStates(c); err != nil {
 		return fmt.Errorf("stage: recheck cascades: %w", err)
@@ -757,10 +791,9 @@ func (e *Engine) persistAfterMutation(c *Changeset) error {
 	}
 	c.Checks = checks
 
-	if err := writeChangesetJSON(filepath.Join(e.changesetOpenDir(), c.ID), c); err != nil {
+	if err := e.persistAndPublish(c); err != nil {
 		return fmt.Errorf("stage: persist changeset: %w", err)
 	}
-	e.cacheOpen(c)
 	return nil
 }
 
@@ -769,9 +802,20 @@ func (e *Engine) persistAfterMutation(c *Changeset) error {
 //
 // Contract (backbone §5.4, per-kind table, MASTER §9 D-AJ, D-BC): it never
 // recomputes Hunks — only State — leaving the last-computed hunks and
-// their Dropped flags intact.
+// their Dropped flags intact. A-803: the whole body holds writeMu and the
+// flips land on writerOpen's private copy, so a persist failure leaves the
+// published cache exactly what disk still holds.
 func (e *Engine) Refresh() error {
-	c, err := e.currentOpen()
+	e.writeMu.Lock()
+	defer e.writeMu.Unlock()
+	return e.refreshWriteLocked()
+}
+
+// refreshWriteLocked is Refresh's body without writeMu — Commit holds
+// writeMu across its whole body and calls this directly (A-803: sync.Mutex
+// is not reentrant, so a holder never re-locks).
+func (e *Engine) refreshWriteLocked() error {
+	c, err := e.writerOpen()
 	if err != nil {
 		return err
 	}
@@ -784,10 +828,9 @@ func (e *Engine) Refresh() error {
 		refreshOp(&c.Ops[i], e.vault, base)
 	}
 
-	if err := writeChangesetJSON(filepath.Join(e.changesetOpenDir(), c.ID), c); err != nil {
+	if err := e.persistAndPublish(c); err != nil {
 		return fmt.Errorf("stage: refresh: %w", err)
 	}
-	e.cacheOpen(c)
 	return nil
 }
 
@@ -795,8 +838,16 @@ func (e *Engine) Refresh() error {
 // a delete — and journals changeset_rejected.
 //
 // Contract (backbone §5.4, §14, MASTER §9 D-AI): rejections are permanent
-// history.
+// history. A-803: the whole body holds writeMu. Reject mutates no
+// changeset content — the rename moves whatever is on disk — so unlike
+// the writing verbs it enters through currentOpen, not writerOpen: with a
+// stale cache naming a changeset a foreign process already committed, the
+// rename fails with ENOENT and the caller finds out, rather than silently
+// rejecting a different changeset the user never saw.
 func (e *Engine) Reject(reason string) error {
+	e.writeMu.Lock()
+	defer e.writeMu.Unlock()
+
 	c, err := e.currentOpen()
 	if err != nil {
 		return err

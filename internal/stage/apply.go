@@ -38,7 +38,22 @@ const logRotateThreshold = 500
 // Commit applies the currently open changeset to the working tree,
 // following backbone §5.4's ten steps in order, and returns the new
 // commit's id.
+//
+// A-803: the whole ten-step body holds writeMu — the single-writer lock —
+// so no other mutating verb of this process can interleave with a commit.
+// ReloadIfChanged still does not take writeMu (it must never queue behind
+// a commit); its vault/index/changeset reads stay race-free through the
+// A-802 immutable snapshots and the openMu-guarded cache pointer.
 func (e *Engine) Commit(message string) (string, error) {
+	e.writeMu.Lock()
+	defer e.writeMu.Unlock()
+	return e.commitWriteLocked(message)
+}
+
+// commitWriteLocked is Commit's body without writeMu — the exported Commit
+// holds the lock across the whole ten-step sequence (A-803), and step 2
+// calls Refresh's body directly so a holder never re-locks.
+func (e *Engine) commitWriteLocked(message string) (string, error) {
 	// Consume the D-AG force flag first, before any step can fail, so a
 	// refused or errored commit never leaks it into a later one
 	// (MASTER §9 D-CD).
@@ -54,8 +69,12 @@ func (e *Engine) Commit(message string) (string, error) {
 
 	// Step 2. Refresh re-hashes the tree and flips any now-stale op; a
 	// changeset the review screen has not yet reconciled is refused
-	// outright rather than partially applied.
-	if err := e.Refresh(); err != nil {
+	// outright rather than partially applied. Its body runs lock-free here
+	// (Commit already holds writeMu) and, through writerOpen's coherence
+	// check, re-reads changeset.json when a foreign process rewrote it —
+	// so the materialization below is built from what disk actually holds,
+	// not from this engine's possibly stale cache (008 A-803, F-805-1).
+	if err := e.refreshWriteLocked(); err != nil {
 		e.Close()
 		return "", fmt.Errorf("stage: commit: %w", err)
 	}

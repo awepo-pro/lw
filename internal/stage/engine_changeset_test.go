@@ -717,7 +717,7 @@ func TestOldWidthIDsStillLoad(t *testing.T) {
 		Checks:   Checks{Schema: "pass", Lint: "pass"},
 	}
 	committedDir := filepath.Join(dir, ".llmwiki", "changesets", "committed", oldID)
-	if err := writeChangesetJSON(committedDir, old); err != nil {
+	if _, err := writeChangesetJSON(committedDir, old); err != nil {
 		t.Fatalf("seed legacy changeset: %v", err)
 	}
 

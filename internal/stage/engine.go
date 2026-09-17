@@ -37,20 +37,48 @@ type Engine struct {
 	// forgetOpen in the Refresh→cachedOpen window deterministically
 	// (008 F-R2) instead of racing a real one into it.
 	invalidateOpen func()
-	forceNext      bool // next Commit overrode a lint regression (D-AG)
-	// openMu guards open and nextOp (008 A-802): the reload tick's
-	// ReloadIfChanged, an agent turn's Current/Append and a review load all
-	// touch those two fields from different goroutines, so every read and
-	// write of either goes through the cacheOpen*/forgetOpen/cachedOpen/
-	// cachedOpenCopy/stageAppendOp/unstageAppendOp/assignIDs helpers below.
-	// It is a short-held lock: never across vault, index, CAS or journal
-	// I/O — Append stages the op into the cache under it, then recomputes
-	// and persists with it released (008 D-8H). It is never held together
-	// with journalStampMu — no code path takes both, so there is no lock
-	// order between them to document.
+	// failBeforePersist is a test-only hook, nil in production: when set,
+	// persistAndPublish returns its error just before changeset.json is
+	// written, so single_writer_test.go can prove a writer that fails
+	// before its persist publishes nothing (A-803) without racing a real
+	// disk failure into the window.
+	failBeforePersist func() error
+	forceNext         bool // next Commit overrode a lint regression (D-AG)
+	// writeMu is the single-writer lock (008 contract §10, amendment
+	// A-803): every verb that mutates the open changeset or persists
+	// changeset.json — OpenChangeset, Append, DropHunk, UndropHunk, DropOp,
+	// Refresh, Reject, Commit — holds it for its whole body. A writer works
+	// on a private copy (writerOpen in writer.go) and publishes it under
+	// openMu only once it is on disk, so a published changeset is never
+	// mutated in place: readers see one whole state or the next, never a
+	// half-applied field set. Lock order: writeMu → openMu, never the
+	// reverse; writeMu → journalStampMu (via appendJournal); openMu and
+	// journalStampMu are never taken together, and openMu is never held
+	// across any I/O. ReloadIfChanged deliberately does NOT take writeMu —
+	// it only invalidates, and a TUI tick must not queue behind a
+	// multi-second Commit. Refresh's and Commit's bodies are reachable
+	// lock-free as refreshWriteLocked / commitWriteLocked because Commit
+	// calls Refresh (sync.Mutex is not reentrant); no other verb calls
+	// another, so they lock in their own body directly.
+	writeMu sync.Mutex
+	// openMu guards open, nextOp and csStamp (008 A-802, A-803): the reload
+	// tick's ReloadIfChanged, an agent turn's Current/Append and a review
+	// load all touch those fields from different goroutines, so every read
+	// and write goes through the cacheOpen*/forgetOpen/cachedOpen/
+	// cachedOpenCopy/drawAppendIDs/publishWritten helpers. It is a
+	// short-held lock: never across vault, index, CAS, stat or journal I/O
+	// — a writer's coherence stat and persist run under writeMu, and only
+	// the pointer/stamp moves go through openMu (A-803).
 	openMu sync.Mutex
 	open   *Changeset // nil when none is open; guarded by openMu
 	nextOp int        // op<N> counter, incl. cascade sub-ops; guarded by openMu
+	// csStamp is the (size, mtime) of the changeset.json the published
+	// cache was persisted from or rehydrated from — the coherence stamp the
+	// A-803 writer check compares against disk before mutating (F-805-1).
+	// Guarded by openMu, beside the cache it describes; the stat that
+	// produces or compares it always runs under writeMu, never under
+	// openMu, so openMu stays I/O-free.
+	csStamp journalStamp
 	// journalStampMu guards journalStamp: every journal append this Engine
 	// makes refreshes the stamp, and ReloadIfChanged (reload.go, 008
 	// contract §3) stats the journal and compares it under the same lock,
@@ -61,8 +89,12 @@ type Engine struct {
 }
 
 // cacheOpen stores c as the engine's cached open changeset, leaving the op
-// counter alone — the shape Append and the mutation tails need, where the
-// changeset object is extended in place and only the cache pointer moves.
+// counter and the coherence stamp alone. A-803 gave it no production
+// callers — every writer now publishes through publishWritten or
+// cacheOpenAt with the stamp that matches what it just wrote — but it
+// remains the exact pointer-move a test needs to install a forged cache
+// object (staged_test.go) without disturbing the stamp that still
+// describes disk.
 func (e *Engine) cacheOpen(c *Changeset) {
 	e.openMu.Lock()
 	e.open = c
@@ -70,11 +102,13 @@ func (e *Engine) cacheOpen(c *Changeset) {
 }
 
 // cacheOpenAt stores c as the cached open changeset together with the op
-// counter rehydrated from it — the shape OpenChangeset and Current need.
-func (e *Engine) cacheOpenAt(c *Changeset, nextOp int) {
+// counter and the coherence stamp it was persisted with — the shape
+// OpenChangeset publishes with (A-803).
+func (e *Engine) cacheOpenAt(c *Changeset, nextOp int, stamp journalStamp) {
 	e.openMu.Lock()
 	e.open = c
 	e.nextOp = nextOp
+	e.csStamp = stamp
 	e.openMu.Unlock()
 }
 
@@ -105,8 +139,9 @@ func (e *Engine) cachedOpen() *Changeset {
 
 // cachedOpenCopy returns a deep copy of the cached open changeset for the
 // callers a value escapes to (008 D-8H), nil when none is cached. The copy
-// is taken under openMu so it can never catch an Append's id draw and op
-// insert half-done — that pair is one critical section (stageAppendOp).
+// is taken under openMu so it can never catch a cache swap half-done; the
+// object it clones is a published state that A-803 writers never mutate in
+// place, so the result is whole either way.
 func (e *Engine) cachedOpenCopy() *Changeset {
 	e.openMu.Lock()
 	defer e.openMu.Unlock()
@@ -114,81 +149,24 @@ func (e *Engine) cachedOpenCopy() *Changeset {
 }
 
 // cacheOpenRehydrated stores c — a changeset just read back from disk — as
-// the cached open changeset and LIFTS the op counter to nextOp, never
-// lowering it. Ownership of c transfers to the cache: callers hand over
-// their own deep copy (rehydrateOpen passes c.clone()) and keep their
-// object unshared. This is the D-8H amendment to rehydration: an Append
+// the cached open changeset, LIFTS the op counter to nextOp (never
+// lowering it) and records the coherence stamp the read was taken with.
+// Ownership of c transfers to the cache: callers hand over their own deep
+// copy (rehydrateOpen passes c.clone()) and keep their object unshared.
+// The raise-only counter is the D-8H amendment to rehydration: an Append
 // whose id is drawn but not yet persisted may be in flight while Current
 // reads disk, and disk cannot see that op, so setting nextOp = 1+maxOpN(disk)
 // flat could rewind the counter under the drawn id and hand the next
 // Append a duplicate. Raising it instead keeps the R-804 rule without
 // exception: gaps are harmless and self-heal, duplicates are not.
-func (e *Engine) cacheOpenRehydrated(c *Changeset, nextOp int) {
+func (e *Engine) cacheOpenRehydrated(c *Changeset, nextOp int, stamp journalStamp) {
 	e.openMu.Lock()
 	e.open = c
 	if nextOp > e.nextOp {
 		e.nextOp = nextOp
 	}
+	e.csStamp = stamp
 	e.openMu.Unlock()
-}
-
-// stageAppendOp is Append's cache critical section (008 D-8H). Under ONE
-// openMu hold it draws op's op<N> id — its cascade sub-ops included — and
-// inserts the numbered op into the engine's CACHED changeset, so a
-// concurrent Current can neither rewind the counter under the drawn id nor
-// swap the cache to a disk copy that lacks this op. It returns the cached
-// changeset the op landed in: the object Append's whole persist tail —
-// checks recompute, changeset.json write, journal — must then use, so the
-// cache and what lands on disk stay the same thing.
-//
-// A cache cleared mid-Append (a concurrent forgetOpen) is re-seeded with c:
-// the changeset is unmodified on disk and nextOp already counts past every
-// op c carries. A cache holding a rehydrated copy of the SAME changeset is
-// adopted as the target — D-8H stages into whatever the cache holds. Only
-// a DIFFERENT changeset id is refused, before any id is drawn: grafting the
-// op onto another changeset, or resurrecting c over it, would corrupt one
-// of them.
-//
-// The caller must have finished every step that reads or writes op before
-// calling this — validation, content storage, SourceSHA capture — since
-// numbering and insertion happen inside the lock.
-func (e *Engine) stageAppendOp(c *Changeset, op *Op) (*Changeset, error) {
-	e.openMu.Lock()
-	defer e.openMu.Unlock()
-	target := e.open
-	switch {
-	case target == nil:
-		target = c
-		e.open = c
-	case target != c && target.ID != c.ID:
-		return nil, fmt.Errorf("stage: append: the open changeset changed while the op was being prepared: %s is open, not %s",
-			target.ID, c.ID)
-	}
-	e.assignIDs(op)
-	target.Ops = append(target.Ops, *op)
-	return target, nil
-}
-
-// unstageAppendOp is stageAppendOp's inverse for a failed persist tail
-// (008 D-8H): the cache must equal what will be on disk, and a tail that
-// failed before the changeset.json write leaves the op unpersisted — so the
-// cache drops it again, under openMu, and checks is restored with it. Only
-// a cache that still holds the changeset the op was staged into is
-// corrected: a cache that has moved on is not this Append's to rewrite, and
-// the op was never on disk for it to miss.
-func (e *Engine) unstageAppendOp(c *Changeset, opID string, checks Checks) {
-	e.openMu.Lock()
-	defer e.openMu.Unlock()
-	if e.open != c {
-		return
-	}
-	for i := range c.Ops {
-		if c.Ops[i].ID == opID {
-			c.Ops = append(c.Ops[:i], c.Ops[i+1:]...)
-			break
-		}
-	}
-	c.Checks = checks
 }
 
 // ForceNextCommit marks the next Commit as one that overrode a lint
