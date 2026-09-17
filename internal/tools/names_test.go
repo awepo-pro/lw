@@ -12,7 +12,7 @@ import (
 var wireNameRE = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
 // TestWireNameRoundTripsThroughList proves the mapping is total and
-// bijective over the real 17 tool names — driven off reg.List(), not a
+// bijective over the real 18 tool names — driven off reg.List(), not a
 // hand-built copy of the table, so a renamed or added tool exercises this
 // too. It is also names.go's own regression test for the switch-not-
 // ReplaceAll requirement: "stage.create_page" carries an underscore inside
@@ -21,8 +21,8 @@ var wireNameRE = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 func TestWireNameRoundTripsThroughList(t *testing.T) {
 	reg := minimalRegistry(t)
 	names := reg.List()
-	if len(names) != 17 {
-		t.Fatalf("registry has %d tools, want 17", len(names))
+	if len(names) != 18 {
+		t.Fatalf("registry has %d tools, want 18", len(names))
 	}
 	for _, tool := range names {
 		wire := WireName(tool.Name)
@@ -36,7 +36,7 @@ func TestWireNameRoundTripsThroughList(t *testing.T) {
 }
 
 // TestNameDefaultBranchesAreConsistent exercises both switches' default
-// branch — a name outside the fixed 17 — pinned as its own case because
+// branch — a name outside the fixed 18 — pinned as its own case because
 // neither switch's default fires anywhere in
 // TestWireNameRoundTripsThroughList.
 func TestNameDefaultBranchesAreConsistent(t *testing.T) {

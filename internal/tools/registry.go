@@ -58,8 +58,9 @@ type Registry struct {
 }
 
 // NewRegistry builds the tool registry over d. This subtask (S3-T1)
-// registers the 7 read-only tools; S3-T2 adds the 10 stage.* tools to the
-// same package, bringing the total to the backbone's 17.
+// registers the 7 read-only tools; S3-T2 added the 10 stage.* tools,
+// bringing the total to the backbone's 17; 008 adds the read-only
+// discovery tool raw.list as the 18th.
 func NewRegistry(d Deps) *Registry {
 	r := &Registry{
 		deps:  d,
@@ -74,7 +75,8 @@ func NewRegistry(d Deps) *Registry {
 	return r
 }
 
-// readTools returns the 7 read-only tools (backbone §6, rows 1-7).
+// readTools returns the read-only tools: backbone §6's rows 1-7, plus 008's
+// raw.list, registered directly after raw.get (008 contract §4.2).
 func readTools(d Deps) []Tool {
 	return []Tool{
 		vaultOrientTool(d),
@@ -83,6 +85,7 @@ func readTools(d Deps) []Tool {
 		wikiNeighborsTool(d),
 		wikiBacklinksTool(d),
 		rawGetTool(d),
+		rawListTool(d),
 		wikiLintTool(d),
 	}
 }

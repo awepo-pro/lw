@@ -33,7 +33,8 @@ func rawGetTool(d Deps) Tool {
 			"vault-relative path under raw/ — a committed source, or one just " +
 			"staged in the open changeset via stage.ingest_source (read before " +
 			"commit too). Long sources are split into ~4000-token chunks; call " +
-			"again with an increasing chunk number to read the rest.",
+			"again with an increasing chunk number to read the rest. " +
+			"If you do not know a raw source's exact path, call raw.list first.",
 		Schema:   json.RawMessage(rawGetSchema),
 		ReadOnly: true,
 		Handler: func(ctx context.Context, args json.RawMessage) (Result, error) {
@@ -125,6 +126,9 @@ func rawNotFoundMessage(d Deps, source string) string {
 		"raw source %q was not found; provide the exact vault-relative path under raw/ — check a citing page's ^[raw/...] provenance marker",
 		source,
 	)
+	// 008 §4.2: point at raw.list before the staged-paths suffix, so a
+	// model that knows no path has a first move that is not a guess.
+	msg += "; call raw.list to see every raw source"
 	if d.Engine == nil {
 		return msg
 	}

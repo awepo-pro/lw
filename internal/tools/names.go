@@ -20,6 +20,8 @@ func WireName(canonical string) string {
 	switch canonical {
 	case "raw.get":
 		return "raw_get"
+	case "raw.list":
+		return "raw_list"
 	case "vault.orient":
 		return "vault_orient"
 	case "wiki.backlinks":
@@ -70,6 +72,8 @@ func CanonicalName(wire string) string {
 	switch wire {
 	case "raw_get":
 		return "raw.get"
+	case "raw_list":
+		return "raw.list"
 	case "vault_orient":
 		return "vault.orient"
 	case "wiki_backlinks":

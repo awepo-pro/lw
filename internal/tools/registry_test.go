@@ -35,6 +35,7 @@ func minimalRegistry(t *testing.T) *Registry {
 // order List() must produce.
 var wantToolNames = []string{
 	"raw.get",
+	"raw.list",
 	"stage.add_link",
 	"stage.close",
 	"stage.create_page",
@@ -57,8 +58,8 @@ func TestRegistryListCountAndOrder(t *testing.T) {
 	reg := minimalRegistry(t)
 	list := reg.List()
 
-	if len(list) != 17 {
-		t.Fatalf("List() returned %d tools, want 17", len(list))
+	if len(list) != 18 {
+		t.Fatalf("List() returned %d tools, want 18", len(list))
 	}
 
 	var got []string
@@ -80,8 +81,8 @@ func TestRegistryListCountAndOrder(t *testing.T) {
 // silently run zero tests after a registry edit.
 func TestToolCount(t *testing.T) {
 	reg := minimalRegistry(t)
-	if got := len(reg.List()); got != 17 {
-		t.Fatalf("registry exposes %d tools, want 17", got)
+	if got := len(reg.List()); got != 18 {
+		t.Fatalf("registry exposes %d tools, want 18", got)
 	}
 }
 
@@ -146,9 +147,9 @@ func propertyNames(props map[string]json.RawMessage) []string {
 	return names
 }
 
-// TestReadToolsAgainstMinimal calls every one of the 7 read tools against
+// TestReadToolsAgainstMinimal calls every read tool but raw.list against
 // spec/fixtures/minimal and asserts each returns non-empty, non-error
-// Content (backbone §6, S3-T1 goal 3).
+// Content (backbone §6, S3-T1 goal 3; raw.list is covered by TestRawList).
 func TestReadToolsAgainstMinimal(t *testing.T) {
 	reg := minimalRegistry(t)
 	ctx := context.Background()

@@ -5,10 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
-	"path"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/awepo-pro/lw/internal/stage"
 	"github.com/awepo-pro/lw/internal/vault"
@@ -91,14 +89,12 @@ func stageIngestSourceTool(d Deps) Tool {
 		if kind != "article" && kind != "paper" && kind != "transcript" {
 			kind = "article"
 		}
-		name := slugSourceName(doc.Title)
-		if name == "" {
-			name = slugSourceName(path.Base(uri))
-		}
-		if name == "" {
-			return Result{IsError: true, Content: "could not derive a stable source filename from uri or extracted title"}, nil
-		}
-		sourcePath := "raw/" + rawKindDir(kind) + "/" + name + ".md"
+		// 008 §4.1: title, else basename minus one trailing extension, else
+		// "untitled" — never empty, so the old "could not derive a stable
+		// source filename" refusal is gone.
+		name := sourceNameForDoc(doc.Title, uri)
+		kindDir := rawKindDir(kind)
+		candidate := "raw/" + kindDir + "/" + name + ".md"
 		sourceURL := strings.TrimSpace(doc.SourceURL)
 		if sourceURL == "" {
 			sourceURL = uri
@@ -120,18 +116,36 @@ func stageIngestSourceTool(d Deps) Tool {
 				}
 			}
 		}
+		// 008 §4.1 splits the old "same path OR same sha" refusal: a body
+		// already proposed in this changeset is still refused with the
+		// existing text — compared by BODY sha (C-806), the way the
+		// committed check above compares frontmatter shas, because the
+		// whole-file sha Append records in op.SHA256 changes whenever
+		// source_url does and would buy the same body a -2 path — while a
+		// taken candidate holding a DIFFERENT source falls through to the
+		// -n suffix below instead of cornering the agent.
 		if d.Engine != nil {
-			// After Append the engine replaces op.SHA256 with the sha of the
-			// stored post-image, so this compares file bytes with file bytes.
 			fileSHA := vault.BodySHA256(string(content))
 			if cs, currentErr := d.Engine.Current(); currentErr == nil {
 				for _, op := range cs.Live() {
-					if op.Kind == stage.OpIngestSource && (op.Path == sourcePath || op.SHA256 == fileSHA) {
-						return Result{IsError: true, Content: fmt.Sprintf("source %q is already ingested or proposed in this changeset (duplicate path or sha256)", sourcePath)}, nil
+					if op.Kind != stage.OpIngestSource {
+						continue
+					}
+					dup := false
+					if sha := stagedBodySHA(d, op.Path); sha != "" {
+						dup = sha == bodySHA
+					} else {
+						// The staged bytes could not be read back (a CAS
+						// failure); keep the pre-008 whole-file comparison.
+						dup = op.SHA256 == fileSHA
+					}
+					if dup {
+						return Result{IsError: true, Content: fmt.Sprintf("source %q is already ingested or proposed in this changeset (duplicate path or sha256)", candidate)}, nil
 					}
 				}
 			}
 		}
+		_, sourcePath, suffixed := resolveSourcePath(d, kindDir, name)
 		extractor := doc.Extractor
 		if extractor == "" {
 			extractor = "local"
@@ -153,8 +167,36 @@ func stageIngestSourceTool(d Deps) Tool {
 		n := len(chunkText(body, rawChunkRunes))
 		res.Content = fmt.Sprintf("%s at %s — %d chunk(s); read it with raw.get {\"source\":%q,\"chunk\":1}",
 			res.Content, sourcePath, n, sourcePath)
+		// 008 §4.1: when the -n suffix decided the path, say so — otherwise
+		// the agent cannot tell why the source did not land at its title.
+		if suffixed {
+			res.Content += fmt.Sprintf(" named %s because %s already holds a different source.", sourcePath, candidate)
+		}
 		return res, nil
 	}}
+}
+
+// stagedBodySHA returns the sha to compare the incoming body against for
+// one live ingest_source op: the sha256 of the body parsed back out of the
+// op's stored bytes — the same read raw.get and raw.list make through
+// Engine.StagedFile, because Append clears op.Content and keeps only the
+// whole-file sha in op.SHA256 (C-806) — or the sha of the whole stored
+// bytes when they do not parse, mirroring stage's own ingestBodySHA. ""
+// means the bytes could not be read at all and the caller falls back to
+// the pre-008 whole-file comparison on op.SHA256; a hex sha256 is never
+// "".
+func stagedBodySHA(d Deps, path string) string {
+	if d.Engine == nil {
+		return ""
+	}
+	b, staged, err := d.Engine.StagedFile(path)
+	if err != nil || !staged {
+		return ""
+	}
+	if src, perr := vault.ParseRawSource("raw/proposed/proposal.md", b); perr == nil {
+		return vault.BodySHA256(src.Body)
+	}
+	return vault.BodySHA256(string(b))
 }
 
 // rawSourceDocument renders the canonical bytes of a raw/ file for one
@@ -207,24 +249,4 @@ func rawDocumentDefect(sourceURL, body string, b []byte) string {
 	}
 	return fmt.Sprintf(
 		"source url %q cannot be recorded in raw frontmatter as a plain YAML scalar; ingest from a path or URL without newlines or \" #\" sequences", sourceURL)
-}
-
-func slugSourceName(s string) string {
-	s = sanitizeSourceSlug(strings.ToLower(strings.TrimSpace(s)))
-	return strings.Trim(s, "-")
-}
-
-func sanitizeSourceSlug(s string) string {
-	var b strings.Builder
-	dash := false
-	for _, r := range s {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
-			b.WriteRune(r)
-			dash = false
-		} else if !dash {
-			b.WriteByte('-')
-			dash = true
-		}
-	}
-	return strings.Trim(b.String(), "-")
 }

@@ -161,7 +161,7 @@ func TestStageIngestDuplicateSHARejected(t *testing.T) {
 func TestStageToolSchemasAndNames(t *testing.T) {
 	reg, _, _ := engineRegistry(t, nil)
 	list := reg.List()
-	if len(list) != 17 {
+	if len(list) != 18 {
 		t.Fatalf("tool count = %d", len(list))
 	}
 	names := make([]string, len(list))
