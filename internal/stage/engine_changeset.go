@@ -37,10 +37,12 @@ func (e *Engine) changesetCommittedDir() string {
 // an error matching ErrNoChangeset, the sentinel Current already owns.
 //
 // It is deliberately a read-only stat and nothing more (005 contract §6, as
-// amended by R-509): Current writes the engine's unlocked open/nextOp
-// fields, and the ask pane's turn goroutine calls Current while the pane's
-// frames are rendering, so a title lookup that went through Current — or
-// touched any Engine field beyond the root path — would race it.
+// amended by R-509) — though not because Engine state is unguarded: since
+// 008 A-802 the engine's open/nextOp fields are openMu-guarded, and Current
+// is safe to call from the ask pane's turn goroutine. The stat-only shape
+// stays right for its own reasons: it costs a directory walk instead of
+// Current's read-and-cache, and answering a display question must not
+// repopulate the engine's changeset cache as a side effect.
 // ChangesetState reads directory entries under e.root and nothing else.
 //
 // id must be a bare directory name, as every id newChangesetID draws is:

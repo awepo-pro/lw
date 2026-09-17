@@ -146,8 +146,9 @@ func TestChangesetState(t *testing.T) {
 	// amendment names: the lookup runs while Current runs — in production,
 	// from a tea.Cmd goroutine while the turn goroutine and Update call
 	// Current — and must never share a word of engine state with it.
-	// Current's own unlocked open/nextOp writes are why the lookup reads
-	// none of them; this subtest exists so `-race` proves that.
+	// Current's open/nextOp writes are openMu-guarded since 008 A-802,
+	// but the lookup reads none of them anyway; this subtest exists so
+	// `-race` proves that.
 	t.Run("concurrent_with_current_is_race_free", func(t *testing.T) {
 		e, _ := newTestEngine(t)
 		cs, err := e.OpenChangeset("watched from a lookup", testAuthor)

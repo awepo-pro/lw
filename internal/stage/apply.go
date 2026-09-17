@@ -59,7 +59,19 @@ func (e *Engine) Commit(message string) (string, error) {
 		e.Close()
 		return "", fmt.Errorf("stage: commit: %w", err)
 	}
+	if e.invalidateOpen != nil {
+		e.invalidateOpen()
+	}
 	c := e.cachedOpen()
+	if c == nil {
+		// A forgetOpen landed between Refresh's repopulation and this
+		// read — reachable only when another goroutine invalidates the
+		// cache while Commit runs (008 F-R2). The changeset is intact
+		// on disk, so refuse exactly as a commit with no changeset
+		// would; dereferencing the nil cache is not an option.
+		e.Close()
+		return "", fmt.Errorf("stage: commit: %w", ErrNoChangeset)
+	}
 	if hasStaleOp(c.Ops) {
 		e.Close()
 		return "", ErrStale

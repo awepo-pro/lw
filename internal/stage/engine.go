@@ -32,7 +32,12 @@ type Engine struct {
 	now        func() time.Time        // injected (00-conventions.md §3)
 	rand       io.Reader               // injected; id entropy
 	faultAfter func(step string) error // test-only; nil in production
-	forceNext  bool                    // next Commit overrode a lint regression (D-AG)
+	// invalidateOpen is a test-only hook, nil in production: Commit runs it
+	// just before reading the cached open changeset, so a test can park a
+	// forgetOpen in the Refresh→cachedOpen window deterministically
+	// (008 F-R2) instead of racing a real one into it.
+	invalidateOpen func()
+	forceNext      bool // next Commit overrode a lint regression (D-AG)
 	// openMu guards open and nextOp (008 A-802): the reload tick's
 	// ReloadIfChanged, an agent turn's Current/Append and a review load all
 	// touch those two fields from different goroutines, so every read and
@@ -71,13 +76,16 @@ func (e *Engine) cacheOpenAt(c *Changeset, nextOp int) {
 	e.openMu.Unlock()
 }
 
-// forgetOpen clears the cached open changeset and the op counter. The
-// counter is always rehydrated by the Current() call that repopulates the
-// cache, so zeroing it here is safe.
+// forgetOpen clears the cached open changeset and leaves the op counter
+// alone. Zeroing nextOp would let an Append already holding the old
+// changeset draw a duplicate op<N> — it numbers through takeOpNumber
+// without consulting Current again (008 F-R1). A stale-high counter at
+// worst leaves a gap in the ids, which is harmless and self-heals: every
+// cache repopulation rehydrates 1+maxOpN from disk. A duplicate id in a
+// persisted changeset is not harmless, so the counter is never rewound.
 func (e *Engine) forgetOpen() {
 	e.openMu.Lock()
 	e.open = nil
-	e.nextOp = 0
 	e.openMu.Unlock()
 }
 
