@@ -63,8 +63,7 @@ func (e *Engine) Revert(commitID string) (*Changeset, error) {
 		intent = fmt.Sprintf("revert of %s (skipped: %s)", commitID, strings.Join(skipped, ", "))
 	}
 
-	c, err := e.OpenChangeset(intent, Author{Kind: "human"})
-	if err != nil {
+	if _, err := e.OpenChangeset(intent, Author{Kind: "human"}); err != nil {
 		return nil, fmt.Errorf("stage: revert %s: %w", commitID, err)
 	}
 
@@ -74,12 +73,22 @@ func (e *Engine) Revert(commitID string) (*Changeset, error) {
 		}
 	}
 
+	// D-8H: OpenChangeset returns a copy, and the Appends above staged into
+	// the engine's cached changeset, so that copy still shows zero ops.
+	// Read the changeset back — Current returns the cache's copy with every
+	// appended op — before the reverted event is journalled, so the caller
+	// sees the proposal that actually exists.
+	final, err := e.Current()
+	if err != nil {
+		return nil, fmt.Errorf("stage: revert %s: read back: %w", commitID, err)
+	}
+
 	ev := Event{
 		TS:        e.now().UTC(),
 		Kind:      EvReverted,
-		Changeset: c.ID,
+		Changeset: final.ID,
 		Commit:    commitID,
-		Actor:     c.Author,
+		Actor:     final.Author,
 	}
 	if len(skipped) > 0 {
 		data, err := json.Marshal(struct {
@@ -94,7 +103,7 @@ func (e *Engine) Revert(commitID string) (*Changeset, error) {
 		return nil, fmt.Errorf("stage: revert %s: %w", commitID, err)
 	}
 
-	return c, nil
+	return final, nil
 }
 
 // classifyRevertDelta partitions cur against prev into the ADDED, REMOVED

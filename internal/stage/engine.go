@@ -42,10 +42,12 @@ type Engine struct {
 	// ReloadIfChanged, an agent turn's Current/Append and a review load all
 	// touch those two fields from different goroutines, so every read and
 	// write of either goes through the cacheOpen*/forgetOpen/cachedOpen/
-	// takeOpNumber helpers below. It is a short-held lock: never across
-	// vault, index, CAS or journal I/O. It is never held together with
-	// journalStampMu — no code path takes both, so there is no lock order
-	// between them to document.
+	// cachedOpenCopy/stageAppendOp/unstageAppendOp/assignIDs helpers below.
+	// It is a short-held lock: never across vault, index, CAS or journal
+	// I/O — Append stages the op into the cache under it, then recomputes
+	// and persists with it released (008 D-8H). It is never held together
+	// with journalStampMu — no code path takes both, so there is no lock
+	// order between them to document.
 	openMu sync.Mutex
 	open   *Changeset // nil when none is open; guarded by openMu
 	nextOp int        // op<N> counter, incl. cascade sub-ops; guarded by openMu
@@ -78,11 +80,13 @@ func (e *Engine) cacheOpenAt(c *Changeset, nextOp int) {
 
 // forgetOpen clears the cached open changeset and leaves the op counter
 // alone. Zeroing nextOp would let an Append already holding the old
-// changeset draw a duplicate op<N> — it numbers through takeOpNumber
-// without consulting Current again (008 F-R1). A stale-high counter at
-// worst leaves a gap in the ids, which is harmless and self-heals: every
-// cache repopulation rehydrates 1+maxOpN from disk. A duplicate id in a
-// persisted changeset is not harmless, so the counter is never rewound.
+// changeset draw a duplicate op<N> — it numbers through assignIDs without
+// consulting Current again (008 F-R1), and since D-8H a rehydration lifts
+// the counter instead of setting it, so the rule has no exception left. A
+// stale-high counter at worst leaves a gap in the ids, which is harmless
+// and self-heals: every cache repopulation raises nextOp to 1+maxOpN from
+// disk. A duplicate id in a persisted changeset is not harmless, so the
+// counter is never rewound.
 func (e *Engine) forgetOpen() {
 	e.openMu.Lock()
 	e.open = nil
@@ -90,22 +94,101 @@ func (e *Engine) forgetOpen() {
 }
 
 // cachedOpen returns the cached open changeset, or nil when none is cached.
+// In-package callers only: the result is the live cache object, not a copy,
+// so it and its slices must not escape the package (D-8H) — anything handed
+// to callers outside internal/stage goes through cachedOpenCopy.
 func (e *Engine) cachedOpen() *Changeset {
 	e.openMu.Lock()
 	defer e.openMu.Unlock()
 	return e.open
 }
 
-// takeOpNumber draws the next op<N> number. One lock acquisition numbers a
-// whole op: its cascade sub-ops recurse through this same method, which is
-// correct — numbering stays gapless and total — at the cost of a lock per
-// sub-op, negligible against Append's validation and lint work.
-func (e *Engine) takeOpNumber() int {
+// cachedOpenCopy returns a deep copy of the cached open changeset for the
+// callers a value escapes to (008 D-8H), nil when none is cached. The copy
+// is taken under openMu so it can never catch an Append's id draw and op
+// insert half-done — that pair is one critical section (stageAppendOp).
+func (e *Engine) cachedOpenCopy() *Changeset {
 	e.openMu.Lock()
 	defer e.openMu.Unlock()
-	n := e.nextOp
-	e.nextOp++
-	return n
+	return e.open.clone()
+}
+
+// cacheOpenRehydrated stores c — a changeset just read back from disk — as
+// the cached open changeset and LIFTS the op counter to nextOp, never
+// lowering it. Ownership of c transfers to the cache: callers hand over
+// their own deep copy (rehydrateOpen passes c.clone()) and keep their
+// object unshared. This is the D-8H amendment to rehydration: an Append
+// whose id is drawn but not yet persisted may be in flight while Current
+// reads disk, and disk cannot see that op, so setting nextOp = 1+maxOpN(disk)
+// flat could rewind the counter under the drawn id and hand the next
+// Append a duplicate. Raising it instead keeps the R-804 rule without
+// exception: gaps are harmless and self-heal, duplicates are not.
+func (e *Engine) cacheOpenRehydrated(c *Changeset, nextOp int) {
+	e.openMu.Lock()
+	e.open = c
+	if nextOp > e.nextOp {
+		e.nextOp = nextOp
+	}
+	e.openMu.Unlock()
+}
+
+// stageAppendOp is Append's cache critical section (008 D-8H). Under ONE
+// openMu hold it draws op's op<N> id — its cascade sub-ops included — and
+// inserts the numbered op into the engine's CACHED changeset, so a
+// concurrent Current can neither rewind the counter under the drawn id nor
+// swap the cache to a disk copy that lacks this op. It returns the cached
+// changeset the op landed in: the object Append's whole persist tail —
+// checks recompute, changeset.json write, journal — must then use, so the
+// cache and what lands on disk stay the same thing.
+//
+// A cache cleared mid-Append (a concurrent forgetOpen) is re-seeded with c:
+// the changeset is unmodified on disk and nextOp already counts past every
+// op c carries. A cache holding a rehydrated copy of the SAME changeset is
+// adopted as the target — D-8H stages into whatever the cache holds. Only
+// a DIFFERENT changeset id is refused, before any id is drawn: grafting the
+// op onto another changeset, or resurrecting c over it, would corrupt one
+// of them.
+//
+// The caller must have finished every step that reads or writes op before
+// calling this — validation, content storage, SourceSHA capture — since
+// numbering and insertion happen inside the lock.
+func (e *Engine) stageAppendOp(c *Changeset, op *Op) (*Changeset, error) {
+	e.openMu.Lock()
+	defer e.openMu.Unlock()
+	target := e.open
+	switch {
+	case target == nil:
+		target = c
+		e.open = c
+	case target != c && target.ID != c.ID:
+		return nil, fmt.Errorf("stage: append: the open changeset changed while the op was being prepared: %s is open, not %s",
+			target.ID, c.ID)
+	}
+	e.assignIDs(op)
+	target.Ops = append(target.Ops, *op)
+	return target, nil
+}
+
+// unstageAppendOp is stageAppendOp's inverse for a failed persist tail
+// (008 D-8H): the cache must equal what will be on disk, and a tail that
+// failed before the changeset.json write leaves the op unpersisted — so the
+// cache drops it again, under openMu, and checks is restored with it. Only
+// a cache that still holds the changeset the op was staged into is
+// corrected: a cache that has moved on is not this Append's to rewrite, and
+// the op was never on disk for it to miss.
+func (e *Engine) unstageAppendOp(c *Changeset, opID string, checks Checks) {
+	e.openMu.Lock()
+	defer e.openMu.Unlock()
+	if e.open != c {
+		return
+	}
+	for i := range c.Ops {
+		if c.Ops[i].ID == opID {
+			c.Ops = append(c.Ops[:i], c.Ops[i+1:]...)
+			break
+		}
+	}
+	c.Checks = checks
 }
 
 // ForceNextCommit marks the next Commit as one that overrode a lint

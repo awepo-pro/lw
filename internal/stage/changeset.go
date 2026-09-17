@@ -176,3 +176,87 @@ func (c *Changeset) Touches() []string {
 	}
 	return sortedSet(set)
 }
+
+// clone returns a deep copy of c, nil for a nil receiver. Every slice the
+// type graph holds is copied — Ops, each op's Sources/SourceSHAs/
+// Provenance/Content, each Hunk's Before/Add/Del lines, and each Cascade
+// tree recursively — so mutating a clone, or any slice reachable from it,
+// can never reach the original. This is what makes D-8H's copy rule
+// possible: Current hands callers a clone of the engine's cached changeset,
+// never the cache itself, so a caller's mutation cannot corrupt engine
+// state.
+func (c *Changeset) clone() *Changeset {
+	if c == nil {
+		return nil
+	}
+	out := *c
+	out.Ops = cloneOps(c.Ops)
+	return &out
+}
+
+// cloneOps deep-copies an op slice, preserving nil and empty-non-nil
+// distinctions — Ops marshals without omitempty, so a changeset whose Ops
+// is []Op{} must not come back as nil (`"ops": null`).
+func cloneOps(ops []Op) []Op {
+	if ops == nil {
+		return nil
+	}
+	out := make([]Op, len(ops))
+	for i := range ops {
+		out[i] = ops[i].clone()
+	}
+	return out
+}
+
+// clone returns a deep copy of op, recursing through Cascade (cloneOps).
+func (op Op) clone() Op {
+	op.Sources = cloneStrings(op.Sources)
+	op.SourceSHAs = cloneStrings(op.SourceSHAs)
+	op.Provenance = cloneStrings(op.Provenance)
+	op.Content = cloneBytes(op.Content)
+	op.Hunks = cloneHunks(op.Hunks)
+	op.Cascade = cloneOps(op.Cascade)
+	return op
+}
+
+// cloneHunks deep-copies a hunk slice; each hunk's line slices are copied
+// too, since a caller mutating a returned hunk's Add/Del/Before must not
+// reach the engine's copy.
+func cloneHunks(hunks []Hunk) []Hunk {
+	if hunks == nil {
+		return nil
+	}
+	out := make([]Hunk, len(hunks))
+	for i := range hunks {
+		out[i] = Hunk{
+			ID:      hunks[i].ID,
+			Path:    hunks[i].Path,
+			Section: hunks[i].Section,
+			Before:  cloneStrings(hunks[i].Before),
+			Add:     cloneStrings(hunks[i].Add),
+			Del:     cloneStrings(hunks[i].Del),
+			Dropped: hunks[i].Dropped,
+		}
+	}
+	return out
+}
+
+// cloneStrings deep-copies a string slice, preserving nil.
+func cloneStrings(s []string) []string {
+	if s == nil {
+		return nil
+	}
+	out := make([]string, len(s))
+	copy(out, s)
+	return out
+}
+
+// cloneBytes deep-copies a byte slice, preserving nil.
+func cloneBytes(b []byte) []byte {
+	if b == nil {
+		return nil
+	}
+	out := make([]byte, len(b))
+	copy(out, b)
+	return out
+}
