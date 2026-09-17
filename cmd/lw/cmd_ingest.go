@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -15,122 +16,13 @@ import (
 	"github.com/awepo-pro/lw/internal/agent"
 	"github.com/awepo-pro/lw/internal/config"
 	"github.com/awepo-pro/lw/internal/extract"
-	"github.com/awepo-pro/lw/internal/llm"
 	"github.com/awepo-pro/lw/internal/stage"
-	"github.com/awepo-pro/lw/internal/tools"
 )
 
-// httpTimeout bounds every fetch NewHTML's Extract makes on ingest's
-// behalf — a hung remote server must not hang the whole command.
+// httpTimeout bounds every fetch the CLI's HTML extractor makes —
+// cmdIngest's own source chain below and agent_deps.go's agentExtractors
+// alike — so a hung remote server must not hang the whole command.
 const httpTimeout = 30 * time.Second
-
-// newIngestAgent constructs the agent.Agent used by ingest, query and
-// lint --fix (cmd_ingest.go, cmd_query.go, cmd_lint.go): the single
-// package-level seam this subtask's brief asks for, since agent.Agent is
-// a small interface but internal/agent's own fake-client seam (backbone
-// §9, D-CS) is unexported and lives in another package. A test in package
-// main swaps this var for a function returning a fake agent.Agent —
-// stage.Engine.Append is enough for a fake to propose real ops with no
-// network and no LLM at all.
-//
-// Deps are assembled exactly as cmd_mcp.go's cmdMCP does — the same
-// findVaultRoot -> stage.OpenEngine -> tools.NewRegistry(tools.Deps{...})
-// sequence (backbone §9's C-104 pinned instruction) — with one addition:
-// Extract, which cmd_mcp.go's Deps leaves unset because S3 shipped before
-// this package existed. Sessions are the caller's choice: ingest and
-// lint --fix pass agent.NewFileSessions(root) so the session travels with
-// the real changeset (backbone §9, C-102); query passes its own ephemeral,
-// in-process store (cmd_query.go) so no changeset is ever touched.
-//
-// ex is the extract.Extractor the tools' Deps.Extract is built over — the
-// ingest-local seam C-123's fix needs (backbone §6, §10): cmdIngest calls
-// this directly with a Chain that resolves each scratch path it wrote back
-// to the already-extracted Doc, corrected SourceURL and all (see
-// preExtracted below), rather than letting stage.ingest_source re-extract
-// the scratch file with a bare extract.NewFile() and record the scratch
-// path itself as the raw source's provenance. newAgent (below) keeps its
-// existing three-argument signature — query, lint --fix and the TUI all
-// swap it directly in their own tests — by delegating to this with
-// extract.NewFile(), exactly what it built inline before.
-var newIngestAgent = func(e *stage.Engine, cfg *config.Config, sessions agent.SessionStore, ex extract.Extractor) (agent.Agent, error) {
-	apiKey, err := cfg.ResolveAPIKey()
-	if err != nil {
-		return nil, fmt.Errorf("resolve api key: %w", err)
-	}
-	client := llm.New(llm.Config{
-		BaseURL:     cfg.LLM.BaseURL,
-		Model:       cfg.LLM.Model,
-		APIKey:      apiKey,
-		Temperature: cfg.LLM.Temperature,
-		MaxTokens:   cfg.LLM.MaxTokens,
-	})
-	reg := tools.NewRegistry(tools.Deps{
-		Vault:   e.Vault(),
-		Index:   e.Index(),
-		Engine:  e,
-		Extract: ex,
-		Author:  stage.Author{Kind: "agent", Model: cfg.LLM.Model},
-	})
-	loopCfg := agent.LoopConfig{
-		MaxToolRounds: cfg.Limits.MaxToolRounds,
-		ContextTokens: cfg.Limits.ContextTokens,
-	}
-	return agent.NewLoop(client, reg, sessions, e, loopCfg), nil
-}
-
-// newAgent is the seam cmd_query.go, cmd_lint.go and cmd_tui.go call and
-// swap in their own tests. It is unchanged in signature and behaviour —
-// still extract.NewFile() — so none of those callers or tests are
-// affected by C-123's fix, which only changes what cmdIngest itself calls.
-var newAgent = func(e *stage.Engine, cfg *config.Config, sessions agent.SessionStore) (agent.Agent, error) {
-	return newIngestAgent(e, cfg, sessions, extract.NewFile())
-}
-
-// preExtracted is the extract.Extractor cmdIngest hands the agent's tools
-// for one ingest (C-123). stage.ingest_source only ever accepts a local
-// path, so the agent is always given a scratch file cmdIngest already
-// wrote — but re-extracting that scratch file with a bare extract.NewFile()
-// sets Doc.SourceURL to the scratch path itself, and that path is removed
-// (os.RemoveAll on a deferred temp dir) the moment lw ingest exits: every
-// committed raw file then records a provenance that no longer exists. This
-// type closes that gap by remembering, per scratch path, the Doc cmdIngest
-// already extracted from the ORIGINAL source — SourceURL corrected back to
-// that original argument before the doc is ever staged (stage below) — and
-// handing back a copy of exactly that Doc when the tool re-extracts the
-// path. CanHandle is true only for paths this ingest staged; every other
-// uri is left to the next extractor in the chain, extract.NewFile().
-type preExtracted struct {
-	docs map[string]extract.Doc
-}
-
-// newPreExtracted returns an empty preExtracted, ready for stage.
-func newPreExtracted() *preExtracted {
-	return &preExtracted{docs: make(map[string]extract.Doc)}
-}
-
-// stage records doc — with SourceURL already corrected — as the result
-// preExtracted returns for a future Extract(ctx, path).
-func (p *preExtracted) stage(path string, doc extract.Doc) {
-	p.docs[path] = doc
-}
-
-// CanHandle reports whether uri is a path preExtracted staged.
-func (p *preExtracted) CanHandle(uri string) bool {
-	_, ok := p.docs[uri]
-	return ok
-}
-
-// Extract returns a copy of the Doc staged for uri, so the caller's own
-// mutations (e.g. stage.ingest_source trimming Markdown) never alter the
-// map entry a second call to the same path would see.
-func (p *preExtracted) Extract(ctx context.Context, uri string) (*extract.Doc, error) {
-	doc, ok := p.docs[uri]
-	if !ok {
-		return nil, fmt.Errorf("preExtracted: no document staged for %s", uri)
-	}
-	out := doc
-	return &out, nil
-}
 
 // isURLSource reports whether src parses as an http or https URL — the
 // same test stage.ingest_source itself applies (internal/tools/
@@ -289,8 +181,17 @@ func cmdIngest(args []string) error {
 			}
 		}
 
-		name := filepath.Base(extract.SuggestPath(doc))
-		tmpPath := filepath.Join(tmpDir, fmt.Sprintf("%02d-%s", i+1, name))
+		// The scratch name follows the ORIGINAL source (U6) — its base
+		// name, slugified, numbered per source — not the extracted title,
+		// so the agent sees "01-quaternion.md" for "Quaternion
+		// 四元數簡介.md" rather than a name SuggestPath guessed. A source
+		// whose base name slugifies to nothing falls back to
+		// SuggestPath's base, as before 008.
+		slug := scratchSlug(sources[i])
+		if slug == "" {
+			slug = strings.TrimSuffix(filepath.Base(extract.SuggestPath(doc)), ".md")
+		}
+		tmpPath := filepath.Join(tmpDir, fmt.Sprintf("%02d-%s.md", i+1, slug))
 		if err := os.WriteFile(tmpPath, []byte(doc.Markdown), 0o644); err != nil {
 			return fmt.Errorf("write scratch file: %w", err)
 		}
@@ -312,10 +213,10 @@ func cmdIngest(args []string) error {
 	// Construct the agent (which resolves the configured API key) before
 	// opening a changeset: a bad or missing key must fail with nothing
 	// opened at all, not an empty changeset the caller has to notice and
-	// clean up by hand. newIngestAgent (not newAgent) so the tools' Extract
-	// is pre chained in front of extract.NewFile() — see preExtracted above.
+	// clean up by hand. The tools' Extract is pre chained in front of the
+	// shared agentExtractors() chain (U7) — see preExtracted above.
 	sessions := agent.NewFileSessions(e.Vault().Root())
-	toolExtract := extract.Chain(pre, extract.NewFile())
+	toolExtract := extract.Chain(pre, agentExtractors())
 	ag, err := newIngestAgent(e, cfg, sessions, toolExtract)
 	if err != nil {
 		return fmt.Errorf("construct agent: %w", err)
@@ -335,17 +236,31 @@ func cmdIngest(args []string) error {
 	final, curErr := e.Current()
 	if curErr != nil {
 		if sendErr != nil {
-			return rejectAndReturn(e, fmt.Errorf("agent turn: %w (and reading back the changeset failed: %v)", sendErr, curErr))
+			return rejectAndReturn(e, fmt.Errorf("%w (and reading back the changeset failed: %v)", agentErrorHint(sendErr, cfg.LLM.MaxTokens, true), curErr))
 		}
 		return rejectAndReturn(e, fmt.Errorf("read back changeset %s: %w", cs.ID, curErr))
 	}
 
 	if sendErr != nil {
-		return rejectAndReturn(e, fmt.Errorf("agent turn: %w", sendErr))
+		return rejectAndReturn(e, agentErrorHint(sendErr, cfg.LLM.MaxTokens, true))
+	}
+
+	// A clean turn that staged nothing is not a success (U1's sibling,
+	// 000006's zero-page commit): reject the empty changeset with the
+	// contract's own message rather than printing a summary of nothing.
+	if len(final.Live()) == 0 {
+		return rejectAndReturn(e, errors.New("agent proposed nothing for this ingest; the changeset was rejected"))
 	}
 
 	fmt.Println()
 	printChangesetSummary(os.Stdout, final)
+
+	// A raw-only ingest (live raw sources, no create_page) still succeeds —
+	// the changeset stays open for review — but says so, so the absence of
+	// pages is visible to the human the changeset waits for.
+	if _, rawOnly := ingestOnlyPaths(final); rawOnly {
+		fmt.Println("warning: 0 pages proposed — only raw source(s) staged; review before committing")
+	}
 	return nil
 }
 
@@ -362,6 +277,24 @@ func rejectAndReturn(e *stage.Engine, origErr error) error {
 		return fmt.Errorf("%w (and rejecting the changeset failed: %v)", origErr, rerr)
 	}
 	return origErr
+}
+
+// ingestOnlyPaths reports cs's live ingest_source paths, in live-op order,
+// and whether cs is raw-only: at least one live ingest_source op and zero
+// live create_page ops (008 contract §6). Shared by `lw ingest`'s
+// post-turn warning and `lw commit`'s pre-commit one — the same definition
+// review's own raw-only confirmation applies (internal/ui/review).
+func ingestOnlyPaths(cs *stage.Changeset) (paths []string, rawOnly bool) {
+	creates := 0
+	for _, op := range cs.Live() {
+		switch op.Kind {
+		case stage.OpIngestSource:
+			paths = append(paths, op.Path)
+		case stage.OpCreatePage:
+			creates++
+		}
+	}
+	return paths, len(paths) > 0 && creates == 0
 }
 
 // ingestItem is one extracted source, staged locally and described to the

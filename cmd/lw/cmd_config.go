@@ -251,7 +251,7 @@ keys:
   llm.limits.context_tokens   theme
 
 llm.api_key is stored as a reference, never a value: export the key and set
-the variable's name, e.g. lw config set llm.api_key env:DEEPSEEK_API_KEY.
+the variable's name, e.g. lw config set llm.api_key env:LW_API_KEY.
 A literal that looks like a key is refused.
 `)
 }

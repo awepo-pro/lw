@@ -150,7 +150,7 @@ func runLintFix(vaultPath, checksFlag string) error {
 	final, curErr := e.Current()
 	if curErr != nil {
 		if sendErr != nil {
-			return fmt.Errorf("agent turn: %w (and reading back the changeset failed: %v)", sendErr, curErr)
+			return fmt.Errorf("%w (and reading back the changeset failed: %v)", agentErrorHint(sendErr, cfg.LLM.MaxTokens, false), curErr)
 		}
 		return fmt.Errorf("read back changeset %s: %w", cs.ID, curErr)
 	}
@@ -159,7 +159,11 @@ func runLintFix(vaultPath, checksFlag string) error {
 	printChangesetSummary(os.Stdout, final)
 
 	if sendErr != nil {
-		return fmt.Errorf("agent turn: %w", sendErr)
+		// U1: a truncated turn names the output budget and the fix; any
+		// other error keeps the pre-008 wording (agentErrorHint). The
+		// C-808 query/lint form applies — no rejection sentence, which is
+		// ingest's alone.
+		return agentErrorHint(sendErr, cfg.LLM.MaxTokens, false)
 	}
 	return nil
 }

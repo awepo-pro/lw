@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/awepo-pro/lw/internal/stage"
 	"github.com/awepo-pro/lw/internal/ui/review"
@@ -53,8 +54,11 @@ func cmdCommit(args []string) error {
 	defer e.Close()
 
 	// Rehydrate the open changeset — ErrNoChangeset here is the "nothing
-	// staged" error path, and every step below assumes one is open.
-	if _, err := e.Current(); err != nil {
+	// staged" error path, and every step below assumes one is open. The
+	// changeset is kept: the raw-only warning below names its paths, and
+	// the ErrNothingToCommit mapping names its id.
+	cs, err := e.Current()
+	if err != nil {
 		return err
 	}
 
@@ -94,10 +98,25 @@ func cmdCommit(args []string) error {
 		e.ForceNextCommit()
 	}
 
+	// A raw-only changeset still commits (its raw sources are the point of
+	// an ingest), but says so first — the same notice `lw ingest` printed
+	// when the changeset was opened, and the same shape review's own
+	// raw-only confirmation warns about (008 contract §6). stderr, because
+	// stdout stays the result ("committed <id>").
+	if raws, rawOnly := ingestOnlyPaths(cs); rawOnly {
+		fmt.Fprintf(os.Stderr, "warning: 0 pages proposed — committing raw source(s) only: %s\n", strings.Join(raws, ", "))
+	}
+
 	commitID, err := e.Commit(*message)
 	if err != nil {
 		if errors.Is(err, stage.ErrStale) {
 			return fmt.Errorf("changeset has stale ops (the working tree changed since they were proposed); run `lw diff` to review, then re-stage before committing: %w", err)
+		}
+		if errors.Is(err, stage.ErrNothingToCommit) {
+			// Engine.Commit refuses before it journals anything, so the
+			// changeset stays open for further review; say which one and
+			// why, in git's "nothing to commit" spirit (008 contract §6).
+			return fmt.Errorf("nothing to commit: every op in %s was dropped", cs.ID)
 		}
 		return err
 	}

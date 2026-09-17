@@ -108,7 +108,9 @@ func cmdQuery(args []string) error {
 	}
 
 	if sendErr != nil {
-		return fmt.Errorf("agent turn: %w", sendErr)
+		// U1: a truncated turn names the output budget and the fix; any
+		// other error keeps the pre-008 wording (agentErrorHint).
+		return agentErrorHint(sendErr, cfg.LLM.MaxTokens, false)
 	}
 	return nil
 }

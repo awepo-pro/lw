@@ -322,6 +322,7 @@ func runDoctor(ctx context.Context, root string, o doctorOptions) doctorReport {
 
 	cfg, cfgErr := config.Load()
 	rep.Checks = append(rep.Checks, checkConfig(cfg, cfgErr))
+	rep.Checks = append(rep.Checks, checkLLMBudget(cfg, cfgErr))
 	if o.probe {
 		rep.Checks = append(rep.Checks, checkProvider(ctx, cfg))
 	}
@@ -840,7 +841,7 @@ func checkConfig(cfg *config.Config, err error) doctorCheck {
 		return doctorCheck{
 			Name:   name,
 			Detail: "no api_key configured" + about,
-			Remedy: "set it to an environment reference, e.g. lw config set llm.api_key env:DEEPSEEK_API_KEY, and export that variable",
+			Remedy: "set it to an environment reference, e.g. lw config set llm.api_key env:LW_API_KEY, and export that variable",
 		}
 	case strings.HasPrefix(ref, "env:"):
 		envName := strings.TrimPrefix(ref, "env:")
@@ -865,6 +866,33 @@ func checkConfig(cfg *config.Config, err error) doctorCheck {
 			Detail: fmt.Sprintf("api_key literal (set)%s — prefer env:NAME so the value is never stored in the config file", about),
 		}
 	}
+}
+
+// checkLLMBudget warns when llm.max_tokens sits below
+// config.MinRecommendedMaxTokens (008 contract §6): thinking-mode models
+// spend most of a round's budget reasoning — a live GLM ingest measured
+// 5,247 reasoning tokens in one round (008 W0) — so a budget under the
+// floor is how a run ends truncated with nothing proposed. Like the
+// tracked-state check, a warn keeps OK true: doctor's exit is a pass, the
+// condition is just made visible with its fix.
+func checkLLMBudget(cfg *config.Config, cfgErr error) doctorCheck {
+	const name = "llm budget"
+	if cfgErr != nil {
+		// The config check above already reports the load failure with its
+		// remedy; this check has nothing to measure without a config.
+		return doctorCheck{Name: name, OK: true, Skipped: true, Detail: "skipped: the configuration did not load"}
+	}
+	if cfg.LLM.MaxTokens < config.MinRecommendedMaxTokens {
+		return doctorCheck{
+			Name: name,
+			OK:   true,
+			Warn: true,
+			Detail: fmt.Sprintf("llm.max_tokens = %d is below %d; thinking models can spend a whole round reasoning and stop before acting",
+				cfg.LLM.MaxTokens, config.MinRecommendedMaxTokens),
+			Remedy: fmt.Sprintf("lw config set llm.max_tokens %d", config.Default().LLM.MaxTokens),
+		}
+	}
+	return doctorCheck{Name: name, OK: true, Detail: fmt.Sprintf("llm.max_tokens = %d", cfg.LLM.MaxTokens)}
 }
 
 // checkProvider reports whether the configured endpoint is reachable and

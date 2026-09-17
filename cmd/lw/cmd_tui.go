@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -181,5 +182,10 @@ func buildTUIOptions(d ui.Deps) ui.Options {
 			ui.ScreenLog:    logview.New(d),
 		},
 		Start: ui.ScreenReview,
+
+		// ReloadEvery makes the shell notice a commit another process made
+		// while the TUI sits open (008 contract §6): Engine.ReloadIfChanged
+		// on a 2s tick, broadcasting ui.VaultReloadedMsg when it fires.
+		ReloadEvery: 2 * time.Second,
 	}
 }
