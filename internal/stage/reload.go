@@ -12,8 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"time"
-
-	"github.com/awepo-pro/lw/internal/index"
 )
 
 // journalStamp is the journal's on-disk fingerprint: its byte size and the
@@ -98,6 +96,11 @@ func (e *Engine) journalChanged() (prev, cur journalStamp, changed bool, err err
 // Engine never count as a change. It clears the cached open changeset so
 // the next Current() re-reads it. It is a no-op returning (false, nil)
 // while this Engine holds the commit lock.
+//
+// The reload mutates the vault and the index in place — the *index.Index
+// handed out before the reload is the same object after it and answers
+// for the reloaded vault (008 A-801) — and it is deliberately
+// unsynchronized: callers must not run it while another goroutine is using this Engine.
 func (e *Engine) ReloadIfChanged() (bool, error) {
 	if e.unlock != nil {
 		return false, nil
@@ -110,17 +113,17 @@ func (e *Engine) ReloadIfChanged() (bool, error) {
 	if err := e.vault.Reload(); err != nil {
 		return false, fmt.Errorf("stage: reload: %w", err)
 	}
-	// The index is a disposable cache (engine.go's OpenEngine contract): a
-	// full rebuild is the honest answer to a vault that just changed under
-	// us, and it is saved so the NEXT process opens current instead of
-	// rebuilding again. e.index swaps only after the save succeeds, so a
-	// failed save leaves the old index — and the old stamp — standing for
-	// the next call to retry.
-	ix := index.Build(e.vault)
-	if err := ix.Save(filepath.Join(e.llmwikiDir(), "index.gob")); err != nil {
+	// The index is a disposable cache (engine.go's OpenEngine contract),
+	// but it is rebuilt IN PLACE (008 A-801): the agent's tool registry
+	// captured e.index at construction, so a swap would leave it searching
+	// a stale index for the life of the process. This mirrors Commit's
+	// step 7 — update over the just-reloaded vault. The save is best-effort
+	// for the NEXT process only: a failed save returns an error and leaves
+	// the stamp standing, so the next call reloads again and retries it.
+	e.index.Rebuild(e.vault)
+	if err := e.index.Save(filepath.Join(e.llmwikiDir(), "index.gob")); err != nil {
 		return false, fmt.Errorf("stage: reload: save index: %w", err)
 	}
-	e.index = ix
 	e.open = nil
 	// Stamp with what this reload actually read (cur, observed before it
 	// began) — never a fresh stat. An append landing mid-reload must stay

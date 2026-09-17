@@ -109,6 +109,15 @@ func freqMap(tokens []string) map[string]int {
 	return m
 }
 
+// Rebuild replaces ix's contents with a fresh index over every page in v,
+// keeping ix's identity: a pointer to ix captured before the rebuild — the
+// agent tool registry holds one for the process lifetime — keeps answering,
+// now for v (008 A-801, Engine.ReloadIfChanged).
+func (ix *Index) Rebuild(v *vault.Vault) {
+	fresh := Build(v)
+	ix.docs = fresh.docs
+}
+
 // Update re-indexes the pages named by paths: a path still present in v is
 // (re-)built from the vault's current content, a path no longer present in
 // v is dropped from the index entirely.
