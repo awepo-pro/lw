@@ -1,0 +1,5 @@
+{"ts":"2026-09-16T09:15:04Z","role":"user","content":"Rewrite the intro of kv-cache.md so it mentions the new invalidation section."}
+{"ts":"2026-09-16T09:15:09Z","role":"assistant","content":"I'll stage the rewrite first, then re-read the current intro for comparison."}
+{"ts":"2026-09-16T09:15:13Z","role":"tool","tool":"stage.create_page","args":"{\"path\":\"wiki/kv-cache.md\",\"title\":\"KV cache\",\"type\":\"concept\",\"confidence\":\"low\",\"contested\":false,\"body\":\"# KV cache\\n\\nA KV cache keeps reuse-friendly data close to the compute that needs it. This rewrite adds the invalidation section.\",\"rationale\":\"mention the new invalidation section\"}","result":"proposed op op-3f9c2a","staged":true}
+{"ts":"2026-09-16T09:15:15Z","role":"tool","tool":"wiki.get","args":"{\"page\":\"kv-cache.md\"}","result":"# KV cache\n\nA KV cache keeps reuse-friendly data close to the compute that needs it."}
+{"ts":"2026-09-16T09:15:22Z","role":"assistant","content":"Staged the rewrite as op-3f9c2a; the current intro is quoted above for the diff review."}

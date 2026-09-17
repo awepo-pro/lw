@@ -2,8 +2,9 @@
 // the panel itself with its tail-follow and overflow notes, the empty
 // state's intro and suggested prompts (mockgen.ask_empty), and the
 // conversation turn shape (mockgen.ask_conversation). The frame around it
-// is view.go; the inline renderer the assistant's prose goes through is
-// inline.go.
+// is view.go; assistant prose renders through the shared markdown renderer
+// (005 contract §5) with inline.go demoted to the live turn's unwritten
+// tail and Ask's own chrome.
 package ask
 
 import (
@@ -11,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/awepo-pro/lw/internal/ui"
+	"github.com/awepo-pro/lw/internal/ui/markdown"
 )
 
 // introSentence is the empty transcript's intro (mockgen.ask_empty), muted.
@@ -59,7 +61,7 @@ func (m *Model) transcriptPanel(w, th int) []string {
 	}
 
 	return ui.Panel(m.theme, ui.PanelSpec{
-		Title:     "Transcript",
+		Title:     m.transcriptTitle(),
 		Note:      note,
 		FootNote:  footNote,
 		Lines:     lines,
@@ -94,11 +96,14 @@ func (m *Model) emptyTranscriptLines(cw, th int) []string {
 
 // conversationLines renders the entries into the turn shape the frozen
 // ask-conversation grids pin: `you` (bold) plus the wrapped question, the
-// tool rows, `assistant` (bold) plus the wrapped answer, then the turn
+// tool rows, `assistant` (bold) plus the rendered answer, then the turn
 // status. Blanks separate the blocks exactly as mockgen.ask_conversation
 // draws them: one after the question, one before `assistant`, one between
 // the answer and the status, and one between two turns. cursor is the
-// selected tool call's head line, or -1.
+// selected tool call's head line, or -1. Every line counted here is a
+// RENDERED line — the scroll math (scroll.go) and the ↑/↓ notes count
+// this list, so markdown's reflow feeds them by construction (005
+// contract §5 note 5).
 func (m *Model) conversationLines(w int) (lines []string, cursor int) {
 	cursor = -1
 	prev := kindUser // a leading user entry opens the transcript, no blank
@@ -121,7 +126,10 @@ func (m *Model) conversationLines(w int) (lines []string, cursor int) {
 				lines = append(lines, "")
 			}
 			lines = append(lines, m.theme.Bold.Render("assistant"))
-			lines = append(lines, m.inlineWrap(e.text, w)...)
+			// The turn's live entry renders its settled blocks and keeps the
+			// half-written tail plain (D-5A); every earlier entry's buffer is
+			// complete and renders whole.
+			lines = append(lines, m.assistantLines(e, w, m.turnActive && i == len(m.entries)-1)...)
 			lines = append(lines, "")
 		case kindStatus:
 			for _, l := range wrapPlain(e.text, w) {
@@ -135,6 +143,65 @@ func (m *Model) conversationLines(w int) (lines []string, cursor int) {
 		prev = e.kind
 	}
 	return lines, cursor
+}
+
+// assistantLines renders one assistant entry's buffer at w. A finished
+// entry (its turn has ended, or the turn moved on past it) renders the
+// whole buffer through the shared renderer — the same fragment entry
+// point a page body goes through, so a heading here is the heading a
+// preview draws (005 contract §5 note 2). A live entry — the turn is still
+// running and this is its last entry — renders its settled prefix through
+// the same renderer and keeps the tail plain via inlineWrap, separated by
+// the one blank line renderBody itself puts between blocks: settled+tail
+// split never shows a half-open fence, and the blank keeps the live shape
+// byte-for-byte the shape the finished render settles into.
+func (m *Model) assistantLines(e entry, w int, live bool) []string {
+	if !live {
+		return m.fragmentLines(e.text, w)
+	}
+	settled, tail := markdown.SettledPrefix(e.text)
+	lines := m.fragmentLines(settled, w)
+	if len(lines) > 0 && tail != "" {
+		lines = append(lines, "")
+	}
+	return append(lines, m.inlineWrap(tail, w)...)
+}
+
+// fragmentLines renders one markdown buffer as a fragment at w (005
+// contract §1). A render error — glamour has no error paths for ordinary
+// vault input, but it is not impossible — degrades to the plain inline
+// wrap the tail uses rather than dropping the answer's lines on the floor.
+func (m *Model) fragmentLines(src string, w int) []string {
+	if src == "" {
+		return nil
+	}
+	lines, err := m.md.RenderFragment([]byte(src), markdown.Options{Width: w, Style: m.mdStyle()})
+	if err != nil {
+		return m.inlineWrap(src, w)
+	}
+	return lines
+}
+
+// mdStyle builds the renderer's palette from this pane's own theme copy
+// (contract §3: a plain struct literal; markdown.Style and ui.Palette
+// share field names on purpose). Heading and Code ride along (W5 F3):
+// without them the renderer sees an empty hex and draws headings in the
+// fallback colour instead of the palette's.
+func (m *Model) mdStyle() markdown.Style {
+	p := m.theme.Palette
+	return markdown.Style{
+		Dark:    m.theme.IsDark,
+		Fg:      p.Fg,
+		Muted:   p.Muted,
+		Faint:   p.Faint,
+		Border:  p.Border,
+		Accent:  p.Accent,
+		Good:    p.Good,
+		Warn:    p.Warn,
+		Bad:     p.Bad,
+		Heading: p.Heading,
+		Code:    p.Code,
+	}
 }
 
 // toolLines renders one tool call: the collapsed `▸ name args  → result`

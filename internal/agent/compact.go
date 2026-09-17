@@ -17,6 +17,11 @@ func EstimateTokens(s string) int {
 
 // recordText is the text Compact and EstimateTokens measure a Record by —
 // the same fields recordToMessage (context.go) turns into an llm.Message.
+// Reasoning is deliberately absent (005, D-5G): recordToMessage never
+// sends it, so budgeting it would compact real conversation history to
+// pay for bytes the provider never sees. A reasoning-only record therefore
+// measures as zero tokens — which is fine, because it is also skipped by
+// Build and never reaches a request.
 func recordText(r Record) string {
 	return r.Content + r.Tool + r.Args + r.Result
 }

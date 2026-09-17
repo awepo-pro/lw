@@ -66,18 +66,30 @@ func (m *Model) applyEvent(ev agent.Event) tea.Cmd {
 		case agent.ToolResEv:
 			m.resolveToolCall(e)
 		case agent.StageEv:
+			// Only the pane's own auto-reject streams an empty StageEv while
+			// its turn is active (stream.go forwardTurn) — the one turn that
+			// owes the `nothing staged` hint. The id is captured now because
+			// the StageChangedMsg this command produces comes back through
+			// changesetGone, which clears m.sessionID on its way; the hint
+			// itself lands after the turn's terminal line (title.go
+			// appendKeptHint).
+			if e.ChangesetID == "" && m.turnActive {
+				m.hintAfterTurn = m.sessionID
+			}
 			cmd = stageChangedCmd(e)
 		case agent.DoneEv:
 			// The frozen conversation grids render the turn boundary as
 			// `done · N rounds` (s2-screens.md T08, from DoneEv.Rounds); the
 			// stop reason stays in the session transcript.
 			m.endTurn(fmt.Sprintf("done · %d rounds", e.Rounds))
+			m.appendKeptHint()
 		case agent.ErrorEv:
 			msg := "unknown error"
 			if e.Err != nil {
 				msg = e.Err.Error()
 			}
 			m.endTurnError(msg)
+			m.appendKeptHint()
 		}
 	})
 	return cmd
@@ -141,6 +153,23 @@ func (m *Model) resolveToolCall(e agent.ToolResEv) {
 	tc.content = e.Content
 	tc.isError = e.IsError
 	m.turnActive = true
+}
+
+// echoUser appends text as a kindUser scrollback entry and clears the input
+// box — the submit path's one shared "the curator said this" step.
+func (m *Model) echoUser(text string) {
+	m.entries = append(m.entries, entry{kind: kindUser, text: text})
+	m.input = ""
+}
+
+// appendStatus appends one kindStatus line: a pane-local notice (a refused
+// submit, a failed Close) rather than a turn boundary, which endTurn and
+// endTurnError own. Through mutateEntries, the notice lands below a
+// scrolled-up window instead of moving it.
+func (m *Model) appendStatus(text string) {
+	m.mutateEntries(func() {
+		m.entries = append(m.entries, entry{kind: kindStatus, text: text})
+	})
 }
 
 // endTurn appends a kindStatus line and closes the turn: the next

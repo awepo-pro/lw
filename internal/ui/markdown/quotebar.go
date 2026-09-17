@@ -35,6 +35,14 @@ func colorizeQuoteBar(lines []string, borderHex string) []string {
 			// leading "│".
 			var sgrs string
 			for {
+				// A list-nested quote's lines carry the owning item's
+				// text column before their bars (R-508); those plain
+				// spaces pass through. A quote block never indents a
+				// line, so this is a no-op there.
+				for strings.HasPrefix(rest, " ") {
+					b.WriteByte(' ')
+					rest = rest[1:]
+				}
 				seq, n, _, ok := decodeSGR(rest)
 				if !ok {
 					break

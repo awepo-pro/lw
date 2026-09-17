@@ -103,9 +103,8 @@ func buildGlamourStyle(s Style) ansi.StyleConfig {
 		// Fg, not Accent: item text renders against the List primitive (a
 		// tight list's TextBlock pushes no block of its own), so the marker
 		// and the item text can't take different colours from the config.
-		// block.go recolours the leading "•" / "N." Accent afterwards
-		// (colorizeListMarkers), the same post-render pass tables and
-		// blockquotes get.
+		// reflowListLines recolours every "•" / "N." marker Accent after
+		// the render, the same post-render pass tables and blockquotes get.
 		List: ansi.StyleList{
 			StyleBlock:  ansi.StyleBlock{Indent: uintPtr(0), StylePrimitive: ansi.StylePrimitive{Color: fg}},
 			LevelIndent: 2,
@@ -125,11 +124,26 @@ func buildGlamourStyle(s Style) ansi.StyleConfig {
 		// back to Fg. Prose takes its colour from its block — the stock
 		// glamour styles are built the same way ("text": {}). Strong, Emph
 		// and Strikethrough keep Fg + their attribute.
-		Text:           ansi.StylePrimitive{},
-		Strong:         ansi.StylePrimitive{Color: fg, Bold: boolPtr(true)},
-		Emph:           ansi.StylePrimitive{Color: fg, Italic: boolPtr(true)},
-		Item:           ansi.StylePrimitive{Color: fg, BlockPrefix: "• "}, // "• "
-		Enumeration:    ansi.StylePrimitive{Color: fg, BlockPrefix: ". "},
+		Text:        ansi.StylePrimitive{},
+		Strong:      ansi.StylePrimitive{Color: fg, Bold: boolPtr(true)},
+		Emph:        ansi.StylePrimitive{Color: fg, Italic: boolPtr(true)},
+		Item:        ansi.StylePrimitive{Color: fg, BlockPrefix: "• "}, // "• "
+		Enumeration: ansi.StylePrimitive{Color: fg, BlockPrefix: ". "},
+
+		// Task items ("- [ ] …"): glamour routes them through its task
+		// element, never the item element, so without these glyphs a task
+		// item renders NO marker at all and the reflow joins consecutive
+		// task items into one paragraph (R-508). The glyphs are plain
+		// ASCII — ☐/☑ are East-Asian-ambiguous and can take two cells —
+		// so the checkbox is 3 cells wide in every locale and each task
+		// item opens its own paragraph hung at 4. The checkbox is
+		// recoloured Accent by reflowListLines like every other list
+		// marker (the task primitive's own colour never reaches the
+		// glyphs: they are drawn with the block's cascade style).
+		Task: ansi.StyleTask{
+			Unticked: "[ ] ",
+			Ticked:   "[x] ",
+		},
 		HorizontalRule: ansi.StylePrimitive{Color: fg},
 
 		// Genuine markdown links: Accent + underlined text, Muted URL.

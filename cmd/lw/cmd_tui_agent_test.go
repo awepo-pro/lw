@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/awepo-pro/lw/internal/agent"
 	"github.com/awepo-pro/lw/internal/config"
@@ -202,7 +203,7 @@ func TestTUIAgentWiresThroughNewAgentToTheAskPane(t *testing.T) {
 
 	// And the ask pane's own scrollback — visible because Ask is the active
 	// pane — shows the streamed reply and the collapsed stage.* call.
-	if view := app.View().Content; !strings.Contains(view, "staged a page") {
+	if view := app.View().Content; !strings.Contains(ansi.Strip(view), "staged a page") {
 		t.Fatalf("shell view does not show the streamed reply:\n%s", view)
 	} else if !strings.Contains(view, "stage.create_page") {
 		t.Fatalf("shell view does not show the tool call line:\n%s", view)

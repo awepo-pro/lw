@@ -86,6 +86,15 @@ type Record struct {
 	Args    string    `json:"args,omitempty"`
 	Result  string    `json:"result,omitempty"`
 	Staged  bool      `json:"staged,omitempty"` // NEVER compacted away
+
+	// Reasoning is the round's thinking, as the provider streamed it.
+	// Added 2026-09-16 (005). loop.go already accumulates this into
+	// roundReasoning to build the round's single outbound wire message
+	// (C-114/D-CZ) and then drops it; it is now also persisted.
+	//
+	// omitempty is load-bearing: every session.ndjson written before 005
+	// stays readable, and no migration exists or is needed.
+	Reasoning string `json:"reasoning,omitempty"`
 }
 
 // Session is one curator conversation, bound to a changeset.

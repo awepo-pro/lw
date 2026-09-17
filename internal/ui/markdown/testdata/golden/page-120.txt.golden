@@ -26,10 +26,10 @@
   [netns-tutorial.md] covers the syscalls directly; [container-runtime-notes.md] covers how runtimes
   wire it up.                                                                                       
                                                                                                     
-  ip netns add example                                                                              
-  ip netns exec example ip link set lo up                                                           
+    ip netns add example                                                                            
+    ip netns exec example ip link set lo up                                                         
                                                                                                     
-  ip netns exec example ping -c1 10.0.0.1                                                           
+    ip netns exec example ping -c1 10.0.0.1                                                         
                                                                                                     
   Some further detail about routing tables and how they interact with iptables rules in each        
   namespace.                                                                                        

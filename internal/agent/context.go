@@ -86,6 +86,16 @@ func (b *ContextBuilder) Build(s *Session, userMsg string) ([]llm.Message, error
 	}
 
 	for _, rec := range Compact(s.Records, remaining) {
+		// D-5G: a record with no tool and no content — since 005, a
+		// reasoning-only assistant record — would become an empty
+		// assistant message, which some providers reject outright. Skip
+		// it. The persisted thinking is for the human reading
+		// `lw session show`, not for the wire. Tool records never match
+		// this guard (their Tool is non-empty), so a staged op's audit
+		// trail cannot be dropped here.
+		if rec.Tool == "" && rec.Content == "" {
+			continue
+		}
 		msgs = append(msgs, recordToMessage(rec))
 	}
 
@@ -132,6 +142,12 @@ func (b *ContextBuilder) indexHash() string {
 // tool-call id to reconstruct the original wire pairing, and history here
 // is read by the model as context, not re-dispatched — live dispatch is
 // Loop's job (S5-T3).
+//
+// Reasoning is deliberately NOT emitted (005, D-5G): it is persisted for
+// the human reading `lw session show`, and replayed history must stay
+// byte-identical to v1.0.0's. Changing what a replayed turn sends would be
+// an untested provider-behaviour change smuggled in under a recording
+// feature, and is not in this workflow's scope.
 func recordToMessage(r Record) llm.Message {
 	if r.Tool == "" {
 		return llm.Message{Role: r.Role, Content: r.Content}

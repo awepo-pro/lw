@@ -17,7 +17,7 @@ func sentinelEscapeSubtests(t *testing.T) {
 			"and a provenance ^[raw/articles/a-very-long-provenance-file-name-that-will-wrap.md] after it.\n")
 		fgSGR := "\x1b[38;2;216;221;228m"
 		underlineSGR := "\x1b[38;2;122;178;242;4m" // Accent + underline (W5 F3 role)
-		faintSGR := "\x1b[38;2;94;102;114m"
+		mutedSGR := "\x1b[38;2;140;149;162m"       // Muted (A-5-1 change 3: provenance, like ask/inline.go)
 
 		plain, err := NewRenderer().Render(src, Options{Width: 44, Style: testStyle, Plain: true})
 		if err != nil {
@@ -57,12 +57,12 @@ func sentinelEscapeSubtests(t *testing.T) {
 				t.Errorf("wikilink fragment %q is not styled underline+Accent: %q", frag, joined)
 			}
 		}
-		// Every provenance word fragment must carry Faint, including the
+		// Every provenance word fragment must carry Muted, including the
 		// continuation after the wrap (the exact bug R1 reported: the
-		// continuation came back plain Fg instead of Faint).
+		// continuation came back plain Fg instead of Muted).
 		for _, frag := range []string{"[a-very-long-provenance-file-", "name-that-will-wrap.md]"} {
-			if !strings.Contains(joined, faintSGR+frag) {
-				t.Errorf("provenance fragment %q is not styled Faint: %q", frag, joined)
+			if !strings.Contains(joined, mutedSGR+frag) {
+				t.Errorf("provenance fragment %q is not styled Muted: %q", frag, joined)
 			}
 		}
 		// Ambient Fg must be restored after each span, on whichever line it
@@ -155,15 +155,15 @@ func sentinelEscapeSubtests(t *testing.T) {
 		}
 		joined := strings.Join(styled, "\n")
 		underlineSGR := "\x1b[38;2;122;178;242;4m" // Accent + underline (W5 F3 role)
-		faintSGR := "\x1b[38;2;94;102;114m"
+		mutedSGR := "\x1b[38;2;140;149;162m"       // Muted (A-5-1 change 3: provenance, like ask/inline.go)
 		if !strings.Contains(joined, underlineSGR+"R&D.md") {
 			t.Errorf("wikilink R&D.md not styled underline+Accent: %q", joined)
 		}
 		if !strings.Contains(joined, underlineSGR+"a~~b~~c") {
 			t.Errorf("wikilink a~~b~~c not styled underline+Accent: %q", joined)
 		}
-		if !strings.Contains(joined, faintSGR+"[R&D~~x.md]") {
-			t.Errorf("provenance [R&D~~x.md] not styled Faint: %q", joined)
+		if !strings.Contains(joined, mutedSGR+"[R&D~~x.md]") {
+			t.Errorf("provenance [R&D~~x.md] not styled Muted: %q", joined)
 		}
 		assertNoEscapedRunes(t, styled)
 	})

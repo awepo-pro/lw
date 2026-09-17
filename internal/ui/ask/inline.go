@@ -2,7 +2,11 @@
 // plus the styled-cell word-wrap its callers use (mockgen.ask_conversation
 // wraps inline(ANSWER), so markers are consumed before the text wraps):
 // `**b**` bold, `c` in the Code token with backticks removed, `[[x]]`
-// Accent + underlined x (W5 F3/D-3W), `^[p]` faint `[base]`, `*i*` italic.
+// Accent + underlined x (W5 F3/D-3W), `^[p]` muted `[base]` (A-5-1/D-5C:
+// the user's transparent-terminal complaint — Faint is unreadable on one),
+// `*i*` italic. 005 demotes this renderer to the live turn's plain tail
+// and Ask's own chrome; settled prose renders through the shared markdown
+// renderer (transcript.go).
 package ask
 
 import (
@@ -27,23 +31,23 @@ var inlineRe = regexp.MustCompile(`\*\*(.+?)\*\*|` + "`" + `([^` + "`" + `]+)` +
 
 // inlineStyleTable is the per-render style table the cell ids index. It
 // mirrors mockgen.inline's styles against the theme tokens: base fg, bold,
-// Code-token code span and Accent-underlined wikilink (W5 F3/D-3W), faint
-// provenance, italic.
+// Code-token code span and Accent-underlined wikilink (W5 F3/D-3W), muted
+// provenance (A-5-1/D-5C), italic.
 func (m *Model) inlineStyleTable() []lipgloss.Style {
 	return []lipgloss.Style{
 		{},                             // 1: base (unstyled fg)
 		m.theme.Bold,                   // 2: **bold**
 		m.theme.Code,                   // 3: `code`
 		m.theme.Accent.Underline(true), // 4: [[wikilink]]
-		m.theme.Faint,                  // 5: ^[provenance]
+		m.theme.Muted,                  // 5: ^[provenance] (A-5-1/D-5C: was Faint)
 		m.theme.Fg.Italic(true),        // 6: *italic*
 	}
 }
 
 // inlineCells converts one line of assistant text into styled cells
 // (mockgen.inline): markers are consumed, `[[x|label]]` becomes the
-// underlined target x, `^[p]` becomes faint `[base(p)]`, code spans lose
-// their backticks. The base style id is 1.
+// underlined target x, `^[p]` becomes muted `[base(p)]` (A-5-1/D-5C), code
+// spans lose their backticks. The base style id is 1.
 func inlineCells(text string) []cell {
 	var out []cell
 	put := func(s string, id int) {

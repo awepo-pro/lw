@@ -14,7 +14,7 @@
   Concepts
 
 ▎ • speculative-decoding — Drafting tokens with a small model and verifying them
-▎ with the target model.
+▎   with the target model.
 ▎ • kv-cache — Caching attention keys/values across decoding steps.
 ▎ • flash-attention — Fused, memory-efficient attention kernel.
 ▎ • diff-target — Diff Target
@@ -45,13 +45,13 @@
   A cache-hit log line looks like the block below. The ##-looking line inside it
   is plain text, not a heading, because it sits inside a fenced code block.
 
-  ## this is not a heading, just log text
-  kv_cache_hit_rate: 0.94
+    ## this is not a heading, just log text
+    kv_cache_hit_rate: 0.94
 
   Related
 
 ▎ • gpt-4 — an unrelated edit for TestDiffRender's fixture.
-▎ • flash-attention — a kernel design that reduces the memory-bandwidth cost
-▎ of reading the cache.
-▎ • speculative-decoding — both the draft and target model read the cache
-▎ during verification.
+▎ • flash-attention — a kernel design that reduces the memory-bandwidth cost of
+▎   reading the cache.
+▎ • speculative-decoding — both the draft and target model read the cache during
+▎   verification.

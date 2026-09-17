@@ -68,7 +68,7 @@ ancestor containing `SCHEMA.md`, so run the verbs from inside it.
 mkdir ml-wiki && cd ml-wiki
 
 # 1. Scaffold the vault: SCHEMA.md, index.md, log.md, curator-memory.md,
-#    raw/{articles,papers,transcripts,assets}/, wiki/, .llmwiki/
+#    .gitignore, raw/{articles,papers,transcripts,assets}/, wiki/, .llmwiki/
 lw init --schema "ml-systems"
 
 # 2. Provider settings. lw defaults to DeepSeek; the key is a reference, never
@@ -120,6 +120,9 @@ commands:
   diff [--op <id>]             show the projected diff of the open changeset
   commit -m "..." [--force]    commit the open changeset
   log [--rejected] [--agent]   show changeset history
+  session list [--json]        list recorded agent sessions
+  session show [<id>] [--plain] [--json] [--thinking]
+                               print one session's transcript
   revert <commit-id>           open a reverse changeset for review
   query "..."                  ask the curator agent a question
   lint [--fix]                 run the lint checks
@@ -147,6 +150,7 @@ are the same flag). Exit codes: `0` success, `1` failure, `2` usage error.
 | `diff` | `-op <id>`, `-stat`, `-render` | The projected diff of the buffer — what commit would write. `lw diff --render [--op <id>]` renders each changed page as it will read after commit, as plain text when stdout is not a terminal; it cannot be combined with `--stat` |
 | `commit` | `-m <msg>` (required), `-force` | Re-hashes the tree first; an op whose `before` hash no longer matches is stale and the commit is refused. Refuses a lint regression unless `--force`, which is journalled |
 | `log` | `-rejected`, `-agent`, `-limit <n>`, `-page <path>`, `-since <rfc3339\|YYYY-MM-DD>` | The journal, including what you rejected |
+| `session` | `list`: `-json`; `show`: `<id>`, `-plain`, `-json`, `-thinking` | Reads the transcript every agent conversation leaves in the vault — see [Transcripts](#transcripts) below. `list` prints one row per session, newest first. `show` prints one back: the question, every tool call with its full arguments and result, and each answer as the TUI rendered it — the thinking folded to one line unless `--thinking`. With no id it shows the open session; a short prefix works. Read-only, and needs no provider |
 | `revert` | (positional) `<commit-id>` | Opens the inverse ops as a *new* changeset — a rollback is reviewed like anything else |
 | `query` | (positional) `"…"` | One-shot answer with citations; uses an ephemeral in-process session and never touches a changeset |
 | `lint` | `-checks <id,id,…>`, `-fix`, `-json` | 14 checks ([docs/vault-schema.md](docs/vault-schema.md#the-14-lint-checks)). Exits 1 only on errors. `--fix` asks the agent to propose repairs — as a changeset |
@@ -196,7 +200,14 @@ still quits.
 
 Ask's message box takes all typing: `q` and `?` type into the message
 instead of quitting or opening the overlay — quit from Ask with `ctrl+c`.
-Keys rebind from `~/.config/lw/hotkeys.toml`; see
+Its answers render as markdown — headings, lists, code, tables, links —
+through the same renderer as the previews and `lw diff --render`, and the
+Transcript panel's title carries the session id (`╭ Transcript — cs-1a2b3c ──…`),
+so `lw session show` can read the same conversation back later. When that
+changeset is committed or rejected the title keeps the id with its state
+(`Transcript — cs-1a2b3c · rejected`), and a turn that staged nothing says
+so and names `lw session show <id>`. Keys rebind
+from `~/.config/lw/hotkeys.toml`; see
 [docs/hotkeys.md](docs/hotkeys.md) for the table and the file format.
 
 ### Themes
@@ -264,6 +275,37 @@ at the moment it needs it. `lw config` shows `env:DEEPSEEK_API_KEY (set)` or
 `(missing)`; the value itself never appears in a command's output, in the
 config file, or anywhere in the vault. A literal key is rejected with a
 warning pointing at `env:`.
+
+## Transcripts
+
+Every agent conversation is recorded as it happens, in the vault, under the
+changeset it opened — a session *is* a changeset, and the two share one id:
+
+```
+<vault>/.llmwiki/changesets/{open,committed,rejected}/<changeset-id>/session.ndjson
+```
+
+A transcript holds the question, every tool call with its full arguments and
+full result, each answer, and — when the provider streams it — the model's
+thinking; a transcript recorded before lw recorded thinking reads back the
+same, minus that one folded line. That means whole file dumps and raw
+provider output, which is why `lw init` writes a vault `.gitignore`
+containing `.llmwiki/`: a vault may be a public git repository, and a
+transcript should never commit by accident. An existing `.gitignore` gains
+that one line only if it is missing, and is otherwise untouched.
+
+A `.gitignore` only stops future commits — it does not remove what git history
+already holds. So `lw doctor` carries a `git` check: a vault whose repository
+tracks anything under `.llmwiki/` draws a warning naming the fix,
+
+```
+git rm -r --cached .llmwiki/ && git commit
+```
+
+and lw never runs that command itself — it reports, and the user decides.
+
+`lw session list` and `lw session show` read transcripts back, read-only; see
+the command table above.
 
 ## Documentation
 

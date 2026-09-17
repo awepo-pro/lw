@@ -1,24 +1,30 @@
 // ask.go holds the ask screen's ui.Pane itself: the Model, its construction
-// and key handling, the shell-interface surface (footer, overlay, text
-// capture), and the D10 suggested prompts read off index.md. The rendering
-// lives in view.go, the scrollback state machine in state.go, and the
-// agent.Event pump and turn lifecycle in stream.go.
+// and key handling, and the shell-interface surface (footer, overlay, text
+// capture). The rendering lives in view.go, the scrollback state machine in
+// state.go, the agent.Event pump and turn lifecycle in stream.go, the D10
+// suggested prompts in prompts.go.
 package ask
 
 import (
-	"regexp"
-
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/awepo-pro/lw/internal/agent"
 	"github.com/awepo-pro/lw/internal/ui"
+	"github.com/awepo-pro/lw/internal/ui/markdown"
 )
 
 // Model is the ask screen (backbone §12 ui.Pane).
 type Model struct {
 	deps  ui.Deps
 	theme ui.Theme // C-81: a copy, rebuilt locally on tea.BackgroundColorMsg
+
+	// md is the shared markdown renderer the assistant's prose goes through
+	// (005 contract §5): the same memoized renderer review and browse hold,
+	// so a heading here and the same heading in a preview are the same
+	// colour. It is constructed once in New — one per frame would throw the
+	// render cache away every render.
+	md *markdown.Renderer
 
 	// prompts are the D10 suggested first questions, read off index.md at
 	// New and refreshed on ui.VaultReloadedMsg. They render only while the
@@ -48,6 +54,32 @@ type Model struct {
 	// and "" when no turn of this pane's has a session to close. It is what
 	// changesetGone archives when the changeset is committed or rejected.
 	sessionID string
+
+	// titleID is the open changeset's id for the Transcript panel's title
+	// (005 contract §6), "" when none is open. It is maintained OFF the
+	// render path, exactly the way the shell maintains its own stage
+	// summary (app.go refreshStage): seeded once in New and refreshed on
+	// ui.StageChangedMsg / ui.VaultReloadedMsg / turnStartedMsg — all
+	// Update-thread — because Engine.Current both does filesystem I/O and
+	// writes the engine's unlocked open/nextOp fields, and the turn
+	// goroutine calls Current concurrently with rendering frames. The kept
+	// id and the hint below are the rest of the title's state machine
+	// (title.go).
+	titleID string
+
+	// keptID and keptState hold the session the title keeps after its
+	// changeset stops being open (005 contract §6, as amended by R-509):
+	// keptState is resolved by a tea.Cmd (title.go fateCmd) and is "" — no
+	// suffix — until the answer lands, and after a failure or an "open"
+	// answer. Update-thread fields the render path only reads.
+	keptID, keptState string
+
+	// hintAfterTurn is the session id of a turn the pane just auto-rejected
+	// for staging nothing — the empty StageEv seen while turnActive — whose
+	// `nothing staged` hint is owed once that turn's terminal line lands
+	// (title.go appendKeptHint). "" when no hint is owed.
+	hintAfterTurn string
+
 	// cancel aborts the running turn's context; nil until startTurn runs.
 	cancel func()
 
@@ -58,12 +90,19 @@ var _ ui.Pane = (*Model)(nil)
 var _ ui.TextCapturer = (*Model)(nil)
 
 // New constructs the ask screen (backbone §12). It captures a copy of
-// d.Theme and reads the D10 prompts off index.md — a bounded, local vault
-// read, the same order of work review's construction does — falling back to
-// the generic prompt set when there is no engine or no readable index.
+// d.Theme, reads the D10 prompts off index.md and seeds the title's
+// changeset id — a bounded, local vault read and one small directory scan
+// each, the same order of work review's construction does — falling back
+// to the generic prompt set and a plain title when there is no engine or
+// nothing readable.
 func New(d ui.Deps) ui.Pane {
-	m := &Model{deps: d, theme: d.Theme, selected: -1}
+	m := &Model{deps: d, theme: d.Theme, selected: -1, md: markdown.NewRenderer()}
 	m.prompts = m.loadPrompts()
+	if d.Engine != nil {
+		if cs, err := d.Engine.Current(); err == nil {
+			m.titleID = cs.ID
+		}
+	}
 	return m
 }
 
@@ -142,9 +181,13 @@ func (m *Model) Update(msg tea.Msg) (ui.Pane, tea.Cmd) {
 
 	case ui.VaultReloadedMsg:
 		// D10: the suggested prompts track the vault, so a re-read (the
-		// shell broadcasts this after a commit) refreshes them.
+		// shell broadcasts this after a commit) refreshes them. The title's
+		// changeset id refreshes here too — the same two messages the
+		// shell's own stage summary refreshes on (app.go refreshStage) —
+		// and the reload decides the kept id's fate the same way (title.go
+		// refreshTitleID).
 		m.prompts = m.loadPrompts()
-		return m, nil
+		return m, m.refreshTitleID()
 
 	case StreamMsg:
 		// repair-1: the exported injection point for a caller that holds
@@ -169,6 +212,9 @@ func (m *Model) Update(msg tea.Msg) (ui.Pane, tea.Cmd) {
 			return m, nil
 		}
 		m.sessionID = msg.sessionID
+		m.titleID = msg.sessionID // the turn's changeset is the open one now
+		m.dropKeptTitle()         // it replaces whatever the title kept
+		m.hintAfterTurn = ""      // a new turn owes nothing to the old one's hint
 		m.ch = msg.ch
 		return m, m.rearm()
 
@@ -179,6 +225,7 @@ func (m *Model) Update(msg tea.Msg) (ui.Pane, tea.Cmd) {
 	case StreamClosedMsg:
 		m.ch = nil
 		m.turnActive = false
+		m.hintAfterTurn = "" // a turn cancelled before its terminal line owes no hint
 		// The turn is over either way, so its context has nothing left to
 		// cancel; releasing it here (rather than waiting for a later
 		// changesetGone) is what keeps one turn's cancel from being mistaken
@@ -193,6 +240,13 @@ func (m *Model) Update(msg tea.Msg) (ui.Pane, tea.Cmd) {
 		if msg.err != nil {
 			m.appendStatus("closing the session failed: " + msg.err.Error())
 		}
+		return m, m.fateIfOwed()
+
+	case titleFateMsg:
+		// The kept id's state lookup came back (title.go noteTitleFate);
+		// recording it is all there is to do — the next View renders the
+		// suffix from the field.
+		m.noteTitleFate(msg)
 		return m, nil
 
 	case ui.StageChangedMsg:
@@ -200,8 +254,17 @@ func (m *Model) Update(msg tea.Msg) (ui.Pane, tea.Cmd) {
 		// pane's own StageEv coming back (or review reporting a change); the
 		// empty form is how review says "no changeset is open any more" —
 		// Commit and Reject both emit it — and that is when this pane's
-		// session has to close (backbone §9; s5-agent-loop.md S5-T5).
-		return m, m.changesetGone(msg.ChangesetID)
+		// session has to close (backbone §9; s5-agent-loop.md S5-T5). The
+		// title's id rides the same message, and the empty form is also what
+		// keeps it (title.go noteStageChanged). The archive's command is the
+		// one Update returns — the session lifecycle pins it — and the kept
+		// id's state lookup rides the archive's outcome instead of batching
+		// beside it (fateIfOwed).
+		fate := m.noteStageChanged(msg.ChangesetID)
+		if close := m.changesetGone(msg.ChangesetID); close != nil {
+			return m, close
+		}
+		return m, fate
 
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
@@ -317,23 +380,6 @@ func (m *Model) submitInput() tea.Cmd {
 	return m.startTurn(sessionID, msg)
 }
 
-// echoUser appends text as a kindUser scrollback entry and clears the input
-// box — the submit path's one shared "the curator said this" step.
-func (m *Model) echoUser(text string) {
-	m.entries = append(m.entries, entry{kind: kindUser, text: text})
-	m.input = ""
-}
-
-// appendStatus appends one kindStatus line: a pane-local notice (a refused
-// submit, a failed Close) rather than a turn boundary, which endTurn and
-// endTurnError own. Through mutateEntries, the notice lands below a
-// scrolled-up window instead of moving it.
-func (m *Model) appendStatus(text string) {
-	m.mutateEntries(func() {
-		m.entries = append(m.entries, entry{kind: kindStatus, text: text})
-	})
-}
-
 // deleteInputRune removes the last rune of the input box, if any.
 func (m *Model) deleteInputRune() {
 	r := []rune(m.input)
@@ -341,59 +387,4 @@ func (m *Model) deleteInputRune() {
 		return
 	}
 	m.input = string(r[:len(r)-1])
-}
-
-// promptEntryRe matches one index.md bullet D10 turns into a suggested
-// prompt: `- [[target]] — description`, with the `|label` form of a
-// wikilink allowed (s2-screens.md T08).
-var promptEntryRe = regexp.MustCompile(`(?m)^- \[\[([^\]|]+)(?:\|[^\]]*)?\]\] — (.+)$`)
-
-// fallbackPrompts is the D10 prompt set for a vault whose index has fewer
-// than two entries (or none at all).
-func fallbackPrompts() []string {
-	return []string{
-		"What does the wiki cover so far?",
-		"Which pages were updated most recently?",
-		"Which pages rest on a single source?",
-	}
-}
-
-// promptsFromIndex computes the D10 prompt set from index.md's content.
-// The first two entries' descriptions become the personalized prompts (T1,
-// T2); anything from the third on is not needed. The frozen grids pin the
-// descriptions — not the wikilink targets — as T1/T2: on the mockup vault
-// the first two entries are `[[vertex-ai]] — Vertex AI` and
-// `[[claude]] — Claude`, and ask-80x24 reads "What does the wiki say about
-// Vertex AI?" / "How is Claude related to Vertex AI?".
-func promptsFromIndex(src []byte) []string {
-	var descs []string
-	for _, match := range promptEntryRe.FindAllStringSubmatch(string(src), -1) {
-		descs = append(descs, match[2])
-		if len(descs) == 2 {
-			break
-		}
-	}
-	if len(descs) < 2 {
-		return fallbackPrompts()
-	}
-	return []string{
-		"What does the wiki say about " + descs[0] + "?",
-		"How is " + descs[1] + " related to " + descs[0] + "?",
-		"Which pages rest on a single source?",
-	}
-}
-
-// loadPrompts reads index.md through the engine's vault (D10) and returns
-// the prompt set for it. Every failure — no engine, unreadable vault,
-// missing index — degrades to fallbackPrompts; suggested questions are
-// never worth an error surface.
-func (m *Model) loadPrompts() []string {
-	if m.deps.Engine == nil {
-		return fallbackPrompts()
-	}
-	src, err := m.deps.Engine.Vault().Read("index.md")
-	if err != nil {
-		return fallbackPrompts()
-	}
-	return promptsFromIndex(src)
 }

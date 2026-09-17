@@ -59,8 +59,15 @@ func fgSGR(hex string, underline bool) string {
 //     restoreActive), regardless of how many lines the span spanned or
 //     what glamour's own embedded resets did in between.
 //
-// ansiOptions never use OSC hyperlinks any more (repair-1), so every
-// escape this pass can see is a plain SGR "\x1b[...m".
+// Glamour DOES emit OSC 8 hyperlink escapes for a real markdown link —
+// BEL-terminated "\x1b]8;id=…;url\a" around the anchor text and the
+// appended " <url>", re-opened on continuation lines by the re-wrap,
+// balanced and zero-width (pinned by TestTasksAndQuotesInLists /
+// comment_matches_the_escapes_glamour_emits, R-508). The pass is still
+// safe: decodeSGR matches only plain SGR "\x1b[...m" sequences, so an OSC
+// here is copied through byte-for-byte, and every strip/truncate/width
+// call downstream — and the wrap itself — is OSC-aware, so a hyperlink
+// wrapper is never mistaken for visible text and never split mid-line.
 //
 // Known cosmetic caveat, deliberately not special-cased: when a marker's
 // content word-wraps INSIDE a padded table cell (the only wrap that inserts
