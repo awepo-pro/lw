@@ -88,6 +88,7 @@ type Model struct {
 
 var _ ui.Pane = (*Model)(nil)
 var _ ui.TextCapturer = (*Model)(nil)
+var _ ui.EngineUser = (*Model)(nil)
 
 // New constructs the ask screen (backbone §12). It captures a copy of
 // d.Theme, reads the D10 prompts off index.md and seeds the title's

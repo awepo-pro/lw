@@ -211,6 +211,17 @@ func (m *Model) endTurnError(msg string) {
 	m.selected = -1
 }
 
+// EngineBusy implements ui.EngineUser (008 contract §8, A-801): true from
+// the moment a turn starts — submitInput sets turnActive — until its
+// terminal event has been processed by Update: DoneEv and ErrorEv through
+// endTurn/endTurnError, a cancelled or closed-off stream through
+// StreamClosedMsg. turnActive is the lifetime this file's state machine
+// already tracks, and it is exactly the window in which the turn goroutine
+// is calling the engine (session resolution, tool handlers reading the
+// vault), the window the shell's reload tick must not reload under (G5
+// review I-1).
+func (m *Model) EngineBusy() bool { return m.turnActive }
+
 // toolEntryIndexes returns, in ascending order, the indexes of every
 // kindTool entry in m.entries — the set moveSelection cycles over.
 func (m *Model) toolEntryIndexes() []int {

@@ -32,8 +32,16 @@ func reloadTickCmd(every time.Duration) tea.Cmd {
 // overlap with. A reload produces ui.VaultReloadedMsg and lets the existing
 // case do the refresh and the fan-out; whatever happened, the tick re-arms
 // itself, and a failed stat is not fatal — the next tick retries.
+//
+// 008 A-801 (G5 review I-1): ReloadIfChanged mutates the vault and the
+// index, and a pane reporting EngineBusy is using this Engine from another
+// goroutine right now — an ask turn whose tool handlers read the vault's
+// maps, a review loadCmd calling Current on its own goroutine. The reload
+// is therefore skipped for that tick and only the re-arm is returned; the
+// foreign commit is not lost, because the journal stamp still differs and
+// the first tick after every pane goes idle reloads.
 func (a *App) handleReloadTick() tea.Cmd {
-	if a.deps.Engine != nil {
+	if a.deps.Engine != nil && !a.anyPaneBusy() {
 		if reloaded, err := a.deps.Engine.ReloadIfChanged(); err == nil && reloaded {
 			return tea.Batch(
 				func() tea.Msg { return VaultReloadedMsg{} },
@@ -42,4 +50,22 @@ func (a *App) handleReloadTick() tea.Cmd {
 		}
 	}
 	return reloadTickCmd(a.reloadEvery)
+}
+
+// anyPaneBusy reports whether any injected pane implements EngineUser and
+// reports itself busy (008 A-801). Every pane is consulted, not just the
+// one on screen: the pane using the engine from another goroutine is
+// usually not the one the curator is looking at — an ask turn left running
+// while they read Review is exactly the case I-1 probed. It iterates
+// a.order, the fixed screen slice, the way propagateAll does, so the visit
+// order stays deterministic.
+func (a *App) anyPaneBusy() bool {
+	for _, s := range a.order {
+		if p := a.panes[s]; p != nil {
+			if eu, ok := p.(EngineUser); ok && eu.EngineBusy() {
+				return true
+			}
+		}
+	}
+	return false
 }

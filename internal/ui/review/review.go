@@ -60,6 +60,12 @@ type Model struct {
 	// process's commit reloading in a new changeset — must not inherit the
 	// arm and commit unwarned.
 	commitArmedFor string
+
+	// loadsInFlight counts the load commands this pane has returned whose
+	// loadedMsg has not landed back in Update yet (008 contract §8, A-801,
+	// load()'s doc comment). A count, not a flag, because loads overlap: a
+	// commit batches one beside the broadcast handlers' own.
+	loadsInFlight int
 }
 
 var (
@@ -68,6 +74,7 @@ var (
 	_ ui.OverlayHelper  = (*Model)(nil)
 	_ ui.StatusReporter = (*Model)(nil)
 	_ ui.Scroller       = (*Model)(nil)
+	_ ui.EngineUser     = (*Model)(nil)
 )
 
 // New constructs the review screen (backbone §12). It captures d and
@@ -96,7 +103,7 @@ func (m *Model) Help() []key.Binding {
 // Init loads the currently open changeset and its diff (s2-screens.md
 // T06; the load round trip is load.go).
 func (m *Model) Init() tea.Cmd {
-	return loadCmd(m.deps.Engine)
+	return m.load()
 }
 
 // Update handles the review keymap and the shell messages this screen
@@ -127,13 +134,28 @@ func (m *Model) Update(msg tea.Msg) (ui.Pane, tea.Cmd) {
 		return m.handleWheel(msg)
 
 	case ui.StageChangedMsg:
-		return m, loadCmd(m.deps.Engine)
+		return m, m.load()
 
 	case ui.VaultReloadedMsg:
-		return m, loadCmd(m.deps.Engine)
+		return m, m.load()
 
 	case loadedMsg:
+		// The load round trip's answer (load.go): the trip this counts is
+		// over, so the in-flight count comes down before the result installs.
+		if m.loadsInFlight > 0 {
+			m.loadsInFlight--
+		}
 		m.applyLoaded(msg)
+		return m, nil
+
+	case ui.ShellKeyMsg:
+		// 008 A-801 (G5 review M-1): a key the shell consumed — tab's
+		// screen switch, the `?` overlay opening, closing, or swallowing a
+		// key — never reaches handleKey, so contract §5's "any other key
+		// disarms" silently failed for exactly the keys a curator presses
+		// while walking between screens. The shell reports them here; the
+		// arm dies like it would for any pane-visible key.
+		m.commitArmedFor = ""
 		return m, nil
 
 	case tea.KeyPressMsg:
@@ -141,6 +163,22 @@ func (m *Model) Update(msg tea.Msg) (ui.Pane, tea.Cmd) {
 	}
 	return m, nil
 }
+
+// load arms one load round trip: it counts the trip as in flight and
+// returns the loadCmd (load.go). EngineBusy is therefore already true when
+// the command leaves this pane and stays true until its loadedMsg has been
+// applied back in Update — the window in which loadCmd reads the Engine
+// (Current, Diff, OpDiff) on a tea.Cmd goroutine, the window the shell's
+// reload tick must not reload under (008 contract §8, A-801, G5 review
+// I-1). Every loadCmd this pane issues goes through here.
+func (m *Model) load() tea.Cmd {
+	m.loadsInFlight++
+	return loadCmd(m.deps.Engine)
+}
+
+// EngineBusy implements ui.EngineUser (008 contract §8, A-801): true while
+// a load command this pane returned has not delivered its loadedMsg yet.
+func (m *Model) EngineBusy() bool { return m.loadsInFlight > 0 }
 
 // handleKey dispatches one tea.KeyPressMsg against the review keymap. A
 // changeset that is not open makes every key a no-op — there is nothing
@@ -248,7 +286,7 @@ func (m *Model) acceptHunk() (ui.Pane, tea.Cmd) {
 	m.setStatus(ui.StatusInfo, "")
 	m.cursor = clampCursor(m.cursor+1, len(m.stops))
 	m.resetScroll() // the y advance is a cursor-stop change (T06 Scroll)
-	return m, tea.Batch(loadCmd(m.deps.Engine), stageChangedCmd(m.deps.Engine))
+	return m, tea.Batch(m.load(), stageChangedCmd(m.deps.Engine))
 }
 
 // dropHunk is `n`: Engine.DropHunk.
@@ -268,7 +306,7 @@ func (m *Model) dropHunk() (ui.Pane, tea.Cmd) {
 	m.setStatus(ui.StatusInfo, "")
 	m.cursor = clampCursor(m.cursor+1, len(m.stops))
 	m.resetScroll() // the n advance is a cursor-stop change (T06 Scroll)
-	return m, tea.Batch(loadCmd(m.deps.Engine), stageChangedCmd(m.deps.Engine))
+	return m, tea.Batch(m.load(), stageChangedCmd(m.deps.Engine))
 }
 
 // acceptAll is `A`: refused on a stale op (before ANY engine call — a
@@ -310,12 +348,12 @@ func (m *Model) acceptAll() (ui.Pane, tea.Cmd) {
 			}
 			if err := e.UndropHunk(op.ID, h.ID); err != nil {
 				m.setStatus(ui.StatusWarn, fmt.Sprintf("accept-all failed on %s/%s: %v", op.ID, h.ID, err))
-				return m, tea.Batch(loadCmd(e), stageChangedCmd(e))
+				return m, tea.Batch(m.load(), stageChangedCmd(e))
 			}
 		}
 	}
 	m.setStatus(ui.StatusInfo, "")
-	return m, tea.Batch(loadCmd(e), stageChangedCmd(e))
+	return m, tea.Batch(m.load(), stageChangedCmd(e))
 }
 
 // reject is `X`: Engine.Reject. There is no changeset left to show
@@ -328,7 +366,7 @@ func (m *Model) reject() (ui.Pane, tea.Cmd) {
 		return m, nil
 	}
 	m.setStatus(ui.StatusInfo, "")
-	return m, tea.Batch(loadCmd(m.deps.Engine), func() tea.Msg { return ui.StageChangedMsg{} })
+	return m, tea.Batch(m.load(), func() tea.Msg { return ui.StageChangedMsg{} })
 }
 
 // setStatus records the message the footer renders until the next key

@@ -74,6 +74,16 @@ type Options struct {
 	ReloadEvery time.Duration
 }
 
+// EngineUser is implemented by a pane that may use Deps.Engine from a
+// goroutine other than Update's (an agent turn, a load command). While any
+// pane reports EngineBusy, the App skips Engine.ReloadIfChanged for that
+// tick and re-arms it (008 A-801).
+type EngineUser interface{ EngineBusy() bool }
+
+// ShellKeyMsg is sent to the current pane when the shell consumes a key
+// itself (screen switch, help overlay) instead of forwarding it (008 A-801).
+type ShellKeyMsg struct{}
+
 // StageChangedMsg is broadcast whenever a stage.Engine mutation changes the
 // open changeset, so every pane — and the shell's own STAGE panel — can
 // re-render with the new id and op count live.

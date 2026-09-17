@@ -83,7 +83,7 @@ func (m *Model) commit() (ui.Pane, tea.Cmd) {
 
 	m.commitArmedFor = "" // the confirmation was consumed with its changeset
 	m.setStatus(ui.StatusGood, fmt.Sprintf("committed %s", commitID))
-	return m, tea.Batch(loadCmd(e), func() tea.Msg { return ui.StageChangedMsg{} },
+	return m, tea.Batch(m.load(), func() tea.Msg { return ui.StageChangedMsg{} },
 		func() tea.Msg { return ui.VaultReloadedMsg{} })
 }
 

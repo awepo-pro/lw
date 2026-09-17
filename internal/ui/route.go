@@ -74,6 +74,28 @@ func (a *App) handleWheel(msg tea.MouseWheelMsg) tea.Cmd {
 	})
 }
 
+// nextPane is NextPane's handler (008 A-801, G5 review M-1). It advances
+// a.cur and delivers ShellKeyMsg to the pane being left and to the one the
+// switch lands on: the shell consumed the key instead of forwarding it, and
+// a pane whose state a key can undo — review's raw-only commit
+// confirmation — must hear it whichever side of the switch it sits on.
+// Which keys tab consumes is unchanged.
+func (a *App) nextPane() tea.Cmd {
+	left := a.order[a.cur]
+	a.cur = (a.cur + 1) % len(a.order)
+	entered := a.order[a.cur]
+	var cmds []tea.Cmd
+	if left != entered {
+		if cmd := a.deliverTo(left, ShellKeyMsg{}); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	}
+	if cmd := a.deliverTo(entered, ShellKeyMsg{}); cmd != nil {
+		cmds = append(cmds, cmd)
+	}
+	return tea.Batch(cmds...)
+}
+
 // propagate forwards msg to the active pane's Update, if one is injected
 // for the current screen, and stores the pane it returns back into the map
 // — Pane.Update returns a (possibly new) Pane the same way tea.Model.Update

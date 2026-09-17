@@ -96,12 +96,15 @@ func TestWheelRouting(t *testing.T) {
 			t.Fatalf("pane received %#v on the shell's own rows, want nothing", pane.got)
 		}
 
-		// With the ? overlay open, no wheel notch reaches a pane.
+		// With the ? overlay open, no wheel notch reaches a pane. (The ?
+		// itself delivers a ShellKeyMsg — 008 A-801 — which this test's
+		// assertions do not cover; drop it.)
 		m, _ := a.Update(tea.KeyPressMsg{Code: '?', Text: "?"})
 		a = m.(*App)
 		if !a.overlayOpen {
 			t.Fatal("setup: the ? overlay did not open")
 		}
+		pane.got = nil
 		if _, cmd := a.Update(wheel); cmd != nil {
 			t.Fatal("a wheel notch while the overlay is open was routed on")
 		}
@@ -131,11 +134,16 @@ func TestWheelRouting(t *testing.T) {
 			t.Fatal("a horizontal wheel notch was routed on")
 		}
 		// The pane must have seen nothing but the two resize broadcasts the
-		// subtest itself issued — not one wheel or mouse message.
+		// subtest itself issued — not one wheel or mouse message. The two
+		// ShellKeyMsg from the overlay's ? and esc (008 A-801: the shell
+		// reports consumed keys to the current pane) are not wheel traffic
+		// and are expected.
 		for _, msg := range pane.got {
-			if _, isResize := msg.(tea.WindowSizeMsg); !isResize {
-				t.Fatalf("pane received %T on a wheel-ignored path, want nothing but resizes", msg)
+			switch msg.(type) {
+			case tea.WindowSizeMsg, ShellKeyMsg:
+				continue
 			}
+			t.Fatalf("pane received %T on a wheel-ignored path, want nothing but resizes", msg)
 		}
 	})
 

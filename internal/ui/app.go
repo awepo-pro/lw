@@ -347,9 +347,12 @@ func (a *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return a, tea.Quit
 		case key.Matches(msg, a.deps.Keys.Help), msg.String() == "esc":
 			a.overlayOpen = false
-			return a, nil
+			return a, a.propagate(ShellKeyMsg{})
 		}
-		return a, nil
+		// Any other key is swallowed while the overlay is open — but a pane
+		// whose state keys can undo (review's raw-only confirmation, A-801)
+		// must still hear that one did.
+		return a, a.propagate(ShellKeyMsg{})
 	}
 
 	// A pane that is taking text input types the printable keys itself: `q`
@@ -365,10 +368,9 @@ func (a *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return a, tea.Quit
 	case key.Matches(msg, a.deps.Keys.Help):
 		a.overlayOpen = true
-		return a, nil
+		return a, a.propagate(ShellKeyMsg{})
 	case key.Matches(msg, a.deps.Keys.NextPane):
-		a.cur = (a.cur + 1) % len(a.order)
-		return a, nil
+		return a, a.nextPane()
 	}
 	return a, a.propagate(msg)
 }
