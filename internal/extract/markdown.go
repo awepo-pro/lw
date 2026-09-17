@@ -35,11 +35,15 @@ func (fileExtractor) CanHandle(uri string) bool {
 
 // Extract reads uri and returns it as a Doc: Markdown is the file's
 // content with line endings normalized to "\n" and exactly one trailing
-// newline, Title is the text of the first "# " ATX heading (or "" if none
-// exists — the caller, e.g. stage.ingest_source's tool, falls back to the
-// source's own basename), Kind defaults to "article" (backbone §10 rules
-// out any readability heuristic that would guess "paper" or
-// "transcript"), and Extractor is "passthrough".
+// newline, Title is the document's YAML frontmatter `title:` when the file
+// starts with a `---` line closed by another one (008 contract §2 — a
+// frontmatter title wins over a heading), else the text of the first "# "
+// ATX heading (or "" if neither exists — the caller, e.g.
+// stage.ingest_source's tool, falls back to the source's own basename),
+// Kind defaults to "article" (backbone §10 rules out any readability
+// heuristic that would guess "paper" or "transcript"), and Extractor is
+// "passthrough". The markdown itself is passthrough: frontmatter included,
+// byte for byte.
 func (fileExtractor) Extract(ctx context.Context, uri string) (*Doc, error) {
 	b, err := os.ReadFile(uri)
 	if err != nil {
@@ -52,13 +56,53 @@ func (fileExtractor) Extract(ctx context.Context, uri string) (*Doc, error) {
 		body += "\n"
 	}
 
+	title := frontmatterTitle(body)
+	if title == "" {
+		title = firstATXH1(body)
+	}
+
 	return &Doc{
-		Title:     firstATXH1(body),
+		Title:     title,
 		SourceURL: uri,
 		Markdown:  body,
 		Kind:      "article",
 		Extractor: "passthrough",
 	}, nil
+}
+
+// frontmatterTitle returns the top-level `title:` value from body's YAML
+// frontmatter — the block between an opening `---` as the very first line
+// and a closing `---` — trimmed, with one level of matching surrounding
+// double or single quotes removed. It returns "" when the document does
+// not start with `---`, when no closing line exists (the block is then
+// just body text), or when the key is absent or empty. A real YAML parser
+// is deliberately not used: one top-level scalar key is all passthrough
+// content needs, and a line scan cannot mis-parse the rest of the file.
+func frontmatterTitle(body string) string {
+	lines := strings.Split(body, "\n")
+	if strings.TrimSpace(lines[0]) != "---" {
+		return ""
+	}
+
+	title := ""
+	closed := false
+	for _, line := range lines[1:] {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "---" {
+			closed = true
+			break
+		}
+		if title == "" && strings.HasPrefix(line, "title:") {
+			title = strings.TrimSpace(strings.TrimPrefix(line, "title:"))
+		}
+	}
+	if !closed || title == "" {
+		return ""
+	}
+	if len(title) >= 2 && (title[0] == '"' || title[0] == '\'') && title[len(title)-1] == title[0] {
+		title = title[1 : len(title)-1]
+	}
+	return title
 }
 
 // normalizeNewlines rewrites "\r\n" and lone "\r" to "\n", so a file

@@ -21,6 +21,11 @@ const (
 // configFileName is the file Load reads and Save writes, inside ConfigDir.
 const configFileName = "config.toml"
 
+// MinRecommendedMaxTokens is the llm.max_tokens floor lw doctor warns
+// below: thinking-mode models spend most of a round's budget reasoning, and
+// a live GLM ingest measured 5,247 reasoning tokens in one round (008 W0).
+const MinRecommendedMaxTokens = 16000
+
 // LLM is the language-model endpoint lw talks to.
 type LLM struct {
 	BaseURL     string  `toml:"base_url"`
@@ -234,7 +239,7 @@ func Default() *Config {
 			Model:       "deepseek-v4-flash",
 			APIKey:      "env:DEEPSEEK_API_KEY",
 			Temperature: 0.2,
-			MaxTokens:   8192,
+			MaxTokens:   32768,
 		},
 		Limits: Limits{
 			MaxToolRounds: 24,
