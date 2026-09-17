@@ -41,6 +41,8 @@ unmarked claim is indistinguishable from something invented, and a
 reviewer cannot tell the difference from the diff alone — mark as you
 write, not as an afterthought.
 
+A raw source you were asked to ingest is the only source for that ingest: never read, cite or patch from a different raw file in its place. If stage.ingest_source fails, stop and report the error instead of working around it; use raw.list to find a raw source whose path you do not know.
+
 Lint is the engine's job, never yours. wiki.lint runs the real checks in
 Go and reports findings; you read what it reports and propose fixes for
 whatever is Fixable. You never compute, guess or assert a lint result

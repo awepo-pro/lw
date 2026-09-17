@@ -42,6 +42,13 @@ const maxConsecutiveBadCalls = 2
 // error, so a TUI can render the event and a CLI can check the return; a
 // clean finish returns nil. Every send to out is guarded against a stalled
 // consumer with select on ctx.Done() (send/fail below).
+//
+// Truncation (008, contract §1): a round whose finish reason is neither
+// "", "stop" nor "tool_calls" and that completed no tool call is the model
+// stopping before it finished its turn — not a clean stop. Such a round
+// ends the turn with exactly one ErrorEv wrapping ErrTruncated and no
+// DoneEv, so a caller cannot mistake an output-token cap for success (U1:
+// 000006 committed an ingest of zero pages that way).
 func (l *Loop) Send(ctx context.Context, sessionID, msg string, out chan<- Event) error {
 	defer close(out)
 
@@ -73,13 +80,16 @@ func (l *Loop) Send(ctx context.Context, sessionID, msg string, out chan<- Event
 	for {
 		rounds++
 
-		newMsgs, toolCalled, err := l.runRound(ctx, sessionID, msgs, &badCalls, out)
+		newMsgs, toolCalled, finish, err := l.runRound(ctx, sessionID, msgs, &badCalls, out)
 		if err != nil {
 			return err
 		}
 		msgs = newMsgs
 
 		if !toolCalled {
+			if truncated(finish) {
+				return l.fail(ctx, out, fmt.Errorf("%w (finish_reason %q in round %d)", ErrTruncated, finish, rounds))
+			}
 			if !l.send(ctx, out, DoneEv{Reason: "stop", Rounds: rounds}) {
 				return ctx.Err()
 			}
@@ -102,8 +112,16 @@ func (l *Loop) Send(ctx context.Context, sessionID, msg string, out chan<- Event
 // stream order — is folded into exactly **one** assistant llm.Message,
 // followed by that round's tool-result messages in call order. It returns
 // the message list to send on the next round (msgs plus whatever this round
-// appended) and whether this round produced at least one tool call — the
-// signal Send uses to decide whether to loop again.
+// appended), whether this round produced at least one tool call — the
+// signal Send uses to decide whether to loop again — and the round's last
+// non-empty Chunk.Finish ("" when the provider sent none), which Send
+// checks for truncation (008, contract §1).
+//
+// Truncation record: a round that ends abnormally (truncated(finish) and no
+// tool call) writes ONE assistant Record carrying its pending text, pending
+// reasoning and the finish reason — even when both buffers are empty —
+// before Send's ErrorEv, so the transcript shows what the cap cut off. It
+// is the only path that sets Record.Finish; normal rounds never do.
 //
 // Contract — one assistant message per round (backbone §9, C-114/C-115/
 // D-CZ; superseded by C-120/D-DG). A round that streamed text then a tool
@@ -119,10 +137,10 @@ func (l *Loop) Send(ctx context.Context, sessionID, msg string, out chan<- Event
 // right here, when the channel closes; dispatchToolCall and correctable no
 // longer build assistant messages at all, only the matching tool-result
 // message.
-func (l *Loop) runRound(ctx context.Context, sessionID string, msgs []llm.Message, badCalls *int, out chan<- Event) ([]llm.Message, bool, error) {
+func (l *Loop) runRound(ctx context.Context, sessionID string, msgs []llm.Message, badCalls *int, out chan<- Event) ([]llm.Message, bool, string, error) {
 	ch, err := l.client.Stream(ctx, llm.Request{Messages: msgs, Tools: l.tools.Definitions()})
 	if err != nil {
-		return nil, false, l.fail(ctx, out, fmt.Errorf("agent: stream: %w", err))
+		return nil, false, "", l.fail(ctx, out, fmt.Errorf("agent: stream: %w", err))
 	}
 
 	var roundText strings.Builder        // every Text delta this round, in full — becomes the round's one assistant message Content.
@@ -132,6 +150,7 @@ func (l *Loop) runRound(ctx context.Context, sessionID string, msgs []llm.Messag
 	var roundToolCalls []llm.ToolCall    // every ToolCall this round completes, in stream order.
 	var roundToolMsgs []llm.Message      // the matching tool-result messages, in call order.
 	toolCalled := false
+	finish := "" // the round's last non-empty Chunk.Finish; "" when the provider sent none
 
 	// flushRecord writes any text and/or reasoning accumulated since the
 	// last flush as ONE assistant Record, in the position it arrived —
@@ -167,8 +186,20 @@ func (l *Loop) runRound(ctx context.Context, sessionID string, msgs []llm.Messag
 		select {
 		case chunk, ok := <-ch:
 			if !ok {
-				if err := flushRecord(); err != nil {
-					return nil, false, l.fail(ctx, out, err)
+				if truncated(finish) && !toolCalled {
+					// Abnormal round end (008, contract §1): write the
+					// round's one assistant Record with its pending text,
+					// pending reasoning AND the finish reason, even when
+					// both buffers are empty — flushRecord skips empty
+					// buffers, and this record is the only trace of what
+					// the cap cut off. Send turns the same condition into
+					// the turn's ErrorEv, so the record lands before it.
+					rec := Record{TS: time.Now().UTC(), Role: "assistant", Content: pendingText.String(), Reasoning: pendingReasoning.String(), Finish: finish}
+					if aerr := l.sessions.Append(sessionID, rec); aerr != nil {
+						return nil, false, "", l.fail(ctx, out, fmt.Errorf("agent: append assistant record: %w", aerr))
+					}
+				} else if err := flushRecord(); err != nil {
+					return nil, false, "", l.fail(ctx, out, err)
 				}
 				content := roundText.String()
 				if content != "" || len(roundToolCalls) > 0 {
@@ -180,10 +211,13 @@ func (l *Loop) runRound(ctx context.Context, sessionID string, msgs []llm.Messag
 					})
 					msgs = append(msgs, roundToolMsgs...)
 				}
-				return msgs, toolCalled, nil
+				return msgs, toolCalled, finish, nil
 			}
 			if chunk.Err != nil {
-				return nil, false, l.fail(ctx, out, fmt.Errorf("agent: stream: %w", chunk.Err))
+				return nil, false, "", l.fail(ctx, out, fmt.Errorf("agent: stream: %w", chunk.Err))
+			}
+			if chunk.Finish != "" {
+				finish = chunk.Finish
 			}
 			if chunk.Reasoning != "" {
 				roundReasoning.WriteString(chunk.Reasoning)
@@ -191,26 +225,26 @@ func (l *Loop) runRound(ctx context.Context, sessionID string, msgs []llm.Messag
 			}
 			if chunk.Text != "" {
 				if !l.send(ctx, out, TextDelta{Text: chunk.Text}) {
-					return nil, false, ctx.Err()
+					return nil, false, "", ctx.Err()
 				}
 				roundText.WriteString(chunk.Text)
 				pendingText.WriteString(chunk.Text)
 			}
 			if chunk.ToolCall != nil {
 				if err := flushRecord(); err != nil {
-					return nil, false, l.fail(ctx, out, err)
+					return nil, false, "", l.fail(ctx, out, err)
 				}
 				toolCalled = true
 
 				toolMsg, stop, tErr := l.dispatchToolCall(ctx, sessionID, *chunk.ToolCall, badCalls, out)
 				if stop {
-					return nil, false, tErr
+					return nil, false, "", tErr
 				}
 				roundToolCalls = append(roundToolCalls, *chunk.ToolCall)
 				roundToolMsgs = append(roundToolMsgs, toolMsg)
 			}
 		case <-ctx.Done():
-			return nil, false, ctx.Err()
+			return nil, false, "", ctx.Err()
 		}
 	}
 }

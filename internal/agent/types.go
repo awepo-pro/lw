@@ -95,6 +95,11 @@ type Record struct {
 	// omitempty is load-bearing: every session.ndjson written before 005
 	// stays readable, and no migration exists or is needed.
 	Reasoning string `json:"reasoning,omitempty"`
+
+	// Finish is the provider's finish_reason for a round that ended abnormally
+	// (anything but "", "stop", "tool_calls"). Set only on the round's final
+	// assistant record; empty otherwise. Added 2026-09-17 (008).
+	Finish string `json:"finish,omitempty"`
 }
 
 // Session is one curator conversation, bound to a changeset.
