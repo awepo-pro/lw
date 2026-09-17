@@ -22,17 +22,30 @@
 // Residual, accepted by A-803 and restated here: two processes writing
 // within the same stat→write window are still last-writer-wins, and the
 // loser's change is lost without a signal only if it lands inside that
-// window — microseconds, versus the seconds-long window F-805-1 measured.
-// Commit keeps the exclusive lock file (backbone §5.2); no other verb
-// takes it, per A-803's documented deviation from the user's sketch.
+// window — bounded per verb (C-813: seconds, not microseconds, for
+// Append, whose window spans the lint recompute). A-804 makes the window
+// fail closed at the persist boundary: persistAndPublish refuses when the
+// changeset directory has been renamed away mid-window, so the loser can
+// no longer resurrect a committed changeset. Commit keeps the exclusive
+// lock file (backbone §5.2); no other verb takes it, per A-803's
+// documented deviation from the user's sketch.
 package stage
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 )
+
+// errChangesetGone is persistAndPublish's refusal when the writer's
+// changeset directory no longer exists at persist time — a foreign process
+// committed or rejected it inside the verb's stat→persist window (008
+// contract §11, amendment A-804; F-806-1). Deliberately unexported: the
+// contract adds no sentinel and no caller branches on this — the message
+// is the interface.
+var errChangesetGone = errors.New("stage: the open changeset was committed or rejected by another process")
 
 // openChangesetStamp stats the open changeset's changeset.json. ok is
 // false when the file cannot be stated at all — missing (the state between
@@ -112,7 +125,10 @@ func (e *Engine) readOpenFromDisk() (*Changeset, journalStamp, error) {
 //
 // A cache that names a changeset no longer on disk (a foreign process
 // committed it) errors with the same "no such file" the cold engine's
-// read produces — instead of resurrecting the committed directory.
+// read produces — instead of resurrecting the committed directory. The
+// persist boundary refuses the same way (persistAndPublish, A-804): a
+// foreign commit landing INSIDE the window fails the writer's persist
+// instead of being written over.
 //
 // The caller must hold writeMu. The stat runs under writeMu, never under
 // openMu, so openMu stays I/O-free.
@@ -185,6 +201,16 @@ func (e *Engine) persistAndPublish(c *Changeset) error {
 		if err := e.failBeforePersist(); err != nil {
 			return err
 		}
+	}
+	// A-804 (F-806-1): the changeset directory must still exist. A foreign
+	// Commit renames open/<id> to committed/<id> mid-window; recreating the
+	// directory here would un-commit that commit at the filesystem level
+	// (the changeset in BOTH open/ and committed/, one-open and id-
+	// uniqueness both broken, no error to anyone). writeChangesetJSON no
+	// longer creates the directory — OpenChangeset is its only creator —
+	// so a vanished directory fails closed with errChangesetGone.
+	if _, err := os.Stat(filepath.Join(e.changesetOpenDir(), c.ID)); err != nil {
+		return errChangesetGone
 	}
 	stamp, err := writeChangesetJSON(filepath.Join(e.changesetOpenDir(), c.ID), c)
 	if err != nil {

@@ -255,9 +255,19 @@ func TestCrashAfterStep(t *testing.T) {
 
 			assertNoLwTmpFiles(t, dir)
 
-			// A crash leaves the lock held — nothing ran step 10.
-			if _, err := AcquireLock(filepath.Join(dir, ".llmwiki")); !errors.Is(err, ErrLocked) {
-				t.Errorf("lock after a simulated crash: AcquireLock err = %v, want ErrLocked (a real crash never releases it)", err)
+			// A-804 (F-806-2): a commit that RETURNS an error releases the
+			// lock — a returned error is a lived-through failure, not a
+			// crash, and holding it would wedge a long-lived caller forever.
+			// A real crash never runs this code at all; its stale on-disk
+			// lock is cleared by AcquireLock's liveness check or
+			// lw doctor --unlock.
+			unlock, lockErr := AcquireLock(filepath.Join(dir, ".llmwiki"))
+			if errors.Is(lockErr, ErrLocked) {
+				t.Errorf("lock after a faulted commit: AcquireLock = ErrLocked, want the lock released (A-804)")
+			} else if lockErr != nil {
+				t.Errorf("lock after a faulted commit: AcquireLock err = %v", lockErr)
+			} else {
+				unlock()
 			}
 
 			absPath := filepath.Join(dir, filepath.FromSlash(path))

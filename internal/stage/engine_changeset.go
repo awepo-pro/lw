@@ -95,16 +95,18 @@ func (e *Engine) changesetIDTaken(id string) (bool, error) {
 // preserves size and mtime, so this is exactly the stamp the A-803
 // coherence check compares against on the next write, with no post-rename
 // stat and no window in which a foreign write could be recorded as ours.
+//
+// The caller must have created dir (A-804, F-806-1): OpenChangeset is the
+// only legitimate creator of a changeset directory, and a persist that
+// recreated one would resurrect a changeset another process just renamed
+// away — so this function never mkdirs, and a missing directory fails at
+// CreateTemp instead.
 func writeChangesetJSON(dir string, c *Changeset) (journalStamp, error) {
 	b, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
 		return journalStamp{}, fmt.Errorf("stage: marshal changeset %s: %w", c.ID, err)
 	}
 	b = append(b, '\n')
-
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return journalStamp{}, fmt.Errorf("stage: write changeset %s: %w", c.ID, err)
-	}
 
 	tmp, err := os.CreateTemp(dir, "tmp-*")
 	if err != nil {
@@ -220,6 +222,13 @@ func (e *Engine) OpenChangeset(intent string, a Author) (*Changeset, error) {
 	c.Checks = checks
 
 	dir := filepath.Join(openDir, id)
+	// A-804 (F-806-1): OpenChangeset is the only creator of a changeset
+	// directory — open/ was just proven to exist by the ReadDir above — so
+	// the persist path itself never mkdirs and can never resurrect a
+	// directory a foreign process renamed away.
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		return nil, fmt.Errorf("stage: open changeset: %w", err)
+	}
 	stamp, err := writeChangesetJSON(dir, c)
 	if err != nil {
 		return nil, fmt.Errorf("stage: open changeset: %w", err)
@@ -855,9 +864,9 @@ func (e *Engine) Reject(reason string) error {
 
 	src := filepath.Join(e.changesetOpenDir(), c.ID)
 	dst := filepath.Join(e.changesetRejectedDir(), c.ID)
-	if err := os.MkdirAll(e.changesetRejectedDir(), 0o755); err != nil {
-		return fmt.Errorf("stage: reject: %w", err)
-	}
+	// rejected/ is §14 layout OpenEngine guarantees; this verb creates no
+	// directories (A-804, F-806-1), so a missing one fails the rename
+	// instead of being silently recreated.
 	if err := os.Rename(src, dst); err != nil {
 		return fmt.Errorf("stage: reject: %w", err)
 	}

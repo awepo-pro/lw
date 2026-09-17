@@ -28,7 +28,7 @@ type Engine struct {
 	index      *index.Index
 	store      *Store
 	journal    *Journal
-	unlock     func() error            // nil unless Commit holds the lock
+	unlock     func() error            // nil unless Commit holds the lock; guarded by lifecycleMu
 	now        func() time.Time        // injected (00-conventions.md §3)
 	rand       io.Reader               // injected; id entropy
 	faultAfter func(step string) error // test-only; nil in production
@@ -43,7 +43,16 @@ type Engine struct {
 	// before its persist publishes nothing (A-803) without racing a real
 	// disk failure into the window.
 	failBeforePersist func() error
-	forceNext         bool // next Commit overrode a lint regression (D-AG)
+	forceNext         bool // next Commit overrode a lint regression (D-AG); guarded by lifecycleMu
+	// lifecycleMu guards the commit-lifecycle fields unlock and forceNext
+	// (008 contract §11, amendment A-804; ORCH-806): Commit writes both,
+	// ForceNextCommit and ReloadIfChanged read them, and those run on
+	// different goroutines in a library caller, so plain fields were a true
+	// data race. It is a leaf lock — holders do nothing but read or write
+	// those two fields; never held across I/O or another lock, and never
+	// taken while openMu or journalStampMu is held (the reverse is fine:
+	// ReloadIfChanged checks the lock between its own lock-guarded reads).
+	lifecycleMu sync.Mutex
 	// writeMu is the single-writer lock (008 contract §10, amendment
 	// A-803): every verb that mutates the open changeset or persists
 	// changeset.json — OpenChangeset, Append, DropHunk, UndropHunk, DropOp,
@@ -181,7 +190,51 @@ func (e *Engine) cacheOpenRehydrated(c *Changeset, nextOp int, stamp journalStam
 // written inside Commit. Without this seam the CLI can only append a
 // SECOND commit_end, which makes the journal state that one commit ended
 // twice.
-func (e *Engine) ForceNextCommit() { e.forceNext = true }
+func (e *Engine) ForceNextCommit() {
+	e.lifecycleMu.Lock()
+	e.forceNext = true
+	e.lifecycleMu.Unlock()
+}
+
+// takeForceNext consumes and returns the D-AG force flag under
+// lifecycleMu — Commit's step 0 (A-804; the flag is lifecycle state like
+// unlock, written by ForceNextCommit on another goroutine).
+func (e *Engine) takeForceNext() bool {
+	e.lifecycleMu.Lock()
+	forced := e.forceNext
+	e.forceNext = false
+	e.lifecycleMu.Unlock()
+	return forced
+}
+
+// setCommitUnlock records unlock as the release for the commit lock this
+// Engine now holds (Commit's step 1), under lifecycleMu (A-804).
+func (e *Engine) setCommitUnlock(unlock func() error) {
+	e.lifecycleMu.Lock()
+	e.unlock = unlock
+	e.lifecycleMu.Unlock()
+}
+
+// commitLockHeld reports whether this Engine currently holds the vault
+// commit lock — ReloadIfChanged's guard, evaluated before AND after its
+// stamp read (008 contract §3 and §11, A-804).
+func (e *Engine) commitLockHeld() bool {
+	e.lifecycleMu.Lock()
+	defer e.lifecycleMu.Unlock()
+	return e.unlock != nil
+}
+
+// takeCommitUnlock returns and clears the held unlock under lifecycleMu,
+// nil when none is held. Close's documented safe-to-call-twice contract
+// rides on the take being atomic: exactly one caller ever receives a
+// non-nil func (A-804; ORCH-806).
+func (e *Engine) takeCommitUnlock() func() error {
+	e.lifecycleMu.Lock()
+	unlock := e.unlock
+	e.unlock = nil
+	e.lifecycleMu.Unlock()
+	return unlock
+}
 
 // ErrNoChangeset, ErrOpenChangeset, ErrStale and ErrValidation are the
 // sentinels backbone §5.4 defines for the Engine's changeset lifecycle.
@@ -342,12 +395,12 @@ func (e *Engine) Journal() *Journal {
 //
 // Contract (backbone §5.4, MASTER §9 D-AS): it does not close the journal —
 // §5.7 gives Journal no Close method, since it holds no persistent file
-// handle. Close is safe to call twice.
+// handle. Close is safe to call twice; the take below is atomic under
+// lifecycleMu, so exactly one caller receives the unlock (008 A-804).
 func (e *Engine) Close() error {
-	if e.unlock == nil {
+	unlock := e.takeCommitUnlock()
+	if unlock == nil {
 		return nil
 	}
-	unlock := e.unlock
-	e.unlock = nil
 	return unlock()
 }

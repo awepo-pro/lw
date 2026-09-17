@@ -53,19 +53,33 @@ func (e *Engine) Commit(message string) (string, error) {
 // commitWriteLocked is Commit's body without writeMu — the exported Commit
 // holds the lock across the whole ten-step sequence (A-803), and step 2
 // calls Refresh's body directly so a holder never re-locks.
+//
+// A-804 (F-806-2): every error return after step 1 releases the vault
+// lock — backbone §5.4 step 10 is "release the lock", and Close is
+// documented safe to call twice, so the defer below stands down only once
+// step 10 has run. Without this, one failed commit in a caller that does
+// not defer Close (the TUI's review pane) wedged the engine for the life
+// of the process: every later Commit ErrLocked, every ReloadIfChanged a
+// no-op.
 func (e *Engine) commitWriteLocked(message string) (string, error) {
 	// Consume the D-AG force flag first, before any step can fail, so a
 	// refused or errored commit never leaks it into a later one
 	// (MASTER §9 D-CD).
-	forced := e.forceNext
-	e.forceNext = false
+	forced := e.takeForceNext()
 
 	// Step 1.
 	unlock, err := AcquireLock(e.llmwikiDir())
 	if err != nil {
 		return "", err
 	}
-	e.unlock = unlock
+	e.setCommitUnlock(unlock)
+
+	committed := false
+	defer func() {
+		if !committed {
+			e.Close()
+		}
+	}()
 
 	// Step 2. Refresh re-hashes the tree and flips any now-stale op; a
 	// changeset the review screen has not yet reconciled is refused
@@ -75,7 +89,6 @@ func (e *Engine) commitWriteLocked(message string) (string, error) {
 	// so the materialization below is built from what disk actually holds,
 	// not from this engine's possibly stale cache (008 A-803, F-805-1).
 	if err := e.refreshWriteLocked(); err != nil {
-		e.Close()
 		return "", fmt.Errorf("stage: commit: %w", err)
 	}
 	if e.invalidateOpen != nil {
@@ -88,11 +101,9 @@ func (e *Engine) commitWriteLocked(message string) (string, error) {
 		// cache while Commit runs (008 F-R2). The changeset is intact
 		// on disk, so refuse exactly as a commit with no changeset
 		// would; dereferencing the nil cache is not an option.
-		e.Close()
 		return "", fmt.Errorf("stage: commit: %w", ErrNoChangeset)
 	}
 	if hasStaleOp(c.Ops) {
-		e.Close()
 		return "", ErrStale
 	}
 
@@ -103,7 +114,6 @@ func (e *Engine) commitWriteLocked(message string) (string, error) {
 	// an id and before commit_begin is journalled, so the refusal writes
 	// nothing at all and the changeset stays open for further review.
 	if len(c.Live()) == 0 {
-		e.Close()
 		return "", fmt.Errorf("stage: commit: %w", ErrNothingToCommit)
 	}
 
@@ -117,17 +127,14 @@ func (e *Engine) commitWriteLocked(message string) (string, error) {
 	// brick. Discovering it here costs one Stat and aborts while the vault
 	// is still untouched.
 	if taken, err := e.committedIDTaken(c.ID); err != nil {
-		e.Close()
 		return "", fmt.Errorf("stage: commit: %w", err)
 	} else if taken {
-		e.Close()
 		return "", fmt.Errorf("stage: commit: changeset %s is already committed: %w", c.ID, ErrIDCollision)
 	}
 
 	now := e.now().UTC()
 	commitID, err := nextCommitID(filepath.Join(e.llmwikiDir(), "snapshots"))
 	if err != nil {
-		e.Close()
 		return "", fmt.Errorf("stage: commit: %w", err)
 	}
 
@@ -135,7 +142,6 @@ func (e *Engine) commitWriteLocked(message string) (string, error) {
 	retractedDate := now.Format("2006-01-02")
 	m, err := e.buildCommitMaterialization(live, retractedDate)
 	if err != nil {
-		e.Close()
 		return "", fmt.Errorf("stage: commit: %w", err)
 	}
 	paths := commitTargetPaths(m)
@@ -272,6 +278,7 @@ func (e *Engine) commitWriteLocked(message string) (string, error) {
 
 	// Step 10.
 	e.forgetOpen()
+	committed = true // the defer below stands down; this Close owns the release
 	if err := e.Close(); err != nil {
 		return commitID, fmt.Errorf("stage: commit: release lock: %w", err)
 	}
@@ -280,10 +287,12 @@ func (e *Engine) commitWriteLocked(message string) (string, error) {
 
 // checkFault invokes e.faultAfter(step) when the test-only hook is set and
 // returns its error unchanged. It is called after each of steps 3 through
-// 9 completes, so a test can simulate a process kill at that exact
-// boundary: Commit returns immediately, without releasing the lock,
-// mirroring what a real crash would leave behind (a stale lock is cleared
-// by AcquireLock's own liveness check, or lw doctor --unlock).
+// 9 completes, so a test can fail a commit at that exact boundary. Since
+// A-804 (F-806-2) the failed commit RELEASES the lock on return — a
+// returned error is a lived-through failure, not a crash, and a leaked
+// lock would wedge a long-lived caller forever. A real crash still leaves
+// the on-disk lock behind (nothing runs to release it); that stale lock is
+// cleared by AcquireLock's own liveness check, or lw doctor --unlock.
 func (e *Engine) checkFault(step string) error {
 	if e.faultAfter == nil {
 		return nil

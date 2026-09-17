@@ -95,7 +95,9 @@ func (e *Engine) journalChanged() (prev, cur journalStamp, changed bool, err err
 // It returns true when it reloaded. Journal appends made through THIS
 // Engine never count as a change. It clears the cached open changeset so
 // the next Current() re-reads it. It is a no-op returning (false, nil)
-// while this Engine holds the commit lock.
+// while this Engine holds the commit lock; the guard is evaluated before
+// AND after the journal stamp read (008 A-804), so a commit that acquires
+// the lock while the stamp is being read still holds the reload off.
 //
 // The reload mutates the vault and the index in place — the *index.Index
 // handed out before the reload is the same object after it and answers for
@@ -106,12 +108,21 @@ func (e *Engine) journalChanged() (prev, cur journalStamp, changed bool, err err
 // report or review load always observes one whole state. The A-801 busy
 // guard therefore stands as a second layer, not the only one.
 func (e *Engine) ReloadIfChanged() (bool, error) {
-	if e.unlock != nil {
+	if e.commitLockHeld() {
 		return false, nil
 	}
 	prev, cur, changed, err := e.journalChanged()
 	if err != nil || !changed {
 		return false, err
+	}
+	// A-804 (F-806-3, the review's TOCTOU): re-check the lock AFTER the
+	// stamp read. The first check can pass a hair before a Commit reaches
+	// step 1, and the reload below would then run across step 5's
+	// materialization — publishing a vault snapshot that never existed as
+	// one disk state (some files post-write, some pre). A commit that
+	// starts after this re-check is the next tick's decision.
+	if e.commitLockHeld() {
+		return false, nil
 	}
 
 	if err := e.vault.Reload(); err != nil {

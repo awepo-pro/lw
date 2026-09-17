@@ -717,6 +717,10 @@ func TestOldWidthIDsStillLoad(t *testing.T) {
 		Checks:   Checks{Schema: "pass", Lint: "pass"},
 	}
 	committedDir := filepath.Join(dir, ".llmwiki", "changesets", "committed", oldID)
+	// A-804: a persist no longer creates the directory — the seed does.
+	if err := os.MkdirAll(committedDir, 0o755); err != nil {
+		t.Fatalf("seed legacy changeset dir: %v", err)
+	}
 	if _, err := writeChangesetJSON(committedDir, old); err != nil {
 		t.Fatalf("seed legacy changeset: %v", err)
 	}
