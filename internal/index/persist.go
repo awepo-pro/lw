@@ -43,17 +43,23 @@ type gobDoc struct {
 }
 
 // GobEncode implements gob.GobEncoder so Save can gob.Encode an *Index
-// directly while keeping its fields unexported.
+// directly while keeping its fields unexported. It loads the docs map once
+// (008 A-802), so the encoded bytes describe one whole map even if a
+// concurrent Update lands mid-encode.
 func (ix *Index) GobEncode() ([]byte, error) {
-	paths := make([]string, 0, len(ix.docs))
-	for p := range ix.docs {
+	var docs map[string]*docEntry
+	if p := ix.docs.Load(); p != nil {
+		docs = *p
+	}
+	paths := make([]string, 0, len(docs))
+	for p := range docs {
 		paths = append(paths, p)
 	}
 	sort.Strings(paths)
 
 	g := gobIndex{Docs: make([]gobDoc, 0, len(paths))}
 	for _, p := range paths {
-		d := ix.docs[p]
+		d := docs[p]
 		g.Docs = append(g.Docs, gobDoc{
 			Path:    d.Path,
 			Title:   d.Title,
@@ -107,7 +113,7 @@ func (ix *Index) GobDecode(data []byte) error {
 			TagLen:        gd.TagLen,
 		}
 	}
-	ix.docs = docs
+	ix.docs.Store(&docs) // one store: a concurrent reader sees old or new, never a partial map (008 A-802)
 	return nil
 }
 

@@ -29,12 +29,21 @@ type Engine struct {
 	store      *Store
 	journal    *Journal
 	unlock     func() error            // nil unless Commit holds the lock
-	open       *Changeset              // nil when none is open
 	now        func() time.Time        // injected (00-conventions.md §3)
 	rand       io.Reader               // injected; id entropy
-	nextOp     int                     // op<N> counter, incl. cascade sub-ops
 	faultAfter func(step string) error // test-only; nil in production
 	forceNext  bool                    // next Commit overrode a lint regression (D-AG)
+	// openMu guards open and nextOp (008 A-802): the reload tick's
+	// ReloadIfChanged, an agent turn's Current/Append and a review load all
+	// touch those two fields from different goroutines, so every read and
+	// write of either goes through the cacheOpen*/forgetOpen/cachedOpen/
+	// takeOpNumber helpers below. It is a short-held lock: never across
+	// vault, index, CAS or journal I/O. It is never held together with
+	// journalStampMu — no code path takes both, so there is no lock order
+	// between them to document.
+	openMu sync.Mutex
+	open   *Changeset // nil when none is open; guarded by openMu
+	nextOp int        // op<N> counter, incl. cascade sub-ops; guarded by openMu
 	// journalStampMu guards journalStamp: every journal append this Engine
 	// makes refreshes the stamp, and ReloadIfChanged (reload.go, 008
 	// contract §3) stats the journal and compares it under the same lock,
@@ -42,6 +51,53 @@ type Engine struct {
 	// and be mistaken for a foreign write.
 	journalStampMu sync.Mutex
 	journalStamp   journalStamp
+}
+
+// cacheOpen stores c as the engine's cached open changeset, leaving the op
+// counter alone — the shape Append and the mutation tails need, where the
+// changeset object is extended in place and only the cache pointer moves.
+func (e *Engine) cacheOpen(c *Changeset) {
+	e.openMu.Lock()
+	e.open = c
+	e.openMu.Unlock()
+}
+
+// cacheOpenAt stores c as the cached open changeset together with the op
+// counter rehydrated from it — the shape OpenChangeset and Current need.
+func (e *Engine) cacheOpenAt(c *Changeset, nextOp int) {
+	e.openMu.Lock()
+	e.open = c
+	e.nextOp = nextOp
+	e.openMu.Unlock()
+}
+
+// forgetOpen clears the cached open changeset and the op counter. The
+// counter is always rehydrated by the Current() call that repopulates the
+// cache, so zeroing it here is safe.
+func (e *Engine) forgetOpen() {
+	e.openMu.Lock()
+	e.open = nil
+	e.nextOp = 0
+	e.openMu.Unlock()
+}
+
+// cachedOpen returns the cached open changeset, or nil when none is cached.
+func (e *Engine) cachedOpen() *Changeset {
+	e.openMu.Lock()
+	defer e.openMu.Unlock()
+	return e.open
+}
+
+// takeOpNumber draws the next op<N> number. One lock acquisition numbers a
+// whole op: its cascade sub-ops recurse through this same method, which is
+// correct — numbering stays gapless and total — at the cost of a lock per
+// sub-op, negligible against Append's validation and lint work.
+func (e *Engine) takeOpNumber() int {
+	e.openMu.Lock()
+	defer e.openMu.Unlock()
+	n := e.nextOp
+	e.nextOp++
+	return n
 }
 
 // ForceNextCommit marks the next Commit as one that overrode a lint

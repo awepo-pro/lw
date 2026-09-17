@@ -337,7 +337,10 @@ func (a *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			a.quitting = true
 			return a, tea.Quit
 		}
-		return a, nil
+		// A key swallowed below the minimum still tells the active pane that
+		// a key went by (008 A-801 F-3) — review's raw-only confirmation
+		// disarms on it exactly as on every other shell-consumed key.
+		return a, a.propagate(ShellKeyMsg{})
 	}
 
 	if a.overlayOpen {

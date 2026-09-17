@@ -59,7 +59,7 @@ func (e *Engine) Commit(message string) (string, error) {
 		e.Close()
 		return "", fmt.Errorf("stage: commit: %w", err)
 	}
-	c := e.open
+	c := e.cachedOpen()
 	if hasStaleOp(c.Ops) {
 		e.Close()
 		return "", ErrStale
@@ -240,8 +240,7 @@ func (e *Engine) Commit(message string) (string, error) {
 	}
 
 	// Step 10.
-	e.open = nil
-	e.nextOp = 0
+	e.forgetOpen()
 	if err := e.Close(); err != nil {
 		return commitID, fmt.Errorf("stage: commit: release lock: %w", err)
 	}

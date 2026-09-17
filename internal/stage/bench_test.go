@@ -115,11 +115,11 @@ func benchChangeset(b *testing.B, e *Engine, intent string) {
 }
 
 // benchFill appends the first k benchmark ops to the open changeset, then
-// checks the count against e.open — the in-memory changeset Append just
-// extended (currentOpen returns the e.open pointer OpenChangeset set, and
-// nothing reloads it from disk), so it is the changeset the timed region
-// actually works on. A mismatch means the setup half-failed and the tier
-// measures nothing.
+// checks the count against the engine's cached changeset — the in-memory
+// changeset Append just extended (currentOpen returns the pointer
+// OpenChangeset cached, and nothing reloads it from disk), so it is the
+// changeset the timed region actually works on. A mismatch means the setup
+// half-failed and the tier measures nothing.
 //
 // That per-op Append error check sits inside BenchmarkStageAppend's timed
 // region deliberately: ~1 ns against a ≥167 ms op, and the only guard
@@ -136,7 +136,7 @@ func benchFill(b *testing.B, e *Engine, k, n int) {
 			b.Fatalf("stage bench: first Append returned an empty op id")
 		}
 	}
-	if got := len(e.open.Ops); got != k {
+	if got := len(e.cachedOpen().Ops); got != k {
 		b.Fatalf("stage bench: changeset carries %d ops, want %d", got, k)
 	}
 }

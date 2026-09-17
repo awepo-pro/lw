@@ -84,3 +84,37 @@ func BenchmarkIndexSearch(b *testing.B) {
 		})
 	}
 }
+
+// BenchmarkIndexUpdate measures Update — Commit step 7's mutator — whose
+// 008 A-802 cost is a copy-on-write clone of the docs map before the named
+// paths are re-indexed. "copy-only" isolates exactly that added clone (an
+// empty path list is the clone and the store and nothing else); "three-paths"
+// is the shape a real commit drives, a few re-indexed pages on top of the
+// clone. The pre-A-802 Update had no clone, so copy-only is the whole
+// per-call regression this benchmark pins.
+func BenchmarkIndexUpdate(b *testing.B) {
+	for _, n := range benchTiers {
+		b.Run(fmt.Sprint(n), func(b *testing.B) {
+			b.ReportAllocs()
+			v := openScaleVault(b, n)
+			ix := Build(v)
+
+			b.Run("copy-only", func(b *testing.B) {
+				for i := 0; i < b.N; i++ {
+					ix.Update(v, nil)
+				}
+			})
+
+			b.Run("three-paths", func(b *testing.B) {
+				paths := []string{
+					testutil.ScaleNotePath(0),
+					testutil.ScaleNotePath(1),
+					"wiki/concepts/absent.md", // Update's drop half
+				}
+				for i := 0; i < b.N; i++ {
+					ix.Update(v, paths)
+				}
+			})
+		})
+	}
+}

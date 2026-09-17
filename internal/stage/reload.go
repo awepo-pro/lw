@@ -98,9 +98,13 @@ func (e *Engine) journalChanged() (prev, cur journalStamp, changed bool, err err
 // while this Engine holds the commit lock.
 //
 // The reload mutates the vault and the index in place — the *index.Index
-// handed out before the reload is the same object after it and answers
-// for the reloaded vault (008 A-801) — and it is deliberately
-// unsynchronized: callers must not run it while another goroutine is using this Engine.
+// handed out before the reload is the same object after it and answers for
+// the reloaded vault (008 A-801) — and it is safe to call while
+// another goroutine is using this Engine (008 A-802): the vault swaps whole
+// immutable snapshots, the index swaps whole copy-on-write maps, and the
+// cached changeset moves under openMu, so a concurrent agent turn, lint
+// report or review load always observes one whole state. The A-801 busy
+// guard therefore stands as a second layer, not the only one.
 func (e *Engine) ReloadIfChanged() (bool, error) {
 	if e.unlock != nil {
 		return false, nil
@@ -124,7 +128,7 @@ func (e *Engine) ReloadIfChanged() (bool, error) {
 	if err := e.index.Save(filepath.Join(e.llmwikiDir(), "index.gob")); err != nil {
 		return false, fmt.Errorf("stage: reload: save index: %w", err)
 	}
-	e.open = nil
+	e.forgetOpen()
 	// Stamp with what this reload actually read (cur, observed before it
 	// began) — never a fresh stat. An append landing mid-reload must stay
 	// visible to the next call, or the stamp would claim a state the vault

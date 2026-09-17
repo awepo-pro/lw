@@ -216,7 +216,7 @@ func TestStagedFileRealEngineErrorPropagates(t *testing.T) {
 	}
 	op.After = strings.Repeat("0", 64)
 	op.SHA256 = op.After
-	e.open = c
+	e.cacheOpen(c)
 
 	_, _, err = e.StagedFile("raw/articles/staged-file.md")
 	if err == nil {

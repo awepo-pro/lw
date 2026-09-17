@@ -213,8 +213,7 @@ func (e *Engine) OpenChangeset(intent string, a Author) (*Changeset, error) {
 		return nil, fmt.Errorf("stage: open changeset: %w", err)
 	}
 
-	e.open = c
-	e.nextOp = 1
+	e.cacheOpenAt(c, 1)
 	return c, nil
 }
 
@@ -254,18 +253,19 @@ func (e *Engine) Current() (*Changeset, error) {
 		return nil, fmt.Errorf("stage: current: %w", err)
 	}
 
-	e.open = &c
-	e.nextOp = 1 + maxOpN(c.Ops)
+	e.cacheOpenAt(&c, 1+maxOpN(c.Ops))
 	return &c, nil
 }
 
-// currentOpen returns e.open, calling Current to rehydrate it first when
-// nil — the seam that lets Append/DropHunk/DropOp/Refresh/Reject work
-// correctly whether or not the caller already called Current in this
-// process (backbone §5.4, MASTER §9 D-BB).
+// currentOpen returns the cached open changeset, calling Current to
+// rehydrate it first when nothing is cached — the seam that lets
+// Append/DropHunk/DropOp/Refresh/Reject work correctly whether or not the
+// caller already called Current in this process (backbone §5.4, MASTER §9
+// D-BB). The cache pointer moves under openMu (008 A-802), so a concurrent
+// ReloadIfChanged clearing it is either seen whole or not at all.
 func (e *Engine) currentOpen() (*Changeset, error) {
-	if e.open != nil {
-		return e.open, nil
+	if c := e.cachedOpen(); c != nil {
+		return c, nil
 	}
 	return e.Current()
 }
@@ -335,13 +335,13 @@ func (e *Engine) captureSourceSHAs(op *Op) error {
 	return nil
 }
 
-// assignIDs assigns op the next "op<N>" id from e.nextOp, defaults its
-// State to StateProposed when unset, and recurses into Cascade — a single
-// counter numbers every op nested in a Cascade too (backbone §5.4,
-// MASTER §9 D-AK), so DropOp can address a cascade entry by id.
+// assignIDs assigns op the next "op<N>" id from the engine's op counter,
+// defaults its State to StateProposed when unset, and recurses into
+// Cascade — a single counter numbers every op nested in a Cascade too
+// (backbone §5.4, MASTER §9 D-AK), so DropOp can address a cascade entry by
+// id. The counter is drawn under openMu (008 A-802).
 func (e *Engine) assignIDs(op *Op) {
-	op.ID = fmt.Sprintf("op%d", e.nextOp)
-	e.nextOp++
+	op.ID = fmt.Sprintf("op%d", e.takeOpNumber())
 	if op.State == "" {
 		op.State = StateProposed
 	}
@@ -453,7 +453,7 @@ func (e *Engine) Append(op Op) (string, error) {
 		return "", fmt.Errorf("stage: append: %w", err)
 	}
 
-	e.open = c
+	e.cacheOpen(c)
 	return op.ID, nil
 }
 
@@ -687,7 +687,7 @@ func (e *Engine) persistAfterMutation(c *Changeset) error {
 	if err := writeChangesetJSON(filepath.Join(e.changesetOpenDir(), c.ID), c); err != nil {
 		return fmt.Errorf("stage: persist changeset: %w", err)
 	}
-	e.open = c
+	e.cacheOpen(c)
 	return nil
 }
 
@@ -714,7 +714,7 @@ func (e *Engine) Refresh() error {
 	if err := writeChangesetJSON(filepath.Join(e.changesetOpenDir(), c.ID), c); err != nil {
 		return fmt.Errorf("stage: refresh: %w", err)
 	}
-	e.open = c
+	e.cacheOpen(c)
 	return nil
 }
 
@@ -748,7 +748,6 @@ func (e *Engine) Reject(reason string) error {
 		return fmt.Errorf("stage: reject: %w", err)
 	}
 
-	e.open = nil
-	e.nextOp = 0
+	e.forgetOpen()
 	return nil
 }

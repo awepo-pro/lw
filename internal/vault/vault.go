@@ -8,18 +8,24 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"sync/atomic"
 )
 
 // Vault is a loaded wiki: its schema, every parsed page under wiki/, every
 // parsed raw source under raw/, and the wikilink graph built over the pages.
+//
+// The content lives in one immutable snapshot behind an atomic pointer
+// (008 A-802): Open and Reload build a complete new snapshot and swap it in
+// with a single store, so a reader running concurrently with a Reload sees
+// either the whole old state or the whole new one, never a half-written
+// structure, and a snapshot is never mutated after it is stored. The
+// *Schema, *Page, *RawSource and *Graph values a snapshot holds are
+// therefore immutable too: everything handed out from a Vault stays valid
+// for exactly as long as the caller keeps it, whatever Reload does.
 type Vault struct {
-	root        string // original argument to Open; "" for an FS-backed vault
-	fsys        fs.FS
-	schema      *Schema
-	pages       map[string]*Page
-	rawSources  map[string]*RawSource
-	parseErrors []ParseError
-	graph       *Graph
+	root string // original argument to Open; "" for an FS-backed vault
+	fsys fs.FS
+	snap atomic.Pointer[snapshot]
 }
 
 // ParseError is one file under wiki/ or raw/ that Open could not parse.
@@ -93,58 +99,6 @@ func (v *Vault) Root() string {
 	return v.root
 }
 
-// Schema returns the vault's parsed SCHEMA.md.
-func (v *Vault) Schema() *Schema {
-	return v.schema
-}
-
-// Pages returns every successfully parsed wiki page, sorted by Path.
-func (v *Vault) Pages() []*Page {
-	paths := sortedKeys(v.pages)
-	out := make([]*Page, 0, len(paths))
-	for _, p := range paths {
-		out = append(out, v.pages[p])
-	}
-	return out
-}
-
-// Page returns the page at the given vault-relative path, and whether it
-// was found.
-func (v *Vault) Page(path string) (*Page, bool) {
-	p, ok := v.pages[path]
-	return p, ok
-}
-
-// RawSources returns every successfully parsed raw source, sorted by Path.
-func (v *Vault) RawSources() []*RawSource {
-	paths := sortedKeys(v.rawSources)
-	out := make([]*RawSource, 0, len(paths))
-	for _, p := range paths {
-		out = append(out, v.rawSources[p])
-	}
-	return out
-}
-
-// RawSource returns the raw source at the given vault-relative path, and
-// whether it was found.
-func (v *Vault) RawSource(path string) (*RawSource, bool) {
-	r, ok := v.rawSources[path]
-	return r, ok
-}
-
-// ParseErrors returns one entry per file under wiki/ or raw/ that Open
-// could not parse, sorted by Path. A file in ParseErrors is in neither
-// Pages() nor RawSources() and contributes no graph edges (backbone §2.8,
-// MASTER §9 D-W).
-func (v *Vault) ParseErrors() []ParseError {
-	return append([]ParseError(nil), v.parseErrors...)
-}
-
-// Graph returns the vault's wikilink graph, built from Pages() only.
-func (v *Vault) Graph() *Graph {
-	return v.graph
-}
-
 // Read returns the raw bytes at the given vault-relative path.
 //
 // Contract (backbone §2.8): rejects any path that is absolute, contains
@@ -180,6 +134,12 @@ func (v *Vault) Exists(path string) bool {
 // disk-backed vault (opened via Open), that FS is a live view of the
 // directory, not a snapshot, so Reload sees anything written there since
 // the last load.
+//
+// The new state is built completely — pages, raw sources, parse errors and
+// the graph over the NEW pages — before a single store swaps it in, so a
+// reader concurrent with Reload always observes one whole state (008
+// A-802). A Reload that fails leaves the previous snapshot standing, and
+// slices or pages taken before it stay exactly as they were.
 func (v *Vault) Reload() error {
 	schemaBytes, err := fs.ReadFile(v.fsys, "SCHEMA.md")
 	if err != nil {
@@ -202,11 +162,18 @@ func (v *Vault) Reload() error {
 	parseErrors := append(pageErrs, rawErrs...)
 	sort.Slice(parseErrors, func(i, j int) bool { return parseErrors[i].Path < parseErrors[j].Path })
 
-	v.schema = schema
-	v.pages = pages
-	v.rawSources = rawSources
-	v.parseErrors = parseErrors
-	v.graph = BuildGraph(v)
+	s := &snapshot{
+		schema:      schema,
+		pages:       pages,
+		rawSources:  rawSources,
+		parseErrors: parseErrors,
+	}
+	s.pagesSorted = sortedValues(pages)
+	s.rawSorted = sortedValues(rawSources)
+	// The graph resolves against the new pages only — this snapshot's own —
+	// so it can never mix the old and new states of one reload.
+	s.graph = s.buildGraph()
+	v.snap.Store(s)
 	return nil
 }
 
@@ -339,4 +306,14 @@ func sortedKeys[V any](m map[string]V) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// sortedValues returns m's values ordered by their keys' ascending order —
+// the order Pages() and RawSources() hand out.
+func sortedValues[V any](m map[string]V) []V {
+	out := make([]V, 0, len(m))
+	for _, k := range sortedKeys(m) {
+		out = append(out, m[k])
+	}
+	return out
 }

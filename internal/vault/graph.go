@@ -29,7 +29,17 @@ type Graph struct {
 // loads only wiki/ and raw/), so their [[links]] contribute no edges and
 // cannot give a page an inbound ref.
 func BuildGraph(v *Vault) *Graph {
-	pages := v.Pages() // already sorted by Path
+	if s := v.snap.Load(); s != nil {
+		return s.buildGraph()
+	}
+	return (&snapshot{}).buildGraph()
+}
+
+// buildGraph builds the graph over s's pages, resolving every link against
+// those same pages — the one snapshot Reload hands it, so a graph can never
+// mix the pages of one reload with the links of another (008 A-802).
+func (s *snapshot) buildGraph() *Graph {
+	pages := s.Pages() // already sorted by Path
 
 	g := &Graph{
 		pages:     make([]string, 0, len(pages)),
@@ -42,7 +52,7 @@ func BuildGraph(v *Vault) *Graph {
 
 	for _, p := range pages {
 		for _, link := range p.Links {
-			to, _ := Resolve(v, link.Target)
+			to, _ := s.resolve(link.Target)
 			ref := Ref{
 				From:    p.Path,
 				To:      to,
@@ -160,31 +170,40 @@ func (g *Graph) Orphans() []string {
 // Ambiguous at any matching step means that step fails, not that Resolve
 // returns a wrong answer.
 func Resolve(v *Vault, target string) (string, bool) {
+	if s := v.snap.Load(); s != nil {
+		return s.resolve(target)
+	}
+	return "", false
+}
+
+// resolve is Resolve against one snapshot: every step of the lookup sees
+// the same pages, never a half-applied reload (008 A-802).
+func (s *snapshot) resolve(target string) (string, bool) {
 	if target == "" {
 		return "", false
 	}
-	if _, ok := v.Page(target); ok {
+	if _, ok := s.pages[target]; ok {
 		return target, true
 	}
-	if p, ok := resolveWithMDSuffix(v, target); ok {
+	if p, ok := resolveWithMDSuffix(s, target); ok {
 		return p, true
 	}
-	if p, ok := resolveByBasename(v, target); ok {
+	if p, ok := resolveByBasename(s, target); ok {
 		return p, true
 	}
-	if p, ok := resolveByDir(v, target); ok {
+	if p, ok := resolveByDir(s, target); ok {
 		return p, true
 	}
 	return "", false
 }
 
 // resolveWithMDSuffix tries target+".md" as an exact vault-relative path.
-func resolveWithMDSuffix(v *Vault, target string) (string, bool) {
+func resolveWithMDSuffix(s *snapshot, target string) (string, bool) {
 	if strings.HasSuffix(target, ".md") {
 		return "", false
 	}
 	candidate := target + ".md"
-	if _, ok := v.Page(candidate); ok {
+	if _, ok := s.pages[candidate]; ok {
 		return candidate, true
 	}
 	return "", false
@@ -193,11 +212,11 @@ func resolveWithMDSuffix(v *Vault, target string) (string, bool) {
 // resolveByBasename matches target, case-insensitively and with any ".md"
 // suffix stripped, against every page's basename. Ambiguous (more than one
 // match) resolves to nothing, same as no match.
-func resolveByBasename(v *Vault, target string) (string, bool) {
+func resolveByBasename(s *snapshot, target string) (string, bool) {
 	want := strings.ToLower(strings.TrimSuffix(target, ".md"))
 
 	var matches []string
-	for _, p := range v.Pages() {
+	for _, p := range s.Pages() {
 		base := strings.TrimSuffix(path.Base(p.Path), ".md")
 		if strings.ToLower(base) == want {
 			matches = append(matches, p.Path)
@@ -212,13 +231,13 @@ func resolveByBasename(v *Vault, target string) (string, bool) {
 // resolveByDir tries "<dir>/<target>.md" for each directory that currently
 // holds at least one page under wiki/. Ambiguous (more than one directory
 // matching) resolves to nothing.
-func resolveByDir(v *Vault, target string) (string, bool) {
+func resolveByDir(s *snapshot, target string) (string, bool) {
 	t := strings.TrimSuffix(target, ".md")
 
 	var matches []string
-	for _, dir := range wikiDirs(v) {
+	for _, dir := range wikiDirs(s) {
 		candidate := dir + "/" + t + ".md"
-		if _, ok := v.Page(candidate); ok {
+		if _, ok := s.pages[candidate]; ok {
 			matches = append(matches, candidate)
 		}
 	}
@@ -229,11 +248,11 @@ func resolveByDir(v *Vault, target string) (string, bool) {
 }
 
 // wikiDirs returns the distinct immediate parent directories of every page
-// in v, sorted — e.g. ["wiki/concepts", "wiki/entities"].
-func wikiDirs(v *Vault) []string {
+// in s, sorted — e.g. ["wiki/concepts", "wiki/entities"].
+func wikiDirs(s *snapshot) []string {
 	seen := map[string]bool{}
 	var dirs []string
-	for _, p := range v.Pages() {
+	for _, p := range s.Pages() {
 		d := path.Dir(p.Path)
 		if !seen[d] {
 			seen[d] = true
