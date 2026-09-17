@@ -6,6 +6,7 @@
 package ask
 
 import (
+	"errors"
 	"fmt"
 
 	tea "charm.land/bubbletea/v2"
@@ -78,15 +79,28 @@ func (m *Model) applyEvent(ev agent.Event) tea.Cmd {
 			}
 			cmd = stageChangedCmd(e)
 		case agent.DoneEv:
-			// The frozen conversation grids render the turn boundary as
-			// `done · N rounds` (s2-screens.md T08, from DoneEv.Rounds); the
-			// stop reason stays in the session transcript.
-			m.endTurn(fmt.Sprintf("done · %d rounds", e.Rounds))
+			// The frozen conversation grids render a clean stop's turn
+			// boundary as `done · N rounds` (s2-screens.md T08, from
+			// DoneEv.Rounds). A turn the loop cut off at its round limit is
+			// not a clean stop: its boundary says so (008 contract §5). The
+			// scrollback line is the only place the reason is surfaced.
+			if e.Reason == "max_rounds" {
+				m.endTurn(fmt.Sprintf("stopped: round limit · %d rounds", e.Rounds))
+			} else {
+				m.endTurn(fmt.Sprintf("done · %d rounds", e.Rounds))
+			}
 			m.appendKeptHint()
 		case agent.ErrorEv:
 			msg := "unknown error"
 			if e.Err != nil {
 				msg = e.Err.Error()
+			}
+			// A truncated turn (008 contract §5, agent.ErrTruncated)
+			// replaces the provider's wrapped detail with the one sentence
+			// a curator can act on: the output cap ate the turn, nothing
+			// after it was proposed, and llm.max_tokens is the knob.
+			if errors.Is(e.Err, agent.ErrTruncated) {
+				msg = "stopped: output limit reached — nothing after this was proposed; raise llm.max_tokens"
 			}
 			m.endTurnError(msg)
 			m.appendKeptHint()

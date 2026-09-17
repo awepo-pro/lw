@@ -13,6 +13,8 @@
 package ui
 
 import (
+	"time"
+
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 
@@ -65,6 +67,11 @@ type Options struct {
 	Deps
 	Panes map[Screen]Pane // injected by cmd/lw
 	Start Screen
+
+	// ReloadEvery, when > 0, makes the App call Engine.ReloadIfChanged on a
+	// tea.Tick of this period and broadcast VaultReloadedMsg when it reloads.
+	// Zero (the default, and every test harness) disables the tick.
+	ReloadEvery time.Duration
 }
 
 // StageChangedMsg is broadcast whenever a stage.Engine mutation changes the

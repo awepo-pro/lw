@@ -102,15 +102,28 @@ func (m *Model) applyLoaded(msg loadedMsg) {
 			m.opDiffs = nil
 			m.stops = nil
 			m.cursor = 0
+			// C-807: the changeset the confirmation was armed for is gone
+			// (committed or rejected elsewhere); the arm dies with it.
+			m.commitArmedFor = ""
 			return
 		}
 		m.loadErr = msg.err
+		// A load that failed for another reason changes nothing about what
+		// the reviewer is looking at, so the arm stays; rawOnlyWarning's
+		// id check against the engine is the backstop if it went stale.
 		return
 	}
 
 	m.hasChangeset = true
 	m.loadErr = nil
 	m.changeset = msg.changeset
+	if m.commitArmedFor != "" && m.commitArmedFor != msg.changeset.ID {
+		// C-807: the loaded changeset is not the one the raw-only
+		// confirmation was armed for — the swap happened with no key press
+		// to disarm it (another process's commit reloading in a new
+		// changeset, say). The next C must warn again, not commit.
+		m.commitArmedFor = ""
+	}
 	m.diff = msg.diff
 	m.ops = flattenAllOps(msg.changeset)
 	m.opDiffs = msg.opDiffs

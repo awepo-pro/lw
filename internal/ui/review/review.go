@@ -14,7 +14,6 @@
 package review
 
 import (
-	"errors"
 	"fmt"
 
 	"charm.land/bubbles/v2/key"
@@ -52,6 +51,15 @@ type Model struct {
 
 	status string         // transient StatusReporter message; "" shows the bindings
 	level  ui.StatusLevel // the level the footer styles status with
+
+	// commitArmedFor is the raw-only commit confirmation (008 contract §5,
+	// commit.go): the first C on a raw-only changeset warns and arms with
+	// that changeset's id; the next C commits only while the engine's open
+	// changeset still has that id. Any other key disarms, and so does a
+	// load of a different id (C-807): a swap with no key press — another
+	// process's commit reloading in a new changeset — must not inherit the
+	// arm and commit unwarned.
+	commitArmedFor string
 }
 
 var (
@@ -142,6 +150,13 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (ui.Pane, tea.Cmd) {
 		return m, nil
 	}
 	k := m.deps.Keys
+	// D-8B (008 contract §5): the raw-only commit confirmation is
+	// single-shot. Any key but C — movement, accept, drop, reject, scroll —
+	// disarms it, so a stale confirmation can never survive into what the
+	// reviewer looks at next.
+	if !key.Matches(msg, k.Commit) {
+		m.commitArmedFor = ""
+	}
 	switch {
 	case key.Matches(msg, k.MoveDown):
 		m.cursor = clampCursor(m.cursor+1, len(m.stops))
@@ -314,57 +329,6 @@ func (m *Model) reject() (ui.Pane, tea.Cmd) {
 	}
 	m.setStatus(ui.StatusInfo, "")
 	return m, tea.Batch(loadCmd(m.deps.Engine), func() tea.Msg { return ui.StageChangedMsg{} })
-}
-
-// commitMessage is the changeset's Intent, falling back to "review: <id>"
-// when Intent is empty.
-func (m *Model) commitMessage() string {
-	if m.changeset == nil {
-		return "review: "
-	}
-	if m.changeset.Intent != "" {
-		return m.changeset.Intent
-	}
-	return "review: " + m.changeset.ID
-}
-
-// commit is `C`: calls the same LintBaseline this package exports before
-// calling Engine.Commit, so it produces exactly the same result as
-// `lw commit` (TD-3 — now the same call, not a second implementation of
-// it). There is no --force in the TUI.
-func (m *Model) commit() (ui.Pane, tea.Cmd) {
-	e := m.deps.Engine
-
-	projected, err := e.ProjectedReport()
-	if err != nil {
-		m.setStatus(ui.StatusWarn, fmt.Sprintf("commit failed: %v", err))
-		return m, nil
-	}
-	baseline, err := LintBaseline(e)
-	if err != nil {
-		m.setStatus(ui.StatusWarn, fmt.Sprintf("commit failed: %v", err))
-		return m, nil
-	}
-	if projected.Regresses(baseline) {
-		m.setStatus(ui.StatusWarn, fmt.Sprintf(
-			"commit refused: lint regressed: %d error(s) projected vs %d in the last commit; fix it or drop the offending hunk",
-			projected.Errors, baseline.Errors))
-		return m, nil
-	}
-
-	commitID, err := e.Commit(m.commitMessage())
-	if err != nil {
-		if errors.Is(err, stage.ErrStale) {
-			m.setStatus(ui.StatusWarn,
-				"commit refused: changeset has a stale op — the working tree changed since it was proposed; rebase or drop the stale op")
-		} else {
-			m.setStatus(ui.StatusWarn, fmt.Sprintf("commit failed: %v", err))
-		}
-		return m, nil
-	}
-
-	m.setStatus(ui.StatusGood, fmt.Sprintf("committed %s", commitID))
-	return m, tea.Batch(loadCmd(e), func() tea.Msg { return ui.StageChangedMsg{} })
 }
 
 // setStatus records the message the footer renders until the next key

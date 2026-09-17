@@ -10,6 +10,7 @@ package ui
 
 import (
 	"path/filepath"
+	"time"
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
@@ -58,6 +59,11 @@ type App struct {
 	// overlayOpen is the `?` overlay's toggle state (contract §5 frame note 4).
 	overlayOpen bool
 
+	// reloadEvery is Options.ReloadEvery: the period of the periodic
+	// Engine.ReloadIfChanged tick (008 contract §5, reload.go). Zero
+	// disables it — every test harness and conformance grid runs at zero.
+	reloadEvery time.Duration
+
 	quitting bool
 }
 
@@ -72,11 +78,12 @@ var _ tea.Model = (*App)(nil)
 // construct.
 func NewApp(o Options) *App {
 	a := &App{
-		deps:   o.Deps,
-		panes:  o.Panes,
-		order:  screenOrder,
-		width:  80,
-		height: 24,
+		deps:        o.Deps,
+		panes:       o.Panes,
+		order:       screenOrder,
+		width:       80,
+		height:      24,
+		reloadEvery: o.ReloadEvery,
 	}
 	if a.panes == nil {
 		a.panes = map[Screen]Pane{}
@@ -151,6 +158,11 @@ func (a *App) Init() tea.Cmd {
 				cmds = append(cmds, producedBy(s, cmd))
 			}
 		}
+	}
+	// 008 contract §5: the periodic vault reload. Zero — every test harness
+	// and every conformance grid — schedules nothing.
+	if a.reloadEvery > 0 {
+		cmds = append(cmds, reloadTickCmd(a.reloadEvery))
 	}
 	return tea.Batch(cmds...)
 }
@@ -261,6 +273,11 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case VaultReloadedMsg:
 		a.refreshVaultCounts()
 		return a, a.propagateAll(msg)
+
+	case reloadTickMsg:
+		// 008 contract §5: the periodic-reload tick (reload.go). The engine
+		// read happens here, on Update's goroutine — never inside a tea.Cmd.
+		return a, a.handleReloadTick()
 
 	case StreamMsg:
 		// C-117/D-DA: the ask pump, routed by name. Only ask consumes these
