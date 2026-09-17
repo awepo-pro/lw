@@ -16,7 +16,7 @@ actually shipped in v1.0.0.
 ─────────────────    ─────────────────────────────────────    ──────────────
  url or local file   1  extract → deterministic markdown
                      2  agent loop, tools only  ────────────►  proposed pages,
-                        17 tools, 0 filesystem verbs           patches, renames
+                        18 tools, 0 filesystem verbs           patches, renames
                      3  every proposal becomes an op  ─────►  OPEN CHANGESET
                                                               + session.ndjson
  you                 4  review hunk by hunk (TUI or lw diff)
@@ -87,7 +87,7 @@ rationale attached.
 | `internal/index` | In-memory inverted word index — no SQLite, no FTS5 |
 | `internal/lint` | The 14 checks ([vault-schema.md](vault-schema.md#the-14-lint-checks)) |
 | `internal/stage` | CAS (`objects/`), journal, changesets, lock, apply/revert, snapshots, recovery |
-| `internal/tools` | The 17 tools ([tools.md](tools.md)) — one definition, two consumers |
+| `internal/tools` | The 18 tools ([tools.md](tools.md)) — one definition, two consumers |
 | `internal/mcp` | stdio transport for the same registry; name mapping only, no new tools |
 | `internal/llm` | OpenAI-compatible streaming client |
 | `internal/agent` | The tool-calling loop, sessions, context building |

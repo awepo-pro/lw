@@ -47,7 +47,7 @@ These are the twenty actions in the keymap. Defaults are frozen; the
 | `split_hunk` | `s` | Split the selected hunk — not implemented yet; Review says so and suggests dropping the op instead | Review |
 | `accept_all` | `A` | Accept every hunk; refused unless lint is clean | Review |
 | `reject_changeset` | `X` | Reject the whole changeset | Review |
-| `commit` | `C` | Commit the changeset; refused if lint regresses | Review |
+| `commit` | `C` | Commit the changeset; refused if lint regresses. A raw-only changeset (raw source(s) staged, no pages) first shows a warning and commits only when you press C again — any other key disarms it | Review |
 | `move_down` | `j`, `down` | Move the cursor / selection down | Browse, Review, Lint, Log |
 | `move_up` | `k`, `up` | Move the cursor / selection up | Browse, Review, Lint, Log |
 | `top` | `g` | Jump to the first entry | Browse, Review, Lint, Log |

@@ -65,13 +65,13 @@ endpoint you point it at. It defaults to DeepSeek:
 
 ```
 $ lw config
-config file: /home/you/.config/lw/config.toml (not present — showing lw's defaults)
+config file: /tmp/lw-008-T-H/xdg/lw/config.toml (not present — showing lw's defaults)
 
 llm.base_url               = https://api.deepseek.com/v1   (default)
 llm.model                  = deepseek-v4-flash   (default)
 llm.api_key                = env:DEEPSEEK_API_KEY (missing)   (default)
 llm.temperature            = 0.2   (default)
-llm.max_tokens             = 8192   (default)
+llm.max_tokens             = 32768   (default)
 llm.limits.max_tool_rounds = 24   (default)
 llm.limits.context_tokens  = 96000   (default)
 theme                      = (not set)   (default)
@@ -80,7 +80,9 @@ theme                      = (not set)   (default)
 ```
 
 (That path is your own `$XDG_CONFIG_HOME/lw/config.toml`, or `~/.config/lw/config.toml`
-when that variable is unset — nothing above is vault-specific.)
+when that variable is unset — the capture above pointed `XDG_CONFIG_HOME` at a
+scratch directory so it would not touch a real config. Nothing above is
+vault-specific.)
 
 The API key is never a value in the config file — it is a *reference*, and
 `lw` resolves it at the moment it needs it:
@@ -767,7 +769,7 @@ full table of 14 checks and their severities.
 
 ## 12. Using lw from other agents
 
-`lw mcp` runs the same 17 tools over an MCP stdio server, for any client
+`lw mcp` runs the same 18 tools over an MCP stdio server, for any client
 that brings its own model:
 
 ```bash
@@ -785,11 +787,11 @@ lw mcp            # from inside a vault
 No API key or provider is needed to run `lw mcp` itself — the tools are
 vault operations, not model calls. Dots become underscores on the wire
 (`wiki.search` → `wiki_search`); nothing is added or removed in the
-translation. One gap worth knowing about: over MCP, `stage_ingest_source`
-reports `no extractor configured`, because the extractor is wired by the
-CLI's `ingest` verb, not by the MCP transport. Every read, patch, rename,
+translation. The MCP server wires the same HTML and markdown extractor
+chain the CLI's `ingest` verb does, so `stage_ingest_source` extracts
+sources identically over either surface. Every read, patch, rename,
 merge, split, link and retract tool works the same either way. See
-[tools.md](tools.md) for what each of the 17 tools reads or stages.
+[tools.md](tools.md) for what each of the 18 tools reads or stages.
 
 ## 13. Troubleshooting
 

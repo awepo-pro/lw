@@ -8,7 +8,9 @@ make it different from every agent-with-a-shell tool:
 
 1. **The agent gets no filesystem.** Its tool registry contains no `write`, no
    `edit`, no `delete`, no `bash` — not denied, *not offered*, so there is
-   nothing to misconfigure. Its only mutation path is a set of graph-aware,
+   nothing to misconfigure. It reads sources only through `raw.get` and
+   discovers them with `raw.list`, a read-only listing of every raw source,
+   committed or staged. Its only mutation path is a set of graph-aware,
    validating, transactional tools that propose changes into a buffer. A `mv`
    cannot know that renaming a page orphans twelve backlinks; `stage.rename_page`
    computes all twelve and shows them to you before anything touches disk.
@@ -106,6 +108,14 @@ TUI.
 resolvable API key. **Every other verb works offline with no LLM at all** —
 `lw diff`, `lw commit`, `lw log`, `lw revert`, `lw lint`, `lw status`,
 `lw doctor` and `lw mcp` are pure Go over the vault.
+
+**If an ingest stops early** — the provider hit its output-token cap
+mid-turn — `lw` fails loudly instead of quietly committing nothing: the error
+names the limit (`the output limit (llm.max_tokens = …) was reached before
+the agent finished`) and the changeset is rejected. Raise the budget with
+`lw config set llm.max_tokens 32768`; `lw doctor` warns when it sits below
+16000, which thinking-mode models routinely burn through on reasoning alone
+before they act.
 
 ## Command reference
 
@@ -246,7 +256,7 @@ alone.
 ## MCP setup
 
 ```bash
-lw mcp            # in a vault; serves the same 17 tools over stdio
+lw mcp            # in a vault; serves the same 18 tools over stdio
 ```
 
 `lw mcp` needs no API key and no provider — the tools are vault operations, and
@@ -263,9 +273,10 @@ or removed in transit, so an MCP client sees exactly the surface described in
 }
 ```
 
-One honest note: over MCP, `stage_ingest_source` reports `no extractor
-configured` — the extractor is wired by the CLI's `ingest` verb, not by the
-transport. Reads, patches, renames, merges, splits, links and retracts all work.
+One transport note: the MCP server wires the same HTML and markdown extractor
+chain the CLI's `ingest` verb does, so `stage_ingest_source` extracts sources
+identically over either surface. Reads, patches, renames, merges, splits,
+links and retracts all work.
 
 ## Secrets
 
@@ -314,7 +325,7 @@ the command table above.
 | [docs/tutorial.md](docs/tutorial.md) | Start here — a hands-on walkthrough from install to a reviewed wiki |
 | [docs/architecture.md](docs/architecture.md) | The pipeline, the agent's verb boundary, the package map |
 | [docs/vault-schema.md](docs/vault-schema.md) | The vault layout, frontmatter, and the 14 lint checks |
-| [docs/tools.md](docs/tools.md) | The 17 tools and what each one reads |
+| [docs/tools.md](docs/tools.md) | The 18 tools and what each one reads |
 | [docs/changesets.md](docs/changesets.md) | Changeset layout, the journal, and recovery |
 | [spec/vault-schema.md](spec/vault-schema.md) | The normative vault schema |
 | [spec/changeset.schema.json](spec/changeset.schema.json) | The JSON Schema every changeset validates against |
@@ -351,7 +362,9 @@ Stated plainly, because a tool asking for this much trust should not oversell.
   audio. Sources arrive as files or web pages.
 - **One vault, one open changeset.** No multi-vault, no parallel ingest.
 - **`stage.ingest_source` takes local paths only**, and only writes a `raw/`
-  path that does not already exist — `raw/` is immutable.
+  path that does not already exist — `raw/` is immutable. When the natural
+  name is taken by a *different* source, the first free suffixed path
+  (`notes-2.md`, `notes-3.md`, …) is used, and the tool result says so.
 - No graph view, no plugin system, no web UI. `lw` is a terminal tool.
 
 ## Development

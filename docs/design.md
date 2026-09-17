@@ -416,7 +416,7 @@ base_url    = "https://api.deepseek.com/v1"
 model       = "deepseek-v4-flash"
 api_key     = "env:DEEPSEEK_API_KEY"      # env: | keyring: | literal (discouraged)
 temperature = 0.2
-max_tokens  = 8192
+max_tokens  = 32768
 
 [llm.limits]
 max_tool_rounds = 24       # hard stop; a runaway agent costs review time, not money
@@ -551,3 +551,35 @@ the v2 roadmap or the v2.1 roadmap.
 - [yorukot/superfile](https://github.com/yorukot/superfile) · [charmbracelet/crush](https://github.com/charmbracelet/crush) · [erikjuhani/basalt](https://github.com/erikjuhani/basalt)
 - [letta-ai/letta-code](https://github.com/letta-ai/letta-code) · [Letta self-hosting](https://docs.letta.com/self-hosting) · [Letta OpenAI-proxy provider](https://docs.letta.com/guides/server/providers/openai-proxy/) · [letta-code issue #2714](https://github.com/letta-ai/letta-code/issues/2714)
 - [Charm v2 release](https://charm.land/blog/v2/) · [MCP Go SDK](https://github.com/modelcontextprotocol/go-sdk) · [Docling](https://github.com/docling-project/docling)
+
+---
+
+## 16. Addendum — reliability invariants (008, 2026-09-17)
+
+Four invariants were added after a live run measured the failure they close: at
+`max_tokens = 2048` a thinking-mode round spent its whole budget on
+`reasoning_content`, ended `finish_reason: "length"`, produced zero content —
+and lw exited 0 with a changeset that staged the raw source and proposed no
+pages.
+
+- **A truncated round is an error, not a clean stop.** When a round's finish
+  reason is anything but `stop` or `tool_calls` (in practice `length`) and the
+  round completed no tool call, the agent loop ends the turn with
+  `ErrTruncated` — exactly one `ErrorEv`, no `DoneEv` — and the round's
+  assistant transcript record carries the abnormal `finish` reason. `lw ingest`
+  rejects the changeset and its error names the fix:
+  `lw config set llm.max_tokens 32768`. The default rose from 8192 to 32768
+  because the measured run spent 5,247 reasoning tokens in one round.
+- **Commits refuse an empty changeset.** A changeset whose every op was
+  dropped — or that never had one — is refused with `ErrNothingToCommit`
+  before anything is journalled, in git's "nothing to commit" spirit.
+- **A raw-only changeset commits on a second, deliberate keypress.** An ingest
+  that staged raw source(s) but proposed no pages first warns in Review —
+  `0 pages proposed — this commits raw source(s) only: …` — and commits only
+  when the reviewer gives a second `C` — press C again, with no other key in
+  between. `lw commit` prints its own warning to stderr — `warning: 0 pages
+  proposed — committing raw source(s) only: …` — and commits without asking.
+- **The TUI notices commits made elsewhere.** Every two seconds it checks the
+  journal's size and mtime stamp; if another process committed, the engine
+  reloads the vault, index and open changeset, and the UI refreshes. Appends
+  the engine made itself never count as a change.
