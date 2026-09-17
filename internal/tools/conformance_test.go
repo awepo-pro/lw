@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -147,12 +148,25 @@ func runConformanceScript(t *testing.T, name string) {
 		}
 	}
 
+	// A read-only or all-rejected script leaves the changeset with no live
+	// op; Commit refuses exactly that with ErrNothingToCommit (008 contract
+	// §3, C-802) and writes nothing, so the harness asserts the refusal
+	// instead of expecting a commit id. Any other script commits as before.
+	csBeforeCommit, csErr := engine.Current()
+	zeroLive := csErr == nil && len(csBeforeCommit.Live()) == 0
+
 	commitID, err := engine.Commit(script.CommitMessage)
-	if err != nil {
-		t.Fatalf("Commit: %v", err)
-	}
-	if commitID == "" {
-		t.Fatal("Commit returned an empty commit id")
+	if zeroLive {
+		if !errors.Is(err, stage.ErrNothingToCommit) {
+			t.Fatalf("Commit of a changeset with no live ops = %v, want an error matching stage.ErrNothingToCommit", err)
+		}
+	} else {
+		if err != nil {
+			t.Fatalf("Commit: %v", err)
+		}
+		if commitID == "" {
+			t.Fatal("Commit returned an empty commit id")
+		}
 	}
 	for _, path := range script.ExpectPaths {
 		if info, err := os.Stat(filepath.Join(dir, filepath.FromSlash(path))); err != nil {

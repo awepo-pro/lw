@@ -13,6 +13,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/awepo-pro/lw/internal/agent"
+	"github.com/awepo-pro/lw/internal/stage"
 	"github.com/awepo-pro/lw/internal/ui"
 )
 
@@ -105,6 +106,20 @@ func TestSessionClosesAfterARealCommit(t *testing.T) {
 	var seen []tea.Msg
 	m = runCmd(t, m, cmd, &seen).(*Model)
 
+	// Commit refuses a changeset with no live op (008 ErrNothingToCommit,
+	// C-802), so the harness stages one valid page through the public stage
+	// API before committing. Every original assertion below stays.
+	if _, err := engine.Append(stage.Op{
+		Kind: stage.OpCreatePage,
+		Path: "wiki/concepts/session-commit-page.md",
+		Content: []byte("---\ntitle: Session Commit Page\ncreated: 2026-08-29\nupdated: 2026-08-29\ntype: concept\n" +
+			"tags: [inference]\nconfidence: medium\n---\n\n" +
+			"# Session Commit Page\n\nSee [[kv-cache]] and [[gpt-4]] for background.\n"),
+		Rationale:  "this commit needs one live op",
+		Provenance: []string{"raw/papers/leviathan-2023.md"},
+	}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
 	if _, err := engine.Commit("test commit"); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}

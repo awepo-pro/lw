@@ -13,6 +13,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/awepo-pro/lw/internal/index"
@@ -34,6 +35,13 @@ type Engine struct {
 	nextOp     int                     // op<N> counter, incl. cascade sub-ops
 	faultAfter func(step string) error // test-only; nil in production
 	forceNext  bool                    // next Commit overrode a lint regression (D-AG)
+	// journalStampMu guards journalStamp: every journal append this Engine
+	// makes refreshes the stamp, and ReloadIfChanged (reload.go, 008
+	// contract §3) stats the journal and compares it under the same lock,
+	// so an own append can never land between the stat and the comparison
+	// and be mistaken for a foreign write.
+	journalStampMu sync.Mutex
+	journalStamp   journalStamp
 }
 
 // ForceNextCommit marks the next Commit as one that overrode a lint
@@ -75,6 +83,13 @@ var (
 	// ErrIDExhausted is returned by OpenChangeset when it could not draw a
 	// free changeset id (D-CI).
 	ErrIDExhausted = errors.New("stage: could not draw a free changeset id")
+	// ErrNothingToCommit is returned by Commit when the open changeset has
+	// no live op (every op dropped or rejected, or none was ever proposed).
+	// Checked after the stale-op check and before commit_begin is
+	// journalled, so a refused commit writes nothing. Like git's "nothing
+	// to commit", it is an invariant, not a policy gate (008 contract §3,
+	// C-802).
+	ErrNothingToCommit = errors.New("stage: nothing to commit; the changeset has no live ops")
 )
 
 // llmwikiDir returns the absolute path to e.root's .llmwiki directory
@@ -165,6 +180,10 @@ func OpenEngine(vaultRoot string, opts ...Option) (*Engine, error) {
 		return nil, fmt.Errorf("stage: open engine: %w", err)
 	}
 	e.journal = j
+	// The first journal stamp (008 contract §3): everything the journal
+	// holds at this point is pre-existing history this Engine did not write,
+	// and the stamp is what keeps ReloadIfChanged from calling it a change.
+	e.stampJournal()
 
 	indexPath := filepath.Join(dir, "index.gob")
 	ix, loadErr := index.Load(indexPath)

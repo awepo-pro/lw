@@ -144,8 +144,9 @@ func ValidateOp(op Op, v *vault.Vault, s *vault.Schema) error {
 }
 
 // validateIngestSource enforces: path under raw/, does not already exist,
-// its sha not already present in any raw source (dedupe by hash), and a
-// non-empty Extractor (the schema's required set, D-BH).
+// its body sha not already present in any raw source (dedupe by hash, on
+// the body parsed from op.Content — 008 contract §3), and a non-empty
+// Extractor (the schema's required set, D-BH).
 func validateIngestSource(op Op, v *vault.Vault) error {
 	if !strings.HasPrefix(op.Path, "raw/") {
 		return fmt.Errorf("%w: ingest_source: path %q must be under raw/", ErrValidation, op.Path)
@@ -156,7 +157,7 @@ func validateIngestSource(op Op, v *vault.Vault) error {
 	if op.Extractor == "" {
 		return fmt.Errorf("%w: ingest_source: extractor is required", ErrValidation)
 	}
-	sha := vault.BodySHA256(string(op.Content))
+	sha := ingestBodySHA(op.Content)
 	for _, r := range v.RawSources() {
 		if r.SHA256 == sha {
 			return fmt.Errorf("%w: ingest_source: content already ingested at %s (sha256 %s); dedupe by hash", ErrValidation, r.Path, sha)

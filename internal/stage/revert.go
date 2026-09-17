@@ -90,7 +90,7 @@ func (e *Engine) Revert(commitID string) (*Changeset, error) {
 		}
 		ev.Data = json.RawMessage(data)
 	}
-	if err := e.journal.Append(ev); err != nil {
+	if err := e.appendJournal(ev); err != nil {
 		return nil, fmt.Errorf("stage: revert %s: %w", commitID, err)
 	}
 

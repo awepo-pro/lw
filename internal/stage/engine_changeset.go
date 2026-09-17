@@ -203,7 +203,7 @@ func (e *Engine) OpenChangeset(intent string, a Author) (*Changeset, error) {
 		return nil, fmt.Errorf("stage: open changeset: %w", err)
 	}
 
-	if err := e.journal.Append(Event{
+	if err := e.appendJournal(Event{
 		TS:        e.now().UTC(),
 		Kind:      EvChangesetOpened,
 		Changeset: c.ID,
@@ -442,7 +442,7 @@ func (e *Engine) Append(op Op) (string, error) {
 		return "", fmt.Errorf("stage: append: %w", err)
 	}
 
-	if err := e.journal.Append(Event{
+	if err := e.appendJournal(Event{
 		TS:        e.now().UTC(),
 		Kind:      EvOpProposed,
 		Changeset: c.ID,
@@ -502,7 +502,7 @@ func (e *Engine) DropHunk(opID, hunkID string) error {
 		return err
 	}
 
-	return e.journal.Append(Event{
+	return e.appendJournal(Event{
 		TS:        e.now().UTC(),
 		Kind:      EvHunkDropped,
 		Changeset: c.ID,
@@ -565,7 +565,7 @@ func (e *Engine) UndropHunk(opID, hunkID string) error {
 		return err
 	}
 
-	return e.journal.Append(Event{
+	return e.appendJournal(Event{
 		TS:        e.now().UTC(),
 		Kind:      EvHunkUndropped,
 		Changeset: c.ID,
@@ -594,7 +594,7 @@ func (e *Engine) DropOp(opID string) error {
 		return err
 	}
 
-	return e.journal.Append(Event{
+	return e.appendJournal(Event{
 		TS:        e.now().UTC(),
 		Kind:      EvOpDropped,
 		Changeset: c.ID,
@@ -738,7 +738,7 @@ func (e *Engine) Reject(reason string) error {
 		return fmt.Errorf("stage: reject: %w", err)
 	}
 
-	if err := e.journal.Append(Event{
+	if err := e.appendJournal(Event{
 		TS:        e.now().UTC(),
 		Kind:      EvChangesetRejected,
 		Changeset: c.ID,

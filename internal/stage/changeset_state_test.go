@@ -39,6 +39,9 @@ func TestChangesetState(t *testing.T) {
 		if err != nil {
 			t.Fatalf("OpenChangeset: %v", err)
 		}
+		// Commit refuses a changeset with no live op (008 ErrNothingToCommit,
+		// C-802), so the harness stages one valid op first.
+		stageKVCachePatch(t, e)
 		if _, err := e.Commit("test commit"); err != nil {
 			t.Fatalf("Commit: %v", err)
 		}

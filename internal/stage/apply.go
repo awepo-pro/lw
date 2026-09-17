@@ -65,6 +65,17 @@ func (e *Engine) Commit(message string) (string, error) {
 		return "", ErrStale
 	}
 
+	// Step 2b (008 contract §3, C-802). A changeset whose every op was
+	// dropped or rejected — or that never carried one — has nothing to
+	// apply. Like git's "nothing to commit" this is an invariant, not a
+	// policy gate: refused here, under the lock, before nextCommitID draws
+	// an id and before commit_begin is journalled, so the refusal writes
+	// nothing at all and the changeset stays open for further review.
+	if len(c.Live()) == 0 {
+		e.Close()
+		return "", fmt.Errorf("stage: commit: %w", ErrNothingToCommit)
+	}
+
 	// Step 2a (D-CI). The commit target must not already exist, checked
 	// here — under the lock, before step 3 journals commit_begin and
 	// before step 5 writes a byte of the vault. Step 9 renames
@@ -100,7 +111,7 @@ func (e *Engine) Commit(message string) (string, error) {
 
 	// Step 3. The full target-path list is journaled before a single byte
 	// of the vault is touched.
-	if err := e.journal.Append(Event{
+	if err := e.appendJournal(Event{
 		TS:        now,
 		Kind:      EvCommitBegin,
 		Changeset: c.ID,
@@ -191,7 +202,7 @@ func (e *Engine) Commit(message string) (string, error) {
 
 	// Step 8.
 	creates, edits := countPagesAndEdits(live)
-	if err := e.appendLog(commitID, c.Intent, creates, edits, now); err != nil {
+	if err := e.appendLog(commitID, c.Intent, live, creates, edits, now); err != nil {
 		return "", fmt.Errorf("stage: commit: %w", err)
 	}
 	if err := e.checkFault("8"); err != nil {
@@ -206,7 +217,7 @@ func (e *Engine) Commit(message string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("stage: commit: %w", err)
 	}
-	if err := e.journal.Append(Event{
+	if err := e.appendJournal(Event{
 		TS:        now,
 		Kind:      EvCommitEnd,
 		Changeset: c.ID,
@@ -669,13 +680,15 @@ func sha256Hex(b []byte) string {
 // --- step 8: log.md -------------------------------------------------------
 
 // appendLog appends one human-readable entry to log.md — "- YYYY-MM-DD
-// HH:MM <commit> <intent> (+N pages, ~M edits)" — rotating log.md's
-// existing entries out to log-<year>.md when the append would leave it
-// holding more than logRotateThreshold entries (/docs/design.md §6). The
-// rotation boundary is the one internal/lint/check_log_rotate.go judges:
-// after rotation, log.md holds zero entries, so that check never fires on
-// the file this method just wrote.
-func (e *Engine) appendLog(commitID, intent string, creates, edits int, now time.Time) error {
+// HH:MM <commit> <intent> → <raw path>[, <raw path>…] (+N pages, ~M edits)"
+// when live carries an ingest_source op, "- YYYY-MM-DD HH:MM <commit>
+// <intent> (+N pages, ~M edits)" otherwise (008 contract §3) — rotating
+// log.md's existing entries out to log-<year>.md when the append would
+// leave it holding more than logRotateThreshold entries (/docs/design.md
+// §6). The rotation boundary is the one internal/lint/check_log_rotate.go
+// judges: after rotation, log.md holds zero entries, so that check never
+// fires on the file this method just wrote.
+func (e *Engine) appendLog(commitID, intent string, live []Op, creates, edits int, now time.Time) error {
 	logPath := filepath.Join(e.root, "log.md")
 	existing, err := os.ReadFile(logPath)
 	if err != nil && !os.IsNotExist(err) {
@@ -683,8 +696,7 @@ func (e *Engine) appendLog(commitID, intent string, creates, edits int, now time
 	}
 
 	header, entries := splitLog(string(existing))
-	line := fmt.Sprintf("- %s %s %s (+%d pages, ~%d edits)",
-		now.Format("2006-01-02 15:04"), commitID, intent, creates, edits)
+	line := commitLogLine(now, commitID, intent, rawIngestPaths(live), creates, edits)
 	entries = append(entries, line)
 
 	if len(entries) > logRotateThreshold {
@@ -746,10 +758,16 @@ func entryYear(line string) string {
 // number of top-level live create_page ops ("+N pages") and the number of
 // every other write this commit makes — every other top-level live op,
 // plus every live cascade sub-op, each a distinct file rewritten ("~M
-// edits"). Not specified further by the backbone; see this subtask's
-// report for the reasoning.
+// edits"). A live ingest_source is not one of them (008 contract §3): it
+// is named, path and all, in the line's arrow clause, so counting it here
+// too would report the same write twice — one ingest plus one create reads
+// "(+1 pages, ~0 edits)". Not specified further by the backbone; see this
+// subtask's report for the reasoning.
 func countPagesAndEdits(live []Op) (creates, edits int) {
 	for _, op := range live {
+		if op.Kind == OpIngestSource {
+			continue
+		}
 		if op.Kind == OpCreatePage {
 			creates++
 		} else {
