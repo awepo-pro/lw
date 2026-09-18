@@ -230,19 +230,17 @@ func TestSmokeStageFromRoundtrip(t *testing.T) {
 // so a page whose sources: cites a raw/ path that nothing ever staged is a
 // src-integrity error the moment the changeset is committed — and S6-C127
 // made a vault's first commit lint-gated on exactly that count. Round 1
-// stages stage_ingest_source on the local source this scenario already wrote
-// (a relative "sources/..." path, which resolves against the subprocess's own
-// working directory — see runLW's cmd.Dir — independent of cmdIngest's own
-// scratch-file bookkeeping), round 2 proposes the page citing the raw path
-// that call produces, round 3 stops. testdata/ingest_round{1,2}.sse stay
-// untouched: TestHarness's own two-round script never commits, so the
-// dangling citation these round files also carry is not this fixture's to
-// fix.
+// stages stage_ingest_source on the scratch path lw ingest's own message
+// names (what a real model does with buildIngestMessage — C-817), round 2
+// proposes the page citing the raw path that call produces, round 3 stops.
+// testdata/ingest_round{1,2}.sse stay untouched: TestHarness's own two-round
+// script never commits, so the dangling citation these round files also
+// carry is not this fixture's to fix.
 func TestSmokeIngestCommit(t *testing.T) {
 	e := newEnv(t)
 	vault := newVault(t)
 	fake := newFakeLLM(t,
-		sseFixture(t, "smoke_ingest_round1.sse"),
+		stageIngestScratchSSE("smoke-ingest", 1),
 		sseFixture(t, "smoke_ingest_round2.sse"),
 		sseFixture(t, "smoke_ingest_round3.sse"),
 	)

@@ -17,6 +17,7 @@ import (
 	"github.com/awepo-pro/lw/internal/config"
 	"github.com/awepo-pro/lw/internal/extract"
 	"github.com/awepo-pro/lw/internal/stage"
+	"github.com/awepo-pro/lw/internal/tools"
 )
 
 // httpTimeout bounds every fetch the CLI's HTML extractor makes —
@@ -150,6 +151,54 @@ func cmdIngest(args []string) error {
 		docs = append(docs, doc)
 	}
 
+	// The engine opens before config.Load and the agent is built (A-807):
+	// the duplicate pre-check below reads the committed raw sources, and a
+	// vault that already holds everything must exit 0 without ever
+	// resolving an API key.
+	e, err := stage.OpenEngine(root)
+	if err != nil {
+		return fmt.Errorf("open engine: %w", err)
+	}
+	defer e.Close()
+
+	// A-807 (BUG-2): drop every source whose body the vault already holds,
+	// or that an earlier source of this command already carried, BEFORE
+	// building the agent, opening a changeset, or spending an LLM round —
+	// re-ingesting committed content used to burn a whole agent turn only
+	// to end in "agent proposed nothing". The hash is tools.SourceBodySHA,
+	// the same number stage.ingest_source records, so this check and the
+	// tool can never disagree about what the vault holds.
+	committed := e.Vault().RawSources()
+	seenBody := make(map[string]string) // body sha -> the first source argument carrying it
+	keptSrcs := make([]string, 0, len(sources))
+	keptDocs := make([]*extract.Doc, 0, len(docs))
+	for i, src := range sources {
+		sha := tools.SourceBodySHA(docs[i].Markdown)
+		skip := ""
+		for _, r := range committed {
+			if r.SHA256 == sha {
+				skip = fmt.Sprintf("skipped %s: already in the vault at %s", src, r.Path)
+				break
+			}
+		}
+		if skip == "" {
+			if first, dup := seenBody[sha]; dup {
+				skip = fmt.Sprintf("skipped %s: same content as %s", src, first)
+			}
+		}
+		if skip != "" {
+			fmt.Println(skip)
+			continue
+		}
+		seenBody[sha] = src
+		keptSrcs = append(keptSrcs, src)
+		keptDocs = append(keptDocs, docs[i])
+	}
+	if len(keptSrcs) == 0 {
+		fmt.Println("nothing to ingest: every source is already in the vault")
+		return nil
+	}
+
 	// stage.ingest_source only ever accepts a local path (it refuses
 	// http/https outright), so every extracted Doc is written to a scratch
 	// local file the agent can hand that tool regardless of what the
@@ -166,44 +215,45 @@ func cmdIngest(args []string) error {
 	// the scratch path itself (removed by the tmpDir cleanup below the
 	// moment this process exits) as the raw source's source_url.
 	pre := newPreExtracted()
-	items := make([]ingestItem, 0, len(docs))
-	for i, doc := range docs {
-		// doc.SourceURL is already sources[i] verbatim — both NewHTML and
+	items := make([]ingestItem, 0, len(keptSrcs))
+	for i, src := range keptSrcs {
+		doc := keptDocs[i]
+		// doc.SourceURL is already src verbatim — both NewHTML and
 		// NewFile set it to the uri they were handed (backbone §10) — so a
 		// URL source needs no change. A local path is instead resolved to
 		// absolute + cleaned (00-conventions.md §3: never store a path a
 		// caller could have typed relative to a directory that no longer
 		// matches by the time a human reviews the committed raw file).
 		corrected := *doc
-		if !isURLSource(sources[i]) {
-			if abs, absErr := filepath.Abs(sources[i]); absErr == nil {
+		if !isURLSource(src) {
+			if abs, absErr := filepath.Abs(src); absErr == nil {
 				corrected.SourceURL = abs
 			}
 		}
 
 		// The scratch name follows the ORIGINAL source (U6) — its base
-		// name, slugified, numbered per source — not the extracted title,
-		// so the agent sees "01-quaternion.md" for "Quaternion
-		// 四元數簡介.md" rather than a name SuggestPath guessed. A source
-		// whose base name slugifies to nothing falls back to
-		// SuggestPath's base, as before 008.
-		slug := scratchSlug(sources[i])
+		// name, slugified, numbered per source — not the extracted title.
+		// A-807 (BUG-1): the number is a directory of its own
+		// (<tmpDir>/<NN>/<slug>.md, keeping two same-named sources apart),
+		// so the file name stage.ingest_source's basename fallback sees is
+		// the user's own — an untitled "m3-note.md" lands at
+		// raw/articles/m3-note.md, never at a path carrying lw's scratch
+		// numbering. A source whose base name slugifies to nothing falls
+		// back to SuggestPath's base, as before 008.
+		slug := scratchSlug(src)
 		if slug == "" {
 			slug = strings.TrimSuffix(filepath.Base(extract.SuggestPath(doc)), ".md")
 		}
-		tmpPath := filepath.Join(tmpDir, fmt.Sprintf("%02d-%s.md", i+1, slug))
+		tmpPath := filepath.Join(tmpDir, fmt.Sprintf("%02d", i+1), slug+".md")
+		if err := os.MkdirAll(filepath.Dir(tmpPath), 0o700); err != nil {
+			return fmt.Errorf("create scratch directory: %w", err)
+		}
 		if err := os.WriteFile(tmpPath, []byte(doc.Markdown), 0o644); err != nil {
 			return fmt.Errorf("write scratch file: %w", err)
 		}
 		pre.stage(tmpPath, corrected)
-		items = append(items, ingestItem{path: tmpPath, kind: doc.Kind, title: doc.Title, source: sources[i]})
+		items = append(items, ingestItem{path: tmpPath, kind: doc.Kind, title: doc.Title, source: src})
 	}
-
-	e, err := stage.OpenEngine(root)
-	if err != nil {
-		return fmt.Errorf("open engine: %w", err)
-	}
-	defer e.Close()
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -261,6 +311,11 @@ func cmdIngest(args []string) error {
 	if _, rawOnly := ingestOnlyPaths(final); rawOnly {
 		fmt.Println("warning: 0 pages proposed — only raw source(s) staged; review before committing")
 	}
+
+	// A-807 (FINDING-3): an ingest whose changeset lint-regresses must say
+	// so here — not let the user discover it only when lw commit refuses.
+	// The warning is informational: exit 0, changeset left open for review.
+	warnIfLintRegresses(e)
 	return nil
 }
 

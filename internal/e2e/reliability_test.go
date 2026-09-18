@@ -95,7 +95,7 @@ func TestReliabilityTruncatedIngest(t *testing.T) {
 	e := newEnv(t)
 	vault := newVault(t)
 	fake := newFakeLLM(t,
-		stageIngestSSE("trunc1", "sources/t/truncated.md"),
+		stageIngestScratchSSE("trunc1", 1),
 		truncatedSSE("trunc2"),
 	)
 	// 8192 is the pre-008 default and the budget a truncated round is
@@ -165,7 +165,7 @@ func TestReliabilityUntitledCollision(t *testing.T) {
 		"A second, deliberately different scratch pad: the body sha must not\nmatch the first source, or the ingest would dedupe instead of colliding.\n")
 
 	fake1 := newFakeLLM(t,
-		stageIngestSSE("coll1", "sources/x/notes.md"),
+		stageIngestScratchSSE("coll1", 1),
 		stopSSE("coll1", "Staged the untitled notes; no page proposed, so the changeset is raw-only."),
 	)
 	writeConfig(t, e.config, fake1.URL()+"/v1")
@@ -204,7 +204,7 @@ func TestReliabilityUntitledCollision(t *testing.T) {
 	// The second ingest points at its own fake (the first script is spent),
 	// so the config is rewritten to the new endpoint.
 	fake2 := newFakeLLM(t,
-		stageIngestSSE("coll2", "sources/y/notes.md"),
+		stageIngestScratchSSE("coll2", 1),
 		stopSSE("coll2", "Staged the second untitled notes; again raw-only."),
 	)
 	writeConfig(t, e.config, fake2.URL()+"/v1")
@@ -240,7 +240,7 @@ func TestReliabilityRawListOverWire(t *testing.T) {
 	src := e.writeSource(t, "sources/q/attention-notes.md",
 		"# Attention Notes\n\nA titled source, so raw.list's row carries a title and the\nquery can be a word from it.\n")
 	fake1 := newFakeLLM(t,
-		stageIngestSSE("rl-pre", "sources/q/attention-notes.md"),
+		stageIngestScratchSSE("rl-pre", 1),
 		stopSSE("rl-pre", "Staged the titled notes."),
 	)
 	writeConfig(t, e.config, fake1.URL()+"/v1")

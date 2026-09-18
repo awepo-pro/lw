@@ -117,6 +117,13 @@ the agent finished`) and the changeset is rejected. Raise the budget with
 16000, which thinking-mode models routinely burn through on reasoning alone
 before they act.
 
+**If an ingest proposes a lint regression** — more errors than the last
+commit — it says so at ingest time (`warning: lint regresses — …; lw commit
+will refuse this (review with lw diff)`) while still exiting 0 and leaving
+the changeset open; a source the vault already holds is skipped before the
+provider is called at all (`skipped <source>: …`, and `nothing to ingest`
+with exit 0 when nothing else remains).
+
 ## Command reference
 
 ```

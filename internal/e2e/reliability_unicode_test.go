@@ -21,7 +21,7 @@ func TestReliabilityUnicodeTitle(t *testing.T) {
 		"---\ntitle: Quaternion 四元數簡介\n---\n\n四元數簡介 — quaternions extend the complex numbers with two more imaginary units; this clipping walks through i, j and k.\n")
 
 	fake := newFakeLLM(t,
-		stageIngestSSE("uni1", "Quaternion 四元數簡介.md"),
+		stageIngestScratchSSE("uni1", 1),
 		stopSSE("uni1", "Staged the quaternion clipping; no page proposed, so the changeset is raw-only."),
 	)
 	writeConfig(t, e.config, fake.URL()+"/v1")

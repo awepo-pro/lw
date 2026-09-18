@@ -21,10 +21,15 @@ type fakeRequest struct {
 
 // fakeRound is one scripted response: Body is replayed byte-for-byte as the
 // SSE payload of exactly one chat-completions response, in the order rounds
-// were handed to newFakeLLM. Name only labels failure messages.
+// were handed to newFakeLLM. Name only labels failure messages. When
+// BodyFunc is set it answers instead, built from the request body the
+// round actually saw — for fakes that must behave like the real model and
+// act on the paths the conversation names (A-807 C-817) rather than on
+// paths a scenario guessed on its behalf.
 type fakeRound struct {
-	Name string // which scenario this round belongs to
-	Body string // the exact SSE payload, "data: ..." lines and all
+	Name     string                  // which scenario this round belongs to
+	Body     string                  // the exact SSE payload, "data: ..." lines and all
+	BodyFunc func(req []byte) string // when set, answers with BodyFunc(requestBody)
 }
 
 // fakeLLM is an OpenAI-compatible chat-completions server that answers each
@@ -99,9 +104,18 @@ func (f *fakeLLM) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	payload := round.Body
+	if round.BodyFunc != nil {
+		payload = round.BodyFunc(body)
+		if payload == "" {
+			http.Error(w, fmt.Sprintf("fake LLM: round %s produced no answer for request %d", round.Name, i+1), http.StatusInternalServerError)
+			return
+		}
+	}
+
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.WriteHeader(http.StatusOK)
-	_, _ = io.WriteString(w, round.Body)
+	_, _ = io.WriteString(w, payload)
 }
 
 // sseFixture loads one scripted round from this package's testdata directory,

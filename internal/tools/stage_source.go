@@ -45,6 +45,17 @@ func rawKindDir(kind string) string {
 	}
 }
 
+// SourceBodySHA is the one body-hash rule for an extracted source's
+// markdown (008 contract §14, A-807): leading blank lines come off, the
+// body is normalized the way a raw file stores it, and the result runs
+// through vault.BodySHA256 — the sha a staged raw file records in its
+// frontmatter and a committed one carries in RawSources(). stage.ingest_source
+// records it and cmdIngest's duplicate pre-check compares it, so the two
+// can never disagree about whether the vault already holds a source.
+func SourceBodySHA(markdown string) string {
+	return vault.BodySHA256(normalizeToolBody(strings.TrimLeft(markdown, "\n")))
+}
+
 func stageIngestSourceTool(d Deps) Tool {
 	return Tool{Name: "stage.ingest_source", Description: "Extract and propose a local raw source. Network URLs are rejected in this stage; duplicate body hashes are rejected. On success the result names the exact staged path and chunk count — read the staged source with raw.get before proposing pages from it.", Schema: json.RawMessage(stageIngestSourceSchema), Handler: func(ctx context.Context, args json.RawMessage) (Result, error) {
 		var a stageIngestSourceArgs
@@ -76,12 +87,15 @@ func stageIngestSourceTool(d Deps) Tool {
 		// defines a raw Body as everything after the closing delimiter with
 		// leading blank lines stripped, so a body hashed before that strip
 		// would disagree with the sha a re-parse recomputes (src-integrity
-		// drift, on a file raw/ never lets anyone rewrite).
+		// drift, on a file raw/ never lets anyone rewrite). body still
+		// carries the normalized text — the empty check, chunk count and
+		// staged bytes all need it — while the hash itself comes from
+		// SourceBodySHA, the exported rule cmdIngest's pre-check shares.
 		body := normalizeToolBody(strings.TrimLeft(doc.Markdown, "\n"))
 		if body == "" {
 			return Result{IsError: true, Content: "extracted source is empty"}, nil
 		}
-		bodySHA := vault.BodySHA256(body)
+		bodySHA := SourceBodySHA(doc.Markdown)
 		kind := a.Kind
 		if kind == "" {
 			kind = doc.Kind

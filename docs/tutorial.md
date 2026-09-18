@@ -199,7 +199,11 @@ actually needs your provider: it extracts the source to deterministic
 markdown, then runs the agent — reading the extracted text, `SCHEMA.md`,
 `index.md` and recent `log.md` — to propose pages. Extraction happens
 *before* any changeset is opened, so a bad path or a bad URL fails the whole
-command with nothing created.
+command with nothing created. A source whose body the vault already holds —
+committed earlier, or repeated within the same command — is skipped before
+the agent runs, with a `skipped <source>: …` line; when every source is
+skipped, `lw ingest` prints `nothing to ingest: every source is already in
+the vault` and exits 0 without opening a changeset or calling the provider.
 
 ```bash
 lw ingest /home/you/Downloads/kv-cache-explained.md  # a local file
@@ -229,6 +233,12 @@ opened changeset cs-92c7d850b461792a: ingest ~/Downloads/kv-cache-explained.md (
   op3 create_page wiki/concepts/autoregressive-decoding.md
   op4 create_page wiki/queries/reducing-kv-cache-memory.md
 ```
+
+If the proposed changeset would leave the vault with more lint errors than
+the last commit, the run ends with
+`warning: lint regresses — <P> error(s) projected vs <B> in the last commit; lw commit will refuse this (review with lw diff)`
+— still exit 0, with the changeset open, so you can `lw diff` it before
+`lw commit` refuses it.
 
 `op1` is always the immutable copy of your source, staged (not yet written)
 under `raw/articles/`, `raw/papers/` or `raw/transcripts/` depending on kind.

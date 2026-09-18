@@ -15,6 +15,7 @@ import (
 	"github.com/awepo-pro/lw/internal/extract"
 	"github.com/awepo-pro/lw/internal/stage"
 	"github.com/awepo-pro/lw/internal/testutil"
+	"github.com/awepo-pro/lw/internal/vault"
 )
 
 // msgRecordingAgent wraps fakeStageAgent and records the user message the
@@ -69,12 +70,26 @@ func scratchPaths(t *testing.T, rec *msgRecordingAgent) []string {
 }
 
 // oneIngestOp is the single ingest_source op the success-path fakes stage,
-// so the ingest succeeds and leaves its changeset open for review.
+// so the ingest succeeds and leaves its changeset open for review. The
+// content is a WELL-FORMED raw document — frontmatter whose sha256 matches
+// its body, exactly what stage.ingest_source proposes — not bare markdown:
+// A-807's post-turn lint check projects the changeset, and an unlintable
+// fake file would draw the lint-regresses warning on top of the raw-only
+// one these tests pin.
 func oneIngestOp() []stage.Op {
+	const body = "ingested body\n"
+	ingested, _ := vault.ParseDate("2026-01-01")
+	content := (&vault.RawSource{
+		SourceURL: "ingest-reliability-test",
+		Ingested:  ingested,
+		SHA256:    vault.BodySHA256(body),
+		Body:      body,
+	}).Serialize()
 	return []stage.Op{{
 		Kind:      stage.OpIngestSource,
 		Path:      "raw/articles/ingest-reliability-test.md",
-		Content:   []byte("ingested body\n"),
+		Content:   content,
+		SHA256:    vault.BodySHA256(body),
 		Extractor: "test-fake",
 	}}
 }
@@ -82,6 +97,9 @@ func oneIngestOp() []stage.Op {
 // TestIngestScratchName pins U6's CLI half: the scratch file the agent is
 // told to ingest is named after the ORIGINAL source's base name (slugified,
 // numbered per source), never after the extracted title (008 contract §6).
+// Since A-807 the per-source number is a directory of its own
+// (<tmpDir>/<NN>/<slug>.md), so each subtest checks both the file name the
+// tool's basename fallback sees and the directory carrying the number.
 func TestIngestScratchName(t *testing.T) {
 	t.Run("local_path_uses_source_basename", func(t *testing.T) {
 		root := testutil.CopyFixture(t, "minimal")
@@ -98,8 +116,11 @@ func TestIngestScratchName(t *testing.T) {
 			t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr, stdout)
 		}
 		paths := scratchPaths(t, rec)
-		if got := filepath.Base(paths[0]); got != "01-quaternion.md" {
-			t.Errorf("scratch base name = %q, want %q", got, "01-quaternion.md")
+		if got := filepath.Base(paths[0]); got != "quaternion.md" {
+			t.Errorf("scratch base name = %q, want %q", got, "quaternion.md")
+		}
+		if got := filepath.Base(filepath.Dir(paths[0])); got != "01" {
+			t.Errorf("scratch parent directory = %q, want %q", got, "01")
 		}
 	})
 
@@ -120,8 +141,11 @@ func TestIngestScratchName(t *testing.T) {
 			t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr, stdout)
 		}
 		paths := scratchPaths(t, rec)
-		if got := filepath.Base(paths[0]); got != "01-glm52-summary.md" {
-			t.Errorf("scratch base name = %q, want %q", got, "01-glm52-summary.md")
+		if got := filepath.Base(paths[0]); got != "glm52-summary.md" {
+			t.Errorf("scratch base name = %q, want %q", got, "glm52-summary.md")
+		}
+		if got := filepath.Base(filepath.Dir(paths[0])); got != "01" {
+			t.Errorf("scratch parent directory = %q, want %q", got, "01")
 		}
 	})
 
@@ -140,8 +164,11 @@ func TestIngestScratchName(t *testing.T) {
 			t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr, stdout)
 		}
 		paths := scratchPaths(t, rec)
-		if got := filepath.Base(paths[0]); got != "01-rotations.md" {
-			t.Errorf("scratch base name = %q, want %q", got, "01-rotations.md")
+		if got := filepath.Base(paths[0]); got != "rotations.md" {
+			t.Errorf("scratch base name = %q, want %q", got, "rotations.md")
+		}
+		if got := filepath.Base(filepath.Dir(paths[0])); got != "01" {
+			t.Errorf("scratch parent directory = %q, want %q", got, "01")
 		}
 	})
 
@@ -162,11 +189,17 @@ func TestIngestScratchName(t *testing.T) {
 		if len(paths) != 2 {
 			t.Fatalf("the agent was told about %d scratch paths, want 2", len(paths))
 		}
-		if got := filepath.Base(paths[0]); got != "01-a.md" {
-			t.Errorf("first scratch base name = %q, want %q", got, "01-a.md")
+		if got := filepath.Base(paths[0]); got != "a.md" {
+			t.Errorf("first scratch base name = %q, want %q", got, "a.md")
 		}
-		if got := filepath.Base(paths[1]); got != "02-b.md" {
-			t.Errorf("second scratch base name = %q, want %q", got, "02-b.md")
+		if got := filepath.Base(filepath.Dir(paths[0])); got != "01" {
+			t.Errorf("first scratch parent directory = %q, want %q", got, "01")
+		}
+		if got := filepath.Base(paths[1]); got != "b.md" {
+			t.Errorf("second scratch base name = %q, want %q", got, "b.md")
+		}
+		if got := filepath.Base(filepath.Dir(paths[1])); got != "02" {
+			t.Errorf("second scratch parent directory = %q, want %q", got, "02")
 		}
 	})
 }
