@@ -348,3 +348,37 @@ func TestSystemPromptIndexRule(t *testing.T) {
 		t.Error("the index.md rule does not end its own line")
 	}
 }
+
+// TestSystemPromptOutsideVaultRule pins A-806 (G5b P2): when neither the
+// wiki nor the raw sources answer a question, the curator must say so and
+// then answer from its own knowledge under the exact "Not from your
+// vault:" label — a bare "nothing in the vault" left the question
+// unanswered. Byte for byte, on a line of its own, immediately after the
+// A-805 index.md rule.
+func TestSystemPromptOutsideVaultRule(t *testing.T) {
+	const want = "If neither the wiki nor the raw sources answer a question, say so in one sentence, then answer from your own knowledge under a first line that reads exactly \"Not from your vault:\"; carry no provenance marker on those claims, and say plainly when the topic may be newer than your training data."
+	if !strings.Contains(systemPrompt, want) {
+		t.Fatalf("systemPrompt does not contain A-806's out-of-vault rule byte for byte:\n%s", systemPrompt)
+	}
+	// Its own line: delimited by newlines on both sides, never glued onto
+	// a neighbouring rule.
+	i := strings.Index(systemPrompt, want)
+	if i == -1 {
+		t.Fatal("unreachable: Contains above proved the text present")
+	}
+	if i > 0 && systemPrompt[i-1] != '\n' {
+		t.Error("the out-of-vault rule does not start its own line")
+	}
+	if end := i + len(want); end < len(systemPrompt) && systemPrompt[end] != '\n' {
+		t.Error("the out-of-vault rule does not end its own line")
+	}
+	// And placed straight after A-805's index.md rule, per the contract.
+	const indexRule = "index.md is derived by the engine: every stage.create_page adds its index line automatically, so never patch or create index.md."
+	j := strings.Index(systemPrompt, indexRule)
+	if j == -1 {
+		t.Fatal("precondition: the A-805 index.md rule is missing from systemPrompt")
+	}
+	if gap := systemPrompt[j+len(indexRule) : i]; gap != "\n" {
+		t.Errorf("the out-of-vault rule is not immediately after the index.md rule (gap %q)", gap)
+	}
+}

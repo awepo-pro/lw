@@ -1,14 +1,17 @@
 // title.go is the Transcript panel title's state machine (005 contract §6,
-// as amended by R-509/D-5L, the user's U3 finding): the open changeset's
-// short id — and, once that changeset stops being open, the last session
-// the title showed, kept beside the state word `committed` or `rejected`
-// that `lw session list` would print for it. A turn that opened its own
-// changeset and staged nothing is auto-rejected the moment its answer
-// finishes, and the id used to vanish with it; keeping it here is what
-// tells the curator the conversation still exists and where to read it
-// back. Like titleID, the kept id is Update-thread bookkeeping the render
-// path only reads; the state lookup is a tea.Cmd, so Update does no
-// filesystem I/O either.
+// as amended by R-509/D-5L, the user's U3 finding, and by A-806): the open
+// changeset's short id — and, once that changeset stops being open, the
+// last session the title showed, kept beside the state word `committed` or
+// `rejected` that `lw session list` would print for it. A turn that opened
+// its own changeset and staged nothing is auto-rejected the moment its
+// answer finishes, and the id used to vanish with it; keeping it here is
+// what tells the curator the conversation still exists and where to read
+// it back. Since A-806 that one case — a cleanly answered (DoneEv), self-
+// opened, nothing-staged turn — displays as `answered` instead of the raw
+// `rejected` the engine holds on disk and `lw session list` prints; the
+// words differ in the title only. Like titleID, the kept id is
+// Update-thread bookkeeping the render path only reads; the state lookup
+// is a tea.Cmd, so Update does no filesystem I/O either.
 package ask
 
 import (
@@ -64,9 +67,12 @@ func (m *Model) keepTitleID() tea.Cmd {
 
 // dropKeptTitle clears the kept id: a populated broadcast or a started turn
 // has named the changeset open now, and the title shows that one instead.
+// The answered marker (A-806) goes with it — it only ever decorates the id
+// that is kept, never one that is open or arrives later.
 func (m *Model) dropKeptTitle() {
 	m.keptID = ""
 	m.keptState = ""
+	m.answeredID = ""
 }
 
 // fateCmd builds the command that resolves id's state off the render path:
@@ -166,14 +172,18 @@ func (m *Model) refreshTitleID() tea.Cmd {
 }
 
 // transcriptTitle is the Transcript panel's title (005 contract §6, as
-// amended by R-509): `Transcript — <short id>` for the open changeset —
-// the same ShortID the frame header's cs9 uses, so the two spellings
-// cannot drift — and, once that changeset stops being open, the same id
-// kept with its state word: `Transcript — <short id> · committed` or
-// `· rejected`, the words `lw session list` prints. Plain `Transcript`
-// for a pane that never saw a changeset, and no suffix while the kept
-// id's state is still unknown (in flight, failed, or still "open"). It
-// reads only m's fields — the engine is never touched on the render path.
+// amended by R-509 and A-806): `Transcript — <short id>` for the open
+// changeset — the same ShortID the frame header's cs9 uses, so the two
+// spellings cannot drift — and, once that changeset stops being open, the
+// same id kept with its state word: `Transcript — <short id> · committed`
+// or `· rejected`, the words `lw session list` prints — with one display
+// exception (A-806): when the kept id is the pane's own cleanly answered,
+// nothing-staged turn, the raw `rejected` shows as `· answered` here only;
+// on disk and in `lw session list` the state is still `rejected`. Plain
+// `Transcript` for a pane that never saw a changeset, and no suffix while
+// the kept id's state is still unknown (in flight, failed, or still
+// "open"). It reads only m's fields — the engine is never touched on the
+// render path.
 func (m *Model) transcriptTitle() string {
 	id, state := m.titleID, ""
 	if id == "" {
@@ -184,7 +194,11 @@ func (m *Model) transcriptTitle() string {
 	}
 	title := "Transcript — " + ui.ShortID(id)
 	if state == "committed" || state == "rejected" {
-		title += " · " + state
+		word := state
+		if state == "rejected" && m.answeredID == id {
+			word = "answered" // A-806: display word only; state stays "rejected"
+		}
+		title += " · " + word
 	}
 	return title
 }

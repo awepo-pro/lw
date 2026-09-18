@@ -89,6 +89,13 @@ func (m *Model) applyEvent(ev agent.Event) tea.Cmd {
 			} else {
 				m.endTurn(fmt.Sprintf("done · %d rounds", e.Rounds))
 			}
+			// A-806: this turn ended cleanly, so if it is the one
+			// hintAfterTurn names — self-opened, staged nothing, auto-
+			// rejected — its kept state word displays as `answered`.
+			// Captured before appendKeptHint consumes the hint; an ErrorEv
+			// turn reaches appendKeptHint without this, and stays
+			// `rejected`.
+			m.answeredID = m.hintAfterTurn
 			m.appendKeptHint()
 		case agent.ErrorEv:
 			msg := "unknown error"

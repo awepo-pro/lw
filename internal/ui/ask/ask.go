@@ -80,6 +80,17 @@ type Model struct {
 	// (title.go appendKeptHint). "" when no hint is owed.
 	hintAfterTurn string
 
+	// answeredID is the changeset id of a turn that opened itself, staged
+	// nothing, and ended cleanly (DoneEv, not ErrorEv) — the same turn
+	// hintAfterTurn names, recorded when its terminal line lands (state.go's
+	// DoneEv case). While the title keeps this very id, its `rejected`
+	// engine state renders as the display word `answered`: a question
+	// stages no op, so the pane auto-rejects its own empty changeset, and
+	// `rejected` read as a verdict on the question (008 contract §13,
+	// A-806). Display only — disk and titleFateMsg keep `rejected` — and
+	// cleared wherever keptID is (title.go dropKeptTitle).
+	answeredID string
+
 	// cancel aborts the running turn's context; nil until startTurn runs.
 	cancel func()
 

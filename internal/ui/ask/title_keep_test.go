@@ -24,16 +24,51 @@ import (
 )
 
 func TestTranscriptTitleKeepsTheLastSession(t *testing.T) {
-	// empty_self_opened_turn_keeps_id_as_rejected is U3 itself: after the
-	// turn's own auto-reject takes the changeset away, the title keeps the
-	// id and names its state — the same word `lw session list` prints —
-	// instead of dropping back to a bare `Transcript` as if nothing had
-	// happened.
-	t.Run("empty_self_opened_turn_keeps_id_as_rejected", func(t *testing.T) {
+	// empty_self_opened_turn_keeps_id_as_answered is U3 itself, as re-read
+	// by A-806: after the turn's own auto-reject takes the changeset away,
+	// the title keeps the id and names it `answered` — a cleanly answered
+	// (DoneEv) question that staged nothing, not a verdict.
+	t.Run("empty_self_opened_turn_keeps_id_as_answered", func(t *testing.T) {
 		m, _, _, rejectedID := submitEmptyTurn(t)
-		want := "Transcript — " + ui.ShortID(rejectedID) + " · rejected"
-		if got := titleLine(t, m); !strings.Contains(got, want) {
+		want := "Transcript — " + ui.ShortID(rejectedID) + " · answered"
+		got := titleLine(t, m)
+		if !strings.Contains(got, want) {
 			t.Fatalf("the top border reads %q, want it to contain %q", got, want)
+		}
+		if strings.Contains(got, "rejected") {
+			t.Fatalf("the top border reads %q, want no `rejected` for an answered question", got)
+		}
+	})
+
+	// errored_empty_turn_keeps_id_as_rejected: the ErrorEv twin of that same
+	// empty, self-opened turn — there `rejected` is the truth, and
+	// `answered` must not show.
+	t.Run("errored_empty_turn_keeps_id_as_rejected", func(t *testing.T) {
+		root := testutil.CopyFixture(t, "minimal")
+		engine, err := stage.OpenEngine(root)
+		if err != nil {
+			t.Fatalf("OpenEngine: %v", err)
+		}
+		t.Cleanup(func() { engine.Close() })
+		ag := &fakeTurnAgent{
+			sessions: agent.NewFileSessions(root),
+			script:   []agent.Event{agent.ErrorEv{Err: errors.New("the provider gave up")}},
+		}
+		m := New(liveDeps(t, engine, ag)).(*Model)
+		m, cmd := typeAndSubmit(t, m, "still nothing to stage")
+		if cmd == nil {
+			t.Fatal("submit produced no command")
+		}
+		var seen []tea.Msg
+		m = runCmd(t, m, cmd, &seen).(*Model)
+
+		want := "Transcript — " + ui.ShortID(rejectedChangesetID(t, root)) + " · rejected"
+		got := titleLine(t, m)
+		if !strings.Contains(got, want) {
+			t.Fatalf("the top border reads %q, want it to contain %q", got, want)
+		}
+		if strings.Contains(got, "answered") {
+			t.Fatalf("the top border reads %q, want no `answered` for an errored turn", got)
 		}
 	})
 
@@ -215,7 +250,7 @@ func TestTranscriptTitleKeepsTheLastSession(t *testing.T) {
 	t.Run("vault_reload_keeps_the_kept_id", func(t *testing.T) {
 		m, _, _, rejectedID := submitEmptyTurn(t)
 		before := titleLine(t, m)
-		if !strings.Contains(before, ui.ShortID(rejectedID)+" · rejected") {
+		if !strings.Contains(before, ui.ShortID(rejectedID)+" · answered") {
 			t.Fatalf("precondition: the top border reads %q, want the kept id with its state", before)
 		}
 
