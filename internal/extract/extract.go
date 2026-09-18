@@ -3,8 +3,8 @@ package extract
 import (
 	"context"
 	"fmt"
-	"strings"
-	"unicode"
+
+	"github.com/awepo-pro/lw/internal/slug"
 )
 
 // Doc is one source turned into deterministic markdown, ready for
@@ -89,25 +89,15 @@ func kindDir(kind string) string {
 	}
 }
 
-// suggestSlug lowercases title and replaces every run of non-alphanumeric
-// runes with a single "-", trimming leading and trailing dashes. It falls
-// back to "untitled" when that leaves nothing — an untitled extraction
-// still needs a stable, non-empty filename.
+// suggestSlug turns a title into the filename fragment SuggestPath builds
+// with: internal/slug.Make, the one slug rule the whole tree shares
+// (A-805), so the suggestion is always a path the validator accepts. It
+// falls back to "untitled" when nothing survives — a title with no Latin
+// letters or digits (四元數簡介, "!!!") still needs a stable, non-empty
+// filename.
 func suggestSlug(title string) string {
-	var b strings.Builder
-	dash := true // avoid a leading "-"
-	for _, r := range strings.ToLower(strings.TrimSpace(title)) {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
-			b.WriteRune(r)
-			dash = false
-		} else if !dash {
-			b.WriteByte('-')
-			dash = true
-		}
+	if s := slug.Make(title); s != "" {
+		return s
 	}
-	slug := strings.TrimRight(b.String(), "-")
-	if slug == "" {
-		return "untitled"
-	}
-	return slug
+	return "untitled"
 }

@@ -326,3 +326,25 @@ func TestPromptRawRules(t *testing.T) {
 		}
 	})
 }
+
+// TestSystemPromptIndexRule pins A-805's index.md rule (G5b P4): the
+// prompt must say, byte for byte and on a line of its own, that index.md
+// is derived — agents kept patching it by hand.
+func TestSystemPromptIndexRule(t *testing.T) {
+	const want = "index.md is derived by the engine: every stage.create_page adds its index line automatically, so never patch or create index.md."
+	if !strings.Contains(systemPrompt, want) {
+		t.Fatalf("systemPrompt does not contain A-805's index.md rule byte for byte:\n%s", systemPrompt)
+	}
+	// Its own line: delimited by newlines on both sides, never glued onto
+	// a neighbouring rule.
+	i := strings.Index(systemPrompt, want)
+	if i == -1 {
+		t.Fatal("unreachable: Contains above proved the text present")
+	}
+	if i > 0 && systemPrompt[i-1] != '\n' {
+		t.Error("the index.md rule does not start its own line")
+	}
+	if end := i + len(want); end < len(systemPrompt) && systemPrompt[end] != '\n' {
+		t.Error("the index.md rule does not end its own line")
+	}
+}

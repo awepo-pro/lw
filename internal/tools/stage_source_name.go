@@ -13,8 +13,8 @@ import (
 	"fmt"
 	"path"
 	"strings"
-	"unicode"
 
+	"github.com/awepo-pro/lw/internal/slug"
 	"github.com/awepo-pro/lw/internal/stage"
 )
 
@@ -86,22 +86,11 @@ func sourcePathTaken(d Deps, path string) bool {
 	return false
 }
 
-func slugSourceName(s string) string {
-	s = sanitizeSourceSlug(strings.ToLower(strings.TrimSpace(s)))
-	return strings.Trim(s, "-")
-}
-
-func sanitizeSourceSlug(s string) string {
-	var b strings.Builder
-	dash := false
-	for _, r := range s {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
-			b.WriteRune(r)
-			dash = false
-		} else if !dash {
-			b.WriteByte('-')
-			dash = true
-		}
-	}
-	return strings.Trim(b.String(), "-")
-}
+// slugSourceName slugs a title or basename into the raw source's file-name
+// fragment: internal/slug.Make, the one slug rule the whole tree shares
+// (A-805) and the exact lowercase-ASCII shape the engine's validator
+// accepts. "" when nothing survives; §4.1's order — title, basename,
+// "untitled" — owns the fallback. Before A-805 this kept every Unicode
+// letter rune, so a CJK title staged a path the validator rejected and
+// the ingest died (the user's G5b quaternion clipping).
+var slugSourceName = slug.Make

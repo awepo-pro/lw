@@ -13,6 +13,7 @@ import (
 	"github.com/awepo-pro/lw/internal/config"
 	"github.com/awepo-pro/lw/internal/extract"
 	"github.com/awepo-pro/lw/internal/llm"
+	"github.com/awepo-pro/lw/internal/slug"
 	"github.com/awepo-pro/lw/internal/stage"
 	"github.com/awepo-pro/lw/internal/tools"
 )
@@ -171,28 +172,16 @@ func scratchSlug(src string) string {
 	return slugFile(strings.TrimSuffix(base, filepath.Ext(base)))
 }
 
-// slugFile lowercases s and replaces every run of characters outside
-// [a-z0-9] with a single "-", trimming leading and trailing dashes —
-// extract's own slug rule narrowed to ASCII, because a scratch file name
-// is quoted back to the model and must survive as a plain local name
-// (internal/extract's suggestSlug is unexported, so the rule is
-// duplicated here per 008 contract §6). Unicode titles therefore
-// contribute nothing: "Quaternion 四元數簡介.md" stages as
-// 01-quaternion.md, and a name that slugifies to nothing falls back to
-// SuggestPath's base, which keeps extract's unicode-aware slug.
+// slugFile names the scratch file fragment cmdIngest writes one source
+// under (U6): internal/slug.Make, the one slug rule the whole tree shares
+// (A-805) — a lowercase ASCII name quoted back to the model that survives
+// as a plain local file name. "" when nothing survives, in which case
+// cmdIngest answers with extract.SuggestPath's base name as before. This
+// used to be an ASCII-only copy of extract's slug, kept because
+// suggestSlug was unexported and Unicode-aware; internal/slug replaces
+// both the copy and the rule that kept non-ASCII letters in paths.
 func slugFile(s string) string {
-	var b strings.Builder
-	dash := true // avoid a leading "-"
-	for _, r := range strings.ToLower(s) {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
-			b.WriteRune(r)
-			dash = false
-		} else if !dash {
-			b.WriteByte('-')
-			dash = true
-		}
-	}
-	return strings.Trim(b.String(), "-")
+	return slug.Make(s)
 }
 
 // agentErrorHint turns a failed agent turn into the error ingest, query

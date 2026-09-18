@@ -130,3 +130,25 @@ func TestSuggestPathDeterministic(t *testing.T) {
 		}
 	}
 }
+
+// TestSuggestPathIsValid pins A-805: every SuggestPath result is a path
+// the staging validator accepts, whatever script the title is written in.
+// The non-Latin part of a mixed title drops out of the FILE NAME (the
+// title itself is kept in the document), and a title with nothing
+// slugifiable at all falls back to untitled.
+func TestSuggestPathIsValid(t *testing.T) {
+	cases := []struct {
+		title string
+		kind  string
+		want  string
+	}{
+		{"Quaternion 四元數簡介", "article", "raw/articles/quaternion.md"},
+		{"四元數簡介", "article", "raw/articles/untitled.md"},
+		{"Café Déjà Vu", "paper", "raw/papers/cafe-deja-vu.md"},
+	}
+	for _, tc := range cases {
+		if got := SuggestPath(&Doc{Title: tc.title, Kind: tc.kind}); got != tc.want {
+			t.Errorf("SuggestPath(%q, %q) = %q, want %q", tc.title, tc.kind, got, tc.want)
+		}
+	}
+}
