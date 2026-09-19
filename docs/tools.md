@@ -40,7 +40,7 @@ Nothing reaches the working tree until a human commits.
 | 13 | `stage.merge_pages` | `stage_merge_pages` | `{sources[], into}` — redirect plus backlink rewrites as one reviewable unit |
 | 14 | `stage.split_page` | `stage_split_page` | `{path, sections[]}` — the source becomes a reviewable stub |
 | 15 | `stage.add_link` | `stage_add_link` | `{from, to, context?}` — bidirectional; refuses a broken endpoint |
-| 16 | `stage.ingest_source` | `stage_ingest_source` | `{uri, kind?}` — extracts a **local** file, writes `raw/` (write-once, only for a path that does not exist yet), hashes and dedupes by body `sha256`. HTTP URLs are refused here; `lw ingest <url>` fetches and extracts first, then hands the tool a scratch local path. The MCP transport wires the same HTML and markdown extractor chain as the CLI, so extraction behaves identically over either surface |
+| 16 | `stage.ingest_source` | `stage_ingest_source` | `{uri, kind?, name?}` — extracts a **local** file, writes `raw/` (write-once, only for a path that does not exist yet), hashes and dedupes by body `sha256`. HTTP URLs are refused here; `lw ingest <url>` fetches and extracts first, then hands the tool a scratch local path. The MCP transport wires the same HTML and markdown extractor chain as the CLI, so extraction behaves identically over either surface. `name` is used only when the title slugs to nothing (idea 011) |
 | 17 | `stage.retract` | `stage_retract` | `{page, reason}` — a tombstone with a reason, **never a deletion** |
 | 18 | `stage.close` | `stage_close` | A human-readable summary of the proposal — reads only, writes nothing |
 

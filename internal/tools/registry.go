@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -154,4 +155,19 @@ func decodeArgs(args json.RawMessage, out any) error {
 		return nil
 	}
 	return json.Unmarshal(args, out)
+}
+
+// decodeArgsStrict is decodeArgs with the tool schema's
+// "additionalProperties": false enforced: an argument object carrying a
+// field the args struct does not declare is an error, so the handler
+// refuses it with the ordinary bad-args result instead of silently
+// dropping it (009 idea 011 added the optional name argument to
+// stage.ingest_source, and a misspelled hint must not vanish).
+func decodeArgsStrict(args json.RawMessage, out any) error {
+	if len(args) == 0 {
+		return nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(args))
+	dec.DisallowUnknownFields()
+	return dec.Decode(out)
 }
