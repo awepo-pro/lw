@@ -35,14 +35,23 @@ import (
 // session before it calls Send, so a test waiting on entered knows the
 // turn's session file exists — the synchronisation that keeps a test's
 // commit/reject from racing the goroutine startTurn spawned.
+//
+// persist (009's carry-over tests) is what Send writes into the session
+// store under the turn's session id before the script replays — the
+// record-writing half of Loop.Send, without which a fake turn leaves no
+// transcript for a later session to be seeded from. Nil (the default
+// everywhere the carry tests are not running) leaves the store untouched,
+// exactly as before 009.
 type fakeTurnAgent struct {
 	mu       sync.Mutex
 	script   []agent.Event
+	persist  []agent.Record
 	release  chan struct{}
 	entered  chan struct{}
 	sends    int
 	gotMsg   string
 	gotSess  string
+	msgs     []string
 	sessions agent.SessionStore
 }
 
@@ -51,7 +60,9 @@ func (f *fakeTurnAgent) Send(ctx context.Context, sessionID, msg string, out cha
 	f.sends++
 	f.gotMsg = msg
 	f.gotSess = sessionID
+	f.msgs = append(f.msgs, msg)
 	script := append([]agent.Event(nil), f.script...)
+	persist := append([]agent.Record(nil), f.persist...)
 	f.mu.Unlock()
 
 	if f.entered != nil {
@@ -59,6 +70,12 @@ func (f *fakeTurnAgent) Send(ctx context.Context, sessionID, msg string, out cha
 	}
 	if f.release != nil {
 		<-f.release
+	}
+
+	if persist != nil && f.sessions != nil {
+		for _, r := range persist {
+			_ = f.sessions.Append(sessionID, r)
+		}
 	}
 
 	for _, ev := range script {
@@ -80,6 +97,14 @@ func (f *fakeTurnAgent) sendCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.sends
+}
+
+// sentMsgs returns every msg Send has been entered with, in order — the
+// history the single gotMsg cannot answer once two turns have run.
+func (f *fakeTurnAgent) sentMsgs() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.msgs...)
 }
 
 // recordingSessions wraps a SessionStore and records every Close, so a test

@@ -1,0 +1,165 @@
+// file_hint_test.go is 009 contract §3.2's evidence: a cleanly answered turn
+// whose answer cites a vault source marker leaves the ctrl+s hint under its
+// terminal line (after the kept hint, when one is owed), and nothing else
+// does — not an error turn, not a max_rounds turn, not an unsourced answer,
+// and never a filing turn's own answer.
+package ask
+
+import (
+	"errors"
+	"strings"
+	"testing"
+
+	tea "charm.land/bubbletea/v2"
+
+	"github.com/awepo-pro/lw/internal/agent"
+)
+
+// hintTurn runs one real turn on a fresh vault (the turn opens its own
+// changeset, and auto-rejects it when it stages nothing) whose scripted
+// events are evs, and drains it fully.
+func hintTurn(t *testing.T, evs ...agent.Event) *Model {
+	t.Helper()
+	_, engine := carryVault(t)
+	ag := &fakeTurnAgent{sessions: agent.NewFileSessions(engine.Vault().Root()), script: evs}
+	m := New(liveDeps(t, engine, ag)).(*Model)
+	return submitAndDrain(t, m, "what is a kv cache?")
+}
+
+// countStatusEntries counts the kindStatus entries whose text equals text.
+func countStatusEntries(m *Model, text string) int {
+	n := 0
+	for _, e := range m.entries {
+		if e.kind == kindStatus && e.text == text {
+			n++
+		}
+	}
+	return n
+}
+
+func TestFileHint(t *testing.T) {
+	t.Run("raw_marker_is_fileable", func(t *testing.T) {
+		m := hintTurn(t,
+			agent.TextDelta{Text: "It is the attention cache.^[raw/articles/kv-cache-explained.md]"},
+			agent.DoneEv{Reason: "stop", Rounds: 1},
+		)
+		got := lastEntry(m)
+		if got.kind != kindStatus || got.text != "ctrl+s file this answer as a query page" {
+			t.Fatalf("last entry = %#v, want the file hint status line", got)
+		}
+	})
+
+	t.Run("wiki_marker_is_fileable", func(t *testing.T) {
+		m := hintTurn(t,
+			agent.TextDelta{Text: "See the comparison page.^[wiki/concepts/y.md]"},
+			agent.DoneEv{Reason: "stop", Rounds: 1},
+		)
+		got := lastEntry(m)
+		if got.kind != kindStatus || got.text != "ctrl+s file this answer as a query page" {
+			t.Fatalf("last entry = %#v, want the file hint status line", got)
+		}
+	})
+
+	t.Run("no_marker_no_hint", func(t *testing.T) {
+		m := hintTurn(t,
+			agent.TextDelta{Text: "It is the attention cache, but nothing here is cited."},
+			agent.DoneEv{Reason: "stop", Rounds: 1},
+		)
+		if got := countStatusEntries(m, fileHint); got != 0 {
+			t.Fatalf("unsourced answer produced %d file hints, want none", got)
+		}
+	})
+
+	t.Run("error_turn_no_hint", func(t *testing.T) {
+		m := hintTurn(t,
+			agent.TextDelta{Text: "Half an answer.^[raw/articles/kv-cache-explained.md]"},
+			agent.ErrorEv{Err: errors.New("provider boom")},
+		)
+		if got := countStatusEntries(m, fileHint); got != 0 {
+			t.Fatalf("errored turn produced %d file hints, want none", got)
+		}
+		// The errored turn also auto-rejected its empty changeset, so the
+		// scrollback ends with the error line and then the kept hint — the
+		// error line is what directly precedes it.
+		kept := lastEntry(m)
+		if kept.kind != kindStatus || !strings.HasPrefix(kept.text, "nothing staged · conversation kept") {
+			t.Fatalf("last entry = %#v, want the errored turn's kept hint", kept)
+		}
+		if got := m.entries[len(m.entries)-2]; got.kind != kindError || !strings.Contains(got.text, "provider boom") {
+			t.Fatalf("entry before the kept hint = %#v, want the error line", got)
+		}
+	})
+
+	t.Run("max_rounds_no_hint", func(t *testing.T) {
+		m := hintTurn(t,
+			agent.TextDelta{Text: "Cut off mid-work.^[raw/articles/kv-cache-explained.md]"},
+			agent.DoneEv{Reason: "max_rounds", Rounds: 24},
+		)
+		if got := countStatusEntries(m, fileHint); got != 0 {
+			t.Fatalf("max_rounds turn produced %d file hints, want none", got)
+		}
+	})
+
+	t.Run("hint_after_kept_hint", func(t *testing.T) {
+		// A fresh vault: the turn opens its own changeset, stages nothing,
+		// and is auto-rejected — so the terminal line owes the kept hint
+		// first, and the file hint lands after it (009 contract §3.2).
+		m := hintTurn(t,
+			agent.TextDelta{Text: "It is the attention cache.^[raw/articles/kv-cache-explained.md]"},
+			agent.DoneEv{Reason: "stop", Rounds: 1},
+		)
+		if n := len(m.entries); n < 3 {
+			t.Fatalf("scrollback holds %d entries, want the turn's full tail", n)
+		}
+		done := m.entries[len(m.entries)-3]
+		kept := m.entries[len(m.entries)-2]
+		hint := m.entries[len(m.entries)-1]
+		if done.kind != kindStatus || done.text != "done · 1 rounds" {
+			t.Fatalf("third-to-last entry = %#v, want the \"done · 1 rounds\" terminal line", done)
+		}
+		if kept.kind != kindStatus || !strings.HasPrefix(kept.text, "nothing staged · conversation kept · lw session show ") {
+			t.Fatalf("second-to-last entry = %#v, want the kept hint", kept)
+		}
+		if hint.kind != kindStatus || hint.text != fileHint {
+			t.Fatalf("last entry = %#v, want the file hint directly after the kept hint", hint)
+		}
+	})
+
+	t.Run("filing_turn_answer_not_fileable", func(t *testing.T) {
+		m := hintTurn(t,
+			agent.TextDelta{Text: "It is the attention cache.^[raw/articles/kv-cache-explained.md]"},
+			agent.DoneEv{Reason: "stop", Rounds: 1},
+		)
+		if got := countStatusEntries(m, fileHint); got != 1 {
+			t.Fatalf("setup: first turn produced %d file hints, want exactly 1", got)
+		}
+
+		// ctrl+s starts the filing turn; its own scripted answer carries a
+		// marker too, but a filing turn's answer is never fileable.
+		fa, ok := m.deps.Agent.(*fakeTurnAgent)
+		if !ok {
+			t.Fatalf("agent is %T, want *fakeTurnAgent", m.deps.Agent)
+		}
+		fa.script = []agent.Event{
+			agent.TextDelta{Text: "Filed. See ^[wiki/queries/kv-cache.md]"},
+			agent.DoneEv{Reason: "stop", Rounds: 1},
+		}
+		pane, cmd := m.Update(specialKey('s', tea.ModCtrl))
+		m = pane.(*Model)
+		if cmd == nil {
+			t.Fatal("ctrl+s produced no command")
+		}
+		var seen []tea.Msg
+		m = runCmd(t, m, cmd, &seen).(*Model)
+
+		if got := countStatusEntries(m, fileHint); got != 1 {
+			t.Fatalf("scrollback holds %d file hints after the filing turn, want only the first turn's one", got)
+		}
+		// The filing turn auto-rejected its own empty changeset: its tail is
+		// the done line and the kept hint, with no file hint after them.
+		kept := lastEntry(m)
+		if kept.kind != kindStatus || !strings.HasPrefix(kept.text, "nothing staged · conversation kept") {
+			t.Fatalf("last entry = %#v, want the filing turn's kept hint (and no file hint after it)", kept)
+		}
+	})
+}

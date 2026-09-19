@@ -55,6 +55,11 @@ type Model struct {
 	// changesetGone archives when the changeset is committed or rejected.
 	sessionID string
 
+	// convID is the session id the pane's most recent turn ran under (009
+	// §3.1). Unlike sessionID it is NOT cleared by changesetGone — the
+	// archived session is what the next turn seeds a fresh session from.
+	convID string
+
 	// titleID is the open changeset's id for the Transcript panel's title
 	// (005 contract §6), "" when none is open. It is maintained OFF the
 	// render path, exactly the way the shell maintains its own stage
@@ -93,6 +98,14 @@ type Model struct {
 
 	// cancel aborts the running turn's context; nil until startTurn runs.
 	cancel func()
+
+	// last is the file key's recorded question and answer — the last
+	// cleanly answered turn's text, captured on DoneEv and cleared on
+	// ErrorEv and max_rounds (009 contract §3.2, file.go). filingTurn marks
+	// the running turn as one ctrl+s started, whose own answer is never
+	// fileable (§3.4).
+	last       answerCapture
+	filingTurn bool
 
 	ch <-chan agent.Event // installed by StreamMsg; nil = no stream to re-arm
 }
@@ -145,16 +158,10 @@ func (m *Model) Help() []key.Binding { return footerBindings() }
 // `q quit`.
 func (m *Model) FooterHelp() []key.Binding { return footerBindings() }
 
-// OverlayHelp implements ui.OverlayHelper (contract §5): Ask's section of
-// the `?` overlay. There is no `esc cancel turn` entry — Ask binds no esc
-// key today (s2-screens.md T08: "only if bound today").
-func (m *Model) OverlayHelp() (string, []ui.HelpEntry) {
-	return "Ask", []ui.HelpEntry{
-		{Key: "enter", Desc: "send"},
-		{Key: "↑/↓", Desc: "select tool call"},
-		{Key: "ctrl+r", Desc: "open review"},
-	}
-}
+// noAgentStatus is the degrade line submitInput and ctrl+s share when
+// Deps.Agent is nil (S5-T5): the config did not load, so there is no
+// provider, and every other screen carries on.
+const noAgentStatus = "no agent is configured (config did not load) — ask is off; browse, review, lint and log still work"
 
 // CapturesText implements ui.TextCapturer (contract §5, C27/D-3Q): the
 // input box always takes typing, so while Ask is the active screen the
@@ -224,6 +231,7 @@ func (m *Model) Update(msg tea.Msg) (ui.Pane, tea.Cmd) {
 			return m, nil
 		}
 		m.sessionID = msg.sessionID
+		m.convID = msg.sessionID  // 009 §3.1: the pane remembers its latest session even after changesetGone
 		m.titleID = msg.sessionID // the turn's changeset is the open one now
 		m.dropKeptTitle()         // it replaces whatever the title kept
 		m.hintAfterTurn = ""      // a new turn owes nothing to the old one's hint
@@ -238,6 +246,9 @@ func (m *Model) Update(msg tea.Msg) (ui.Pane, tea.Cmd) {
 		m.ch = nil
 		m.turnActive = false
 		m.hintAfterTurn = "" // a turn cancelled before its terminal line owes no hint
+		// ...and records nothing, so its filing marker (file.go) must not
+		// leak onto the next turn's answer either.
+		m.filingTurn = false
 		// The turn is over either way, so its context has nothing left to
 		// cancel; releasing it here (rather than waiting for a later
 		// changesetGone) is what keeps one turn's cancel from being mistaken
@@ -293,6 +304,10 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (ui.Pane, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+r":
 		return m, func() tea.Msg { return ui.SwitchScreenMsg{To: ui.ScreenReview} }
+	case "ctrl+s":
+		// 009 contract §3.3: file the last answer as a query page — before
+		// the printable path, like every other bound key.
+		return m, m.fileKey()
 	case "up":
 		m.moveSelection(-1)
 		return m, nil
@@ -343,6 +358,10 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (ui.Pane, tea.Cmd) {
 //     ask says so and every other screen carries on (S5-T5's degrade
 //     requirement).
 //
+// Everything past those refusals — the nil-agent degrade, the changeset
+// read, the echo, the bookkeeping and the start — is beginTurn (file.go),
+// the same path ctrl+s's filing turn runs on (009 §3.3).
+//
 // A third refusal used to fire here — "no open changeset" — because a
 // session is keyed by its changeset (backbone §9, C-102) and a fresh
 // vault's first question had nowhere to run. C-124/D-DH removed it: when
@@ -370,26 +389,7 @@ func (m *Model) submitInput() tea.Cmd {
 		return nil
 	}
 
-	if m.deps.Agent == nil {
-		m.echoUser(msg)
-		m.appendStatus("no agent is configured (config did not load) — ask is off; browse, review, lint and log still work")
-		return nil
-	}
-
-	sessionID := ""
-	if m.deps.Engine != nil {
-		if cs, err := m.deps.Engine.Current(); err == nil {
-			sessionID = cs.ID
-		}
-	}
-
-	m.echoUser(msg)
-	m.turnActive = true
-	// "" until runTurn resolves it and reports back via turnStartedMsg
-	// (C-124/D-DH) — a changeset already open above is known synchronously,
-	// same as before.
-	m.sessionID = sessionID
-	return m.startTurn(sessionID, msg)
+	return m.beginTurn(msg, msg)
 }
 
 // deleteInputRune removes the last rune of the input box, if any.
