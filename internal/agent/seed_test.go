@@ -7,6 +7,7 @@ package agent
 // assertions).
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -230,6 +231,56 @@ func TestSeedSession(t *testing.T) {
 		}
 		if !reflect.DeepEqual(got.Records, own) {
 			t.Fatalf("session changed: got %+v, want %+v", got.Records, own)
+		}
+	})
+
+	// chained_history_compacts_within_budget is the plan's promised bound
+	// (Tier-2 Minor 3): a 20-turn conversation carried forward through
+	// SeedSession fits the request budget after Compact. Carried records
+	// are prose, so Compact can collapse them — pinned here so a future
+	// change that carried tool records (which isProse can never collapse)
+	// fails this instead of silently blowing every turn's request past its
+	// budget.
+	t.Run("chained_history_compacts_within_budget", func(t *testing.T) {
+		ids := make([]string, 21)
+		for i := range ids {
+			ids[i] = fmt.Sprintf("cs-%d", i)
+		}
+		store := newSeedStore(t, ids...)
+		answer := strings.Repeat("a", 2000)
+
+		// Turn i runs in cs-i: it inherits cs-(i-1)'s conversation, then
+		// adds its own question and its 2,000-character answer.
+		for i := 1; i <= 20; i++ {
+			if _, err := SeedSession(store, ids[i-1], ids[i]); err != nil {
+				t.Fatalf("SeedSession %s from %s: %v", ids[i], ids[i-1], err)
+			}
+			appendAll(t, store, ids[i], []Record{
+				rec(time.Unix(int64(i), 0), "user", fmt.Sprintf("Q%d", i)),
+				rec(time.Unix(int64(i), 0).Add(time.Second), "assistant", answer),
+			})
+		}
+
+		last, err := store.Get(ids[20])
+		if err != nil {
+			t.Fatalf("Get %s: %v", ids[20], err)
+		}
+		total := 0
+		for _, r := range last.Records {
+			total += recordTokens(r)
+		}
+		budget := 1000
+		if total <= budget {
+			t.Fatalf("setup: the chained history totals %d tokens, want more than the %d-token budget", total, budget)
+		}
+
+		fit := Compact(last.Records, budget)
+		sum := 0
+		for _, r := range fit {
+			sum += recordTokens(r)
+		}
+		if sum > budget {
+			t.Fatalf("Compact left %d tokens in %d records, want within the %d-token budget", sum, len(fit), budget)
 		}
 	})
 

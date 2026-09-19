@@ -201,6 +201,45 @@ func TestFileKey(t *testing.T) {
 		}
 	})
 
+	// after_filing_turn_says_filed is C-909's case (§3.3 rule 3a): after a
+	// filing turn, ctrl+s no longer answers with the unsourced refusal —
+	// which was false — but names the answer as already filed, reviewable
+	// with ctrl+r.
+	t.Run("after_filing_turn_says_filed", func(t *testing.T) {
+		_, engine, _ := queryVault(t)
+		ag := &fakeTurnAgent{
+			sessions: agent.NewFileSessions(engine.Vault().Root()),
+			script: []agent.Event{
+				agent.TextDelta{Text: fileKeyAnswer},
+				agent.DoneEv{Reason: "stop", Rounds: 1},
+			},
+		}
+		m := New(liveDeps(t, engine, ag)).(*Model)
+		m = submitAndDrain(t, m, fileKeyQuestion)
+
+		// ctrl+s files: the filing turn runs to its own clean answer.
+		pane, cmd := pressCtrlS(m)
+		m = pane.(*Model)
+		if cmd == nil {
+			t.Fatal("ctrl+s produced no command")
+		}
+		var seen []tea.Msg
+		m = runCmd(t, m, cmd, &seen).(*Model)
+
+		pane, cmd = pressCtrlS(m)
+		m = pane.(*Model)
+		if cmd != nil {
+			t.Fatalf("ctrl+s after a filing turn produced a command (%#v), want nil", cmd)
+		}
+		if m.turnActive {
+			t.Fatal("ctrl+s after a filing turn started a turn")
+		}
+		if got := lastEntry(m); got.kind != kindStatus ||
+			got.text != "this answer was already filed — review it with ctrl+r" {
+			t.Fatalf("last entry = %#v, want the already-filed notice", got)
+		}
+	})
+
 	t.Run("no_agent_status", func(t *testing.T) {
 		// A pane with no agent records the answer from a scripted stream
 		// (Deps.Agent is nil, so no real turn could have run), then ctrl+s

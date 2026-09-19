@@ -117,8 +117,12 @@ func (m *Model) applyEvent(ev agent.Event) tea.Cmd {
 			if errors.Is(e.Err, agent.ErrTruncated) {
 				msg = "stopped: output limit reached — nothing after this was proposed; raise llm.max_tokens"
 			}
+			// Before endTurnError: it drops the filing marker (C-907), and
+			// forgetLastAnswer must still see it to keep a filing turn's
+			// pair (C-908). An ordinary errored turn leaves nothing
+			// fileable (009 §3.2).
+			m.forgetLastAnswer()
 			m.endTurnError(msg)
-			m.forgetLastAnswer() // 009 §3.2: an errored turn leaves nothing fileable
 			m.appendKeptHint()
 		}
 	})

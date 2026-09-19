@@ -13,6 +13,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/awepo-pro/lw/internal/agent"
+	"github.com/awepo-pro/lw/internal/index"
 )
 
 // hintTurn runs one real turn on a fresh vault (the turn opens its own
@@ -160,6 +161,67 @@ func TestFileHint(t *testing.T) {
 		kept := lastEntry(m)
 		if kept.kind != kindStatus || !strings.HasPrefix(kept.text, "nothing staged · conversation kept") {
 			t.Fatalf("last entry = %#v, want the filing turn's kept hint (and no file hint after it)", kept)
+		}
+	})
+
+	// failed_filing_turn_keeps_answer is C-908's case: a filing turn that
+	// dies with ErrorEv keeps the pair it was filing, so ctrl+s retries it
+	// — on byte for byte the message the first filing turn ran on. An
+	// ordinary turn's error still clears (error_turn_no_hint stays).
+	t.Run("failed_filing_turn_keeps_answer", func(t *testing.T) {
+		_, engine, _ := queryVault(t)
+		ag := &fakeTurnAgent{sessions: agent.NewFileSessions(engine.Vault().Root())}
+		m := New(liveDeps(t, engine, ag)).(*Model)
+
+		// Turn 1 answers with a marker: fileable, exactly one hint. Its
+		// records persist, so the filing turn has a conversation to seed.
+		ag.script, ag.persist = turnScript(fileKeyQuestion, fileKeyAnswer)
+		m = submitAndDrain(t, m, fileKeyQuestion)
+		if got := countStatusEntries(m, fileHint); got != 1 {
+			t.Fatalf("setup: first turn produced %d file hints, want exactly 1", got)
+		}
+
+		// ctrl+s starts the filing turn, which dies mid-stream with ErrorEv.
+		ag.script = []agent.Event{
+			agent.TextDelta{Text: "Staging the page."},
+			agent.ErrorEv{Err: errors.New("provider boom")},
+		}
+		pane, cmd := pressCtrlS(m)
+		m = pane.(*Model)
+		if cmd == nil {
+			t.Fatal("ctrl+s produced no command")
+		}
+		var seen []tea.Msg
+		m = runCmd(t, m, cmd, &seen).(*Model)
+		if m.turnActive || m.filingTurn {
+			t.Fatalf("the failed filing turn left turnActive %v / filingTurn %v, want both false", m.turnActive, m.filingTurn)
+		}
+		if !m.last.set || m.last.filing {
+			t.Fatalf("recorded pair after the failed filing turn = %#v, want the pre-filing pair kept, not a filing turn's own", m.last)
+		}
+
+		// The first filing turn ran on fileMessage's exact bytes; the retry
+		// must run on the same ones.
+		first := ag.sentMsgs()[1]
+		hits := engine.Index().Search(fileKeyQuestion, index.Options{Type: "query", Limit: 3})
+		if want := fileMessage(fileKeyQuestion, fileKeyAnswer, hits); first != want {
+			t.Fatalf("setup: first filing message:\n got  %q\n want %q", first, want)
+		}
+
+		pane, cmd = pressCtrlS(m)
+		m = pane.(*Model)
+		if cmd == nil {
+			t.Fatal("retry ctrl+s produced no command")
+		}
+		var retried []tea.Msg
+		m = runCmd(t, m, cmd, &retried).(*Model)
+
+		msgs := ag.sentMsgs()
+		if len(msgs) != 3 {
+			t.Fatalf("Send ran %d times, want the question turn and two filing turns", len(msgs))
+		}
+		if msgs[2] != first {
+			t.Fatalf("retry filing message:\n got  %q\n want the first one byte for byte: %q", msgs[2], first)
 		}
 	})
 
