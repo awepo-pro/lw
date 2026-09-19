@@ -162,4 +162,57 @@ func TestFileHint(t *testing.T) {
 			t.Fatalf("last entry = %#v, want the filing turn's kept hint (and no file hint after it)", kept)
 		}
 	})
+
+	// failed_filing_start_does_not_leak is C-907's case: a filing turn that
+	// fails before its stream exists (turnStartedMsg's error — no
+	// StreamClosedMsg can ever arrive) must drop its filing marker, or the
+	// next ordinary sourced answer is permanently unfileable.
+	t.Run("failed_filing_start_does_not_leak", func(t *testing.T) {
+		root, engine := carryVault(t)
+		sessions := agent.NewFileSessions(root)
+		ag := &fakeTurnAgent{sessions: sessions}
+		m := New(liveDeps(t, engine, ag)).(*Model)
+
+		// Turn 1 answers with a marker: fileable, exactly one hint. Its
+		// records persist, so the failed filing turn below really has a
+		// conversation to seed from.
+		ag.script, ag.persist = turnScript("what is a kv cache?",
+			"It is the attention cache.^[raw/articles/kv-cache-explained.md]")
+		m = submitAndDrain(t, m, "what is a kv cache?")
+		if got := countStatusEntries(m, fileHint); got != 1 {
+			t.Fatalf("setup: first turn produced %d file hints, want exactly 1", got)
+		}
+
+		// ctrl+s starts the filing turn, but its store refuses every Append,
+		// so seeding its fresh session from turn 1's cannot write and the
+		// turn ends at start — before Send, with no stream to close.
+		ag.sessions = seedFailSessions{SessionStore: agent.NewFileSessions(root)}
+		ag.script, ag.persist = nil, nil
+		pane, cmd := pressCtrlS(m)
+		m = pane.(*Model)
+		if cmd == nil {
+			t.Fatal("ctrl+s produced no command")
+		}
+		var seen []tea.Msg
+		m = runCmd(t, m, cmd, &seen).(*Model)
+
+		got := lastEntry(m)
+		if got.kind != kindError || !strings.HasPrefix(got.text, "ask: carry the conversation into ") {
+			t.Fatalf("filing turn's last entry = %#v, want the seed failure's error line", got)
+		}
+		if m.turnActive || m.filingTurn {
+			t.Fatalf("the failed filing turn left turnActive %v / filingTurn %v, want both false", m.turnActive, m.filingTurn)
+		}
+
+		// Turn 3 is ordinary, and its sourced answer must still be fileable.
+		ag.sessions = agent.NewFileSessions(root)
+		ag.script = []agent.Event{
+			agent.TextDelta{Text: "It decodes without recomputing.^[raw/articles/kv-cache-explained.md]"},
+			agent.DoneEv{Reason: "stop", Rounds: 1},
+		}
+		m = submitAndDrain(t, m, "why does decoding reuse the cache?")
+		if last := lastEntry(m); last.kind != kindStatus || last.text != fileHint {
+			t.Fatalf("turn 3's last entry = %#v, want the file hint status line", last)
+		}
+	})
 }
