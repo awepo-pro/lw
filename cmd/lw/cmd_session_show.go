@@ -151,21 +151,28 @@ func plural(n int, one, many string) string {
 // sessionRuleTitle is a record's rule title: "you" for the user's turn,
 // "assistant", "tool <name>" — "· staged" when the call is staged — and
 // the bare role string for any other role a future writer may record.
+// A record the Ask pane copied forward from the earlier conversation of
+// the same pane (Carried, 009 contract §1) is named "· carried", so a
+// transcript tells carried history from the turn's own records.
 func sessionRuleTitle(r *agent.Record) string {
+	var title string
 	switch r.Role {
 	case "user":
-		return "you"
+		title = "you"
 	case "assistant":
-		return "assistant"
+		title = "assistant"
 	case "tool":
-		title := "tool " + r.Tool
+		title = "tool " + r.Tool
 		if r.Staged {
 			title += " · staged"
 		}
-		return title
 	default:
-		return r.Role
+		title = r.Role
 	}
+	if r.Carried {
+		title += " · carried"
+	}
+	return title
 }
 
 // sessionRecordBody renders one record's body lines and reports whether

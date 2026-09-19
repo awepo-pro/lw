@@ -390,6 +390,28 @@ the answer is honest about that: every claim traces back to the same
 article. Ask a question about something you have not ingested yet, and
 the agent has nothing to cite — see §13 for what that refusal looks like.
 
+### Keep an answer: file it as a query page
+
+A follow-up question in the same Ask pane sees the earlier conversation
+of that pane, so "expand on the second point" needs no re-explaining.
+
+After an answer that cites the vault — one carrying a `^[raw/…]` or
+`^[wiki/…]` marker — the pane shows
+`ctrl+s file this answer as a query page`. Pressing `ctrl+s` runs one
+more agent turn that stages a `wiki/queries/` page, or updates an
+existing query page that already answers the same question. Like
+everything else, it reaches the wiki only through normal hunk review:
+`ctrl+r` opens Review, and nothing lands until you commit.
+
+An answer with no vault marker — for example one under
+`Not from your vault:` — cannot be filed: pressing `ctrl+s` answers
+`this answer cites no vault source; nothing to file`. The wiki only
+holds sourced claims.
+
+In `lw session show`, the history an Ask pane copied forward is marked
+`· carried`, so a transcript tells the carried turns from the turn's own
+records.
+
 ## 9. The TUI tour
 
 `lw` with no command, or `lw tui`, opens the terminal UI. Screens cycle with
