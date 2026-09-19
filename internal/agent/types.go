@@ -100,6 +100,12 @@ type Record struct {
 	// (anything but "", "stop", "tool_calls"). Set only on the round's final
 	// assistant record; empty otherwise. Added 2026-09-17 (008).
 	Finish string `json:"finish,omitempty"`
+
+	// Carried marks a record copied into this session from the previous
+	// session of the same Ask conversation by SeedSession (009): the model
+	// reads it as history, but it happened in an earlier changeset. Added
+	// 2026-09-19 (009).
+	Carried bool `json:"carried,omitempty"`
 }
 
 // Session is one curator conversation, bound to a changeset.
