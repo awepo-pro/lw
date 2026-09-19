@@ -1,12 +1,15 @@
 // stage_source_name.go holds the raw-source naming rule 008 contract §4.1
-// pins for stage.ingest_source: the staged file's name comes from the
-// extracted title, else from the uri's basename with one trailing extension
+// pins for stage.ingest_source, extended by 009 (idea 011): the staged
+// file's name comes from the extracted title, else from the tool's
+// optional name hint (for a source whose title has no Latin letters —
+// slug.Make keeps ASCII only, so 四元數簡介 used to land at
+// untitled.md), else from the uri's basename with one trailing extension
 // stripped, else "untitled" — and a candidate path already taken by a
 // DIFFERENT source gets the first free "-2", "-3", … suffix instead of a
-// refusal. Before this the basename fallback kept the extension as "-md"
-// ("notes.md" -> "notes-md.md"), and a taken candidate was a dead end: the
-// schema has no name argument and the agent has no filesystem verbs, so the
-// source was simply never ingested (008 U6).
+// refusal. Before 008 the basename fallback kept the extension as "-md"
+// ("notes.md" -> "notes-md.md"), and a taken candidate was a dead end:
+// the agent has no filesystem verbs, so the source was simply never
+// ingested (008 U6).
 package tools
 
 import (
@@ -25,14 +28,18 @@ var rawSourceExtensions = [...]string{".md", ".markdown", ".txt", ".html", ".htm
 
 // sourceNameForDoc derives the source filename — no directory, no
 // extension — for one extracted document: the slugged title when non-empty,
-// else the slugged basename minus one trailing rawSourceExtensions entry,
-// else "untitled". The result is never empty.
-func sourceNameForDoc(title, uri string) string {
-	if name := slugSourceName(title); name != "" {
-		return name
+// else the slugged name hint (009's optional argument, empty when the
+// caller passed none), else the slugged basename minus one trailing
+// rawSourceExtensions entry, else "untitled". The result is never empty.
+func sourceNameForDoc(title, name, uri string) string {
+	if slug := slugSourceName(title); slug != "" {
+		return slug
 	}
-	if name := slugSourceName(stripRawSourceExtension(path.Base(uri))); name != "" {
-		return name
+	if slug := slugSourceName(name); slug != "" {
+		return slug
+	}
+	if slug := slugSourceName(stripRawSourceExtension(path.Base(uri))); slug != "" {
+		return slug
 	}
 	return "untitled"
 }

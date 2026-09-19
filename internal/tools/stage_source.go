@@ -14,13 +14,14 @@ import (
 
 const stageIngestSourceSchema = `{
   "type":"object",
-  "properties":{"uri":{"type":"string"},"kind":{"type":"string","enum":["article","paper","transcript"]}},
+  "properties":{"uri":{"type":"string"},"kind":{"type":"string","enum":["article","paper","transcript"]},"name":{"type":"string"}},
   "required":["uri"],"additionalProperties":false
 }`
 
 type stageIngestSourceArgs struct {
 	URI  string `json:"uri"`
 	Kind string `json:"kind,omitempty"`
+	Name string `json:"name,omitempty"`
 }
 
 // rawKindDir maps stage.ingest_source's kind argument to the raw/
@@ -57,9 +58,9 @@ func SourceBodySHA(markdown string) string {
 }
 
 func stageIngestSourceTool(d Deps) Tool {
-	return Tool{Name: "stage.ingest_source", Description: "Extract and propose a local raw source. Network URLs are rejected in this stage; duplicate body hashes are rejected. On success the result names the exact staged path and chunk count — read the staged source with raw.get before proposing pages from it.", Schema: json.RawMessage(stageIngestSourceSchema), Handler: func(ctx context.Context, args json.RawMessage) (Result, error) {
+	return Tool{Name: "stage.ingest_source", Description: "Extract and propose a local raw source. Network URLs are rejected in this stage; duplicate body hashes are rejected. On success the result names the exact staged path and chunk count — read the staged source with raw.get before proposing pages from it. Pass name, a short ASCII slug such as \"quaternion-introduction\", when the source's title has no Latin letters; it is used only when the title gives no usable file name.", Schema: json.RawMessage(stageIngestSourceSchema), Handler: func(ctx context.Context, args json.RawMessage) (Result, error) {
 		var a stageIngestSourceArgs
-		if err := decodeArgs(args, &a); err != nil {
+		if err := decodeArgsStrict(args, &a); err != nil {
 			return badArgs("stage.ingest_source", err, `{"uri":"/path/to/source.html","kind":"article"}`), nil
 		}
 		uri := strings.TrimSpace(a.URI)
@@ -103,10 +104,11 @@ func stageIngestSourceTool(d Deps) Tool {
 		if kind != "article" && kind != "paper" && kind != "transcript" {
 			kind = "article"
 		}
-		// 008 §4.1: title, else basename minus one trailing extension, else
+		// 008 §4.1, extended by 009 (idea 011): title, else the optional
+		// name hint, else basename minus one trailing extension, else
 		// "untitled" — never empty, so the old "could not derive a stable
 		// source filename" refusal is gone.
-		name := sourceNameForDoc(doc.Title, uri)
+		name := sourceNameForDoc(doc.Title, a.Name, uri)
 		kindDir := rawKindDir(kind)
 		candidate := "raw/" + kindDir + "/" + name + ".md"
 		sourceURL := strings.TrimSpace(doc.SourceURL)
