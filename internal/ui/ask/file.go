@@ -87,9 +87,17 @@ func (m *Model) recordLastAnswer() {
 }
 
 // forgetLastAnswer clears the recorded pair: an ErrorEv or a max_rounds
-// turn leaves nothing fileable behind (009 contract §3.2), and neither does
-// a turn cancelled before its terminal line.
+// turn leaves nothing fileable behind (009 contract §3.2) — except when the
+// dying turn is a filing turn (C-908): then the pair it was filing is kept,
+// so ctrl+s retries it, and only the filing marker clears. A turn cancelled
+// before its terminal line never reaches this at all: it clears only its
+// filing marker (ask.go's StreamClosedMsg), and the previous pair stays
+// fileable.
 func (m *Model) forgetLastAnswer() {
+	if m.filingTurn {
+		m.filingTurn = false
+		return
+	}
 	m.last = answerCapture{}
 	m.filingTurn = false
 }
@@ -112,10 +120,11 @@ func (m *Model) appendFileHint() {
 }
 
 // fileKey handles ctrl+s (009 contract §3.3), in rule order: a running turn
-// refuses with submit's own string; nothing recorded and an unsourced
-// answer each say so; otherwise one filing turn starts on fileMessage's
-// text, over the candidates the vault's index returns for the question —
-// read here, on the Update thread, while the pane owns the model.
+// refuses with submit's own string; nothing recorded, an already-filed
+// answer (rule 3a) and an unsourced answer each say so; otherwise one
+// filing turn starts on fileMessage's text, over the candidates the vault's
+// index returns for the question — read here, on the Update thread, while
+// the pane owns the model.
 func (m *Model) fileKey() tea.Cmd {
 	if m.turnActive {
 		m.appendStatus("a turn is already running — submit refused, not queued")
@@ -123,6 +132,13 @@ func (m *Model) fileKey() tea.Cmd {
 	}
 	if !m.last.set {
 		m.appendStatus("nothing to file yet: ask a question first")
+		return nil
+	}
+	if m.last.filing {
+		// Rule 3a (C-909): a filing turn's own answer is never fileable
+		// (009 contract §3.4) — it has already been filed, and the honest
+		// answer names that instead of claiming it cites no source.
+		m.appendStatus("this answer was already filed — review it with ctrl+r")
 		return nil
 	}
 	if !m.lastAnswerFileable() {
