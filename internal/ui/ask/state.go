@@ -86,8 +86,13 @@ func (m *Model) applyEvent(ev agent.Event) tea.Cmd {
 			// scrollback line is the only place the reason is surfaced.
 			if e.Reason == "max_rounds" {
 				m.endTurn(fmt.Sprintf("stopped: round limit · %d rounds", e.Rounds))
+				// 009 §3.2: a max_rounds turn leaves nothing fileable.
+				m.forgetLastAnswer()
 			} else {
 				m.endTurn(fmt.Sprintf("done · %d rounds", e.Rounds))
+				// 009 §3.2: record what a clean turn left behind, so ctrl+s
+				// can file it (file.go).
+				m.recordLastAnswer()
 			}
 			// A-806: this turn ended cleanly, so if it is the one
 			// hintAfterTurn names — self-opened, staged nothing, auto-
@@ -97,6 +102,9 @@ func (m *Model) applyEvent(ev agent.Event) tea.Cmd {
 			// `rejected`.
 			m.answeredID = m.hintAfterTurn
 			m.appendKeptHint()
+			// 009 §3.2: the file hint lands after the terminal line and the
+			// kept hint, and only when the answer is fileable.
+			m.appendFileHint()
 		case agent.ErrorEv:
 			msg := "unknown error"
 			if e.Err != nil {
@@ -110,6 +118,7 @@ func (m *Model) applyEvent(ev agent.Event) tea.Cmd {
 				msg = "stopped: output limit reached — nothing after this was proposed; raise llm.max_tokens"
 			}
 			m.endTurnError(msg)
+			m.forgetLastAnswer() // 009 §3.2: an errored turn leaves nothing fileable
 			m.appendKeptHint()
 		}
 	})
@@ -216,6 +225,14 @@ func (m *Model) endTurnError(msg string) {
 	m.entries = append(m.entries, entry{kind: kindError, text: msg})
 	m.turnActive = false
 	m.selected = -1
+	// A turn that ends in error can never reach recordLastAnswer, so its
+	// filing marker must not outlive it (009 §3.4): without this, a filing
+	// turn that failed before its stream existed (turnStartedMsg's error —
+	// no StreamClosedMsg ever comes) would flag the NEXT ordinary turn's
+	// answer as a filing turn's, unfileable. The recorded pair itself
+	// stays: only an ErrorEv or max_rounds clears it (009 §3.2), and
+	// forgetLastAnswer has already run on the ErrorEv path above.
+	m.filingTurn = false
 }
 
 // EngineBusy implements ui.EngineUser (008 contract §8, A-801): true from

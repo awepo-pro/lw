@@ -72,14 +72,16 @@ func truncateRunes(s string, max int) string {
 }
 
 // ensureSession makes sure a turn can actually run under id, when id names a
-// changeset this turn did not just open itself. Loop.Send resolves its
-// session through Sessions.Get before it does anything else (backbone §9),
-// and a file-backed store keys a session by the changeset id (backbone §9,
-// C-102) — so a changeset opened by another verb (`lw stage --from`, `lw
-// revert`) has no session yet and needs one created, while a changeset `lw
-// ingest` opened already has the session that verb created, and reusing it
-// is the point: the transcript stays one continuous record per changeset
-// across processes.
+// changeset this turn did not just open itself, and reports whether it
+// CREATED the session — 009 §3.1's seeding condition: only a session the
+// turn created is seeded with the previous conversation, never one another
+// verb or turn already owns. Loop.Send resolves its session through
+// Sessions.Get before it does anything else (backbone §9), and a file-backed
+// store keys a session by the changeset id (backbone §9, C-102) — so a
+// changeset opened by another verb (`lw stage --from`, `lw revert`) has no
+// session yet and needs one created, while a changeset `lw ingest` opened
+// already has the session that verb created, and reusing it is the point:
+// the transcript stays one continuous record per changeset across processes.
 //
 // Create is only ever called here after id has been confirmed open —
 // Engine.Current for a changeset already open at submit, or resolveTurnChangeset's
@@ -88,14 +90,14 @@ func truncateRunes(s string, max int) string {
 // changeset this turn opened itself calls ss.Create directly instead
 // (runTurn), immediately after OpenChangeset returns, which is what closes
 // C-118's race for that path.
-func ensureSession(ss agent.SessionStore, id string) error {
+func ensureSession(ss agent.SessionStore, id string) (created bool, err error) {
 	if _, err := ss.Get(id); err == nil {
-		return nil
+		return false, nil
 	}
 	if _, err := ss.Create(id); err != nil {
-		return fmt.Errorf("ask: open a session for changeset %s: %w", id, err)
+		return false, fmt.Errorf("ask: open a session for changeset %s: %w", id, err)
 	}
-	return nil
+	return true, nil
 }
 
 // closeSessionCmd archives id's session in its own tea.Cmd, so the

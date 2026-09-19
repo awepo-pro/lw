@@ -106,15 +106,17 @@ type turnStartedMsg struct {
 // startTurn launches one agent turn (backbone §9, C-105). sessionID is the
 // changeset id already known at submit time, or "" when none was open —
 // C-124/D-DH: runTurn resolves it, opening one itself when it must, because
-// that is filesystem and lint work that has to stay off Update. Every value
-// the goroutine needs is passed in, never read off m: Update owns the
-// model, and a goroutine writing to it would be a data race.
+// that is filesystem and lint work that has to stay off Update. carryFrom
+// is the pane's convID (009 §3.1): the session a fresh session for this
+// turn is seeded from, "" on the pane's first turn. Every value the
+// goroutine needs is passed in, never read off m: Update owns the model,
+// and a goroutine writing to it would be a data race.
 //
 // ctx is cancellable and remembered on m, so the pane can abandon a turn
 // whose changeset was committed or rejected underneath it (see
 // changesetGone); Send closes its channel promptly on cancellation and
 // delivers no terminal event of its own (backbone §9, C-105).
-func (m *Model) startTurn(sessionID, msg string) tea.Cmd {
+func (m *Model) startTurn(sessionID, carryFrom, msg string) tea.Cmd {
 	ag := m.deps.Agent
 	e := m.deps.Engine
 	ctx, cancel := context.WithCancel(context.Background())
@@ -122,7 +124,7 @@ func (m *Model) startTurn(sessionID, msg string) tea.Cmd {
 
 	started := make(chan turnStartedMsg, 1)
 	out := make(chan agent.Event, turnEventBuffer)
-	go runTurn(ctx, ag, e, sessionID, msg, started, out)
+	go runTurn(ctx, ag, e, sessionID, carryFrom, msg, started, out)
 
 	return func() tea.Msg { return <-started }
 }
@@ -136,7 +138,7 @@ func (m *Model) startTurn(sessionID, msg string) tea.Cmd {
 // self-opened changeset that ends up with nothing staged. runTurn never
 // touches Update or m: everything it needs is a parameter, and everything
 // it produces goes out through started or out.
-func runTurn(ctx context.Context, ag agent.Agent, e *stage.Engine, sessionID, msg string, started chan<- turnStartedMsg, out chan agent.Event) {
+func runTurn(ctx context.Context, ag agent.Agent, e *stage.Engine, sessionID, carryFrom, msg string, started chan<- turnStartedMsg, out chan agent.Event) {
 	fail := func(err error) {
 		started <- turnStartedMsg{err: err}
 		close(started)
@@ -181,6 +183,7 @@ func runTurn(ctx context.Context, ag agent.Agent, e *stage.Engine, sessionID, ms
 		return
 	}
 
+	created := false
 	if openedHere {
 		// Created immediately after OpenChangeset returns, with no other
 		// engine call in between — the "session created WITH the
@@ -189,9 +192,27 @@ func runTurn(ctx context.Context, ag agent.Agent, e *stage.Engine, sessionID, ms
 			fail(fmt.Errorf("ask: open a session for changeset %s: %w", sessionID, err))
 			return
 		}
-	} else if err := ensureSession(ss, sessionID); err != nil {
-		fail(err)
-		return
+		created = true
+	} else {
+		createdHere, err := ensureSession(ss, sessionID)
+		if err != nil {
+			fail(err)
+			return
+		}
+		created = createdHere
+	}
+
+	// 009 §3.1: a session this turn just created starts empty — its
+	// predecessor was archived with its changeset — so the conversation is
+	// carried over before Send ever runs. A session this turn merely
+	// reused (its own still-open changeset, or another verb's) keeps the
+	// records it already has and is never seeded. After Create, before
+	// Send; a seed failure ends the turn here.
+	if created && carryFrom != "" && carryFrom != sessionID {
+		if _, err := agent.SeedSession(ss, carryFrom, sessionID); err != nil {
+			fail(fmt.Errorf("ask: carry the conversation into %s: %w", sessionID, err))
+			return
+		}
 	}
 
 	started <- turnStartedMsg{sessionID: sessionID, ch: out}
