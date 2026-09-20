@@ -14,6 +14,15 @@ import (
 // inputPlaceholder is the faint hint in an empty message box.
 const inputPlaceholder = "Ask about the wiki…"
 
+// webHintUnavailable is the empty state's notice that this vault's web
+// lookup is not configured (012 contract §3, cs-79f2d7): the agent the pane
+// drives has no web.search verb, so a question that expects an out-of-vault
+// answer would silently get none. emptyTranscriptLines renders it wrapped
+// and faint, only while no provider is wired — a configured vault's empty
+// state never shows it. The bytes are frozen; improving the wording is out
+// of scope.
+const webHintUnavailable = "web lookup unavailable — lw config set web.api_key env:TAVILY_API_KEY"
+
 // View renders the ask screen at exactly w by h (backbone §12): the
 // Transcript panel (height h-3) over the focused Message panel (height 3).
 // Below the height both panels need, the transcript takes the whole pane —

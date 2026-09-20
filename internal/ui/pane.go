@@ -57,8 +57,14 @@ type Deps struct {
 	// resolves, and a nil here means Ask reports why it cannot answer while
 	// every other screen works untouched (backbone §12; S5-T5).
 	Agent agent.Agent
-	Theme Theme
-	Keys  KeyMap
+	// WebSearch reports that the vault's web lookup is configured —
+	// a search provider resolved at startup. The ask pane mentions web
+	// lookup only when this is false; a configured vault's UI never
+	// changes (cs-79f2d7). Zero value false: every construction site
+	// chooses deliberately.
+	WebSearch bool
+	Theme     Theme
+	Keys      KeyMap
 }
 
 // Options configures NewApp. Panes is injected by cmd/lw; the shell never

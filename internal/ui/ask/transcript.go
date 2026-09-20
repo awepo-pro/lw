@@ -1,7 +1,8 @@
 // transcript.go draws what goes inside the ask screen's Transcript panel:
 // the panel itself with its tail-follow and overflow notes, the empty
-// state's intro and suggested prompts (mockgen.ask_empty), and the
-// conversation turn shape (mockgen.ask_conversation). The frame around it
+// state's intro, unconfigured-web hint and suggested prompts
+// (mockgen.ask_empty), and the conversation turn shape
+// (mockgen.ask_conversation). The frame around it
 // is view.go; assistant prose renders through the shared markdown renderer
 // (005 contract §5) with inline.go demoted to the live turn's unwritten
 // tail and Ask's own chrome.
@@ -76,7 +77,12 @@ func (m *Model) transcriptPanel(w, th int) []string {
 
 // emptyTranscriptLines is mockgen.ask_empty: blank lead-in space, the
 // muted intro wrapped at W, a blank, a bold `Try`, then the three
-// suggested prompts as faint `  › ` rows.
+// suggested prompts as faint `  › ` rows. Between intro and Try, a vault
+// whose web lookup is not configured while an agent is wired adds the
+// wrapped web-unavailable hint, each line faint (012 contract §3) — an
+// empty-state line, never a transcript entry, and never drawn on a
+// configured vault, whose empty state stays byte-identical to the mockup's
+// (cs-79f2d7).
 func (m *Model) emptyTranscriptLines(cw, th int) []string {
 	W := min(cw, 100)
 
@@ -86,6 +92,12 @@ func (m *Model) emptyTranscriptLines(cw, th int) []string {
 	}
 	for _, l := range ui.Wrap(introSentence, W, 0) {
 		lines = append(lines, m.theme.Muted.Render(l))
+	}
+	if !m.deps.WebSearch && m.deps.Agent != nil {
+		lines = append(lines, "")
+		for _, l := range ui.Wrap(webHintUnavailable, W, 0) {
+			lines = append(lines, m.theme.Faint.Render(l))
+		}
 	}
 	lines = append(lines, "", m.theme.Bold.Render("Try"))
 	for _, p := range m.prompts {

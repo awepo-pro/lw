@@ -66,7 +66,7 @@ func TestProbeExternalCallerCanDriveTheStream(t *testing.T) {
 	}
 	close(ch)
 
-	var p ui.Pane = ask.New(ui.Deps{})
+	var p ui.Pane = ask.New(ui.Deps{WebSearch: true}) // configured: fixtures pin the unchanged UI (012 contract §5)
 
 	// The only start sequence the exported contract offers an outside
 	// caller: hand the pane the channel through StreamMsg — the same way

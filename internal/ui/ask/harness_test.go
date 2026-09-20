@@ -11,10 +11,12 @@ import (
 	"github.com/awepo-pro/lw/internal/ui"
 )
 
-// newTestDeps builds ui.Deps with lw's compiled-in Theme/KeyMap and no
-// Engine — the ask screen never reads Deps.Engine or Deps.Agent in this
-// subtask (backbone §12, D-CN). XDG_CONFIG_HOME points at an empty temp
-// dir so these tests never pick up a real user config, mirroring
+// newTestDeps builds ui.Deps with lw's compiled-in Theme/KeyMap, no Engine,
+// and WebSearch true — a fixture pins the configured vault, whose UI never
+// changes (012 contract §5); only webhint_test.go flips the flag, and only
+// for a pane it builds itself. Deps.Agent stays nil here; a test that needs
+// an agent sets one on the returned Deps. XDG_CONFIG_HOME points at an
+// empty temp dir so these tests never pick up a real user config, mirroring
 // internal/ui/review's own (unexported, different-package) helper.
 func newTestDeps(t *testing.T) ui.Deps {
 	t.Helper()
@@ -28,7 +30,7 @@ func newTestDeps(t *testing.T) ui.Deps {
 	if err != nil {
 		t.Fatalf("LoadKeys: %v", err)
 	}
-	return ui.Deps{Theme: theme, Keys: keys}
+	return ui.Deps{WebSearch: true, Theme: theme, Keys: keys}
 }
 
 // keyPress builds a synthetic tea.KeyPressMsg for a single printable rune

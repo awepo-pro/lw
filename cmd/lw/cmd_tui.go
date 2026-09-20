@@ -65,11 +65,21 @@ func cmdTUI(args []string) error {
 		fmt.Fprintf(os.Stderr, "lw tui: ask disabled: %v\n", agErr)
 	}
 
+	// The web flag reads the config a third time — tuiTheme reads it for
+	// the theme name, tuiAgent for the provider — because each seam loads
+	// its own, and this one has no other field to carry. A load failure is
+	// already reported by tuiTheme's read and degrades the ask pane through
+	// tuiAgent's, so this one discards the error: a config that cannot load
+	// means web lookup is simply not configured, which is exactly what the
+	// ask pane's hint then says (cs-79f2d7).
+	cfg, _ := config.Load()
+
 	deps := ui.Deps{
-		Engine: engine,
-		Agent:  ag, // nil when tuiAgent failed; the ask pane says so
-		Theme:  theme,
-		Keys:   keys,
+		Engine:    engine,
+		Agent:     ag, // nil when tuiAgent failed; the ask pane says so
+		WebSearch: webConfigured(cfg),
+		Theme:     theme,
+		Keys:      keys,
 	}
 
 	app := ui.NewApp(buildTUIOptions(deps))
@@ -86,6 +96,17 @@ func cmdTUI(args []string) error {
 		return err
 	}
 	return nil
+}
+
+// webConfigured reports whether a web search provider resolved for cfg —
+// the same signal agentToolDeps uses to register web.search. The ask pane's
+// hint keys off it, so the UI can only claim web lookup is missing when the
+// registry really lacks the verb.
+func webConfigured(cfg *config.Config) bool {
+	if cfg == nil {
+		return false
+	}
+	return webSearchProvider(cfg) != nil
 }
 
 // loadTUITheme and loadTUIKeys are the seams tuiTheme goes through, for the
