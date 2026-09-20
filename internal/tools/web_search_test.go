@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/awepo-pro/lw/internal/index"
 	"github.com/awepo-pro/lw/internal/stage"
@@ -170,4 +171,58 @@ func TestWebSearchTool(t *testing.T) {
 			t.Fatalf("unknown-field result = %+v, want the strict decoder's refusal (C-906)", res)
 		}
 	})
+}
+
+// TestWebSearchErrorMessages pins the plain-language mapping from a
+// classified *web.SearchError to the message the model narrates (017
+// MASTER F-A6), byte for byte, each still an IsError result with a nil Go
+// error; an unclassified SearchError keeps today's passthrough bytes.
+// Permanent regression tests (D-10C).
+func TestWebSearchErrorMessages(t *testing.T) {
+	tests := []struct {
+		name string
+		err  *web.SearchError
+		want string
+	}{
+		{
+			name: "auth_401",
+			err:  &web.SearchError{Status: 401},
+			want: "web.search failed: Tavily rejected the web API key (401). The user can check it with: lw config get web.api_key",
+		},
+		{
+			name: "rate_limited_429_no_retry_after",
+			err:  &web.SearchError{Status: 429},
+			want: "web.search failed: Tavily is rate limiting this key (429)",
+		},
+		{
+			name: "rate_limited_429_retry_after",
+			err:  &web.SearchError{Status: 429, RetryAfter: 30 * time.Second},
+			want: "web.search failed: Tavily is rate limiting this key (429); retry after 30s",
+		},
+		{
+			name: "quota_432",
+			err:  &web.SearchError{Status: 432},
+			want: "web.search failed: the monthly web-search budget is exhausted (Tavily 432); it resets with the Tavily billing cycle",
+		},
+		{
+			name: "unclassified_503_passthrough",
+			err:  &web.SearchError{Status: 503},
+			want: "web.search failed: web: tavily search failed: 503",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reg := webSearchRegistry(t, &fakeSearchProvider{err: tt.err})
+			res, err := reg.Call(context.Background(), "web.search", json.RawMessage(`{"query":"x"}`))
+			if err != nil {
+				t.Fatalf("provider failure returned a Go error %v; it must not abort the turn", err)
+			}
+			if !res.IsError {
+				t.Fatalf("result = %+v, want IsError", res)
+			}
+			if res.Content != tt.want {
+				t.Fatalf("Content =\n%q\nwant\n%q", res.Content, tt.want)
+			}
+		})
+	}
 }
