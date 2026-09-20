@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"strings"
 	"time"
@@ -58,18 +59,21 @@ func SourceBodySHA(markdown string) string {
 }
 
 func stageIngestSourceTool(d Deps) Tool {
-	return Tool{Name: "stage.ingest_source", Description: "Extract and propose a local raw source. Network URLs are rejected in this stage; duplicate body hashes are rejected. On success the result names the exact staged path and chunk count — read the staged source with raw.get before proposing pages from it. Pass name, a short ASCII slug such as \"quaternion-introduction\", when the source's title has no Latin letters; it is used only when the title gives no usable file name.", Schema: json.RawMessage(stageIngestSourceSchema), Handler: func(ctx context.Context, args json.RawMessage) (Result, error) {
+	return Tool{Name: "stage.ingest_source", Description: "Extract and propose a raw source from a local file path or an http(s) URL; duplicate body hashes are rejected. On success the result names the exact staged path and chunk count — read the staged source with raw.get before proposing pages from it. Pass name, a short ASCII slug such as \"quaternion-introduction\", when the source's title has no Latin letters; it is used only when the title gives no usable file name.", Schema: json.RawMessage(stageIngestSourceSchema), Handler: func(ctx context.Context, args json.RawMessage) (Result, error) {
 		var a stageIngestSourceArgs
 		if err := decodeArgsStrict(args, &a); err != nil {
 			return badArgs("stage.ingest_source", err, `{"uri":"/path/to/source.html","kind":"article"}`), nil
 		}
 		uri := strings.TrimSpace(a.URI)
 		if uri == "" {
-			return Result{IsError: true, Content: "uri is required: provide a local file path"}, nil
+			return Result{IsError: true, Content: "uri is required: provide a local file path or an http(s) URL"}, nil
 		}
-		u, err := url.Parse(uri)
-		if err == nil && (u.Scheme == "http" || u.Scheme == "https") {
-			return Result{IsError: true, Content: "stage.ingest_source accepts local paths only; HTTP fetching is deferred"}, nil
+		// 010's un-defer (contract §3): a URL flows to d.Extract exactly
+		// like a local file — same dedupe, naming, validator and
+		// Engine.Append below. The fetched page becomes a raw source like
+		// any other, under the normal hunk-level human review.
+		if u, perr := url.Parse(uri); perr == nil && (u.Scheme == "http" || u.Scheme == "https") {
+			slog.Info("ingest url", "uri", uri)
 		}
 		if d.Extract == nil {
 			return Result{IsError: true, Content: "no extractor configured"}, nil
@@ -79,7 +83,10 @@ func stageIngestSourceTool(d Deps) Tool {
 		}
 		doc, err := d.Extract.Extract(ctx, uri)
 		if err != nil {
-			return Result{}, fmt.Errorf("tools: stage.ingest_source: extract %s: %w", uri, err)
+			// A fetch (or parse) failure is recoverable — the model can
+			// re-ingest from a path or another URL — so it is an IsError
+			// result with a nil Go error, never a turn abort.
+			return Result{IsError: true, Content: "stage.ingest_source: " + err.Error()}, nil
 		}
 		if doc == nil {
 			return Result{}, fmt.Errorf("tools: stage.ingest_source: extractor returned nil document")

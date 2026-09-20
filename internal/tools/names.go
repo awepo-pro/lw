@@ -34,6 +34,8 @@ func WireName(canonical string) string {
 		return "wiki_neighbors"
 	case "wiki.search":
 		return "wiki_search"
+	case "web.search":
+		return "web_search"
 	case "stage.open":
 		return "stage_open"
 	case "stage.create_page":
@@ -86,6 +88,8 @@ func CanonicalName(wire string) string {
 		return "wiki.neighbors"
 	case "wiki_search":
 		return "wiki.search"
+	case "web_search":
+		return "web.search"
 	case "stage_open":
 		return "stage.open"
 	case "stage_create_page":
