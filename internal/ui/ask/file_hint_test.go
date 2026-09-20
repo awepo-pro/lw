@@ -45,7 +45,7 @@ func TestFileHint(t *testing.T) {
 			agent.DoneEv{Reason: "stop", Rounds: 1},
 		)
 		got := lastEntry(m)
-		if got.kind != kindStatus || got.text != "ctrl+s file this answer as a query page" {
+		if got.kind != kindStatus || got.text != fileHint {
 			t.Fatalf("last entry = %#v, want the file hint status line", got)
 		}
 	})
@@ -56,7 +56,7 @@ func TestFileHint(t *testing.T) {
 			agent.DoneEv{Reason: "stop", Rounds: 1},
 		)
 		got := lastEntry(m)
-		if got.kind != kindStatus || got.text != "ctrl+s file this answer as a query page" {
+		if got.kind != kindStatus || got.text != fileHint {
 			t.Fatalf("last entry = %#v, want the file hint status line", got)
 		}
 	})

@@ -66,7 +66,7 @@ func TestOverlayHelpFileEntry(t *testing.T) {
 		{Key: "enter", Desc: "send"},
 		{Key: "↑/↓", Desc: "select tool call"},
 		{Key: "ctrl+r", Desc: "open review"},
-		{Key: "ctrl+s", Desc: "file last answer as a query page"},
+		{Key: "ctrl+s", Desc: "save last answer into the wiki"},
 	}
 	if len(entries) != len(want) {
 		t.Fatalf("OverlayHelp has %d entries, want %d:\n%+v", len(entries), len(want), entries)

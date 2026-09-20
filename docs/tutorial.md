@@ -401,7 +401,7 @@ of that pane, so "expand on the second point" needs no re-explaining.
 
 After an answer that cites the vault — one carrying a `^[raw/…]` or
 `^[wiki/…]` marker — the pane shows
-`ctrl+s file this answer as a query page`. Pressing `ctrl+s` runs one
+`ctrl+s save this answer into the wiki`. Pressing `ctrl+s` runs one
 more agent turn that stages a `wiki/queries/` page, or updates an
 existing query page that already answers the same question. Like
 everything else, it reaches the wiki only through normal hunk review:
@@ -409,7 +409,7 @@ everything else, it reaches the wiki only through normal hunk review:
 
 An answer with no vault marker — for example one under
 `Not from your vault:` — cannot be filed: pressing `ctrl+s` answers
-`this answer cites no vault source; nothing to file`. The wiki only
+`this answer cites no vault source; nothing to save`. The wiki only
 holds sourced claims.
 
 In `lw session show`, the history an Ask pane copied forward is marked
