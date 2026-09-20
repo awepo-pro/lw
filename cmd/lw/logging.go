@@ -8,7 +8,8 @@ package main
 // cwd-ancestry fallback before flag parse for the paths that fail before a
 // root is resolved; a verb's own install supersedes it. The install is
 // never fatal: a command with no vault, or one whose log dir cannot be
-// created, simply keeps the default logger.
+// created, runs on a logger that discards everything — the log is
+// file-only, so nothing lw emits can reach a terminal (D-10B).
 //
 // Who creates the log dir is exactly who may write to the vault: verbs
 // that stage, commit, repair or run the agent create <root>/.llmwiki/logs
@@ -19,6 +20,8 @@ package main
 // and a state-less vault has produced no trail to join anyway.
 
 import (
+	"io"
+	"log/slog"
 	"os"
 
 	"github.com/awepo-pro/lw/internal/logging"
@@ -46,13 +49,16 @@ func hasVault(verb string) bool {
 // supersedes it anyway once its own resolution succeeds (re-Init is safe:
 // the file reopens O_APPEND, the last install wins, nothing logs in
 // between). It never fails the command: no vault found, or no trail to
-// join, leaves the default logger in place (010 contract §0).
+// join, lands the discard logger, so nothing lw logs can fall to the
+// terminal (010 contract §0, D-10B).
 func initLogging(verb string) {
 	if !hasVault(verb) {
+		installDiscard()
 		return
 	}
 	root, err := findVaultRoot("")
 	if err != nil {
+		installDiscard()
 		return
 	}
 	attachLoggingAt(root)
@@ -77,10 +83,22 @@ func initLoggingAt(root string) {
 // the lint report, doctor) and the pre-dispatch fallback use it: they must
 // never create .llmwiki state — lw session is pinned byte-exact by 005
 // contract §4, and a plain `lw doctor` on a state-less vault must stay all
-// clear — and they emit no records of their own, so silence costs nothing.
+// clear. A vault with no trail lands the discard logger instead: these
+// verbs emit no records of their own, but what they call (doctor's provider
+// probe, say) must never reach stderr on its way nowhere (D-10B: never a
+// terminal).
 func attachLoggingAt(root string) {
 	if _, err := os.Stat(logging.Dir(root)); err != nil {
+		installDiscard()
 		return
 	}
 	initLoggingAt(root)
+}
+
+// installDiscard points slog.Default at io.Discard: the logger a verb runs
+// under when it has no trail to log into. Without it, a trail-less vault
+// keeps the process-default logger, which writes to stderr — the terminal
+// the file-only log contract forbids.
+func installDiscard() {
+	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
 }

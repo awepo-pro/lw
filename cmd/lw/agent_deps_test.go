@@ -77,7 +77,8 @@ func TestAgentExtractors(t *testing.T) {
 
 	t.Run("mcp_deps_use_the_same_chain", func(t *testing.T) {
 		root := testutil.CopyFixture(t, "minimal")
-		deps := mcpDeps(openEngine(t, root))
+		webConfigEnv(t, "") // scratch XDG config: never the user's config.toml
+		deps := mcpDeps(openEngine(t, root), loadedConfig(t))
 		if deps.Extract == nil {
 			t.Fatal("mcpDeps' Extract is nil")
 		}

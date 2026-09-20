@@ -41,6 +41,18 @@ type Limits struct {
 	ContextTokens int `toml:"context_tokens"`
 }
 
+// Web configures the web lookup behind the web.search tool. With an empty
+// APIKey the tool is never denied — it is simply not offered: the tool
+// registry gains web.search only when a provider is wired (010 contract §4).
+// APIKey follows the same reference rules as LLM.APIKey — "env:NAME",
+// "keyring:NAME", or a literal — and is resolved, never logged, at wiring
+// time. Provider names the search provider; "tavily" is the only built-in.
+type Web struct {
+	Provider   string `toml:"provider"`    // default "tavily"; only built-in
+	APIKey     string `toml:"api_key"`     // "" → web.search not offered
+	MaxResults int    `toml:"max_results"` // default 5
+}
+
 // Config is lw's top-level configuration, loaded from and saved to
 // <ConfigDir()>/config.toml.
 //
@@ -51,10 +63,12 @@ type Limits struct {
 // key named "llm.limits", not as a path into the nested [llm.limits] table
 // /docs/design.md §11.2 documents. Load and Save therefore marshal through the
 // private shadowConfig below instead of decoding/encoding Config directly;
-// see toShadow/fromShadow.
+// see toShadow/fromShadow. The [web] table is the one post-v1 addition,
+// amended by workflow 010 (C-1001).
 type Config struct {
 	LLM    LLM    `toml:"llm"`
 	Limits Limits `toml:"llm.limits"`
+	Web    Web    `toml:"web"`
 	Theme  string `toml:"theme"`
 }
 
@@ -73,9 +87,11 @@ type shadowLLM struct {
 // shadowConfig is the on-disk shape of Config: the same fields, with Limits
 // relocated under LLM. It exists solely so Load/Save can hand BurntSushi a
 // struct whose tags actually produce the documented nested table; Config
-// itself is never decoded/encoded directly.
+// itself is never decoded/encoded directly. Web needs no relocation — its
+// tags already match the flat [web] table the file carries (C-1001).
 type shadowConfig struct {
 	LLM   shadowLLM `toml:"llm"`
+	Web   Web       `toml:"web"`
 	Theme string    `toml:"theme"`
 }
 
@@ -90,6 +106,7 @@ func toShadow(c *Config) shadowConfig {
 			MaxTokens:   c.LLM.MaxTokens,
 			Limits:      c.Limits,
 		},
+		Web:   c.Web,
 		Theme: c.Theme,
 	}
 }
@@ -106,6 +123,7 @@ func fromShadow(s shadowConfig) *Config {
 			MaxTokens:   s.LLM.MaxTokens,
 		},
 		Limits: s.LLM.Limits,
+		Web:    s.Web,
 		Theme:  s.Theme,
 	}
 }
@@ -174,6 +192,15 @@ func mergeOverDefault(def, file *Config, md toml.MetaData) *Config {
 	if md.IsDefined("llm", "limits", "context_tokens") {
 		def.Limits.ContextTokens = file.Limits.ContextTokens
 	}
+	if md.IsDefined("web", "provider") {
+		def.Web.Provider = file.Web.Provider
+	}
+	if md.IsDefined("web", "api_key") {
+		def.Web.APIKey = file.Web.APIKey
+	}
+	if md.IsDefined("web", "max_results") {
+		def.Web.MaxResults = file.Web.MaxResults
+	}
 	if md.IsDefined("theme") {
 		def.Theme = file.Theme
 	}
@@ -184,7 +211,8 @@ func mergeOverDefault(def, file *Config, md toml.MetaData) *Config {
 // creating ConfigDir() if it does not exist. Secrets are referenced, never
 // stored (§11 contract): Save serializes c.LLM.APIKey exactly as held, so a
 // value such as "env:DEEPSEEK_API_KEY" round-trips as that reference and
-// the literal secret it resolves to is never written to disk.
+// the literal secret it resolves to is never written to disk. Web.APIKey
+// follows the same rule (C-1001).
 func (c *Config) Save() error {
 	dir := ConfigDir()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -231,7 +259,8 @@ func (c *Config) ResolveAPIKey() (string, error) {
 
 // Default returns lw's out-of-the-box configuration: the DeepSeek endpoint
 // from /docs/design.md §11.2 (MASTER §9 D-CG), with its API key referenced from the
-// environment rather than stored.
+// environment rather than stored. Web ships with the tavily provider named
+// but no key: web.search stays unoffered until the user configures one.
 func Default() *Config {
 	return &Config{
 		LLM: LLM{
@@ -244,6 +273,11 @@ func Default() *Config {
 		Limits: Limits{
 			MaxToolRounds: 24,
 			ContextTokens: 96000,
+		},
+		Web: Web{
+			Provider:   "tavily",
+			APIKey:     "",
+			MaxResults: 5,
 		},
 	}
 }

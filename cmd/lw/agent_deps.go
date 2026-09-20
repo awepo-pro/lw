@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"net/url"
 	"path/filepath"
 	"strings"
@@ -16,25 +15,70 @@ import (
 	"github.com/awepo-pro/lw/internal/slug"
 	"github.com/awepo-pro/lw/internal/stage"
 	"github.com/awepo-pro/lw/internal/tools"
+	"github.com/awepo-pro/lw/internal/web"
 )
 
 // agent_deps.go holds everything cmd/lw needs to build and drive an
-// agent.Agent: the constructors (newIngestAgent, newAgent, agentExtractors),
-// the preExtracted chain link cmdIngest stages scratch docs into, the
-// scratch-name slug (U6), and the one error hint every verb applies to a
-// failed turn (U1). Split out of cmd_ingest.go by 008 — which also added
-// agentExtractors (U7), so query, lint --fix and the TUI stop handing their
-// agents a bare extract.NewFile() that could not fetch a page or read a
-// saved one.
+// agent.Agent: the constructors (newIngestAgent, newAgent, agentExtractors,
+// webSearchProvider, agentToolDeps), the preExtracted chain link cmdIngest
+// stages scratch docs into, the scratch-name slug (U6), and the one error
+// hint every verb applies to a failed turn (U1). Split out of cmd_ingest.go
+// by 008 — which also added agentExtractors (U7), so query, lint --fix and
+// the TUI stop handing their agents a bare extract.NewFile() that could not
+// fetch a page or read a saved one.
 
 // agentExtractors returns the extractor chain every agent's tool registry
-// is built over (U7): remote HTML through a client bounded by httpTimeout,
-// and local files — saved .html pages and .md/.txt sources alike — through
-// extract.NewFile. newAgent, mcpDeps and cmdIngest's tool chain all share
-// it, so the model can fetch or read the same sources no matter which verb
-// is driving it.
+// is built over (U7): remote HTML through extract.NewHTTPClient(httpTimeout)
+// — the house client (010 contract §1), which sends the lw User-Agent,
+// caps the body and validates every redirect hop — and local files, saved
+// .html pages and .md/.txt sources alike, through extract.NewFile. newAgent,
+// mcpDeps and cmdIngest's tool chain all share it, so the model can fetch or
+// read the same sources no matter which verb is driving it.
 func agentExtractors() extract.Extractor {
-	return extract.Chain(extract.NewHTML(&http.Client{Timeout: httpTimeout}), extract.NewFile())
+	return extract.Chain(extract.NewHTML(extract.NewHTTPClient(httpTimeout)), extract.NewFile())
+}
+
+// webSearchProvider builds the provider behind Deps.Search (010 contract
+// §4): a *web.Tavily over the house HTTP client when [web].api_key is
+// configured and resolves, nil — meaning web.search is simply not offered,
+// never denied — when the provider is not the built-in one, the key is
+// empty, or the key cannot be resolved (an unset environment variable, an
+// unsupported keyring reference). The provider guard keeps the wiring in
+// step with doctor's unknown-provider warn (A-10-5): an unknown provider
+// with a key offers no verb, and `lw doctor` explains why. Resolution goes
+// through config.ResolveAPIKey itself: the web key follows the llm.api_key
+// reference rules, so it is resolved by lending the reference to a copy's
+// llm.api_key rather than by a second copy of the env:/keyring: logic.
+func webSearchProvider(cfg *config.Config) web.SearchProvider {
+	if cfg.Web.Provider != "tavily" {
+		return nil
+	}
+	if cfg.Web.APIKey == "" {
+		return nil
+	}
+	swap := *cfg
+	swap.LLM.APIKey = cfg.Web.APIKey
+	key, err := swap.ResolveAPIKey()
+	if err != nil || key == "" {
+		return nil
+	}
+	return web.NewTavily(key, extract.NewHTTPClient(httpTimeout))
+}
+
+// agentToolDeps assembles the tools.Deps every CLI agent's registry is built
+// over: the engine's vault, index and staging engine, the extractor chain ex,
+// the web search provider when one is configured, and the agent authorship.
+// Split from newIngestAgent so the Search wiring — the one field 010 adds —
+// is testable without building a loop over a real LLM client.
+func agentToolDeps(e *stage.Engine, cfg *config.Config, ex extract.Extractor) tools.Deps {
+	return tools.Deps{
+		Vault:   e.Vault(),
+		Index:   e.Index(),
+		Engine:  e,
+		Extract: ex,
+		Search:  webSearchProvider(cfg),
+		Author:  stage.Author{Kind: "agent", Model: cfg.LLM.Model},
+	}
 }
 
 // newIngestAgent constructs the agent.Agent used by ingest, query and
@@ -75,13 +119,7 @@ var newIngestAgent = func(e *stage.Engine, cfg *config.Config, sessions agent.Se
 		Temperature: cfg.LLM.Temperature,
 		MaxTokens:   cfg.LLM.MaxTokens,
 	})
-	reg := tools.NewRegistry(tools.Deps{
-		Vault:   e.Vault(),
-		Index:   e.Index(),
-		Engine:  e,
-		Extract: ex,
-		Author:  stage.Author{Kind: "agent", Model: cfg.LLM.Model},
-	})
+	reg := tools.NewRegistry(agentToolDeps(e, cfg, ex))
 	loopCfg := agent.LoopConfig{
 		MaxToolRounds: cfg.Limits.MaxToolRounds,
 		ContextTokens: cfg.Limits.ContextTokens,

@@ -79,7 +79,7 @@ func stageIngestSourceTool(d Deps) Tool {
 			return Result{IsError: true, Content: "no extractor configured"}, nil
 		}
 		if !d.Extract.CanHandle(uri) {
-			return Result{IsError: true, Content: fmt.Sprintf("no configured extractor can handle local source %q", uri)}, nil
+			return Result{IsError: true, Content: fmt.Sprintf("no configured extractor can handle %q", uri)}, nil
 		}
 		doc, err := d.Extract.Extract(ctx, uri)
 		if err != nil {

@@ -678,11 +678,143 @@ model = "custom-model"
 	if err != nil {
 		t.Fatalf("read config file: %v", err)
 	}
-	for _, gone := range []string{`api_key = ""`, "temperature = 0.0", "max_tokens = 0", "context_tokens = 0"} {
+	// The credential reference survives the set — never an empty llm.api_key
+	// over a file that did not mention it. (The literal `api_key = ""` was
+	// scoped to the llm reference by the C-1001 amendment: web.api_key
+	// materializes as "" whenever [web] is unset, and that is lw's correct
+	// default — web.search simply not offered.)
+	if !strings.Contains(string(b), `api_key = "env:DEEPSEEK_API_KEY"`) {
+		t.Errorf("llm.api_key reference lost; the file holds:\n%s", b)
+	}
+	// The [web] side of C-1001, positively (A-10-5): the saved file carries
+	// the [web] table with api_key = "" — web.search simply not offered —
+	// even though the file the set read never mentioned [web]. Anchored at
+	// the table so the empty key can only be the web one.
+	webBefore, webAfter, ok := strings.Cut(string(b), "[web]")
+	if !ok {
+		t.Fatalf("config file has no [web] table; the file holds:\n%s", b)
+	}
+	if !strings.Contains(webAfter, `api_key = ""`) {
+		t.Errorf("[web] table has no api_key = \"\"; the file holds:\n%s", b)
+	}
+	if strings.Contains(webBefore, `api_key = ""`) {
+		t.Errorf("llm.api_key wiped to empty; the file holds:\n%s", b)
+	}
+	for _, gone := range []string{"temperature = 0.0", "max_tokens = 0", "context_tokens = 0"} {
 		if strings.Contains(string(b), gone) {
 			t.Errorf("config file now holds %q, a value the user never set:\n%s", gone, b)
 		}
 	}
+}
+
+// TestConfigSetWebKeys pins the web.* keys `lw config set` accepts since
+// A-10-5 — the very keys doctor's web remedies prescribe, which used to exit
+// 2 "unknown key". web.api_key follows the llm.api_key reference discipline
+// end to end: stored verbatim, confirmed by reference, shown as the
+// reference with its resolution state, and never echoed as a value.
+func TestConfigSetWebKeys(t *testing.T) {
+	dir := configTestEnv(t)
+
+	t.Run("api_key_env_reference_set", func(t *testing.T) {
+		t.Setenv("TAVILY_API_KEY", "tvly-web-config-test-value-not-real")
+		stdout, stderr, code := runConfig(t, "set", "web.api_key", "env:TAVILY_API_KEY")
+		if code != 0 {
+			t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+		}
+		if !strings.Contains(stdout, "web.api_key set to env:TAVILY_API_KEY") {
+			t.Errorf("stdout does not confirm the reference:\n%s", stdout)
+		}
+		if strings.Contains(stdout, "tvly-web-config-test-value-not-real") {
+			t.Fatalf("confirmation carried the resolved value:\n%s", stdout)
+		}
+
+		got, err := config.Load()
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if got.Web.APIKey != "env:TAVILY_API_KEY" {
+			t.Fatalf("Web.APIKey = %q, want the env:TAVILY_API_KEY reference", got.Web.APIKey)
+		}
+
+		// show renders the reference and its state — never the value.
+		out, _, code := runConfig(t)
+		if code != 0 {
+			t.Fatalf("show: exit code = %d, want 0", code)
+		}
+		wantRow(t, out, "web.api_key", "env:TAVILY_API_KEY (set)", "(file)")
+		if strings.Contains(out, "tvly-web-config-test-value-not-real") {
+			t.Fatalf("show printed the resolved value:\n%s", out)
+		}
+	})
+
+	t.Run("api_key_missing_variable_still_stores_and_warns", func(t *testing.T) {
+		t.Setenv("TAVILY_API_KEY", "") // forced missing, whatever the host carries
+		_, stderr, code := runConfig(t, "set", "web.api_key", "env:TAVILY_API_KEY")
+		if code != 0 {
+			t.Fatalf("exit code = %d, want 0 (a missing variable is not a set failure); stderr=%q", code, stderr)
+		}
+		if !strings.Contains(stderr, "TAVILY_API_KEY is not set in this shell") {
+			t.Errorf("stderr does not warn about the unresolvable key:\n%s", stderr)
+		}
+		got, err := config.Load()
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if got.Web.APIKey != "env:TAVILY_API_KEY" {
+			t.Fatalf("Web.APIKey = %q, want the reference kept", got.Web.APIKey)
+		}
+	})
+
+	t.Run("provider_validates_against_the_built_in", func(t *testing.T) {
+		_, stderr, code := runConfig(t, "set", "web.provider", "bing")
+		if code != 2 {
+			t.Fatalf("exit code = %d, want 2 for an unknown provider", code)
+		}
+		if !strings.Contains(stderr, `unknown provider "bing"`) || !strings.Contains(stderr, "tavily") {
+			t.Errorf("stderr = %q, want the reason and the built-in name", stderr)
+		}
+		if b, err := os.ReadFile(filepath.Join(dir, "lw", "config.toml")); err == nil && strings.Contains(string(b), "bing") {
+			t.Errorf("config file written for a rejected provider:\n%s", b)
+		}
+
+		if _, stderr, code := runConfig(t, "set", "web.provider", "tavily"); code != 0 {
+			t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+		}
+		got, err := config.Load()
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if got.Web.Provider != "tavily" {
+			t.Fatalf("Web.Provider = %q, want tavily", got.Web.Provider)
+		}
+	})
+
+	t.Run("max_results_bounded_1_to_10", func(t *testing.T) {
+		if _, stderr, code := runConfig(t, "set", "web.max_results", "7"); code != 0 {
+			t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+		}
+		got, err := config.Load()
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if got.Web.MaxResults != 7 {
+			t.Fatalf("Web.MaxResults = %d, want 7", got.Web.MaxResults)
+		}
+
+		for _, tc := range []struct{ value, wantErr string }{
+			{"0", "want 1..10"},
+			{"11", "want 1..10"},
+			{"many", "want an integer"},
+		} {
+			_, stderr, code := runConfig(t, "set", "web.max_results", tc.value)
+			if code != 2 {
+				t.Errorf("set web.max_results %s: exit code = %d, want 2", tc.value, code)
+			}
+			if !strings.Contains(stderr, tc.wantErr) {
+				t.Errorf("set web.max_results %s: stderr = %q, want it to contain %q", tc.value, stderr, tc.wantErr)
+			}
+		}
+	})
 }
 
 // TestConfigSetOnMalformedFileFails: a file lw cannot parse is reported as a
