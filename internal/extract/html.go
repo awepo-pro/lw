@@ -16,6 +16,7 @@ package extract
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -99,15 +100,27 @@ func (h *htmlExtractor) read(ctx context.Context, uri string) ([]byte, error) {
 	}
 	resp, err := h.client.Do(req)
 	if err != nil {
+		// The host guard (client.go) travels inside net/http's *url.Error
+		// wrapper wherever it fired — the initial request or any redirect
+		// hop. Unwrap it so callers see its exact, bare message.
+		var blocked *blockedHostError
+		if errors.As(err, &blocked) {
+			return nil, blocked
+		}
 		return nil, fmt.Errorf("extract: fetch %s: %w", uri, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("extract: fetch %s: unexpected status %s", uri, resp.Status)
 	}
-	b, err := io.ReadAll(resp.Body)
+	// MaxBodyBytes+1 lets read tell "exactly at the cap" apart from "ran
+	// past it": only an over-long body yields more than MaxBodyBytes.
+	b, err := io.ReadAll(io.LimitReader(resp.Body, MaxBodyBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("extract: read response body from %s: %w", uri, err)
+	}
+	if len(b) > MaxBodyBytes {
+		return nil, errBodyExceedsLimit
 	}
 	return b, nil
 }
