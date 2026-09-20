@@ -412,6 +412,42 @@ In `lw session show`, the history an Ask pane copied forward is marked
 `· carried`, so a transcript tells the carried turns from the turn's own
 records.
 
+### Web lookup
+
+An answer under `Not from your vault:` is the honest response to a question
+the vault cannot answer — and the cue to go find a source. The curator may
+search the web with `web.search` and ingest the best result with
+`stage.ingest_source`, at most two pages per question.
+
+`web.search` is offered only when configured. The tool is never denied — it
+is simply *not offered* until a provider is wired, the same way the registry
+treats anything a vault should not do: with no key, the agent's tool list
+does not contain it, and a question falls back to the §8 answer. Tavily is
+the built-in provider. As with every key in `lw` (§3), the config file holds
+a reference, not a value, and the variable is resolved when a lookup runs:
+
+```toml
+[web]
+api_key = "env:TAVILY_API_KEY"   # in your config.toml — see §3
+```
+
+```bash
+export TAVILY_API_KEY=tvly-...
+```
+
+With the table present, `lw doctor`'s config check reports it on its own
+line — `web: provider tavily, env:TAVILY_API_KEY (set)`, or `(missing)`
+while the variable is not exported; the key value itself is never printed.
+
+A search result is not a source until it is ingested. The agent stages the
+best hit with `stage.ingest_source` — the same op `lw ingest <url>` runs —
+so a fetched page reaches `raw/` exactly the way a local file does, and the
+pages proposed from it sit in a changeset you review hunk by hunk before
+anything lands (§6). Once committed, an ingested page is a raw source like
+any other: claims drawn from it carry `^[raw/…]` provenance markers, and an
+answer built on them can be filed with `ctrl+s` exactly like one that cites
+a source you ingested by hand (§8 above).
+
 ## 9. The TUI tour
 
 `lw` with no command, or `lw tui`, opens the terminal UI. Screens cycle with
