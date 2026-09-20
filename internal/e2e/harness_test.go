@@ -242,8 +242,9 @@ func TestHarness(t *testing.T) {
 	t.Run("fakellm_ingest_roundtrip", harnessFakellmIngestRoundtrip)
 }
 
-// harnessVersion runs `lw --version` and expects the exact version string on
-// stdout (main.go:15, 52-54 — nothing else on the wire).
+// harnessVersion runs `lw --version` and expects the stamped version string
+// on stdout (cmd/lw/cmd_version.go — nothing else on the wire), then checks
+// the `lw version` verb prints the exact same bytes.
 func harnessVersion(t *testing.T) {
 	t.Helper()
 
@@ -253,11 +254,22 @@ func harnessVersion(t *testing.T) {
 	if res.Code != 0 {
 		t.Fatalf("lw --version: exit %d, want 0\n%s", res.Code, res.Output)
 	}
-	if got, want := strings.TrimSpace(res.Stdout), "lw 1.0.0-dev"; got != want {
+	if got, want := strings.TrimSpace(res.Stdout), "lw "+e2eVersion; got != want {
 		t.Errorf("lw --version: stdout = %q, want %q", got, want)
 	}
 	if res.Stderr != "" {
 		t.Errorf("lw --version: stderr = %q, want empty", res.Stderr)
+	}
+
+	res = runLW(t, e, "version")
+	if res.Code != 0 {
+		t.Fatalf("lw version: exit %d, want 0\n%s", res.Code, res.Output)
+	}
+	if res.Stdout != "lw "+e2eVersion+"\n" {
+		t.Errorf("lw version: stdout = %q, want %q", res.Stdout, "lw "+e2eVersion+"\n")
+	}
+	if res.Stderr != "" {
+		t.Errorf("lw version: stderr = %q, want empty", res.Stderr)
 	}
 }
 

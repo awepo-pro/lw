@@ -42,7 +42,7 @@ func cmdMCP(args []string) error {
 	}
 
 	reg := tools.NewRegistry(mcpDeps(e, cfg))
-	return mcp.Serve(context.Background(), reg, os.Stdin, os.Stdout)
+	return mcp.ServeVersion(context.Background(), reg, version, os.Stdin, os.Stdout)
 }
 
 // mcpDeps assembles the tool registry's dependencies for the MCP server.

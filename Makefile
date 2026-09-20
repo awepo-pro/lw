@@ -1,5 +1,10 @@
 BINARY := lw
-VERSION := 1.0.0-dev
+# The version is git describe output — never a hand-edited constant. Release
+# tags are vX.Y.Z: Y is the stage (one workflow id), Z a task inside it.
+# Exactly at a tag this is the bare tag (v2.1.0); between tags it carries the
+# commit (v2.1.0-2-g6675ba4, -dirty when the tree is dirty); a tree without
+# git history falls back, matching cmd/lw/cmd_version.go's default.
+VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo 0.0.0-unknown)
 LDFLAGS := -X main.version=$(VERSION)
 BENCHTIME ?= 1x
 

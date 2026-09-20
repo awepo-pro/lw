@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -22,10 +23,12 @@ import (
 // instead of a confusing "no such file").
 var lwBin string
 
-// e2eVersion is the version stamped into the binary under test. It must track
-// the Makefile's VERSION (Makefile:2) — same value, same -X target — so the
-// suite and `make build` produce byte-identical `lw --version` output.
-const e2eVersion = "1.0.0-dev"
+// e2eVersion is the version stamped into the binary under test: the same
+// `git describe --tags --always --dirty` string the Makefile's VERSION
+// (Makefile:2) stamps — same value, same -X target — so the suite and
+// `make build` produce byte-identical `lw --version` output. Both fall back
+// to 0.0.0-unknown outside a git tree. Set in runMain before the build.
+var e2eVersion string
 
 // goTool is the absolute go toolchain path, resolved once at init: LookPath
 // first, then GOROOT/bin/go. The old literal /usr/local/go/bin/go was this
@@ -41,6 +44,22 @@ var goTool = func() string {
 	}
 	return filepath.Join(runtime.GOROOT(), "bin", "go")
 }()
+
+// gitDescribe mirrors the Makefile's VERSION: `git describe --tags --always
+// --dirty` at the module root, or the shared 0.0.0-unknown fallback when git
+// is unavailable or the tree has no history. Both stamping sites compute the
+// same string, so no literal is pinned anywhere.
+func gitDescribe(root string) string {
+	git, err := exec.LookPath("git")
+	if err != nil {
+		return "0.0.0-unknown"
+	}
+	out, err := exec.Command(git, "-C", root, "describe", "--tags", "--always", "--dirty").Output()
+	if err != nil {
+		return "0.0.0-unknown"
+	}
+	return strings.TrimSpace(string(out))
+}
 
 // TestMain builds ./cmd/lw once, points lwBin at it, and runs the package.
 func TestMain(m *testing.M) {
@@ -66,10 +85,12 @@ func runMain(m *testing.M) int {
 	defer os.RemoveAll(tmp)
 
 	bin := filepath.Join(tmp, "lw")
-	// e2eVersion must track the Makefile's VERSION (Makefile:2): stamping here
-	// is how the suite exercises the same -ldflags "-X main.version=..." path
-	// `make build` takes, and the frozen `lw 1.0.0-dev` assertions in
-	// harness_test.go and coldstart_test.go depend on the two staying equal.
+	// e2eVersion is the Makefile's VERSION computed the same way (gitDescribe):
+	// stamping here is how the suite exercises the same -ldflags
+	// "-X main.version=..." path `make build` takes, and the "lw "+e2eVersion
+	// assertions in harness_test.go and coldstart_test.go depend on the two
+	// staying equal.
+	e2eVersion = gitDescribe(root)
 	build := exec.Command(goTool, "build",
 		"-ldflags", "-X main.version="+e2eVersion,
 		"-o", bin, "./cmd/lw")

@@ -36,7 +36,13 @@
       ];
       forAllSystems =
         f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
-      version = "1.0.0"; # bump with the release tag; goreleaser stamps its own
+      # The binary reports its own build id. `make build` stamps `git
+      # describe` — the release tag vX.Y.Z, or tag-N-g<hash> between tags.
+      # The nix sandbox strips .git, so a tag name cannot be recovered here;
+      # the flake stamps the (dirty) short rev instead, which `git tag
+      # --contains <rev>` maps back to its release tag.
+      version =
+        if self ? dirtyShortRev then self.dirtyShortRev else self.shortRev;
     in
     {
       packages = forAllSystems (
@@ -66,7 +72,7 @@
             ldflags = [
               "-s"
               "-w"
-              "-X main.version=v${version}"
+              "-X main.version=${version}"
             ];
 
             meta = with nixpkgs.lib; {

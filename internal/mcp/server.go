@@ -54,12 +54,20 @@ func NewServer(r *tools.Registry, version string) *sdk.Server {
 
 // Serve runs an MCP server over newline-delimited JSON on in and out. The
 // SDK's IOTransport lets tests supply pipes or buffers while the CLI supplies
-// os.Stdin and os.Stdout.
+// os.Stdin and os.Stdout. The server reports the unknown-version fallback;
+// callers that know their build version use ServeVersion.
 func Serve(ctx context.Context, r *tools.Registry, in io.Reader, out io.Writer) error {
+	return ServeVersion(ctx, r, "0.0.0-unknown", in, out)
+}
+
+// ServeVersion is Serve with the serverInfo.version made explicit. Serve's
+// shape is frozen (backbone §7), so the stamped build version enters here:
+// cmd/lw passes the same -ldflags string `lw version` prints.
+func ServeVersion(ctx context.Context, r *tools.Registry, version string, in io.Reader, out io.Writer) error {
 	if in == nil || out == nil {
 		return fmt.Errorf("mcp: nil stdio stream")
 	}
-	server := NewServer(r, "1.0.0-dev")
+	server := NewServer(r, version)
 	state := &stdioState{response: make(chan struct{})}
 	transport := &sdk.IOTransport{
 		Reader: newInputReader(in, state),

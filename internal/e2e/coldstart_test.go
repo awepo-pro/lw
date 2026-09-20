@@ -105,8 +105,8 @@ const (
 	queryAnswerText = "nothing is out of place"
 )
 
-// TestSmokeVersion runs `lw --version` and expects the exact release string
-// on stdout and nothing on stderr (main.go:52-54).
+// TestSmokeVersion runs `lw --version` and expects the stamped version
+// string on stdout and nothing on stderr (cmd/lw/cmd_version.go).
 func TestSmokeVersion(t *testing.T) {
 	e := newEnv(t)
 
@@ -114,7 +114,7 @@ func TestSmokeVersion(t *testing.T) {
 	if res.Code != 0 {
 		t.Fatalf("lw --version: exit %d, want 0\n%s", res.Code, res.Output)
 	}
-	if got, want := strings.TrimSpace(res.Stdout), "lw 1.0.0-dev"; got != want {
+	if got, want := strings.TrimSpace(res.Stdout), "lw "+e2eVersion; got != want {
 		t.Errorf("lw --version: stdout = %q, want %q", got, want)
 	}
 	if res.Stderr != "" {

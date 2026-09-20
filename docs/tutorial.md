@@ -50,9 +50,13 @@ go install github.com/awepo-pro/lw/cmd/lw@latest
 Either way, check it landed:
 
 ```
-$ lw --version
-lw 1.0.0-dev
+$ lw version
+lw v2.1.0-2-g91f0c32
 ```
+
+The version is the release tag the build was made from — a bare `vX.Y.Z`
+exactly at a tag, tag-plus-commit between tags — so a bug report can name the
+exact build. `lw --version` prints the same thing.
 
 `lw` finds its vault by walking up from your current directory to the
 nearest ancestor containing `SCHEMA.md` — so every verb below except `init`

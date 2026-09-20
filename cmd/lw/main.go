@@ -1,6 +1,6 @@
-// Command lw is the llmwiki CLI. This file owns dispatch, usage and the
-// version flag only — every verb's behaviour lives in its own cmd_<verb>.go,
-// implementing the func cmd<Verb>(args []string) error shape.
+// Command lw is the llmwiki CLI. This file owns dispatch and usage — every
+// verb's behaviour lives in its own cmd_<verb>.go, implementing the
+// func cmd<Verb>(args []string) error shape.
 package main
 
 import (
@@ -9,10 +9,6 @@ import (
 	"io"
 	"os"
 )
-
-// version is the build version. Override at link time with
-// -ldflags "-X main.version=...".
-var version = "1.0.0-dev"
 
 // verb pairs one CLI verb with its handler, in the order shown by usage.
 type verb struct {
@@ -36,6 +32,7 @@ var verbs = []verb{
 	{"doctor", cmdDoctor},
 	{"tui", cmdTUI},
 	{"stage", cmdStage},
+	{"version", cmdVersion},
 }
 
 func main() {
@@ -128,6 +125,7 @@ commands:
   doctor [--unlock] [--rebuild-index] [--discard-changeset] [--json]
                                check vault and lock health
   tui                          launch the terminal UI (default with no command)
+  version                      print the build version and exit
 
 flags:
   --version    print the version and exit
