@@ -54,6 +54,20 @@ func TestNameDefaultBranchesAreConsistent(t *testing.T) {
 	}
 }
 
+// TestWireNamesWeb pins 010's wire mapping for the web.search verb (010
+// contract §3) in BOTH literal switches, D-CY style. The verb's leaf has
+// no underscore of its own, so the default ReplaceAll branches would
+// happen to round-trip — the explicit cases are still the contract: the
+// mapping table, not an accident of punctuation, is what the wire sees.
+func TestWireNamesWeb(t *testing.T) {
+	if got, want := WireName("web.search"), "web_search"; got != want {
+		t.Errorf("WireName(%q) = %q, want %q", "web.search", got, want)
+	}
+	if got, want := CanonicalName("web_search"), "web.search"; got != want {
+		t.Errorf("CanonicalName(%q) = %q, want %q", "web_search", got, want)
+	}
+}
+
 // TestCanonicalNameDoesNotOverCollapseUnderscores pins the exact defect
 // D-CY warns against: a naive strings.ReplaceAll(wire, "_", ".") turns
 // "stage_create_page" into "stage.create.page" instead of the real

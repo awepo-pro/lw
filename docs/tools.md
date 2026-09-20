@@ -1,17 +1,20 @@
 # The tool surface
 
-18 tools. **There is no filesystem verb, and none is ever added** — no `write`,
-no `edit`, no `delete`, no `bash`, no `exec`. Not denied: *not offered*. The
-registry is compiled into the binary, so there is nothing for a prompt or a
-permission profile to flip.
+19 tools, of which one is conditional: `web.search` is registered only when a
+search provider is configured (a `[web].api_key`; workflow 010), so a
+provider-less registry exposes 18. **There is no filesystem verb, and none is
+ever added** — no `write`, no `edit`, no `delete`, no `bash`, no `exec`. Not
+denied: *not offered*. The registry is compiled into the binary, so there is
+nothing for a prompt or a permission profile to flip.
 
 Each tool is defined once in `internal/tools` and consumed twice:
 
 - by the **in-process agent loop** (`lw ingest`, `lw query`, `lw lint --fix`,
   the TUI's ask screen), under its canonical dotted name;
 - over **MCP** (`lw mcp`), where dots become underscores: `wiki.search` →
-  `wiki_search`. The mapping is total and bijective over the 18 names, and the
-  MCP layer adds no tool and changes no semantics — it is a transport.
+  `wiki_search`. The mapping is total and bijective over every registered
+  name, `web.search` included, and the MCP layer adds no tool and changes no
+  semantics — it is a transport.
 
 ## Read — no side effects, ever
 
@@ -25,6 +28,7 @@ Each tool is defined once in `internal/tools` and consumed twice:
 | 6 | `raw.get` | `raw_get` | One ~4000-token chunk of an immutable source's body, by its exact vault-relative path. If you do not know a raw source's exact path, call `raw.list` first |
 | 7 | `raw.list` | `raw_list` | Every raw source — committed and staged in the open changeset — one per line: `<path> — <title> — <source_url> — ingested <date> — sha <8 hex>`, or `… — staged in <changeset id>` for a staged one. `query` keeps only rows where every term appears in the path, title or source_url; `limit` defaults to 50 and caps at 200, with `(and N more)` when rows were cut. Read-only, like every tool above |
 | 8 | `wiki.lint` | `wiki_lint` | The lint findings, computed by `internal/lint` in Go. **The model never computes a lint result; it only reads these** |
+| 9 | `web.search` | `web_search` | The public web — the one outward-facing tool, and only when a search provider is wired: `{query, max_results?}` → at most 10 ranked hits, each a title, URL and short snippet, **never a page body**. Fetch a promising hit into the vault with `stage.ingest_source` |
 
 ## Propose — staged, never applied
 
@@ -33,16 +37,16 @@ Nothing reaches the working tree until a human commits.
 
 | # | Tool | MCP name | What it stages |
 |---|---|---|---|
-| 9 | `stage.open` | `stage_open` | `{intent}` — opens the buffer and the session that travels with it |
-| 10 | `stage.create_page` | `stage_create_page` | A full page: path, title, type, tags, sources, confidence, contested, body, rationale — frontmatter, taxonomy, directory and outbound-link rules all checked *at proposal time* |
-| 11 | `stage.patch_page` | `stage_patch_page` | A **section-level** patch: `replace_section`, `append_section` or `insert_after`. Sections survive reformatting; line-number patches do not |
-| 12 | `stage.rename_page` | `stage_rename_page` | `{from, to}` — the engine computes every inbound backlink rewrite from the graph, each one its own reviewable hunk. This is what `mv` cannot do |
-| 13 | `stage.merge_pages` | `stage_merge_pages` | `{sources[], into}` — redirect plus backlink rewrites as one reviewable unit |
-| 14 | `stage.split_page` | `stage_split_page` | `{path, sections[]}` — the source becomes a reviewable stub |
-| 15 | `stage.add_link` | `stage_add_link` | `{from, to, context?}` — bidirectional; refuses a broken endpoint |
-| 16 | `stage.ingest_source` | `stage_ingest_source` | `{uri, kind?, name?}` — extracts a **local** file, writes `raw/` (write-once, only for a path that does not exist yet), hashes and dedupes by body `sha256`. HTTP URLs are refused here; `lw ingest <url>` fetches and extracts first, then hands the tool a scratch local path. The MCP transport wires the same HTML and markdown extractor chain as the CLI, so extraction behaves identically over either surface. `name` is used only when the title slugs to nothing (idea 011) |
-| 17 | `stage.retract` | `stage_retract` | `{page, reason}` — a tombstone with a reason, **never a deletion** |
-| 18 | `stage.close` | `stage_close` | A human-readable summary of the proposal — reads only, writes nothing |
+| 10 | `stage.open` | `stage_open` | `{intent}` — opens the buffer and the session that travels with it |
+| 11 | `stage.create_page` | `stage_create_page` | A full page: path, title, type, tags, sources, confidence, contested, body, rationale — frontmatter, taxonomy, directory and outbound-link rules all checked *at proposal time* |
+| 12 | `stage.patch_page` | `stage_patch_page` | A **section-level** patch: `replace_section`, `append_section` or `insert_after`. Sections survive reformatting; line-number patches do not |
+| 13 | `stage.rename_page` | `stage_rename_page` | `{from, to}` — the engine computes every inbound backlink rewrite from the graph, each one its own reviewable hunk. This is what `mv` cannot do |
+| 14 | `stage.merge_pages` | `stage_merge_pages` | `{sources[], into}` — redirect plus backlink rewrites as one reviewable unit |
+| 15 | `stage.split_page` | `stage_split_page` | `{path, sections[]}` — the source becomes a reviewable stub |
+| 16 | `stage.add_link` | `stage_add_link` | `{from, to, context?}` — bidirectional; refuses a broken endpoint |
+| 17 | `stage.ingest_source` | `stage_ingest_source` | `{uri, kind?, name?}` — extracts a **local file or an http(s) URL**, writes `raw/` (write-once, only for a path that does not exist yet), hashes and dedupes by body `sha256`. A fetched page becomes a raw source like any other — same dedupe, same naming, same hunk-level review before anything commits. The MCP transport wires the same HTML and markdown extractor chain as the CLI, so extraction behaves identically over either surface. `name` is used only when the title slugs to nothing (idea 011) |
+| 18 | `stage.retract` | `stage_retract` | `{page, reason}` — a tombstone with a reason, **never a deletion** |
+| 19 | `stage.close` | `stage_close` | A human-readable summary of the proposal — reads only, writes nothing |
 
 Nine tools propose changes; `stage.close` is the tenth staging verb and is
 itself read-only.

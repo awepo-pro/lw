@@ -13,6 +13,7 @@ import (
 	"github.com/awepo-pro/lw/internal/llm"
 	"github.com/awepo-pro/lw/internal/stage"
 	"github.com/awepo-pro/lw/internal/vault"
+	"github.com/awepo-pro/lw/internal/web"
 )
 
 // Tool is one callable the agent loop and the MCP transport both expose —
@@ -46,6 +47,10 @@ type Deps struct {
 	Engine  *stage.Engine
 	Extract extract.Extractor
 	Author  stage.Author
+	// Search is the web search provider behind web.search (010 contract
+	// §3). nil — no provider configured — means the verb is not offered at
+	// all, never offered-and-failing.
+	Search web.SearchProvider
 }
 
 // ErrUnknownTool is returned by Registry.Call for a name with no
@@ -61,7 +66,8 @@ type Registry struct {
 // NewRegistry builds the tool registry over d. This subtask (S3-T1)
 // registers the 7 read-only tools; S3-T2 added the 10 stage.* tools,
 // bringing the total to the backbone's 17; 008 adds the read-only
-// discovery tool raw.list as the 18th.
+// discovery tool raw.list as the 18th; 010 adds web.search as the 19th,
+// registered only when d.Search is non-nil.
 func NewRegistry(d Deps) *Registry {
 	r := &Registry{
 		deps:  d,
@@ -77,9 +83,12 @@ func NewRegistry(d Deps) *Registry {
 }
 
 // readTools returns the read-only tools: backbone §6's rows 1-7, plus 008's
-// raw.list, registered directly after raw.get (008 contract §4.2).
+// raw.list, registered directly after raw.get (008 contract §4.2), plus
+// 010's web.search — present only when a search provider is wired, since
+// an unbacked verb is not offered, not offered-and-failing (010 contract
+// §3).
 func readTools(d Deps) []Tool {
-	return []Tool{
+	tools := []Tool{
 		vaultOrientTool(d),
 		wikiSearchTool(d),
 		wikiGetTool(d),
@@ -89,6 +98,10 @@ func readTools(d Deps) []Tool {
 		rawListTool(d),
 		wikiLintTool(d),
 	}
+	if d.Search != nil {
+		tools = append(tools, webSearchTool(d))
+	}
+	return tools
 }
 
 // List returns every registered Tool, sorted by Name.
