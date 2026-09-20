@@ -263,11 +263,15 @@ alone.
 ## MCP setup
 
 ```bash
-lw mcp            # in a vault; serves the same 18 tools over stdio
+lw mcp            # in a vault; serves the 18 vault tools — plus web.search
+                  # when configured — over stdio
 ```
 
-`lw mcp` needs no API key and no provider — the tools are vault operations, and
-the connecting client brings its own model. Dots become underscores on the wire
+`lw mcp` itself needs no provider — the 18 vault tools are vault operations,
+and the connecting client brings its own model. The 19th tool, `web.search`,
+is offered only when `[web].api_key` is configured and resolves (see
+"Secrets" below); with no provider wired it is simply not in the list. Dots
+become underscores on the wire
 (`wiki.search` → `wiki_search`); the mapping is bijective and nothing is added
 or removed in transit, so an MCP client sees exactly the surface described in
 [docs/tools.md](docs/tools.md). Point any stdio MCP client at it:
@@ -293,6 +297,12 @@ at the moment it needs it. `lw config` shows `env:DEEPSEEK_API_KEY (set)` or
 `(missing)`; the value itself never appears in a command's output, in the
 config file, or anywhere in the vault. A literal key is rejected with a
 warning pointing at `env:`.
+
+The `[web]` table follows the same rule for web search: `provider` (only
+`tavily` is built in), `api_key` — again a *reference*, `env:TAVILY_API_KEY`
+being the expected variable — and `max_results`. With no resolvable
+`[web].api_key` the `web.search` tool is simply not offered; the 18 vault
+tools need nothing from it.
 
 ## Transcripts
 
@@ -332,7 +342,7 @@ the command table above.
 | [docs/tutorial.md](docs/tutorial.md) | Start here — a hands-on walkthrough from install to a reviewed wiki |
 | [docs/architecture.md](docs/architecture.md) | The pipeline, the agent's verb boundary, the package map |
 | [docs/vault-schema.md](docs/vault-schema.md) | The vault layout, frontmatter, and the 14 lint checks |
-| [docs/tools.md](docs/tools.md) | The 18 tools and what each one reads |
+| [docs/tools.md](docs/tools.md) | The 19 tools — 18 vault tools plus conditional web.search — and what each one reads |
 | [docs/changesets.md](docs/changesets.md) | Changeset layout, the journal, and recovery |
 | [spec/vault-schema.md](spec/vault-schema.md) | The normative vault schema |
 | [spec/changeset.schema.json](spec/changeset.schema.json) | The JSON Schema every changeset validates against |
@@ -368,8 +378,10 @@ Stated plainly, because a tool asking for this much trust should not oversell.
 - **Extraction is HTML and markdown.** No PDF, no OCR, no transcripts from
   audio. Sources arrive as files or web pages.
 - **One vault, one open changeset.** No multi-vault, no parallel ingest.
-- **`stage.ingest_source` takes local paths only**, and only writes a `raw/`
-  path that does not already exist — `raw/` is immutable. When the natural
+- **`stage.ingest_source` takes local paths and http(s) URLs.** A URL is
+  fetched and becomes a raw source exactly as a local file does, through the
+  same hunk review before anything lands. The op only writes a `raw/` path
+  that does not already exist — `raw/` is immutable. When the natural
   name is taken by a *different* source, the first free suffixed path
   (`notes-2.md`, `notes-3.md`, …) is used, and the tool result says so.
 - No graph view, no plugin system, no web UI. `lw` is a terminal tool.

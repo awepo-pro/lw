@@ -6,7 +6,8 @@ import "github.com/awepo-pro/lw/internal/tools"
 // MCP wire. Canonical tool names use dots for namespace separators; MCP
 // names use underscores so they remain portable across clients.
 //
-// The 17-entry mapping itself lives in internal/tools (WireName), since
+// The 19-entry mapping — 18 vault tools plus the conditional web.search —
+// itself lives in internal/tools (WireName), since
 // the agent loop's OpenAI-compatible chat-completions client needs the
 // identical translation for the identical reason — a dotted name is
 // rejected by both consumers (backbone §6/§7's amendment, D-CY/C-112).

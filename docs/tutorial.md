@@ -837,7 +837,8 @@ full table of 14 checks and their severities.
 
 ## 12. Using lw from other agents
 
-`lw mcp` runs the same 18 tools over an MCP stdio server, for any client
+`lw mcp` runs the same tools the CLI's agent verbs offer — the 18 vault
+tools, plus a conditional 19th — over an MCP stdio server, for any client
 that brings its own model. (The CLI's agent verbs offer a 19th,
 `web.search`, whenever `[web].api_key` is configured and resolves — §8's
 Web lookup. Over MCP the same rule holds: a configured server offers
@@ -863,7 +864,8 @@ translation. The MCP server wires the same HTML and markdown extractor
 chain the CLI's `ingest` verb does, so `stage_ingest_source` extracts
 sources identically over either surface. Every read, patch, rename,
 merge, split, link and retract tool works the same either way. See
-[tools.md](tools.md) for what each of the 18 tools reads or stages.
+[tools.md](tools.md) for what each of the 18 vault tools reads or stages,
+plus the conditional `web.search`.
 
 ## 13. Troubleshooting
 
