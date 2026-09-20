@@ -41,10 +41,12 @@ func TestAskCapturesText(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadKeys: %v", err)
 	}
-	d := ui.Deps{Theme: theme.WithDark(true), Keys: keys}
+	d := ui.Deps{WebSearch: true, Theme: theme.WithDark(true), Keys: keys}
 
 	// The input always takes typing: New's pane reports true unconditionally.
-	if p := ask.New(ui.Deps{}); !p.(*ask.Model).CapturesText() {
+	// WebSearch true: fixtures pin the configured vault's unchanged UI (012
+	// contract §5).
+	if p := ask.New(ui.Deps{WebSearch: true}); !p.(*ask.Model).CapturesText() {
 		t.Fatal("ask.Model.CapturesText() = false, want true")
 	}
 

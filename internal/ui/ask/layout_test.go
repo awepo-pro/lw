@@ -103,7 +103,7 @@ func TestAskPromptsFromIndex(t *testing.T) {
 	})
 
 	t.Run("no engine falls back", func(t *testing.T) {
-		m := New(ui.Deps{}).(*Model)
+		m := New(ui.Deps{WebSearch: true}).(*Model) // configured fixture (012 contract §5)
 		if diff := diffStrings(fallbackPrompts(), m.prompts); diff != "" {
 			t.Fatalf("New without an engine: want the fallback prompts:\n%s", diff)
 		}
