@@ -50,6 +50,7 @@ func cmdLog(args []string) error {
 	if err != nil {
 		return err
 	}
+	attachLoggingAt(root) // read-only: join the trail, never create it
 
 	e, err := stage.OpenEngine(root)
 	if err != nil {

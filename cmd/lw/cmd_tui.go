@@ -41,6 +41,7 @@ func cmdTUI(args []string) error {
 	if err != nil {
 		return err
 	}
+	initLoggingAt(root)
 
 	engine, err := stage.OpenEngine(root)
 	if err != nil {

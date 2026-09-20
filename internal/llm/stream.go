@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 )
@@ -30,6 +31,7 @@ func (c *Client) Stream(ctx context.Context, req Request) (<-chan Chunk, error) 
 
 	resp, err := c.do(httpReq)
 	if err != nil {
+		slog.Warn("llm error", "err", err)
 		return nil, fmt.Errorf("llm: request: %w", err)
 	}
 
@@ -170,7 +172,9 @@ func consumeStream(ctx context.Context, body io.ReadCloser, out chan<- Chunk) {
 
 		var wc wireStreamChunk
 		if err := json.Unmarshal([]byte(payload), &wc); err != nil {
-			emit(Chunk{Err: fmt.Errorf("llm: parse stream chunk: %w", err)})
+			err = fmt.Errorf("llm: parse stream chunk: %w", err)
+			slog.Warn("llm error", "err", err)
+			emit(Chunk{Err: err})
 			return
 		}
 		if len(wc.Choices) == 0 {
@@ -217,10 +221,14 @@ func consumeStream(ctx context.Context, body io.ReadCloser, out chan<- Chunk) {
 			if !emit(Chunk{Finish: *choice.FinishReason}) {
 				return
 			}
+			// The file log's stream-end line (010 contract §0), written
+			// only once the finish chunk is actually delivered.
+			slog.Info("llm finish", "finish", *choice.FinishReason)
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
+		slog.Warn("llm error", "err", err)
 		emit(Chunk{Err: fmt.Errorf("llm: read stream: %w", err)})
 		return
 	}
@@ -228,6 +236,8 @@ func consumeStream(ctx context.Context, body io.ReadCloser, out chan<- Chunk) {
 		// The connection ended without [DONE] or a finish_reason while a
 		// tool call was still being assembled: report it rather than
 		// silently dispatching whatever fragments happened to arrive.
-		emit(Chunk{Err: errors.New("llm: stream ended before tool call finished assembling")})
+		err := errors.New("llm: stream ended before tool call finished assembling")
+		slog.Warn("llm error", "err", err)
+		emit(Chunk{Err: err})
 	}
 }

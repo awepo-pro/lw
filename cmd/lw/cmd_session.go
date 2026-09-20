@@ -95,6 +95,7 @@ func cmdSessionList(args []string) error {
 	if err != nil {
 		return err
 	}
+	attachLoggingAt(root) // read-only: join the trail, never create it
 	sessions, err := findSessions(root)
 	if err != nil {
 		return err

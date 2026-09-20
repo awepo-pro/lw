@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -51,6 +52,7 @@ const maxConsecutiveBadCalls = 2
 // 000006 committed an ingest of zero pages that way).
 func (l *Loop) Send(ctx context.Context, sessionID, msg string, out chan<- Event) error {
 	defer close(out)
+	slog.Info("agent turn", "rounds_max", l.cfg.MaxToolRounds)
 
 	sess, err := l.sessions.Get(sessionID)
 	if err != nil {
@@ -90,6 +92,7 @@ func (l *Loop) Send(ctx context.Context, sessionID, msg string, out chan<- Event
 			if truncated(finish) {
 				return l.fail(ctx, out, fmt.Errorf("%w (finish_reason %q in round %d)", ErrTruncated, finish, rounds))
 			}
+			slog.Info("agent done", "reason", "stop", "rounds", rounds)
 			if !l.send(ctx, out, DoneEv{Reason: "stop", Rounds: rounds}) {
 				return ctx.Err()
 			}
@@ -97,6 +100,7 @@ func (l *Loop) Send(ctx context.Context, sessionID, msg string, out chan<- Event
 		}
 
 		if rounds >= l.cfg.MaxToolRounds {
+			slog.Info("agent done", "reason", "max_rounds", "rounds", rounds)
 			if !l.send(ctx, out, DoneEv{Reason: "max_rounds", Rounds: rounds}) {
 				return ctx.Err()
 			}
@@ -270,6 +274,9 @@ func (l *Loop) dispatchToolCall(ctx context.Context, sessionID string, tc llm.To
 	// message sent back to the provider, which must keep its own spelling
 	// to match the tool_call_id/name pair it gave us.
 	canonical := tools.CanonicalName(tc.Function.Name)
+	// The file log's per-dispatch line (010 contract §0): the wire-spelled
+	// name and the raw argument payload's byte count — never its content.
+	slog.Info("agent tool call", "name", tc.Function.Name, "args_bytes", len(tc.Function.Arguments))
 
 	if !l.send(ctx, out, ToolCallEv{ID: tc.ID, Name: canonical, Args: tc.Function.Arguments}) {
 		return llm.Message{}, true, ctx.Err()
@@ -291,6 +298,8 @@ func (l *Loop) dispatchToolCall(ctx context.Context, sessionID string, tc llm.To
 		return llm.Message{}, true, l.fail(ctx, out, fmt.Errorf("agent: call %s: %w", canonical, callErr))
 	}
 	*badCalls = 0 // a dispatched call, whatever its result, resets the retry budget
+
+	slog.Info("agent tool result", "name", canonical, "is_error", res.IsError)
 
 	if !l.send(ctx, out, ToolResEv{ID: tc.ID, Name: canonical, Content: res.Content, IsError: res.IsError}) {
 		return llm.Message{}, true, ctx.Err()
@@ -331,6 +340,7 @@ func (l *Loop) correctable(ctx context.Context, sessionID string, tc llm.ToolCal
 	*badCalls++
 	content := cause.Error()
 
+	slog.Info("agent tool result", "name", canonical, "is_error", true)
 	if !l.send(ctx, out, ToolResEv{ID: tc.ID, Name: canonical, Content: content, IsError: true}) {
 		return llm.Message{}, true, ctx.Err()
 	}

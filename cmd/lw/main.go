@@ -46,6 +46,7 @@ func main() {
 // a verb error, 2 on unusable usage.
 func run(args []string) int {
 	if len(args) == 0 {
+		initLogging("tui") // attach-only fallback; cmdTUI re-installs at its resolved root
 		return dispatch("tui", cmdTUI, nil)
 	}
 
@@ -60,6 +61,12 @@ func run(args []string) int {
 
 	for _, v := range verbs {
 		if v.name == args[0] {
+			// Attach-only fallback (A-10-2): flags are not parsed yet, so
+			// this resolves cwd-ancestry only and never creates a log dir.
+			// The verb re-installs at the root its own
+			// findVaultRoot(*vaultPath) resolves — explicit --vault wins
+			// over the working directory (C-1009).
+			initLogging(v.name)
 			return dispatch(v.name, v.fn, args[1:])
 		}
 	}

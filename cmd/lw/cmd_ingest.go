@@ -133,6 +133,7 @@ func cmdIngest(args []string) error {
 	if err != nil {
 		return err
 	}
+	initLoggingAt(root)
 
 	// Extract every source before touching the staging engine at all: a
 	// bad source fails the whole command with nothing opened, rather than

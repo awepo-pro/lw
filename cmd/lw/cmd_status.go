@@ -30,6 +30,7 @@ func cmdStatus(args []string) error {
 	if err != nil {
 		return err
 	}
+	attachLoggingAt(root) // read-only: join the trail, never create it
 
 	v, err := vault.Open(root)
 	if err != nil {
