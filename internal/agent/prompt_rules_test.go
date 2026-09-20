@@ -6,7 +6,9 @@ package agent
 // "Not from your vault:" rule they qualify. without_search is 012's new half:
 // no registry-offered web.search, no paragraph — and not even the substring
 // web.search anywhere in the prompt. Permanent per D-10C, amended per 012
-// D-12B. The expectations are prompt.go's own consts, never restated
+// D-12B and per 017 TS-17A (the search rule's bytes became 017 §5's
+// auto-search + quota-fallback text; the assertions kept their shape). The
+// expectations are prompt.go's own consts, never restated
 // literals.
 
 import (
