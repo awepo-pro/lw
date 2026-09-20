@@ -19,11 +19,11 @@ import (
 
 // fileHint is the kindStatus line a fileable turn's scrollback ends with
 // (009 contract §3.2).
-const fileHint = "ctrl+s file this answer as a query page"
+const fileHint = "ctrl+s save this answer into the wiki"
 
 // fileEcho is the user entry a filing turn echoes before it starts (009
 // contract §3.3).
-const fileEcho = "file the last answer as a query page"
+const fileEcho = "save the last answer into the wiki"
 
 // fileableRe is the fileability gate (009 contract §3.2): the answer must
 // cite at least one vault source — a raw source or a wiki page — inline in
@@ -131,18 +131,18 @@ func (m *Model) fileKey() tea.Cmd {
 		return nil
 	}
 	if !m.last.set {
-		m.appendStatus("nothing to file yet: ask a question first")
+		m.appendStatus("nothing to save yet: ask a question first")
 		return nil
 	}
 	if m.last.filing {
 		// Rule 3a (C-909): a filing turn's own answer is never fileable
 		// (009 contract §3.4) — it has already been filed, and the honest
 		// answer names that instead of claiming it cites no source.
-		m.appendStatus("this answer was already filed — review it with ctrl+r")
+		m.appendStatus("this answer was already saved — review it with ctrl+r")
 		return nil
 	}
 	if !m.lastAnswerFileable() {
-		m.appendStatus("this answer cites no vault source; nothing to file")
+		m.appendStatus("this answer cites no vault source; nothing to save")
 		return nil
 	}
 	msg := fileMessage(m.last.question, m.last.answer, m.queryCandidates(m.last.question))
@@ -232,6 +232,6 @@ func (m *Model) OverlayHelp() (string, []ui.HelpEntry) {
 		{Key: "enter", Desc: "send"},
 		{Key: "↑/↓", Desc: "select tool call"},
 		{Key: "ctrl+r", Desc: "open review"},
-		{Key: "ctrl+s", Desc: "file last answer as a query page"},
+		{Key: "ctrl+s", Desc: "save last answer into the wiki"},
 	}
 }

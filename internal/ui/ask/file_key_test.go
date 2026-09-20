@@ -123,7 +123,7 @@ func TestFileKey(t *testing.T) {
 			t.Fatal("ctrl+s on a fresh pane started a turn")
 		}
 		if got := lastEntry(m); got.kind != kindStatus ||
-			got.text != "nothing to file yet: ask a question first" {
+			got.text != "nothing to save yet: ask a question first" {
 			t.Fatalf("last entry = %#v, want the nothing-recorded refusal", got)
 		}
 	})
@@ -143,7 +143,7 @@ func TestFileKey(t *testing.T) {
 			t.Fatal("ctrl+s on an unsourced answer started a turn")
 		}
 		if got := lastEntry(m); got.kind != kindStatus ||
-			got.text != "this answer cites no vault source; nothing to file" {
+			got.text != "this answer cites no vault source; nothing to save" {
 			t.Fatalf("last entry = %#v, want the unsourced refusal", got)
 		}
 	})
@@ -178,7 +178,7 @@ func TestFileKey(t *testing.T) {
 		}
 		// The echo lands before the turn reports back, exactly as submit's
 		// own echo does.
-		if got := lastEntry(m); got.kind != kindUser || got.text != "file the last answer as a query page" {
+		if got := lastEntry(m); got.kind != kindUser || got.text != "save the last answer into the wiki" {
 			t.Fatalf("last entry = %#v, want the filing echo", got)
 		}
 		if m.input != "" {
@@ -203,8 +203,8 @@ func TestFileKey(t *testing.T) {
 
 	// after_filing_turn_says_filed is C-909's case (§3.3 rule 3a): after a
 	// filing turn, ctrl+s no longer answers with the unsourced refusal —
-	// which was false — but names the answer as already filed, reviewable
-	// with ctrl+r.
+	// which was false — but names the answer as already saved, reviewable
+	// with ctrl+r (wording amended per D-13B).
 	t.Run("after_filing_turn_says_filed", func(t *testing.T) {
 		_, engine, _ := queryVault(t)
 		ag := &fakeTurnAgent{
@@ -235,7 +235,7 @@ func TestFileKey(t *testing.T) {
 			t.Fatal("ctrl+s after a filing turn started a turn")
 		}
 		if got := lastEntry(m); got.kind != kindStatus ||
-			got.text != "this answer was already filed — review it with ctrl+r" {
+			got.text != "this answer was already saved — review it with ctrl+r" {
 			t.Fatalf("last entry = %#v, want the already-filed notice", got)
 		}
 	})
@@ -259,7 +259,7 @@ func TestFileKey(t *testing.T) {
 		}
 		echo := m.entries[len(m.entries)-2]
 		status := lastEntry(m)
-		if echo.kind != kindUser || echo.text != "file the last answer as a query page" {
+		if echo.kind != kindUser || echo.text != "save the last answer into the wiki" {
 			t.Fatalf("second-to-last entry = %#v, want the filing echo", echo)
 		}
 		if status.kind != kindStatus || !strings.Contains(status.text, "no agent is configured") {
