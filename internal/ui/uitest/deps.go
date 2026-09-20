@@ -35,7 +35,12 @@ func Deps(v *Vault, dark bool, ag agent.Agent) ui.Deps {
 	return ui.Deps{
 		Engine: v.Engine,
 		Agent:  ag,
-		Theme:  theme.WithDark(dark),
-		Keys:   keys,
+		// cmd/lw sets WebSearch from webConfigured(cfg), and a fixture vault
+		// never carries a [web] table — mirror the configured state so the
+		// ask pane's unconfigured hint stays out of every pinned frame
+		// (012 contract §5; R-12A finding 5).
+		WebSearch: true,
+		Theme:     theme.WithDark(dark),
+		Keys:      keys,
 	}
 }

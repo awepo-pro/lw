@@ -1,7 +1,8 @@
 package agent
 
 // carried_test.go is 009 contract §1's tests for the Record.Carried flag and
-// the two filing paragraphs §1.3 adds to systemPrompt. The store in every
+// the two filing paragraphs §1.3 adds to the system prompt (012 D-12B: pinned
+// on the without-search assembly, systemPromptFor(false)). The store in every
 // round-trip is a real NewFileSessions over a temp vault — no fake of the
 // store (MASTER §5, T-A assertions).
 
@@ -15,8 +16,8 @@ import (
 )
 
 // filingParagraph and nameHintParagraph are 009 contract §1.3's two prompt
-// paragraphs, byte for byte; promptFilingTest asserts systemPrompt carries
-// them verbatim.
+// paragraphs, byte for byte; promptFilingTest asserts the system prompt
+// carries them verbatim.
 const (
 	filingParagraph   = `When asked to file an answer as a query page, first read the existing query pages you are given and run wiki.search with type "query"; if one already answers the same question, update it with stage.patch_page instead of creating a second page. Otherwise stage.create_page under wiki/queries/ with type: query. Keep every provenance marker from the answer; a claim that carried no marker, or sat under "Not from your vault:", stays out of the page. sources: lists raw paths only: for a claim marked with a wiki page, use that page's own sources.`
 	nameHintParagraph = `When a source's title has no Latin letters, pass stage.ingest_source a short English slug in name, e.g. "quaternion-introduction"; it is used only when the title gives no usable file name.`

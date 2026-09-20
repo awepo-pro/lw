@@ -438,7 +438,9 @@ in full.
 
 Context assembled per turn:
 
-1. **System prompt** — the curator role and operating procedure. Static.
+1. **System prompt** — the curator role and operating procedure. Static per
+   session; since 012 its two web-lookup paragraphs are included only when the
+   vault's registry actually offers `web.search`.
 2. **`curator-memory.md`** — verbatim. Small by design (D8).
 3. **Orientation digest** — from `vault.orient()`, injected once per session, refreshed
    if `index.md` changes.

@@ -67,7 +67,7 @@ func TestContextOrder(t *testing.T) {
 	// The registry below wires no Search provider, so the prompt must be
 	// the without-search assembly (012 contract §1).
 	if msgs[0].Role != "system" || msgs[0].Content != systemPromptFor(false) {
-		t.Errorf("msgs[0] = %+v, want the static system prompt", msgs[0])
+		t.Errorf("msgs[0] = %+v, want the without-search system prompt", msgs[0])
 	}
 	if msgs[1].Role != "system" || msgs[1].Content != string(memory) {
 		t.Errorf("msgs[1] = %+v, want curator-memory.md verbatim: %q", msgs[1], string(memory))
