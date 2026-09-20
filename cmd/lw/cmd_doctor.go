@@ -222,6 +222,7 @@ func cmdDoctor(args []string) error {
 	if err != nil {
 		return err
 	}
+	attachLoggingAt(root) // read-only: join the trail, never create it
 
 	rep := runDoctor(context.Background(), root, doctorOptions{
 		unlock:           *unlock,

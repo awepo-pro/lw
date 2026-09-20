@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 )
@@ -124,8 +125,13 @@ func (c *Client) newHTTPRequest(ctx context.Context, req Request) (*http.Request
 // body cannot be replayed, is skipped in favor of returning the original
 // error.
 func (c *Client) do(httpReq *http.Request) (*http.Response, error) {
+	// The file log's request line (010 contract §0): model, endpoint and
+	// the body's byte count — never the body, which carries the prompt and
+	// the API key's Authorization header stays out of it entirely.
+	slog.Info("llm request", "model", c.cfg.Model, "url", httpReq.URL.String(), "prompt_bytes", httpReq.ContentLength)
 	resp, err := c.httpClient.Do(httpReq)
 	if err == nil {
+		slog.Info("llm response", "status", resp.StatusCode)
 		return resp, nil
 	}
 	if httpReq.Context().Err() != nil || httpReq.GetBody == nil {
@@ -136,5 +142,10 @@ func (c *Client) do(httpReq *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 	httpReq.Body = body
-	return c.httpClient.Do(httpReq)
+	resp, err = c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	slog.Info("llm response", "status", resp.StatusCode)
+	return resp, nil
 }

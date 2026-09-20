@@ -53,6 +53,7 @@ func cmdLint(args []string) error {
 	if err != nil {
 		return err
 	}
+	attachLoggingAt(root) // the report path is read-only: join, never create
 
 	v, err := vault.Open(root)
 	if err != nil {
@@ -101,6 +102,7 @@ func runLintFix(vaultPath, checksFlag string) error {
 	if err != nil {
 		return err
 	}
+	initLoggingAt(root)
 
 	e, err := stage.OpenEngine(root)
 	if err != nil {

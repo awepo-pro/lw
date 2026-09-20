@@ -46,6 +46,7 @@ func cmdStage(args []string) error {
 	if err != nil {
 		return err
 	}
+	initLoggingAt(root)
 
 	e, err := stage.OpenEngine(root)
 	if err != nil {
