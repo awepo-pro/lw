@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -199,9 +200,13 @@ func (t *Tavily) Search(ctx context.Context, query string, max int) ([]SearchHit
 		se := &SearchError{Status: resp.StatusCode}
 		if resp.StatusCode == http.StatusTooManyRequests {
 			// Retry-After is parsed only on a 429, only as integer seconds
-			// (017 F-A4); absent, non-integer or negative stays 0. Tavily
-			// sends no reset date, so none is invented.
-			if secs, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil && secs > 0 {
+			// (017 F-A4); absent, non-integer, negative or too-large stays
+			// 0 — a value past the seconds that fit in an int64 of
+			// nanoseconds overflows the multiply, so it is garbage from a
+			// broken or hostile server and is dropped like any other junk.
+			// Tavily sends no reset date, so none is invented.
+			if secs, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil &&
+				int64(secs) > 0 && int64(secs) <= math.MaxInt64/int64(time.Second) {
 				se.RetryAfter = time.Duration(secs) * time.Second
 			}
 		}

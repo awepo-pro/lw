@@ -273,6 +273,8 @@ func TestTavilyRateLimitRetryAfter(t *testing.T) {
 		{"integer_seconds", map[string]string{"Retry-After": "30"}, 30 * time.Second},
 		{"garbage", map[string]string{"Retry-After": "soon"}, 0},
 		{"absent", nil, 0},
+		{"negative", map[string]string{"Retry-After": "-5"}, 0},
+		{"past_int64_seconds", map[string]string{"Retry-After": "10000000000"}, 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
