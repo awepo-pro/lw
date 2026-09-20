@@ -308,20 +308,23 @@ func TestFinishRecord(t *testing.T) {
 
 func TestPromptRawRules(t *testing.T) {
 	t.Run("prompt_contains_rule_verbatim", func(t *testing.T) {
+		// The raw-source rule sits in the prompt's unconditional base since
+		// 012 (D-12B), so the pin holds on every vault.
+		prompt := systemPromptFor(false)
 		const want = "A raw source you were asked to ingest is the only source for that ingest: never read, cite or patch from a different raw file in its place. If stage.ingest_source fails, stop and report the error instead of working around it; use raw.list to find a raw source whose path you do not know."
-		if !strings.Contains(systemPrompt, want) {
-			t.Fatalf("systemPrompt does not contain contract §1's raw-source rule byte for byte:\n%s", systemPrompt)
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("systemPromptFor(false) does not contain contract §1's raw-source rule byte for byte:\n%s", prompt)
 		}
 		// Its own paragraph: the sentence block is delimited by newlines on
 		// both sides, not glued onto a neighbouring rule.
-		i := strings.Index(systemPrompt, want)
+		i := strings.Index(prompt, want)
 		if i == -1 {
 			t.Fatal("unreachable: Contains above proved the text present")
 		}
-		if i > 0 && systemPrompt[i-1] != '\n' {
+		if i > 0 && prompt[i-1] != '\n' {
 			t.Error("the rule does not start its own paragraph")
 		}
-		if end := i + len(want); end < len(systemPrompt) && systemPrompt[end] != '\n' {
+		if end := i + len(want); end < len(prompt) && prompt[end] != '\n' {
 			t.Error("the rule does not end its own paragraph")
 		}
 	})
@@ -331,20 +334,23 @@ func TestPromptRawRules(t *testing.T) {
 // prompt must say, byte for byte and on a line of its own, that index.md
 // is derived — agents kept patching it by hand.
 func TestSystemPromptIndexRule(t *testing.T) {
+	// The index.md rule sits in the prompt's unconditional base since 012
+	// (D-12B), so the pin holds on every vault.
+	prompt := systemPromptFor(false)
 	const want = "index.md is derived by the engine: every stage.create_page adds its index line automatically, so never patch or create index.md."
-	if !strings.Contains(systemPrompt, want) {
-		t.Fatalf("systemPrompt does not contain A-805's index.md rule byte for byte:\n%s", systemPrompt)
+	if !strings.Contains(prompt, want) {
+		t.Fatalf("systemPromptFor(false) does not contain A-805's index.md rule byte for byte:\n%s", prompt)
 	}
 	// Its own line: delimited by newlines on both sides, never glued onto
 	// a neighbouring rule.
-	i := strings.Index(systemPrompt, want)
+	i := strings.Index(prompt, want)
 	if i == -1 {
 		t.Fatal("unreachable: Contains above proved the text present")
 	}
-	if i > 0 && systemPrompt[i-1] != '\n' {
+	if i > 0 && prompt[i-1] != '\n' {
 		t.Error("the index.md rule does not start its own line")
 	}
-	if end := i + len(want); end < len(systemPrompt) && systemPrompt[end] != '\n' {
+	if end := i + len(want); end < len(prompt) && prompt[end] != '\n' {
 		t.Error("the index.md rule does not end its own line")
 	}
 }
@@ -356,29 +362,32 @@ func TestSystemPromptIndexRule(t *testing.T) {
 // unanswered. Byte for byte, on a line of its own, immediately after the
 // A-805 index.md rule.
 func TestSystemPromptOutsideVaultRule(t *testing.T) {
+	// The out-of-vault rule closes the prompt's unconditional base since
+	// 012 (D-12B), so the pin holds on every vault.
+	prompt := systemPromptFor(false)
 	const want = "If neither the wiki nor the raw sources answer a question, say so in one sentence, then answer from your own knowledge under a first line that reads exactly \"Not from your vault:\"; carry no provenance marker on those claims, and say plainly when the topic may be newer than your training data."
-	if !strings.Contains(systemPrompt, want) {
-		t.Fatalf("systemPrompt does not contain A-806's out-of-vault rule byte for byte:\n%s", systemPrompt)
+	if !strings.Contains(prompt, want) {
+		t.Fatalf("systemPromptFor(false) does not contain A-806's out-of-vault rule byte for byte:\n%s", prompt)
 	}
 	// Its own line: delimited by newlines on both sides, never glued onto
 	// a neighbouring rule.
-	i := strings.Index(systemPrompt, want)
+	i := strings.Index(prompt, want)
 	if i == -1 {
 		t.Fatal("unreachable: Contains above proved the text present")
 	}
-	if i > 0 && systemPrompt[i-1] != '\n' {
+	if i > 0 && prompt[i-1] != '\n' {
 		t.Error("the out-of-vault rule does not start its own line")
 	}
-	if end := i + len(want); end < len(systemPrompt) && systemPrompt[end] != '\n' {
+	if end := i + len(want); end < len(prompt) && prompt[end] != '\n' {
 		t.Error("the out-of-vault rule does not end its own line")
 	}
 	// And placed straight after A-805's index.md rule, per the contract.
 	const indexRule = "index.md is derived by the engine: every stage.create_page adds its index line automatically, so never patch or create index.md."
-	j := strings.Index(systemPrompt, indexRule)
+	j := strings.Index(prompt, indexRule)
 	if j == -1 {
-		t.Fatal("precondition: the A-805 index.md rule is missing from systemPrompt")
+		t.Fatal("precondition: the A-805 index.md rule is missing from systemPromptFor(false)")
 	}
-	if gap := systemPrompt[j+len(indexRule) : i]; gap != "\n" {
+	if gap := prompt[j+len(indexRule) : i]; gap != "\n" {
 		t.Errorf("the out-of-vault rule is not immediately after the index.md rule (gap %q)", gap)
 	}
 }

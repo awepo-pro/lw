@@ -52,7 +52,8 @@ func NewContextBuilder(v *vault.Vault, r *tools.Registry, budget int) *ContextBu
 // Build assembles one turn's messages for session s plus the new userMsg,
 // in backbone §9's exact order (/docs/design.md §11.3):
 //
-//  1. the system prompt (prompt.go, static);
+//  1. the system prompt (prompt.go — its web-lookup paragraphs only when
+//     this builder's registry offers web.search, 012 D-12B);
 //  2. curator-memory.md, verbatim;
 //  3. the orientation digest — vault.orient's Result.Content, injected once
 //     per session and refreshed only when index.md's content changes;
@@ -69,8 +70,13 @@ func (b *ContextBuilder) Build(s *Session, userMsg string) ([]llm.Message, error
 		return nil, fmt.Errorf("agent: build context: %w", err)
 	}
 
+	// The registry is the truth about what the vault can do: the prompt
+	// promises web.search only when the registry itself offers the verb
+	// (012 contract §1) — never a constructor parameter, never a stored
+	// field.
+	_, hasSearch := b.r.Get("web.search")
 	msgs := []llm.Message{
-		{Role: "system", Content: systemPrompt},
+		{Role: "system", Content: systemPromptFor(hasSearch)},
 		{Role: "system", Content: string(memory)},
 		{Role: "system", Content: digest},
 	}

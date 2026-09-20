@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/awepo-pro/lw/internal/testutil"
 	"github.com/awepo-pro/lw/internal/tools"
 	"github.com/awepo-pro/lw/internal/vault"
+	"github.com/awepo-pro/lw/internal/web"
 )
 
 // newTestVault copies spec/fixtures/minimal into a private temp directory
@@ -62,7 +64,9 @@ func TestContextOrder(t *testing.T) {
 		t.Fatalf("len(msgs) = %d, want 6 (system, memory, orient, 2 history, user); got %+v", len(msgs), msgs)
 	}
 
-	if msgs[0].Role != "system" || msgs[0].Content != systemPrompt {
+	// The registry below wires no Search provider, so the prompt must be
+	// the without-search assembly (012 contract §1).
+	if msgs[0].Role != "system" || msgs[0].Content != systemPromptFor(false) {
 		t.Errorf("msgs[0] = %+v, want the static system prompt", msgs[0])
 	}
 	if msgs[1].Role != "system" || msgs[1].Content != string(memory) {
@@ -172,4 +176,52 @@ func TestBuildCompactsHistoryOverBudget(t *testing.T) {
 	if msgs[len(msgs)-1].Content != "go" {
 		t.Fatalf("last message = %+v, want the user message", msgs[len(msgs)-1])
 	}
+}
+
+// stubSearchProvider is the non-nil web.SearchProvider that makes a test
+// registry offer web.search; its results are never read — only the prompt's
+// reaction to the verb's presence is under test (012 contract §1).
+type stubSearchProvider struct{}
+
+func (stubSearchProvider) Search(ctx context.Context, query string, max int) ([]web.SearchHit, error) {
+	return []web.SearchHit{{Title: "stub", URL: "https://example.com/stub", Snippet: "stub snippet"}}, nil
+}
+
+// TestBuildContextWebSearch pins 012 contract §1's wiring: Build derives
+// hasSearch from its own registry — never a new constructor parameter, never
+// a stored field — so the first system message carries the web-lookup
+// paragraphs only when the registry actually offers web.search.
+func TestBuildContextWebSearch(t *testing.T) {
+	v, _ := newTestVault(t)
+	s := &Session{ID: "cs-websearch", ChangesetID: "cs-websearch"}
+
+	t.Run("without_search", func(t *testing.T) {
+		b := NewContextBuilder(v, tools.NewRegistry(tools.Deps{Vault: v}), 100_000)
+		msgs, err := b.Build(s, "hello")
+		if err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+		if strings.Contains(msgs[0].Content, "web.search") {
+			t.Fatalf("a registry without a Search provider produced a prompt promising web.search:\n%s", msgs[0].Content)
+		}
+	})
+
+	t.Run("with_search", func(t *testing.T) {
+		b := NewContextBuilder(v, tools.NewRegistry(tools.Deps{Vault: v, Search: stubSearchProvider{}}), 100_000)
+		msgs, err := b.Build(s, "hello")
+		if err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+		search := strings.Index(msgs[0].Content, webSearchRule)
+		if search < 0 {
+			t.Fatalf("a registry with a Search provider produced a prompt without the search rule:\n%s", msgs[0].Content)
+		}
+		injection := strings.Index(msgs[0].Content, webInjectionRule)
+		if injection < 0 {
+			t.Fatalf("a registry with a Search provider produced a prompt without the injection rule:\n%s", msgs[0].Content)
+		}
+		if injection < search {
+			t.Fatalf("injection rule (at %d) precedes the search rule (at %d)", injection, search)
+		}
+	})
 }

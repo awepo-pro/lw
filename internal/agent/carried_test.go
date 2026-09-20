@@ -91,30 +91,35 @@ func TestCarriedRecord(t *testing.T) {
 }
 
 func TestPromptFiling(t *testing.T) {
+	// Both filing paragraphs sit in the prompt's unconditional tail since
+	// 012 (D-12B), so the pin uses the without-search assembly and holds on
+	// every vault, web-configured or not.
+	prompt := systemPromptFor(false)
+
 	// assertOwnParagraph fails unless the paragraph found at index i starts
 	// and ends its own paragraph: delimited by newlines on both sides,
 	// never glued onto a neighbour.
 	assertOwnParagraph := func(t *testing.T, para string, i int) {
 		t.Helper()
-		if i > 0 && systemPrompt[i-1] != '\n' {
+		if i > 0 && prompt[i-1] != '\n' {
 			t.Error("the paragraph does not start its own paragraph")
 		}
-		if end := i + len(para); end < len(systemPrompt) && systemPrompt[end] != '\n' {
+		if end := i + len(para); end < len(prompt) && prompt[end] != '\n' {
 			t.Error("the paragraph does not end its own paragraph")
 		}
 	}
 
 	t.Run("prompt_contains_filing_paragraph", func(t *testing.T) {
-		if !strings.Contains(systemPrompt, filingParagraph) {
-			t.Fatalf("systemPrompt does not contain contract §1.3's filing paragraph byte for byte:\n%s", systemPrompt)
+		if !strings.Contains(prompt, filingParagraph) {
+			t.Fatalf("systemPromptFor(false) does not contain contract §1.3's filing paragraph byte for byte:\n%s", prompt)
 		}
-		i := strings.Index(systemPrompt, filingParagraph)
+		i := strings.Index(prompt, filingParagraph)
 		assertOwnParagraph(t, filingParagraph, i)
 
 		// After the existing "Not from your vault:" sentence, per §1.3.
-		j := strings.Index(systemPrompt, outsideVaultRule)
+		j := strings.Index(prompt, outsideVaultRule)
 		if j == -1 {
-			t.Fatal("precondition: the A-806 out-of-vault rule is missing from systemPrompt")
+			t.Fatal("precondition: the A-806 out-of-vault rule is missing from systemPromptFor(false)")
 		}
 		if i < j+len(outsideVaultRule) {
 			t.Errorf("the filing paragraph does not come after the Not from your vault: sentence")
@@ -122,24 +127,24 @@ func TestPromptFiling(t *testing.T) {
 	})
 
 	t.Run("prompt_contains_name_hint", func(t *testing.T) {
-		if !strings.Contains(systemPrompt, nameHintParagraph) {
-			t.Fatalf("systemPrompt does not contain contract §1.3's name-hint paragraph byte for byte:\n%s", systemPrompt)
+		if !strings.Contains(prompt, nameHintParagraph) {
+			t.Fatalf("systemPromptFor(false) does not contain contract §1.3's name-hint paragraph byte for byte:\n%s", prompt)
 		}
-		i := strings.Index(systemPrompt, nameHintParagraph)
+		i := strings.Index(prompt, nameHintParagraph)
 		assertOwnParagraph(t, nameHintParagraph, i)
 
-		j := strings.Index(systemPrompt, outsideVaultRule)
+		j := strings.Index(prompt, outsideVaultRule)
 		if j == -1 {
-			t.Fatal("precondition: the A-806 out-of-vault rule is missing from systemPrompt")
+			t.Fatal("precondition: the A-806 out-of-vault rule is missing from systemPromptFor(false)")
 		}
 		if i < j+len(outsideVaultRule) {
 			t.Errorf("the name-hint paragraph does not come after the Not from your vault: sentence")
 		}
 
 		// Contract order: the filing paragraph first, the name hint second.
-		k := strings.Index(systemPrompt, filingParagraph)
+		k := strings.Index(prompt, filingParagraph)
 		if k == -1 {
-			t.Fatal("precondition: the filing paragraph is missing from systemPrompt")
+			t.Fatal("precondition: the filing paragraph is missing from systemPromptFor(false)")
 		}
 		if i < k {
 			t.Errorf("the name-hint paragraph comes before the filing paragraph; contract §1.3 lists the filing paragraph first")
