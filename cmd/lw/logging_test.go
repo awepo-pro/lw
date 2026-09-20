@@ -8,6 +8,7 @@ package main
 // lands under the explicit root, never under the cwd's vault.
 
 import (
+	"bytes"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -101,16 +102,26 @@ func TestCmdLoggingHelper(t *testing.T) {
 		prev := slog.Default()
 		t.Cleanup(func() { slog.SetDefault(prev) })
 
-		// Without a trail, attach is a no-op: a read-only verb on a
-		// state-less vault must not materialise .llmwiki (005 §4, doctor's
-		// fresh-vault check).
+		// Without a trail, attach creates nothing (005 §4, doctor's
+		// fresh-vault check) and lands the discard logger — the T-L review
+		// minor folded into T-D: a doctor probe on a trail-less vault must
+		// never fall to stderr (D-10B: never a terminal). The previous
+		// default is swapped for io.Discard, so a record that arrives
+		// anyway reaches nothing at all.
 		bare := t.TempDir()
+		var sink bytes.Buffer
+		sentinel := slog.New(slog.NewTextHandler(&sink, nil))
+		slog.SetDefault(sentinel)
 		attachLoggingAt(bare)
 		if _, err := os.Stat(filepath.Join(bare, ".llmwiki")); !os.IsNotExist(err) {
 			t.Fatalf("attachLoggingAt created state under a vault with none (stat err %v)", err)
 		}
-		if slog.Default() != prev {
-			t.Error("a no-op attach replaced slog.Default")
+		slog.Info("doctor probe on a trail-less vault")
+		if sink.Len() != 0 {
+			t.Errorf("a trail-less attach left records reaching the previous sink:\n%s", sink.String())
+		}
+		if slog.Default() == sentinel {
+			t.Error("a trail-less attach kept the previous default; want the discard logger installed")
 		}
 
 		// With a trail, attach installs it and records flow through.
@@ -129,4 +140,28 @@ func TestCmdLoggingHelper(t *testing.T) {
 			t.Errorf("attached logger does not write through:\n%s", b)
 		}
 	})
+}
+
+// TestCreateVerbsInstallLogging is the per-verb wiring tripwire (A-10-3):
+// every verb that can stage — ingest, commit, revert, stage, query, tui,
+// mcp, lint — must call initLoggingAt itself, right after its own
+// findVaultRoot succeeds, so an explicit --vault logs under the explicit
+// root and never under the cwd the fallback resolved (C-1009). The scan
+// reads each verb file directly, so a dropped install line fails here
+// loudly instead of surfacing as a mis-placed trail in the field.
+func TestCreateVerbsInstallLogging(t *testing.T) {
+	for _, verb := range []string{
+		"cmd_ingest", "cmd_commit", "cmd_revert", "cmd_stage",
+		"cmd_query", "cmd_tui", "cmd_mcp", "cmd_lint",
+	} {
+		t.Run(verb, func(t *testing.T) {
+			b, err := os.ReadFile(verb + ".go")
+			if err != nil {
+				t.Fatalf("read source: %v", err)
+			}
+			if !strings.Contains(string(b), "initLoggingAt(") {
+				t.Errorf("%s.go holds no initLoggingAt( call; its log trail would fall to the cwd fallback instead of the verb's own --vault root", verb)
+			}
+		})
+	}
 }

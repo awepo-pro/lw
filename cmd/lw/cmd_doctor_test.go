@@ -845,8 +845,9 @@ func TestDoctorProviderCheck(t *testing.T) {
 func TestMCPDepsCarryExtractor(t *testing.T) {
 	root := testutil.CopyFixture(t, "minimal")
 	e := openEngine(t, root)
+	webConfigEnv(t, "") // scratch XDG config: never the user's config.toml
 
-	deps := mcpDeps(e)
+	deps := mcpDeps(e, loadedConfig(t))
 	if deps.Extract == nil {
 		t.Fatal("mcp Deps.Extract is nil; stage_ingest_source would answer \"no extractor configured\" over MCP")
 	}

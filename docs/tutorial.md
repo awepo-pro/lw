@@ -435,7 +435,7 @@ api_key = "env:TAVILY_API_KEY"   # in your config.toml — see §3
 export TAVILY_API_KEY=tvly-...
 ```
 
-With the table present, `lw doctor`'s config check reports it on its own
+With `api_key` set, `lw doctor`'s config check reports it on its own
 line — `web: provider tavily, env:TAVILY_API_KEY (set)`, or `(missing)`
 while the variable is not exported; the key value itself is never printed.
 
@@ -838,7 +838,11 @@ full table of 14 checks and their severities.
 ## 12. Using lw from other agents
 
 `lw mcp` runs the same 18 tools over an MCP stdio server, for any client
-that brings its own model:
+that brings its own model. (The CLI's agent verbs offer a 19th,
+`web.search`, whenever `[web].api_key` is configured and resolves — §8's
+Web lookup. Over MCP the same rule holds: a configured server offers
+`web.search` as the 19th tool alongside the 18 vault tools, and with no
+provider wired it is simply not offered on either surface.)
 
 ```bash
 lw mcp            # from inside a vault

@@ -6,7 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -138,7 +137,10 @@ func cmdIngest(args []string) error {
 	// Extract every source before touching the staging engine at all: a
 	// bad source fails the whole command with nothing opened, rather than
 	// leaving a changeset with only some of the requested sources in it.
-	ex := extract.Chain(extract.NewHTML(&http.Client{Timeout: httpTimeout}), extract.NewFile())
+	// The HTML client is extract.NewHTTPClient — the house client (010
+	// contract §1) — the same one agent_deps.go builds the agents' chain
+	// and the web.search provider over.
+	ex := extract.Chain(extract.NewHTML(extract.NewHTTPClient(httpTimeout)), extract.NewFile())
 	ctx := context.Background()
 	docs := make([]*extract.Doc, 0, len(sources))
 	for _, src := range sources {

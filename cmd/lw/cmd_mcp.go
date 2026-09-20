@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/awepo-pro/lw/internal/config"
 	"github.com/awepo-pro/lw/internal/mcp"
 	"github.com/awepo-pro/lw/internal/stage"
 	"github.com/awepo-pro/lw/internal/tools"
@@ -35,7 +36,12 @@ func cmdMCP(args []string) error {
 	}
 	defer e.Close()
 
-	reg := tools.NewRegistry(mcpDeps(e))
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
+	reg := tools.NewRegistry(mcpDeps(e, cfg))
 	return mcp.Serve(context.Background(), reg, os.Stdin, os.Stdout)
 }
 
@@ -46,12 +52,19 @@ func cmdMCP(args []string) error {
 // way it does in-process: the two-consumers contract (backbone §6/§7)
 // promises the same tool surface to both, and without an extractor the
 // tool answers "no extractor configured" for every source.
-func mcpDeps(e *stage.Engine) tools.Deps {
+//
+// Search is webSearchProvider(cfg) (010 contract §4) — the same wiring the
+// CLI's agent verbs build agentToolDeps over — so a configured user's MCP
+// client is offered web.search too (the 19th tool), and an unconfigured one
+// simply never sees it. A-10-5: "the deps builders" in contract §4 is
+// plural and unqualified; parity means both consumers.
+func mcpDeps(e *stage.Engine, cfg *config.Config) tools.Deps {
 	return tools.Deps{
 		Vault:   e.Vault(),
 		Index:   e.Index(),
 		Engine:  e,
 		Extract: agentExtractors(),
+		Search:  webSearchProvider(cfg),
 		Author:  stage.Author{Kind: "agent", Model: "mcp"},
 	}
 }

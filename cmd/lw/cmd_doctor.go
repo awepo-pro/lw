@@ -323,6 +323,9 @@ func runDoctor(ctx context.Context, root string, o doctorOptions) doctorReport {
 
 	cfg, cfgErr := config.Load()
 	rep.Checks = append(rep.Checks, checkConfig(cfg, cfgErr))
+	if c := checkWeb(cfg, cfgErr); c != nil {
+		rep.Checks = append(rep.Checks, *c)
+	}
 	rep.Checks = append(rep.Checks, checkLLMBudget(cfg, cfgErr))
 	if o.probe {
 		rep.Checks = append(rep.Checks, checkProvider(ctx, cfg))
@@ -865,6 +868,73 @@ func checkConfig(cfg *config.Config, err error) doctorCheck {
 			Name:   name,
 			OK:     true,
 			Detail: fmt.Sprintf("api_key literal (set)%s — prefer env:NAME so the value is never stored in the config file", about),
+		}
+	}
+}
+
+// checkWeb reports the [web] lookup configuration (010 contract §4, C-1001)
+// as its own `web:` line: the provider name and the api_key reference —
+// `env:NAME (set|missing)`, or the literal/keyring forms as the config check
+// words them — never the key value itself. No configuration, no line: with
+// [web] absent or api_key empty, web.search is simply not offered and there
+// is nothing to report, so the check is nil rather than skipped. An unknown
+// provider, or a named key that cannot resolve, is a warn, not a failure:
+// the vault itself is healthy, and what is lost is one optional verb, with
+// the fix spelled out under the warning line.
+func checkWeb(cfg *config.Config, cfgErr error) *doctorCheck {
+	const name = "web"
+	if cfgErr != nil {
+		// The config check already reports the load failure with its
+		// remedy; whether a [web] table was meant to be there is not
+		// knowable from bytes that did not parse, so no web line.
+		return nil
+	}
+	if cfg.Web.Provider != "tavily" {
+		return &doctorCheck{
+			Name:   name,
+			OK:     true,
+			Warn:   true,
+			Detail: fmt.Sprintf("unknown provider %q", cfg.Web.Provider),
+			Remedy: "tavily is the only built-in provider — set it with lw config set web.provider tavily",
+		}
+	}
+	about := "provider " + cfg.Web.Provider
+	switch ref := cfg.Web.APIKey; {
+	case ref == "":
+		return nil
+	case strings.HasPrefix(ref, "env:"):
+		envName := strings.TrimPrefix(ref, "env:")
+		if v, ok := os.LookupEnv(envName); !ok || v == "" {
+			remedy := fmt.Sprintf("export %s, or point web.api_key at another variable with lw config set web.api_key env:NAME", envName)
+			if envName == "" {
+				// An `env:` reference with no name has nothing to export;
+				// name the broken reference rather than rendering `export ,`.
+				remedy = fmt.Sprintf("%q names no environment variable — point web.api_key at a set one: lw config set web.api_key env:NAME", ref)
+			}
+			return &doctorCheck{
+				Name:   name,
+				OK:     true,
+				Warn:   true,
+				Detail: fmt.Sprintf("%s, %s (missing)", about, ref),
+				Remedy: remedy,
+			}
+		}
+		return &doctorCheck{Name: name, OK: true, Detail: fmt.Sprintf("%s, %s (set)", about, ref)}
+	case strings.HasPrefix(ref, "keyring:"):
+		return &doctorCheck{
+			Name:   name,
+			OK:     true,
+			Warn:   true,
+			Detail: fmt.Sprintf("%s, %s: keyring references are not supported yet", about, ref),
+			Remedy: "store the key in the environment and reference it, e.g. lw config set web.api_key env:NAME",
+		}
+	default:
+		return &doctorCheck{
+			Name: name,
+			OK:   true,
+			// ref itself IS the reference the file holds; the resolved
+			// value is never printed.
+			Detail: fmt.Sprintf("%s, api_key literal (set)", about),
 		}
 	}
 }

@@ -59,7 +59,8 @@ var configFields = []configField{
 		set:     func(c *config.Config, v string) error { c.LLM.Model = v; return nil },
 		display: displayPlain},
 	{key: "llm.api_key", get: func(c *config.Config) string { return c.LLM.APIKey },
-		set: setAPIKey, display: displayAPIKey},
+		set:     setAPIKeyRef(func(c *config.Config) *string { return &c.LLM.APIKey }, "llm.api_key"),
+		display: displayAPIKey},
 	{key: "llm.temperature", get: func(c *config.Config) string { return strconv.FormatFloat(c.LLM.Temperature, 'g', -1, 64) },
 		set: func(c *config.Config, v string) error {
 			f, err := strconv.ParseFloat(v, 64)
@@ -78,6 +79,21 @@ var configFields = []configField{
 		display: displayPlain},
 	{key: "llm.limits.context_tokens", get: func(c *config.Config) string { return strconv.Itoa(c.Limits.ContextTokens) },
 		set:     setInt(func(c *config.Config) *int { return &c.Limits.ContextTokens }, "llm.limits.context_tokens"),
+		display: displayPlain},
+	{key: "web.provider", get: func(c *config.Config) string { return c.Web.Provider },
+		set: func(c *config.Config, v string) error {
+			if v != "tavily" {
+				return fmt.Errorf("web.provider: unknown provider %q — tavily is the only built-in", v)
+			}
+			c.Web.Provider = v
+			return nil
+		},
+		display: displayPlain},
+	{key: "web.api_key", get: func(c *config.Config) string { return c.Web.APIKey },
+		set:     setAPIKeyRef(func(c *config.Config) *string { return &c.Web.APIKey }, "web.api_key"),
+		display: displayAPIKey},
+	{key: "web.max_results", get: func(c *config.Config) string { return strconv.Itoa(c.Web.MaxResults) },
+		set:     setIntBounded(func(c *config.Config) *int { return &c.Web.MaxResults }, "web.max_results", 1, 10),
 		display: displayPlain},
 	{key: "theme", get: func(c *config.Config) string { return c.Theme },
 		set:     func(c *config.Config, v string) error { c.Theme = v; return nil },
@@ -102,6 +118,25 @@ func setInt(dst func(c *config.Config) *int, key string) func(*config.Config, st
 		n, err := strconv.Atoi(v)
 		if err != nil {
 			return fmt.Errorf("%s: want an integer, got %q", key, v)
+		}
+		*dst(c) = n
+		return nil
+	}
+}
+
+// setIntBounded returns setInt's setter with an accepted range: a value
+// outside min..max is refused before anything is written. web.max_results
+// carries the same 1..10 bound the web.search tool's schema puts on the
+// per-call argument (010 contract §3/§4), so a stored default can never
+// ask the provider for something the verb itself would refuse.
+func setIntBounded(dst func(c *config.Config) *int, key string, min, max int) func(*config.Config, string) error {
+	return func(c *config.Config, v string) error {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return fmt.Errorf("%s: want an integer, got %q", key, v)
+		}
+		if n < min || n > max {
+			return fmt.Errorf("%s: want %d..%d, got %d", key, min, max, n)
 		}
 		*dst(c) = n
 		return nil
@@ -168,20 +203,25 @@ func looksLikeSecret(v string) bool {
 	return len(v) >= 24 && !strings.ContainsAny(v, " \t:./-")
 }
 
-// setAPIKey stores an api_key reference. The indirection forms are stored
-// verbatim; a literal that looks like a key is refused, because it would land
-// unencrypted in a file every lw process reads and no diagnostic prints. A
-// literal that does not look like a key is stored (backbone §11 keeps it
-// legal) and is never echoed back by show or by this verb.
-func setAPIKey(c *config.Config, v string) error {
-	switch {
-	case v == "":
-		return fmt.Errorf("llm.api_key: an empty value leaves lw without credentials; point it at an environment variable instead: lw config set llm.api_key env:NAME")
-	case looksLikeSecret(v):
-		return fmt.Errorf("refusing to store an API key literal in %s — it would sit unencrypted on disk; export the key and reference the variable instead: lw config set llm.api_key env:NAME", configFilePath())
+// setAPIKeyRef returns the setter for an api_key field — llm.api_key and,
+// since 010, web.api_key share one reference discipline (A-10-5): the
+// indirection forms are stored verbatim; a literal that looks like a key is
+// refused, because it would land unencrypted in a file every lw process
+// reads and no diagnostic prints. A literal that does not look like a key is
+// stored (backbone §11 keeps it legal) and is never echoed back by show or
+// by this verb. key names the field in both error messages, so the fix each
+// one suggests is copy-pasteable.
+func setAPIKeyRef(dst func(c *config.Config) *string, key string) func(*config.Config, string) error {
+	return func(c *config.Config, v string) error {
+		switch {
+		case v == "":
+			return fmt.Errorf("%s: an empty value leaves lw without credentials; point it at an environment variable instead: lw config set %s env:NAME", key, key)
+		case looksLikeSecret(v):
+			return fmt.Errorf("refusing to store an API key literal in %s — it would sit unencrypted on disk; export the key and reference the variable instead: lw config set %s env:NAME", configFilePath(), key)
+		}
+		*dst(c) = v
+		return nil
 	}
-	c.LLM.APIKey = v
-	return nil
 }
 
 // cmdConfig shows the resolved configuration, sets one key, prints the config
@@ -248,10 +288,12 @@ keys:
   llm.base_url                llm.model
   llm.api_key                 llm.temperature
   llm.max_tokens              llm.limits.max_tool_rounds
-  llm.limits.context_tokens   theme
+  llm.limits.context_tokens   web.provider
+  web.api_key                 web.max_results
+  theme
 
-llm.api_key is stored as a reference, never a value: export the key and set
-the variable's name, e.g. lw config set llm.api_key env:LW_API_KEY.
+llm.api_key and web.api_key are stored as references, never values: export
+the key and set the variable's name, e.g. lw config set llm.api_key env:LW_API_KEY.
 A literal that looks like a key is refused.
 `)
 }
@@ -279,8 +321,8 @@ func configRows(cfg, def *config.Config) []configRow {
 		} else {
 			row.source = "default"
 		}
-		if f.key == "llm.api_key" && raw != "" && !strings.HasPrefix(raw, "env:") && !strings.HasPrefix(raw, "keyring:") {
-			row.note = "llm.api_key is stored in the config file; prefer an environment reference: lw config set llm.api_key env:NAME"
+		if isAPIKeyField(f.key) && raw != "" && !strings.HasPrefix(raw, "env:") && !strings.HasPrefix(raw, "keyring:") {
+			row.note = fmt.Sprintf("%s is stored in the config file; prefer an environment reference: lw config set %s env:NAME", f.key, f.key)
 		}
 		rows = append(rows, row)
 	}
@@ -367,29 +409,40 @@ func runConfigSet(key, value string) error {
 	return nil
 }
 
-// storedDescription is the confirmation's right-hand side. For llm.api_key it
-// is the reference that was stored, or a description rather than the value —
-// an api_key literal is never echoed, so the confirmation stays safe to paste
-// into a bug report. Every other key is echoed as set.
+// isAPIKeyField reports whether key is one of the api_key fields — llm.api_key
+// and web.api_key — which share the reference discipline end to end.
+func isAPIKeyField(key string) bool {
+	return key == "llm.api_key" || key == "web.api_key"
+}
+
+// storedDescription is the confirmation's right-hand side. For an api_key
+// field it is the reference that was stored, or a description rather than the
+// value — an api_key literal is never echoed, so the confirmation stays safe
+// to paste into a bug report. Every other key is echoed as set.
 func storedDescription(key, raw string) string {
-	if key == "llm.api_key" && raw != "" && !strings.HasPrefix(raw, "env:") && !strings.HasPrefix(raw, "keyring:") {
+	if isAPIKeyField(key) && raw != "" && !strings.HasPrefix(raw, "env:") && !strings.HasPrefix(raw, "keyring:") {
 		return "a literal value (not echoed)"
 	}
 	return raw
 }
 
 // warnUnresolvableKey says so when the key just stored cannot resolve in this
-// shell, rather than letting the failure surface as a broken ingest later.
+// shell, rather than letting the failure surface as a broken ingest (or a
+// silently absent web.search) later.
 func warnUnresolvableKey(w io.Writer, cfg *config.Config) {
-	ref := cfg.LLM.APIKey
-	switch {
-	case strings.HasPrefix(ref, "env:"):
-		name := strings.TrimPrefix(ref, "env:")
-		if v, ok := os.LookupEnv(name); !ok || v == "" {
-			fmt.Fprintf(w, "warning: %s is not set in this shell; lw cannot resolve the key until it is exported\n", name)
+	for _, k := range []struct {
+		key string
+		ref string
+	}{{"llm.api_key", cfg.LLM.APIKey}, {"web.api_key", cfg.Web.APIKey}} {
+		switch {
+		case strings.HasPrefix(k.ref, "env:"):
+			name := strings.TrimPrefix(k.ref, "env:")
+			if v, ok := os.LookupEnv(name); !ok || v == "" {
+				fmt.Fprintf(w, "warning: %s is not set in this shell; lw cannot resolve %s until it is exported\n", name, k.key)
+			}
+		case strings.HasPrefix(k.ref, "keyring:"):
+			fmt.Fprintf(w, "note: keyring: references are accepted but not implemented yet, so %s will not resolve; use env:NAME\n", k.key)
 		}
-	case strings.HasPrefix(ref, "keyring:"):
-		fmt.Fprintln(w, "note: keyring: references are accepted but not implemented yet, so this key will not resolve; use env:NAME")
 	}
 }
 
