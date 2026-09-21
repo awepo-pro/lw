@@ -1,9 +1,9 @@
 # Expected lint findings — `dirty/`
 
 Golden for **S1-T5** (`internal/lint`). `lint.Run` over this vault must
-produce exactly these 16 findings (sorted by `Path`, then `Line`, then
+produce exactly these 26 findings (sorted by `Path`, then `Line`, then
 `Check`, matching `lint.Report.Findings`'s ordering contract). Every one of
-the 14 checks in backbone §4 fires at least once. Severities match backbone
+the 15 checks in backbone §4 fires at least once. Severities match backbone
 §4's table exactly.
 
 | check | path | line | severity | why |
@@ -73,6 +73,5 @@ Workflow 014 added the `page-abstract` check (check 15, warn). The ten
 `page-abstract` rows above were produced by running the real check over this
 vault and inserted at their `Path`→`Line`→`Check` sorted positions; every
 pre-existing row is byte-unchanged. `malformed.md` has no row because it
-never parses into a `Page`. The header prose above ("exactly these 16
-findings", "all 14 checks") predates 014 and describes the pre-amendment
-golden; `page-abstract` fires 10 warn rows on top of those 16.
+never parses into a `Page`. The header prose above already reflects the
+amended golden (26 findings, 15 checks).

@@ -92,10 +92,10 @@ Enforced by code, not by prompt:
 ## 5. The 15 lint checks (backbone §4 `internal/lint`)
 
 Each check is independently testable (`check_<id>.go`); the set is fixed at
-14. `Severity` is `error`, `warn`, or `info`; only `error` blocks `lw commit`
+15 (`page-abstract` added by 014). `Severity` is `error`, `warn`, or `info`; only `error` blocks `lw commit`
 (`/docs/design.md §7`, `/docs/design.md §10`).
 
-These are the 14 checks of MASTER §9 **D-V**, plus check 15, `page-abstract`,
+Checks 1–14 come from MASTER §9 **D-V**; check 15, `page-abstract`, was
 added by 014 (wiki-page structure). Checks 1–11 enforce `/docs/design.md`
 §6's mechanical conventions; 12–14 come from the Hermes suite `/docs/design.md` §2
 cites. Hermes's *contradictions* check is deliberately absent — it requires

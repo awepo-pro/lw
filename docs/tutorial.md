@@ -182,7 +182,7 @@ taxonomy, and page-type conventions instead. What it lays down:
   deleting it loses history, not your notes.
 
 See [vault-schema.md](vault-schema.md) for the full layout, the frontmatter
-fields, and the 14 lint checks.
+fields, and the 15 lint checks.
 
 A freshly scaffolded vault is empty but valid:
 
@@ -345,8 +345,8 @@ stage every page `confidence: high`. When it is less sure — a page left at
 confidence set at all — the `fm-quality` check reports one **info**-level
 finding per page, suggesting you corroborate with another source or raise the
 confidence. **Info** never fails `lw lint`'s exit code; only an **error**-level
-finding does. See [vault-schema.md](vault-schema.md#the-14-lint-checks)
-for all 14 checks and their severities.
+finding does. See [vault-schema.md](vault-schema.md#the-15-lint-checks)
+for all 15 checks and their severities.
 
 **If you do not want the changeset at all**, there is no `lw reject` verb —
 discard it instead, either with `X` on the TUI's Review screen, or from the
@@ -836,8 +836,8 @@ Lint is the other health signal, and it is worth re-reading now that you
 have committed pages: **error** fails `lw lint`'s exit code, **warn** and
 **info** do not. A page with one source and `confidence: low` (§7 above) is
 an `info` — normal, not a problem to chase down before you have a second
-source. See [vault-schema.md](vault-schema.md#the-14-lint-checks) for the
-full table of 14 checks and their severities.
+source. See [vault-schema.md](vault-schema.md#the-15-lint-checks) for the
+full table of 15 checks and their severities.
 
 ## 12. Using lw from other agents
 

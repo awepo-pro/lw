@@ -19,7 +19,10 @@ const (
 // weights extended by 014 (backbone §3 amendment — 014 workflow §9): the
 // page's ## Abstract joins as a fourth field at x4, above title, so a page
 // is found by the summary it leads with. A page with no abstract section
-// contributes exactly zero from the field.
+// contributes exactly zero from the field. The abstract is a slice of the
+// body, so its terms also count ×1 in the body field: an abstract hit
+// weighs effectively ×5 (4+1), not ×4 — and the 4-vs-3 ordering above
+// title holds a fortiori.
 const (
 	bodyWeight     = 1
 	tagWeight      = 2
