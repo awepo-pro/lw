@@ -365,7 +365,7 @@ lw commit -m "…"                   apply (refuses if lint regresses, --force o
 lw log [--rejected] [--agent]      journal query
 lw revert <commit-id>              stage the inverse
 lw query "…"                       one-shot answer with citations
-lw lint [--fix]                    --fix asks the agent; result still stages
+lw lint [--fix]                    --fix asks the agent, one page per round; result still stages
 lw mcp                             stdio MCP server for external clients
 lw doctor                          verify index, hashes, provider reachability
 ```

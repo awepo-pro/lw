@@ -201,12 +201,17 @@ func validateNonPagePatch(op Op, v *vault.Vault) error {
 	return checkRootFileOneWriter(v, op.Path)
 }
 
-// checkRootFileOneWriter is OQ-9's L2, forward direction: refuse when an
-// automatic writer — a rename_page/merge_pages cascade (cascadeRoots,
-// op.go) or a create_page's index.md derivation (derive.go rule (a)) —
-// already live in the SAME open changeset also targets path. The message
-// names the other op's id and kind (OQ-9 §7 L2): a refusal the reviewer
-// cannot act on is a worse defect than the collision.
+// checkRootFileOneWriter is OQ-9's L2, forward direction: refuse when a
+// writer — an automatic one (a rename_page/merge_pages cascade,
+// cascadeRoots, op.go; a create_page's index.md derivation, derive.go rule
+// (a)) or another direct patch_page on the same file (020 FIX-1) — already
+// live in the SAME open changeset also targets path. The message names the
+// other op's id and kind (OQ-9 §7 L2): a refusal the reviewer cannot act
+// on is a worse defect than the collision. The patch-vs-patch arm exists
+// because root files cannot chain: both patches validate against the
+// working tree and carry the same committed Before, so without the guard
+// the second would be accepted and then force-flipped StateStale by the
+// first Refresh with a false "the working tree changed" cause.
 //
 // Reading the changeset straight off disk, via v.Root(), is this
 // function's only option: ValidateOp's signature is frozen at
@@ -223,10 +228,11 @@ func validateNonPagePatch(op Op, v *vault.Vault) error {
 // no changeset is open, there is nothing to collide with: nil, nil.
 //
 // v is always e.vault (never a projection) for this call, because
-// Append's cv-selection switch (engine_changeset.go) only overrides cv
-// for OpRenamePage/OpMergePages — a patch_page's Before must match the
-// literal working tree, not a projected view — so v.Root() is reliable
-// here on every call, regardless of what else is already live.
+// Append's cv-selection switch (engine_changeset.go) keeps cv = e.vault
+// for a patch_page on a known root file just as it does for a patch_page
+// generally — a patch_page's Before must match the literal working tree,
+// not a projected view — so v.Root() is reliable here on every call,
+// regardless of what else is already live.
 //
 // Direction (S4-T0 repair-1, closing the gap runs/S4-T0-rootfile-patch/
 // report.md flagged): this is one half of OQ-9's L2. The other half —
@@ -288,12 +294,22 @@ func checkNewWriterOneWriter(v *vault.Vault, newOp Op) error {
 
 // writesRootFile is OQ-9 L2's single "do these two ops collide"
 // predicate: it reports whether writer — a rename_page, merge_pages, or
-// create_page op — automatically writes path. Both directions of the
-// one-writer guard reduce to this one call (rootFileWriterConflict below,
-// checking a proposed root-file patch against earlier live writers, and
+// create_page op writing automatically, or a patch_page op writing the
+// file directly — writes path. Both directions of the one-writer guard
+// reduce to this one call (rootFileWriterConflict below, checking a
+// proposed root-file patch against earlier live writers, and
 // newWriterConflict, checking a proposed writer against an earlier live
 // root-file patch), so the two directions cannot describe "collides" two
 // different ways and drift apart.
+//
+// The OpPatchPage case (020 FIX-1) closes the same F-4 "two writers of one
+// path" class for ROOT files that chained content ops closed for wiki
+// paths: root patches validate against the working tree (Append's root-file
+// exception keeps cv = e.vault), so two patches on one root file both carry
+// the committed Before and cannot chain — the second must be refused, or
+// the first Refresh force-flips it StateStale with a false cause. In the
+// mirror direction this case is dead code today: checkNewWriterOneWriter's
+// newOp is always a rename_page/merge_pages/create_page, never a patch.
 //
 // Retract and split_page derive nothing into index.md themselves
 // (derive.go's header comment rules (b)/(c)); split_page's own
@@ -316,21 +332,26 @@ func writesRootFile(writer Op, path string) bool {
 		}
 	case OpCreatePage:
 		return path == "index.md"
+	case OpPatchPage:
+		return writer.Path == path
 	}
 	return false
 }
 
 // autoWriterMechanism names, for a refusal message, HOW kind writes a
-// root file automatically — "cascade" for rename_page/merge_pages,
-// "index derivation" for create_page — so rootFileWriterConflict and
-// newWriterConflict describe the same writer the same way instead of
-// inlining the label twice and letting the two wordings drift apart.
+// root file — "cascade" for rename_page/merge_pages, "index derivation"
+// for create_page, "patch" for a direct patch_page — so
+// rootFileWriterConflict and newWriterConflict describe the same writer
+// the same way instead of inlining the label twice and letting the two
+// wordings drift apart.
 func autoWriterMechanism(kind OpKind) string {
 	switch kind {
 	case OpRenamePage, OpMergePages:
 		return "cascade"
 	case OpCreatePage:
 		return "index derivation"
+	case OpPatchPage:
+		return "patch"
 	default:
 		return "write"
 	}

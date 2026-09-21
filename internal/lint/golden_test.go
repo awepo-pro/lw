@@ -29,8 +29,10 @@ func openFixtureContext(t *testing.T, name string) *lint.Context {
 }
 
 // TestMinimalIsClean asserts lint.Run finds nothing at all over
-// spec/fixtures/minimal, which was independently re-verified against all 14
-// checks at S1 stage entry (s1-vault-engine.md's cross-check note). A
+// spec/fixtures/minimal, which was independently re-verified at S1 stage
+// entry against the then-14-check set (s1-vault-engine.md's cross-check
+// note). The set is 16 checks today (page-abstract joined in 014,
+// duplicate-section in 020) and minimal still carries zero findings. A
 // finding here is this subtask's bug, not a fixture problem.
 func TestMinimalIsClean(t *testing.T) {
 	ctx := openFixtureContext(t, "minimal")
@@ -45,7 +47,8 @@ func TestMinimalIsClean(t *testing.T) {
 }
 
 // TestDirtyGolden asserts lint.Run over spec/fixtures/dirty reproduces all
-// 26 rows of EXPECTED-LINT.md exactly, across all 15 checks — same order
+// 26 rows of EXPECTED-LINT.md exactly, across the first 15 of the 16 checks
+// (duplicate-section, check 16, fires 0 times on the fixtures — 020) — same order
 // (already Path/Line/Check sorted by Run), same Path, Line, Severity and
 // Message. Comparison is done in memory against a hard-coded golden, never
 // through testutil's golden-file helper against a path under

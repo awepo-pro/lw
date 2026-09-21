@@ -122,15 +122,37 @@ func TestDiffRender(t *testing.T) {
 		// position, from the LAST entry — the write Commit materializes
 		// (C25/D-3P: the body source is FileDiff.New of that last entry,
 		// so "[x]" proves the last op's patch is what renders).
+		//
+		// 020 T-A: the third op chains its Before on the second op's
+		// staged After, read through StagedFile/Current — the committed
+		// sha would be an unchained Before on a staged path, which the
+		// engine now refuses. (Amended outside T-A's file set; see
+		// runs/T-A/report.md "Blockers".)
 		e, err := stage.OpenEngine(root)
 		if err != nil {
 			t.Fatalf("OpenEngine: %v", err)
 		}
-		kvCache, ok := e.Vault().Page("wiki/concepts/kv-cache.md")
-		if !ok {
-			t.Fatal("minimal fixture missing wiki/concepts/kv-cache.md")
+		stagedKV, found, err := e.StagedFile("wiki/concepts/kv-cache.md")
+		if err != nil {
+			t.Fatalf("StagedFile: %v", err)
 		}
-		oldKVCache := string(kvCache.Serialize())
+		if !found {
+			t.Fatal("test setup: no staged kv-cache.md content to chain on")
+		}
+		cur, err := e.Current()
+		if err != nil {
+			t.Fatalf("Current: %v", err)
+		}
+		headAfter := ""
+		for _, op := range cur.Live() {
+			if op.Kind == stage.OpPatchPage && op.Path == "wiki/concepts/kv-cache.md" {
+				headAfter = op.After
+			}
+		}
+		if headAfter == "" {
+			t.Fatal("test setup: no live kv-cache.md patch whose After to chain on")
+		}
+		oldKVCache := string(stagedKV)
 		newKVCache := strings.Replace(oldKVCache,
 			"- [[speculative-decoding]] — both the draft and target model read the cache",
 			"- [[speculative-decoding]] — both the draft and target model read the cache [x]",
@@ -147,7 +169,7 @@ func TestDiffRender(t *testing.T) {
 			Kind:      stage.OpPatchPage,
 			Path:      "wiki/concepts/kv-cache.md",
 			Section:   "## Related",
-			Before:    kvCache.SHA256(),
+			Before:    headAfter,
 			Content:   []byte(newKVCache),
 			Hunks:     hunks,
 			Rationale: "test fixture",

@@ -129,22 +129,44 @@ func canonicalSHA(v *vault.Vault, p string) (string, bool) {
 //	add_link                          either endpoint no longer exists
 //	retract                           the path no longer exists
 //
-// It only ever flips State to StateStale — Hunks and their Dropped flags
-// are left exactly as last computed (D-AJ).
+// State is DERIVED here, never free-running: it is set to StateStale when
+// the anchor no longer matches and CLEARED back to StateProposed when the
+// anchor re-matches — 020 amendment A20-1 to D-AJ's "only ever flips TO
+// StateStale", without which a reviewer's transient drop→undrop of one
+// hunk left every chained dependent stale forever, commit refused, the
+// only escape discarding the reviewed edit. Dropped and Rejected stay
+// terminal: the early return above keeps this pass from touching them.
+// Hunks and their Dropped flags are left exactly as last computed (D-AJ).
 //
-// Two vaults, not one (MASTER §10 OR-13, closing OQ-10). A top-level op's
-// staleness anchor is the WORKING TREE — that is what captureSourceSHAs
-// hashed and what "the tree changed under this proposal" means — so those
-// rules read v. A cascade sub-op's Before is the sha of the tree the op it
-// belongs to will actually apply to, which since OR-13 is the projection
-// of the changeset's preceding live ops, not the working tree; those rules
-// read cascadeV. For the first op of a changeset the two are the same
-// vault, which is why every single-op changeset behaves exactly as before.
+// Three anchor cases, not one (MASTER §10 OR-13 closing OQ-10; 020 T-A
+// adding the middle case):
 //
-// cascadeV is still derived from a fresh read of the working tree (see
+//   - a TOP-LEVEL UNCHAINED op anchors on the working tree v: its inputs
+//     were captured from disk (Before via canonicalContent, SourceSHAs via
+//     captureSourceSHAs), so "the tree changed under this proposal" means
+//     the disk changed.
+//   - a TOP-LEVEL CHAINED patch_page anchors on chainV — the projection of
+//     the live ops preceding it — because its Before is the STAGED sha of
+//     its predecessor's post-image, which the working tree does not hold.
+//     Reading v there would flag every intact chain stale on the first
+//     Refresh; reading chainV still catches an external edit to the chain
+//     head, whose sha propagates through the projection. For a path no
+//     preceding live op touches, the projection seeds it from disk, so
+//     this case is byte-identical to the first and every single-op
+//     changeset behaves exactly as before.
+//   - a CASCADE SUB-OP anchors on chainV too (OR-13): its Before is the
+//     sha of the tree the op it belongs to will actually apply to.
+//
+// create_page, ingest_source and the structural kinds keep the working-tree
+// anchor even when a predecessor is live: their staleness questions ("the
+// target path now exists", "a source page changed") are questions about
+// the disk, and a create_page followed by its own patch_page must not read
+// its own staged page as "already exists".
+//
+// chainV is still derived from a fresh read of the working tree (see
 // projectedTree), so an external edit to a file no preceding op touched
 // still registers as staleness through it.
-func refreshOp(op *Op, v, cascadeV *vault.Vault) {
+func refreshOp(op *Op, v, chainV *vault.Vault) {
 	if op.State == StateDropped || op.State == StateRejected {
 		return
 	}
@@ -152,7 +174,7 @@ func refreshOp(op *Op, v, cascadeV *vault.Vault) {
 	stale := false
 	switch op.Kind {
 	case OpPatchPage:
-		cur, ok := canonicalSHA(v, op.Path)
+		cur, ok := canonicalSHA(chainV, op.Path)
 		stale = !ok || cur != op.Before
 	case OpCreatePage, OpIngestSource:
 		stale = v.Exists(op.Path)
@@ -169,10 +191,12 @@ func refreshOp(op *Op, v, cascadeV *vault.Vault) {
 	}
 	if stale {
 		op.State = StateStale
+	} else if op.State == StateStale {
+		op.State = StateProposed
 	}
 
 	for i := range op.Cascade {
-		refreshOp(&op.Cascade[i], cascadeV, cascadeV)
+		refreshOp(&op.Cascade[i], chainV, chainV)
 	}
 }
 

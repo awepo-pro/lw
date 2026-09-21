@@ -170,7 +170,7 @@ are the same flag). Exit codes: `0` success, `1` failure, `2` usage error.
 | `session` | `list`: `-json`; `show`: `<id>`, `-plain`, `-json`, `-thinking` | Reads the transcript every agent conversation leaves in the vault — see [Transcripts](#transcripts) below. `list` prints one row per session, newest first. `show` prints one back: the question, every tool call with its full arguments and result, and each answer as the TUI rendered it — the thinking folded to one line unless `--thinking`. With no id it shows the open session; a short prefix works. Read-only, and needs no provider |
 | `revert` | (positional) `<commit-id>` | Opens the inverse ops as a *new* changeset — a rollback is reviewed like anything else |
 | `query` | (positional) `"…"` | One-shot answer with citations; uses an ephemeral in-process session and never touches a changeset |
-| `lint` | `-checks <id,id,…>`, `-fix`, `-json` | 15 checks ([docs/vault-schema.md](docs/vault-schema.md#the-15-lint-checks)). Exits 1 only on errors. `--fix` asks the agent to propose repairs — as a changeset |
+| `lint` | `-checks <id,id,…>`, `-fix`, `-json` | 16 checks ([docs/vault-schema.md](docs/vault-schema.md#the-16-lint-checks)). Exits 1 only on errors. `--fix` asks the agent to propose repairs — one page at a time (one agent round per page, a single changeset), as a changeset; a page whose round fails is named in the output and fails the command |
 | `mcp` | — | stdio MCP server; see below |
 | `doctor` | `--unlock`, `--rebuild-index`, `--discard-changeset`, `--json` | Index freshness, object-store completeness, journal tail, interrupted apply, stale lock, config, provider. Every failure prints the fix. `--discard-changeset` moves the open changeset to `changesets/rejected/`, journalled — the CLI way to discard one without opening the TUI. Exit 1 on any failure |
 | `tui` | — | The TUI; also the default with no command |
@@ -341,7 +341,7 @@ the command table above.
 |---|---|
 | [docs/tutorial.md](docs/tutorial.md) | Start here — a hands-on walkthrough from install to a reviewed wiki |
 | [docs/architecture.md](docs/architecture.md) | The pipeline, the agent's verb boundary, the package map |
-| [docs/vault-schema.md](docs/vault-schema.md) | The vault layout, frontmatter, and the 15 lint checks |
+| [docs/vault-schema.md](docs/vault-schema.md) | The vault layout, frontmatter, and the 16 lint checks |
 | [docs/tools.md](docs/tools.md) | The 19 tools — 18 vault tools plus conditional web.search — and what each one reads |
 | [docs/changesets.md](docs/changesets.md) | Changeset layout, the journal, and recovery |
 | [spec/vault-schema.md](spec/vault-schema.md) | The normative vault schema |

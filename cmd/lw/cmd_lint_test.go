@@ -235,21 +235,30 @@ func TestCmdLintFixCleanVaultNeedsNoAgent(t *testing.T) {
 // that proposes one repair op, and requires the result to be exactly one
 // open changeset holding that op — the same "still stages" contract
 // `lw ingest` has (/docs/design.md §9.4): nothing here commits.
+//
+// 020 T-D amendment (logged): --fix now drives one agent round PER PAGE,
+// so the loop sends one message per distinct finding path, not one for
+// the whole report. The fake stages its single repair on the first round
+// only (onceAgent) — staging it every round would stack one copy of the
+// same op per page. The assertions that must survive do: ONE changeset,
+// exactly that op staged, exit 0.
 func TestCmdLintFixStagesRepairsForFindings(t *testing.T) {
 	root := testutil.CopyFixture(t, "dirty")
 
 	var sawFindings bool
 	withFakeAgent(t, func(e *stage.Engine, cfg *config.Config, sessions agent.SessionStore) (agent.Agent, error) {
 		sawFindings = true
-		return &fakeStageAgent{
-			e:        e,
-			sessions: sessions,
-			ops: []stage.Op{
-				{
-					Kind:      stage.OpIngestSource,
-					Path:      "raw/articles/lint-fix-repair.md",
-					Content:   []byte("a repair, staged by the fake agent\n"),
-					Extractor: "test-fake",
+		return &onceAgent{
+			fakeStageAgent: fakeStageAgent{
+				e:        e,
+				sessions: sessions,
+				ops: []stage.Op{
+					{
+						Kind:      stage.OpIngestSource,
+						Path:      "raw/articles/lint-fix-repair.md",
+						Content:   []byte("a repair, staged by the fake agent\n"),
+						Extractor: "test-fake",
+					},
 				},
 			},
 		}, nil

@@ -87,7 +87,7 @@ type stagePatchPageArgs struct {
 }
 
 func stagePatchPageTool(d Deps) Tool {
-	return Tool{Name: "stage.patch_page", Description: "Propose a section-level page patch using replace_section, append_section, insert_after, insert_before or remove_section.", Schema: json.RawMessage(stagePatchPageSchema), Handler: func(ctx context.Context, args json.RawMessage) (Result, error) {
+	return Tool{Name: "stage.patch_page", Description: "Propose a section-level page patch using replace_section, append_section, insert_after, insert_before or remove_section. When the open changeset already stages the page, the patch composes against that staged state, not the committed bytes.", Schema: json.RawMessage(stagePatchPageSchema), Handler: func(ctx context.Context, args json.RawMessage) (Result, error) {
 		var a stagePatchPageArgs
 		if err := decodeArgs(args, &a); err != nil {
 			return badArgs("stage.patch_page", err, `{"path":"wiki/concepts/kv-cache.md","section":"## Related","op":"append_section","content":"- [[new-page]]","rationale":"add a related page"}`), nil
@@ -95,9 +95,12 @@ func stagePatchPageTool(d Deps) Tool {
 		if d.Vault == nil {
 			return Result{IsError: true, Content: "no vault configured"}, nil
 		}
-		page, ok := d.Vault.Page(a.Path)
+		page, onFail, ok, err := stagedPatchBase(d, a.Path)
+		if err != nil {
+			return Result{}, fmt.Errorf("tools: stage.patch_page: %w", err)
+		}
 		if !ok {
-			return Result{IsError: true, Content: fmt.Sprintf("page %q was not found", a.Path)}, nil
+			return onFail, nil
 		}
 		sec, ok := page.Section(a.Section)
 		if !ok {
@@ -126,6 +129,57 @@ func stagePatchPageTool(d Deps) Tool {
 		}
 		return appendStageOp(d, "stage.patch_page", stage.Op{Kind: stage.OpPatchPage, Path: a.Path, Section: a.Section, Before: page.SHA256(), Content: updated.Serialize(), Hunks: hunks, Rationale: a.Rationale})
 	}}
+}
+
+// stagedPatchBase resolves the base page stage.patch_page computes against
+// (020 T-B): when the currently open changeset already holds a live
+// content op for path, its staged bytes are the base — the section lookup,
+// the old side of the hunks and Before all read from them, so a second
+// patch on a staged page composes with the first (its Before is the staged
+// sha) instead of proposing against content the engine has already moved
+// past. Only when nothing staged targets path does the committed vault
+// answer, which keeps every changeset without a prior op on the path on
+// byte-for-byte its pre-T-B path. Staged bytes parse through
+// vault.ParsePage — the same parser a committed page goes through — so the
+// sha the tool proposes is the sha the engine's own projection recomputes.
+//
+// A staged parse failure for a path the committed vault carries as a Page
+// is an internal-invariant violation returned as err — the turn aborts,
+// mirroring rawSourceBody (020 FIX-1): Append only stages bytes it
+// validated, so unparseable staged content for a committed page means the
+// changeset or the CAS is damaged, and editing on top of it would hide the
+// damage. A cascade sub-op may also target a VAULT-ROOT file
+// (curator-memory.md, index.md), whose staged bytes legitimately are not
+// page-structured (op.go's buildCascadeOp raw branch): for such a path —
+// or any path the committed vault does not carry as a Page — the staged
+// bytes are not consumed, and the committed lookup below answers, whose
+// miss is the plain not-found IsError. ok is false with onFail set when
+// path resolves through neither the changeset nor the vault.
+func stagedPatchBase(d Deps, path string) (page *vault.Page, onFail Result, ok bool, err error) {
+	if d.Engine != nil {
+		b, staged, err := d.Engine.StagedFile(path)
+		if err != nil {
+			return nil, Result{}, false, err
+		}
+		if staged {
+			p, perr := vault.ParsePage(path, b)
+			if perr == nil {
+				return p, Result{}, true, nil
+			}
+			if _, isPage := d.Vault.Page(path); isPage {
+				// A committed page's staged bytes should parse: failing
+				// that is damage, not input the model gets to argue with.
+				return nil, Result{}, false, fmt.Errorf("parse staged page %s: %w", path, perr)
+			}
+			// Root-file cascade bytes (or an unknown path): keep the
+			// committed lookup below.
+		}
+	}
+	p, found := d.Vault.Page(path)
+	if !found {
+		return nil, Result{IsError: true, Content: fmt.Sprintf("page %q was not found", path)}, false, nil
+	}
+	return p, Result{}, true, nil
 }
 
 type stageRenamePageArgs struct {
