@@ -182,14 +182,54 @@ func runLintFix(vaultPath, checksFlag string) error {
 	if len(failures) > 0 {
 		// U1 still applies per failure: agentErrorHint names the output
 		// budget on a truncated turn. The C-808 query/lint form applies —
-		// no rejection sentence, which is ingest's alone.
+		// no rejection sentence, which is ingest's alone. Each line also
+		// carries lintFixPartialOpsClause: a failed round's partial ops
+		// stay live in the changeset, and the reviewer must know the
+		// failure did not take them back out (020 FIX-3b, G3 review
+		// finding 6).
 		fmt.Printf("\n%d page round(s) failed:\n", len(failures))
 		for _, f := range failures {
-			fmt.Printf("  %s: %v\n", f.page, agentErrorHint(f.err, cfg.LLM.MaxTokens, false))
+			fmt.Printf("  %s: %v%s\n", f.page, agentErrorHint(f.err, cfg.LLM.MaxTokens, false), lintFixPartialOpsClause(final, f.page))
 		}
 		return &exitError{code: 1}
 	}
 	return nil
+}
+
+// lintFixPartialOpsClause is the parenthetical appended to a failed
+// round's failure line: containment is prompt-only, so a round whose Send
+// fails after some Appends leaves those ops live, and the failure line
+// must say so (020 FIX-3b, G3 review finding 6). When the page is known
+// the clause counts the final changeset's live ops touching it — path,
+// rename/merge endpoints, split products — a cheap read-back of state the
+// command already holds; no engine surface is added. The count is an
+// upper bound on the failed round's own partials, never an attribution:
+// nothing scopes an op to the round that proposed it, so the number may
+// include ops another round staged for the same page. A vault-level round
+// (label "(vault-level)", no single path) and a page with no matching ops
+// get the clause without a count.
+func lintFixPartialOpsClause(cs *stage.Changeset, page string) string {
+	const clause = "any repairs it staged before failing remain in the changeset for review"
+	if cs == nil {
+		return " (" + clause + ")"
+	}
+	n := 0
+	for _, op := range cs.Live() {
+		if op.Path == page || op.From == page || op.To == page {
+			n++
+			continue
+		}
+		for _, src := range op.Sources {
+			if src == page {
+				n++
+				break
+			}
+		}
+	}
+	if n == 0 {
+		return " (" + clause + ")"
+	}
+	return fmt.Sprintf(" (%d live op(s) touch this page; %s)", n, clause)
 }
 
 // lintFixIntent builds a changeset intent line describing what --fix is

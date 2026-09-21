@@ -361,6 +361,12 @@ func TestLintFixContinuesPastFailedPage(t *testing.T) {
 	if !strings.Contains(stdout, "injected: round 2 (bbb) failed") {
 		t.Errorf("stdout does not carry the failed page's error; stdout:\n%s", stdout)
 	}
+	// 020 FIX-3b (G3 finding 6): the failure line says the failed round's
+	// partial ops stay live. Round 2 staged nothing before failing, so the
+	// clause carries no count.
+	if !strings.Contains(stdout, "any repairs it staged before failing remain in the changeset for review") {
+		t.Errorf("failure line does not name the failed round's live partial ops; stdout:\n%s", stdout)
+	}
 
 	// The changeset summary still printed, holding rounds 1 and 3's ops
 	// — round 2 staged nothing.
