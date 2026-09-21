@@ -33,6 +33,13 @@ func renderBlock(blk []string, cfg gansi.StyleConfig, contentW int, style Style)
 		// (repair-2, R2) before restyleSpans runs unconditionally below.
 		text = escapeSourceSentinels(text)
 	} else {
+		// TeX math → unicode before the markers go in: the converter is
+		// frozen against source bytes (its §F.1 table carries a raw ^[…]
+		// marker in its display case), so it must see the block exactly as
+		// written. Every surface that renders a block — page, preview,
+		// transcript, diff, session — comes through here; fences are
+		// exempt, their dollars are code and stay verbatim.
+		text = mathToUnicode(text)
 		text = insertMarkers(text)
 	}
 
