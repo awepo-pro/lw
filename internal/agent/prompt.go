@@ -69,9 +69,12 @@ const (
 )
 
 // abstractRuleParagraph is 014 §5's abstract rule (amendment TS-14A): every
-// staged page opens with a ## Abstract section. TestPromptAbstractRule pins
-// the bytes.
-const abstractRuleParagraph = "Every page you stage into wiki/ must open with a ## Abstract section: two to four\nself-contained sentences that state the page's claim in plain prose, before any other\nsection. A reader or the search index should get the page's point from the abstract\nalone; provenance markers and detail live in the sections after it. When\nstage.patch_page adds a section to a page that has no abstract, include the abstract\nin the same proposal."
+// staged page opens with a ## Abstract section. TS-14A's second amendment
+// (v2.5.1 fix wave, §9 A9) rewrote the bytes: live runs had put ^[...]
+// markers inside abstracts and faked prepends by duplicating headings, so
+// the rule now forbids both and names the ops that move a section.
+// TestPromptAbstractRule pins the bytes.
+const abstractRuleParagraph = "Every page you stage into wiki/ must open with a ## Abstract section: two to four\nself-contained sentences that state the page's claim in plain prose, before any other\nsection. A reader or the search index should get the page's point from the abstract\nalone; detail lives in the sections after it. Keep the abstract pure prose — never\nput a ^[...] provenance marker inside it. To add an abstract to a page that lacks\none, or to move one that does not open the page, stage.patch_page's insert_before\nplaces a section ahead of an existing one and remove_section takes the old copy\ndown; never duplicate or re-parent an existing heading to fake a prepend."
 
 // The closing half of the curator's system prompt: everything from the
 // query-page filing rule to the end, bytes unchanged. 014 §5 (TS-14A) added
