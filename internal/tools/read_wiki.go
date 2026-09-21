@@ -95,13 +95,20 @@ func wikiGetHandler(ctx context.Context, d Deps, args json.RawMessage) (Result, 
 		return badArgs("wiki.get", err, `{"page": "kv-cache"}`), nil
 	}
 
-	resolved, p, res, ok := resolvePageArg(d, "wiki.get", a.Page)
+	resolved, p, staged, res, ok, err := resolvePageArg(d, "wiki.get", a.Page)
+	if err != nil {
+		return Result{}, fmt.Errorf("tools: wiki.get: %w", err)
+	}
 	if !ok {
 		return res, nil
 	}
 
 	if a.Section == "" {
-		return Result{Content: string(p.Serialize())}, nil
+		content := string(p.Serialize())
+		if staged {
+			content = stagedSourceMarker + content
+		}
+		return Result{Content: content}, nil
 	}
 
 	sec, ok := p.Section(a.Section)
@@ -111,7 +118,11 @@ func wikiGetHandler(ctx context.Context, d Deps, args json.RawMessage) (Result, 
 			a.Section, resolved, strings.Join(sectionHeadings(p), ", "),
 		)}, nil
 	}
-	return Result{Content: p.Body[sec.Start:sec.End]}, nil
+	body := p.Body[sec.Start:sec.End]
+	if staged {
+		body = stagedSourceMarker + body
+	}
+	return Result{Content: body}, nil
 }
 
 func sectionHeadings(p *vault.Page) []string {
@@ -149,7 +160,10 @@ func wikiNeighborsHandler(ctx context.Context, d Deps, args json.RawMessage) (Re
 		return badArgs("wiki.neighbors", err, `{"page": "kv-cache"}`), nil
 	}
 
-	resolved, _, res, ok := resolvePageArg(d, "wiki.neighbors", a.Page)
+	resolved, _, _, res, ok, err := resolvePageArg(d, "wiki.neighbors", a.Page)
+	if err != nil {
+		return Result{}, fmt.Errorf("tools: wiki.neighbors: %w", err)
+	}
 	if !ok {
 		return res, nil
 	}
@@ -203,7 +217,10 @@ func wikiBacklinksHandler(ctx context.Context, d Deps, args json.RawMessage) (Re
 		return badArgs("wiki.backlinks", err, `{"page": "kv-cache"}`), nil
 	}
 
-	resolved, _, res, ok := resolvePageArg(d, "wiki.backlinks", a.Page)
+	resolved, _, _, res, ok, err := resolvePageArg(d, "wiki.backlinks", a.Page)
+	if err != nil {
+		return Result{}, fmt.Errorf("tools: wiki.backlinks: %w", err)
+	}
 	if !ok {
 		return res, nil
 	}
@@ -318,27 +335,49 @@ func badArgs(tool string, err error, example string) Result {
 // full path), and returns a ready-to-use Result on any failure so the
 // caller can just return it.
 //
+// After the committed hit, the resolver prefers the open changeset's
+// staged bytes for the resolved path (020 T-B) — the agent must be able
+// to READ BACK its own staged edit before committing it, and the F2
+// blindness ran through reads too. staged reports which body the returned
+// page was parsed from: wiki.get marks staged results with
+// stagedSourceMarker, the way raw.get marks a staged source (S6-C121);
+// wiki.neighbors and wiki.backlinks ignore the flag, because they report
+// the committed graph's link data and carry no staged bytes to mark.
+//
+// The staged preference is a read-back, not a discovery channel:
+// vault.Resolve walks the committed index, so a page that exists only as
+// a staged create_page — no committed counterpart — still falls to the
+// not-found message. Reading a path you just staged is the contract;
+// staged-only page discovery is out of scope.
+//
+// Contract (mirrors rawSourceBody): staged bytes parse through
+// vault.ParsePage — the same parser a committed page goes through — and a
+// staged parse failure is an internal-invariant error, never a silent
+// fall back to the committed page, because Append only stages bytes it
+// validated. err is non-nil for such a violation and for a genuine
+// engine/CAS failure; the caller aborts the turn on it.
+//
 // vault.Resolve does NOT match a page's frontmatter title (backbone §2.9:
 // exact path, then "<target>.md", then basename case-insensitively, then
 // "<dir>/<target>.md"). Every message below therefore says "basename",
 // never "title" — wiki.search shows the model each hit's title beside its
 // path, and a description promising titles resolve sends it round the loop
 // search -> title -> not found -> search (MASTER §10 OR-15).
-func resolvePageArg(d Deps, tool, page string) (resolved string, p *vault.Page, onFail Result, ok bool) {
+func resolvePageArg(d Deps, tool, page string) (resolved string, p *vault.Page, staged bool, onFail Result, ok bool, err error) {
 	page = strings.TrimSpace(page)
 	if page == "" {
-		return "", nil, Result{IsError: true, Content: fmt.Sprintf(
+		return "", nil, false, Result{IsError: true, Content: fmt.Sprintf(
 			`page is required for %s: provide a page path or filename basename, e.g. {"page": "kv-cache"}`, tool,
-		)}, false
+		)}, false, nil
 	}
 
 	resolved, found := vault.Resolve(d.Vault, page)
 	if !found {
-		return "", nil, Result{IsError: true, Content: fmt.Sprintf(
+		return "", nil, false, Result{IsError: true, Content: fmt.Sprintf(
 			"page %q was not found; pass the vault-relative path or the filename basename "+
 				"(e.g. \"kv-cache\"), not the page title — wiki.search lists each result's "+
 				"path before the em dash", page,
-		)}, false
+		)}, false, nil
 	}
 
 	pg, found := d.Vault.Page(resolved)
@@ -346,9 +385,25 @@ func resolvePageArg(d Deps, tool, page string) (resolved string, p *vault.Page, 
 		// vault.Resolve only returns a path it has already confirmed
 		// exists via Vault.Page, so this is unreachable in practice; kept
 		// as a defensive, helpful error rather than a panic.
-		return "", nil, Result{IsError: true, Content: fmt.Sprintf(
+		return "", nil, false, Result{IsError: true, Content: fmt.Sprintf(
 			"page %q resolved to %q, which could not be loaded", page, resolved,
-		)}, false
+		)}, false, nil
 	}
-	return resolved, pg, Result{}, true
+
+	if d.Engine != nil {
+		b, has, serr := d.Engine.StagedFile(resolved)
+		if serr != nil {
+			return "", nil, false, Result{}, false, serr
+		}
+		if has {
+			sp, perr := vault.ParsePage(resolved, b)
+			if perr != nil {
+				return "", nil, false, Result{IsError: true, Content: fmt.Sprintf(
+					"staged content for %s does not parse as a wiki page: %v — the changeset only holds bytes the engine validated, so this is an internal invariant violation; inspect the changeset instead of reading on top of it", resolved, perr,
+				)}, false, nil
+			}
+			return resolved, sp, true, Result{}, true, nil
+		}
+	}
+	return resolved, pg, false, Result{}, true, nil
 }

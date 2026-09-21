@@ -95,9 +95,12 @@ func stagePatchPageTool(d Deps) Tool {
 		if d.Vault == nil {
 			return Result{IsError: true, Content: "no vault configured"}, nil
 		}
-		page, ok := d.Vault.Page(a.Path)
+		page, onFail, ok, err := stagedPatchBase(d, a.Path)
+		if err != nil {
+			return Result{}, fmt.Errorf("tools: stage.patch_page: %w", err)
+		}
 		if !ok {
-			return Result{IsError: true, Content: fmt.Sprintf("page %q was not found", a.Path)}, nil
+			return onFail, nil
 		}
 		sec, ok := page.Section(a.Section)
 		if !ok {
@@ -126,6 +129,47 @@ func stagePatchPageTool(d Deps) Tool {
 		}
 		return appendStageOp(d, "stage.patch_page", stage.Op{Kind: stage.OpPatchPage, Path: a.Path, Section: a.Section, Before: page.SHA256(), Content: updated.Serialize(), Hunks: hunks, Rationale: a.Rationale})
 	}}
+}
+
+// stagedPatchBase resolves the base page stage.patch_page computes against
+// (020 T-B): when the currently open changeset already holds a live
+// content op for path, its staged bytes are the base — the section lookup,
+// the old side of the hunks and Before all read from them, so a second
+// patch on a staged page composes with the first (its Before is the staged
+// sha) instead of proposing against content the engine has already moved
+// past. Only when nothing staged targets path does the committed vault
+// answer, which keeps every changeset without a prior op on the path on
+// byte-for-byte its pre-T-B path. Staged bytes parse through
+// vault.ParsePage — the same parser a committed page goes through — so the
+// sha the tool proposes is the sha the engine's own projection recomputes.
+//
+// A staged parse failure is an internal-invariant IsError, never a silent
+// fall back to the committed page: Append only stages bytes it validated,
+// so unparseable staged content means the changeset or the CAS is damaged
+// and editing on top of it would hide the damage. ok is false with onFail
+// set when path resolves through neither the changeset nor the vault; err
+// is non-nil only for a genuine engine/CAS failure, like rawSourceBody.
+func stagedPatchBase(d Deps, path string) (page *vault.Page, onFail Result, ok bool, err error) {
+	if d.Engine != nil {
+		b, staged, err := d.Engine.StagedFile(path)
+		if err != nil {
+			return nil, Result{}, false, err
+		}
+		if staged {
+			p, perr := vault.ParsePage(path, b)
+			if perr != nil {
+				return nil, Result{IsError: true, Content: fmt.Sprintf(
+					"staged content for %s does not parse as a wiki page: %v — stage.patch_page only stages bytes the engine validated, so this is an internal invariant violation; inspect the changeset instead of patching on top of it", path, perr,
+				)}, false, nil
+			}
+			return p, Result{}, true, nil
+		}
+	}
+	p, found := d.Vault.Page(path)
+	if !found {
+		return nil, Result{IsError: true, Content: fmt.Sprintf("page %q was not found", path)}, false, nil
+	}
+	return p, Result{}, true, nil
 }
 
 type stageRenamePageArgs struct {
