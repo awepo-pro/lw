@@ -56,7 +56,7 @@ func TestNewConstructibleWithNilEngine(t *testing.T) {
 // amendment, workflow §9 A6: 16 → 26, the ten dirty wiki pages each
 // gained a page-abstract warn). Both numbers are read from the model's
 // own state, never hardcoded from a rendered string.
-func TestDirtyFixtureFifteenRowsTwentySixFindings(t *testing.T) {
+func TestDirtyFixtureSixteenRowsTwentySixFindings(t *testing.T) {
 	d, _ := newTestDeps(t, "dirty")
 	p := initModel(t, d)
 	m := p.(*Model)
@@ -64,14 +64,17 @@ func TestDirtyFixtureFifteenRowsTwentySixFindings(t *testing.T) {
 	if !m.hasReport {
 		t.Fatalf("report did not load: %v", m.loadErr)
 	}
-	if got := len(m.checks); got != 15 {
-		t.Fatalf("len(lint.All()) = %d, want 15", got)
+	// 020 amendment (workflow T-C): duplicate-section joins as check 16; it
+	// fires 0 times on dirty (no duplicate sections in the fixtures), so the
+	// totals below are unchanged.
+	if got := len(m.checks); got != 16 {
+		t.Fatalf("len(lint.All()) = %d, want 16", got)
 	}
 	if got := len(m.report.Findings); got != 26 {
 		t.Fatalf("len(report.Findings) = %d, want 26", got)
 	}
 
-	// Every one of the 15 checks fires at least once on dirty
+	// The first 15 checks each fire at least once on dirty
 	// (EXPECTED-LINT.md's own claim) — cross-checked here via ByCheck
 	// rather than trusted blindly.
 	var total int

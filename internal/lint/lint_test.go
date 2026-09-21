@@ -7,6 +7,7 @@ import (
 
 // wantCheckOrder is backbone §4's table order for the checks (MASTER §9 D-V).
 // 014 amendment (workflow §9 A2): page-abstract joins as check 15.
+// 020 amendment (workflow T-C): duplicate-section joins as check 16.
 var wantCheckOrder = []string{
 	"fm-required",
 	"fm-taxonomy",
@@ -23,14 +24,15 @@ var wantCheckOrder = []string{
 	"src-stale",
 	"log-rotate",
 	"page-abstract",
+	"duplicate-section",
 }
 
-// TestAllReturnsFifteenInTableOrder — renamed by the 014 amendment
-// (workflow §9 A2): page-abstract joins as check 15.
-func TestAllReturnsFifteenInTableOrder(t *testing.T) {
+// TestAllReturnsSixteenInTableOrder — renamed by the 020 amendment
+// (workflow T-C): duplicate-section joins as check 16.
+func TestAllReturnsSixteenInTableOrder(t *testing.T) {
 	checks := All()
-	if len(checks) != 15 {
-		t.Fatalf("len(All()) = %d, want 15", len(checks))
+	if len(checks) != 16 {
+		t.Fatalf("len(All()) = %d, want 16", len(checks))
 	}
 
 	var got []string
@@ -54,11 +56,12 @@ func TestAllIDsAreUnique(t *testing.T) {
 
 func TestSelectChecksEmptyMeansAll(t *testing.T) {
 	// 014 amendment (workflow §9 A2): page-abstract joins as check 15.
-	if got := len(selectChecks(nil)); got != 15 {
-		t.Fatalf("selectChecks(nil) has %d checks, want 15", got)
+	// 020 amendment (workflow T-C): duplicate-section joins as check 16.
+	if got := len(selectChecks(nil)); got != 16 {
+		t.Fatalf("selectChecks(nil) has %d checks, want 16", got)
 	}
-	if got := len(selectChecks([]string{})); got != 15 {
-		t.Fatalf("selectChecks([]string{}) has %d checks, want 15", got)
+	if got := len(selectChecks([]string{})); got != 16 {
+		t.Fatalf("selectChecks([]string{}) has %d checks, want 16", got)
 	}
 }
 
