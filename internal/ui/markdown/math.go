@@ -208,6 +208,13 @@ func mathShapeGate(content string) bool {
 	if hasTeXConstruct(content) {
 		return true
 	}
+	// fix2 (A15-3b): a construct-less span holding a markdown-structural
+	// byte stays verbatim with its dollars — stripping the dollars used to
+	// hand glamour a raw tag (<b → silently deleted text) or a blockquote
+	// opener (>=x at line start), and * ~ ` pair as emphasis across spans.
+	if strings.ContainsAny(content, "<>*`~") {
+		return false
+	}
 	if strings.ContainsAny(content, "=[") {
 		return true
 	}

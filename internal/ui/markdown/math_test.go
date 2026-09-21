@@ -234,6 +234,27 @@ func TestMathToUnicode(t *testing.T) {
 			in:   "he paid $$5$$ today",
 			want: "he paid $$5$$ today",
 		},
+
+		// fix2 (A15-3b): gate rejects markdown-structural bytes — silent-loss
+		// class. A construct-less span holding < > * ~ ` stays verbatim with
+		// its dollars: stripping the dollars used to hand glamour a raw tag
+		// ($a<b$ → <b deleted text), a blockquote opener ($>=x$ at line
+		// start), or emphasis paired across spans ($a*b$ and $c*d$).
+		{
+			name: "gate rejects angle tag loss",
+			in:   "if $a<b$ then use x>y",
+			want: "if $a<b$ then use x>y",
+		},
+		{
+			name: "gate rejects line-start tag shape",
+			in:   "$>=x$ means at least",
+			want: "$>=x$ means at least",
+		},
+		{
+			name: "gate rejects cross-span emphasis pairing",
+			in:   "given $a*b$ and $c*d$ here",
+			want: "given $a*b$ and $c*d$ here",
+		},
 	}
 	for _, tc := range cases {
 		tc := tc

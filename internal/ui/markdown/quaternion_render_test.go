@@ -75,3 +75,25 @@ func TestQuaternionNoRawDollarPairs(t *testing.T) {
 		}
 	}
 }
+
+// TestAngleNoTagLoss pins the A15-3b gate through the full Render seam: a
+// construct-less span holding angle bytes must reach the page verbatim with
+// its dollars intact. Stripping them used to hand glamour the raw tag <b,
+// which swallowed the following text — "then use x>y" rendered as "y".
+func TestAngleNoTagLoss(t *testing.T) {
+	out, err := NewRenderer().Render([]byte("if $a<b$ then use x>y"),
+		Options{Width: 80, Style: darkStyle})
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	plain := ansi.Strip(strings.Join(out, "\n"))
+
+	for _, want := range []string{"a<b", "x>y", "then", "use"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("rendered page lost %q — raw-tag interpretation survived:\n%s", want, plain)
+		}
+	}
+	if strings.Contains(plain, "<b ") {
+		t.Errorf("rendered page still carries a raw <b tag interpretation:\n%s", plain)
+	}
+}
