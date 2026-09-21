@@ -7,7 +7,6 @@ import (
 
 	gansi "charm.land/glamour/v2/ansi"
 	"charm.land/lipgloss/v2"
-	"github.com/alecthomas/chroma/v2/lexers"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -98,7 +97,7 @@ func renderBlock(blk []string, cfg gansi.StyleConfig, contentW int, style Style)
 // so nothing can be highlighted by accident (contract §2 note 3).
 func withChromaTheme(cfg gansi.StyleConfig, blk []string, s Style) gansi.StyleConfig {
 	cfg.CodeBlock.Theme = ""
-	if lang := fenceLanguage(blk); lang != "" && lexers.Get(lang) != nil {
+	if lang := fenceLanguage(blk); lang != "" && lexersHave(lang) {
 		cfg.CodeBlock.Theme = chromaTheme(s)
 	}
 	return cfg
