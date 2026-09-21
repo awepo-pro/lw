@@ -22,7 +22,11 @@ import "errors"
 // can turn it straight into a Result{IsError:true} without inventing its
 // own error path. The scan walks the ops in Changeset.Live() order and,
 // within each op, the op itself then its Cascade entries depth-first — the
-// same order projection.go's applyOp applies them — and the LAST
+// same order projection.go's applyOp applies them — skipping Dropped and
+// Rejected entries (only ever cascade sub-ops here, since Live() filters
+// the top level) exactly as planOp and fileDiffsForOp skip them, so the
+// bytes a tool reads are always bytes Commit would actually write — and
+// the LAST
 // content-op targeting path wins, so a path a rename/merge cascade rewrote
 // (020 FIX-1) resolves to the rewrite, not to the committed page the
 // projection has already moved past. When more than one live op targets
@@ -51,6 +55,15 @@ func (e *Engine) StagedFile(path string) ([]byte, bool, error) {
 	scan = func(ops []Op) {
 		for i := range ops {
 			op := &ops[i]
+			// A Dropped or Rejected entry — reachable here only as a
+			// cascade sub-op, since Live() filters the top level — is
+			// skipped with its whole subtree, exactly as planOp (apply.go)
+			// and fileDiffsForOp (diff.go) skip it: serving a dropped
+			// rewrite would let a tool compute its Before from bytes the
+			// commit will discard (020 fix wave 3a, G3 review finding 1).
+			if op.State == StateDropped || op.State == StateRejected {
+				continue
+			}
 			switch op.Kind {
 			case OpIngestSource, OpCreatePage, OpPatchPage:
 				if op.Path == path {

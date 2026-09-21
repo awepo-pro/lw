@@ -414,6 +414,27 @@ func (e *Engine) assignIDs(op *Op) {
 	}
 }
 
+// liveContentOpFor reports the first live content op in base — a
+// top-level op or a cascade sub-op — targeting path, and whether one
+// exists. base comes in pre-filtered (Changeset.Live()), so the state
+// check only bites for cascade sub-ops a reviewer has dropped.
+func liveContentOpFor(base []Op, path string) (Op, bool) {
+	for _, op := range base {
+		if op.State != StateDropped && op.State != StateRejected {
+			switch op.Kind {
+			case OpCreatePage, OpPatchPage, OpIngestSource:
+				if op.Path == path {
+					return op, true
+				}
+			}
+		}
+		if hit, ok := liveContentOpFor(op.Cascade, path); ok {
+			return hit, true
+		}
+	}
+	return Op{}, false
+}
+
 // Append validates op, assigns it a sequential id, stores its content, and
 // recomputes Checks over every live op.
 //
@@ -477,9 +498,19 @@ func (e *Engine) Append(op Op) (string, error) {
 		// only exists in the projection has no pre-image to move.
 		// Refuse it here, explicitly, rather than let the projected-tree
 		// validation below accept a shape Commit cannot honour.
+		//
+		// The same refusal covers a source a live content op is still
+		// rewriting — top-level or another rename's cascade sub-op
+		// (020 fix wave 3a, G3 review finding 4): planOp reads the rename's
+		// content from the COMMITTED page, so accepting the rename would
+		// land the patched source the diff shows deleted and write an
+		// unpatched copy to To.
 		for _, f := range froms {
 			if f != "" && !e.vault.Exists(f) {
 				return "", fmt.Errorf("%w: %s: source %s does not exist in the working tree; commit the op that produces it first", ErrValidation, op.Kind, f)
+			}
+			if hit, ok := liveContentOpFor(c.Live(), f); ok {
+				return "", fmt.Errorf("%w: %s: source %s has a live content op in this changeset (%s, %s); commit the changeset first, or drop that op and re-propose", ErrValidation, op.Kind, f, hit.ID, hit.Kind)
 			}
 		}
 

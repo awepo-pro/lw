@@ -98,7 +98,18 @@ func (e *Engine) postImage(op Op) ([]byte, error) {
 // revert-of-create. A path that no longer parses as a live page (should
 // not happen — ValidateOp requires it to exist at Append time) falls back
 // to the old delete-outright behavior rather than guessing at content.
+//
+// Dropped and Rejected ops are skipped together with their own Cascade —
+// for cascade sub-ops the live-list filters above this call remove
+// nothing, so this guard is the only one — exactly as planOp (apply.go)
+// and fileDiffsForOp (diff.go) skip them: a dropped cascade rewrite the
+// projection still applied was landing baked into a dependent patch with
+// no hunk describing it, while the pre-commit lint gate described a tree
+// Commit would not write (020 fix wave 3a, G3 review finding 1).
 func (e *Engine) applyOp(tree map[string][]byte, op Op) error {
+	if op.State == StateDropped || op.State == StateRejected {
+		return nil
+	}
 	switch op.Kind {
 	case OpCreatePage, OpPatchPage, OpIngestSource:
 		b, err := e.postImage(op)

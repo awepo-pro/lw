@@ -129,8 +129,14 @@ func canonicalSHA(v *vault.Vault, p string) (string, bool) {
 //	add_link                          either endpoint no longer exists
 //	retract                           the path no longer exists
 //
-// It only ever flips State to StateStale — Hunks and their Dropped flags
-// are left exactly as last computed (D-AJ).
+// State is DERIVED here, never free-running: it is set to StateStale when
+// the anchor no longer matches and CLEARED back to StateProposed when the
+// anchor re-matches — 020 amendment A20-1 to D-AJ's "only ever flips TO
+// StateStale", without which a reviewer's transient drop→undrop of one
+// hunk left every chained dependent stale forever, commit refused, the
+// only escape discarding the reviewed edit. Dropped and Rejected stay
+// terminal: the early return above keeps this pass from touching them.
+// Hunks and their Dropped flags are left exactly as last computed (D-AJ).
 //
 // Three anchor cases, not one (MASTER §10 OR-13 closing OQ-10; 020 T-A
 // adding the middle case):
@@ -185,6 +191,8 @@ func refreshOp(op *Op, v, chainV *vault.Vault) {
 	}
 	if stale {
 		op.State = StateStale
+	} else if op.State == StateStale {
+		op.State = StateProposed
 	}
 
 	for i := range op.Cascade {
