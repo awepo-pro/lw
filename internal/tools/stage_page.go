@@ -27,7 +27,7 @@ const stagePatchPageSchema = `{
   "type":"object",
   "properties":{
     "path":{"type":"string"},"section":{"type":"string"},
-    "op":{"type":"string","enum":["replace_section","append_section","insert_after"]},
+    "op":{"type":"string","enum":["replace_section","append_section","insert_after","insert_before","remove_section"]},
     "content":{"type":"string"},"rationale":{"type":"string"}
   },
   "required":["path","section","op","content","rationale"],
@@ -87,7 +87,7 @@ type stagePatchPageArgs struct {
 }
 
 func stagePatchPageTool(d Deps) Tool {
-	return Tool{Name: "stage.patch_page", Description: "Propose a section-level page patch using replace_section, append_section or insert_after.", Schema: json.RawMessage(stagePatchPageSchema), Handler: func(ctx context.Context, args json.RawMessage) (Result, error) {
+	return Tool{Name: "stage.patch_page", Description: "Propose a section-level page patch using replace_section, append_section, insert_after, insert_before or remove_section.", Schema: json.RawMessage(stagePatchPageSchema), Handler: func(ctx context.Context, args json.RawMessage) (Result, error) {
 		var a stagePatchPageArgs
 		if err := decodeArgs(args, &a); err != nil {
 			return badArgs("stage.patch_page", err, `{"path":"wiki/concepts/kv-cache.md","section":"## Related","op":"append_section","content":"- [[new-page]]","rationale":"add a related page"}`), nil
@@ -111,8 +111,12 @@ func stagePatchPageTool(d Deps) Tool {
 			body = vault.AppendToSection(page.Body, sec, sectionAppendText(a.Content))
 		case "insert_after":
 			body = vault.InsertAfterSection(page.Body, sec, a.Content)
+		case "insert_before":
+			body = vault.InsertBeforeSection(page.Body, sec, a.Content)
+		case "remove_section":
+			body = vault.RemoveSection(page.Body, sec) // Content ignored
 		default:
-			return Result{IsError: true, Content: fmt.Sprintf("op %q is invalid; use replace_section, append_section or insert_after", a.Op)}, nil
+			return Result{IsError: true, Content: fmt.Sprintf("op %q is invalid; use replace_section, append_section, insert_after, insert_before or remove_section", a.Op)}, nil
 		}
 		updated := vault.Page{Path: page.Path, FM: page.FM, Body: body}
 		hunks := stage.ComputeHunks(string(page.Serialize()), string(updated.Serialize()))

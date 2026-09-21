@@ -39,7 +39,7 @@ Nothing reaches the working tree until a human commits.
 |---|---|---|---|
 | 10 | `stage.open` | `stage_open` | `{intent}` — opens the buffer and the session that travels with it |
 | 11 | `stage.create_page` | `stage_create_page` | A full page: path, title, type, tags, sources, confidence, contested, body, rationale — frontmatter, taxonomy, directory and outbound-link rules all checked *at proposal time* |
-| 12 | `stage.patch_page` | `stage_patch_page` | A **section-level** patch: `replace_section`, `append_section` or `insert_after`. Sections survive reformatting; line-number patches do not |
+| 12 | `stage.patch_page` | `stage_patch_page` | A **section-level** patch: `replace_section`, `append_section`, `insert_after`, `insert_before` or `remove_section`. Sections survive reformatting; line-number patches do not |
 | 13 | `stage.rename_page` | `stage_rename_page` | `{from, to}` — the engine computes every inbound backlink rewrite from the graph, each one its own reviewable hunk. This is what `mv` cannot do |
 | 14 | `stage.merge_pages` | `stage_merge_pages` | `{sources[], into}` — redirect plus backlink rewrites as one reviewable unit |
 | 15 | `stage.split_page` | `stage_split_page` | `{path, sections[]}` — the source becomes a reviewable stub |

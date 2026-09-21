@@ -8,8 +8,10 @@ import (
 	"github.com/awepo-pro/lw/internal/lint"
 )
 
-// pageAbstractMsg is the one message page-abstract may emit, byte-exact
-// (014 workflow F-B).
+// pageAbstractMsg is the missing-abstract message, byte-exact (014 workflow
+// F-B). The placement message (v2.5.1 fix wave, §9 A9) is pinned verbatim in
+// TestPageAbstractMisplacedWarns, where the blocking heading is part of the
+// expectation.
 const pageAbstractMsg = "no ## Abstract section; open the page with a 2-4 sentence summary"
 
 // abstractlessPage is a well-formed wiki page with no ## Abstract section.
@@ -115,10 +117,13 @@ sha256: %x
 	}
 }
 
-// TestPageAbstractPositionNotEnforced asserts placement is not lint's job:
-// an abstract that is not the first ## section still passes (014 workflow
-// F-B, semantics 4).
-func TestPageAbstractPositionNotEnforced(t *testing.T) {
+// TestPageAbstractMisplacedWarns asserts a page whose ## Abstract follows
+// another section yields exactly one finding: page-abstract, warn, the
+// placement message naming the blocking heading verbatim (v2.5.1 fix wave,
+// §9 A9 — placement became lint's concern once real vaults carried mid-page
+// abstracts that --fix never repaired; still warn, the error flip stays
+// queued).
+func TestPageAbstractMisplacedWarns(t *testing.T) {
 	ctx := buildVault(t, map[string]string{
 		"wiki/concepts/late-abstract.md": `---
 title: Late Abstract
@@ -130,13 +135,64 @@ tags: [test]
 
 # Late Abstract
 
-## Overview
+## Why it matters
 
-The abstract below is deliberately not the first ## section.
+The abstract below is deliberately not the page's first section.
 
 ## Abstract
 
-It still passes, because placement belongs to the prompt rule, not lint.
+It exists, but it does not open the body.
+`,
+	})
+	report := lint.Run(ctx, []string{"page-abstract"})
+
+	if len(report.Findings) != 1 {
+		t.Fatalf("got %d findings, want 1: %+v", len(report.Findings), report.Findings)
+	}
+	f := report.Findings[0]
+	if f.Check != "page-abstract" {
+		t.Errorf("Check = %q, want page-abstract", f.Check)
+	}
+	if f.Severity != lint.SevWarn {
+		t.Errorf("Severity = %q, want warn", f.Severity)
+	}
+	if f.Path != "wiki/concepts/late-abstract.md" {
+		t.Errorf("Path = %q, want wiki/concepts/late-abstract.md", f.Path)
+	}
+	if !f.Fixable {
+		t.Errorf("Fixable = false, want true")
+	}
+	want := `## Abstract must be the page's first section; move it above "## Why it matters"`
+	if f.Message != want {
+		t.Errorf("Message = %q, want %q", f.Message, want)
+	}
+}
+
+// TestPageAbstractAfterTitleAndPreamblePasses asserts the minimal fixtures'
+// shape — # Title, a lead paragraph, then ## Abstract — stays clean: 014 §5
+// asks for the abstract "before any other section", and a preamble paragraph
+// is prose, not a section (v2.5.1 fix wave, §9 A9).
+func TestPageAbstractAfterTitleAndPreamblePasses(t *testing.T) {
+	ctx := buildVault(t, map[string]string{
+		"wiki/concepts/preamble-abstract.md": `---
+title: Preamble Abstract
+created: 2026-09-01
+updated: 2026-09-02
+type: concept
+tags: [test]
+---
+
+# Preamble Abstract
+
+A lead paragraph before the abstract is legal prose, not a section.
+
+## Abstract
+
+Two to four self-contained sentences would sit here.
+
+## Details
+
+The abstract opened the body, so nothing is flagged.
 `,
 	})
 	report := lint.Run(ctx, []string{"page-abstract"})
