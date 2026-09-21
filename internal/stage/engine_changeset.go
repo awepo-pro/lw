@@ -454,9 +454,17 @@ func (e *Engine) Append(op Op) (string, error) {
 		return "", err
 	}
 
-	// cv is the vault this op's cascade is built and validated against.
-	// For a cascade-less kind, and for the first op of any changeset, it
-	// is the working tree — byte-for-byte the pre-OR-13 behaviour.
+	// cv is the vault this op is validated — and, for rename_page and
+	// merge_pages, whose cascade is built — against. For the first op of
+	// any changeset cascadeBase returns e.vault itself, so every
+	// single-op changeset takes byte-for-byte its pre-OR-13 path. Once
+	// live ops exist, a content op (create_page, patch_page) validates
+	// against the projection of those ops too (020 T-A): a second op on a
+	// staged path COMPOSES with the first — its Before is the staged sha,
+	// the section check reads the staged body, and a create on a staged
+	// path sees its own predecessor and is refused — while a path no live
+	// op touches is seeded from disk in the projection, so behaviour
+	// there is byte-for-byte what it was before.
 	cv := e.vault
 	switch op.Kind {
 	case OpRenamePage, OpMergePages:
@@ -484,20 +492,38 @@ func (e *Engine) Append(op Op) (string, error) {
 			return "", fmt.Errorf("stage: append: %w", err)
 		}
 		op.Cascade = cascade
+	case OpCreatePage, OpPatchPage:
+		// Root-file patches are the exception (020 T-A): rootfile
+		// validation reads v.Root() — checkRootFileOneWriter walks the
+		// on-disk open changeset from it, and the projection is rootless
+		// (openProjection) — so a patch on one of OQ-9's named root
+		// files keeps validating against the working tree, exactly as
+		// before. Root files are not chainable content; nobody stages a
+		// predecessor for them.
+		if op.Kind == OpPatchPage && isKnownRootFile(op.Path) {
+			break
+		}
+		var err error
+		if cv, err = e.cascadeBase(c.Live()); err != nil {
+			return "", fmt.Errorf("stage: append: %w", err)
+		}
 	}
 
 	if err := ValidateOp(op, cv, cv.Schema()); err != nil {
 		return "", err
 	}
 
-	// OQ-9 L2's mirror direction, closed for real (S4-T0 repair-2): cv is a
-	// rootless fstest.MapFS projection (cascadeBase, openProjection)
-	// whenever the changeset already carries another live op — precisely
-	// when a root-file collision can exist — so validateCascade's own
-	// checkNewWriterOneWriter(cv, ...) call reads an empty Root() there and
-	// cannot see the on-disk changeset. e.vault is always the real,
-	// disk-backed vault, so this repeats the same check against it.
-	if op.Kind == OpRenamePage || op.Kind == OpMergePages {
+	// OQ-9 L2's mirror direction, closed for real (S4-T0 repair-2), widened
+	// by 020 T-A: cv is a rootless fstest.MapFS projection (cascadeBase,
+	// openProjection) whenever the changeset already carries another live
+	// op — precisely when a root-file collision can exist — so the
+	// checkNewWriterOneWriter(cv, ...) calls validateCascade and
+	// validateCreatePage make read an empty Root() there and cannot see
+	// the on-disk changeset. e.vault is always the real, disk-backed
+	// vault, so this repeats the same check against it for every
+	// automatic-writer kind: rename_page, merge_pages, and — since T-A
+	// made create_page validate against the projection too — create_page.
+	if op.Kind == OpRenamePage || op.Kind == OpMergePages || op.Kind == OpCreatePage {
 		if err := checkNewWriterOneWriter(e.vault, op); err != nil {
 			return "", err
 		}
@@ -758,29 +784,33 @@ func liveBefore(ops []Op, i int) []Op {
 	return out
 }
 
-// refreshCascadeStates re-checks every live op's cascade sub-ops against
-// the tree that op will actually apply to, flipping them StateStale where
-// the base they were built on no longer holds.
+// refreshOpStates runs Refresh's per-op staleness pass over every live op
+// in c: each is re-anchored on cascadeBase(liveBefore(c.Ops, i)) — the
+// projection of the live ops preceding it, which is the working tree
+// itself for a path no predecessor touches — and refreshOp's own Cascade
+// recursion re-checks sub-ops against that same base, the walk OR-13's
+// refreshCascadeStates used to perform separately.
 //
-// It deliberately never touches a TOP-LEVEL op's State: working-tree
-// staleness is Refresh's job and its anchor is captureSourceSHAs' hash of
-// the working tree, which dropping a sibling op does not change.
-func (e *Engine) refreshCascadeStates(c *Changeset) error {
+// 020 T-A made this the shared tail of Refresh AND the drop verbs. A
+// DropOp or DropHunk on a chain's head changes what its dependents will
+// apply to (a dropped predecessor stops projecting; a hunk drop rewrites
+// its After), so persistAfterMutation must re-anchor TOP-LEVEL ops in the
+// same verb — otherwise a dependent whose Before is the head's After would
+// keep looking fresh until some later Refresh happened to run, and a
+// commit could silently apply a patch computed over a rewrite the
+// reviewer just removed. Terminal ops are skipped: Dropped and Rejected
+// are review decisions this pass must not disturb, and Live() excludes
+// them from what Commit writes anyway.
+func (e *Engine) refreshOpStates(c *Changeset) error {
 	for i := range c.Ops {
-		op := &c.Ops[i]
-		if len(op.Cascade) == 0 {
-			continue
-		}
-		if op.State == StateDropped || op.State == StateRejected {
+		if c.Ops[i].State == StateDropped || c.Ops[i].State == StateRejected {
 			continue
 		}
 		base, err := e.cascadeBase(liveBefore(c.Ops, i))
 		if err != nil {
 			return err
 		}
-		for j := range op.Cascade {
-			refreshOp(&op.Cascade[j], base, base)
-		}
+		refreshOp(&c.Ops[i], e.vault, base)
 	}
 	return nil
 }
@@ -790,8 +820,8 @@ func (e *Engine) refreshCascadeStates(c *Changeset) error {
 // writeMu and owns c as a private copy (A-803); persistAndPublish
 // publishes it only once the write has landed.
 func (e *Engine) persistAfterMutation(c *Changeset) error {
-	if err := e.refreshCascadeStates(c); err != nil {
-		return fmt.Errorf("stage: recheck cascades: %w", err)
+	if err := e.refreshOpStates(c); err != nil {
+		return fmt.Errorf("stage: recheck states: %w", err)
 	}
 
 	checks, err := e.recomputeChecks(c)
@@ -829,12 +859,8 @@ func (e *Engine) refreshWriteLocked() error {
 		return err
 	}
 
-	for i := range c.Ops {
-		base, err := e.cascadeBase(liveBefore(c.Ops, i))
-		if err != nil {
-			return fmt.Errorf("stage: refresh: %w", err)
-		}
-		refreshOp(&c.Ops[i], e.vault, base)
+	if err := e.refreshOpStates(c); err != nil {
+		return fmt.Errorf("stage: refresh: %w", err)
 	}
 
 	if err := e.persistAndPublish(c); err != nil {

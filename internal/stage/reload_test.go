@@ -7,8 +7,6 @@ package stage
 
 import (
 	"errors"
-	"fmt"
-	"strings"
 	"sync"
 	"testing"
 
@@ -162,15 +160,17 @@ func TestReloadIfChanged(t *testing.T) {
 		if _, err := e.OpenChangeset("concurrent stamp traffic", testAuthor); err != nil {
 			t.Fatalf("OpenChangeset: %v", err)
 		}
-		page, ok := e.Vault().Page("wiki/concepts/kv-cache.md")
-		if !ok {
-			t.Fatal("fixture missing wiki/concepts/kv-cache.md")
-		}
-		const oldLine = "- [[flash-attention]] — a kernel design that reduces the memory-bandwidth cost"
-		if !strings.Contains(page.Body, oldLine) {
-			t.Fatalf("fixture body does not contain the hunk's old line:\n%s", page.Body)
-		}
 
+		// 020 T-A: the traffic op is add_link, not a repeated patch_page.
+		// This subtest probes the journal stamp vs ReloadIfChanged's stat
+		// under openMu — it does not care what kind is appended — and a
+		// patch_page repeated with the same committed Before is now
+		// refused from round 2 on: round 1 stages new content at the
+		// path, and an unchained Before on a staged path is exactly the
+		// shape chained-ops validation exists to reject. add_link chains
+		// nothing and validates the same on every round, so the race
+		// probe keeps its 32 successful appends. (Amended outside T-A's
+		// file set; see runs/T-A/report.md "Blockers".)
 		const rounds = 32
 		stop := make(chan struct{})
 		var wg sync.WaitGroup
@@ -190,22 +190,10 @@ func TestReloadIfChanged(t *testing.T) {
 			}
 		}()
 		for i := 0; i < rounds; i++ {
-			newLine := fmt.Sprintf("- [[flash-attention]] — a kernel design that cuts round-%d memory-bandwidth cost", i)
-			rewritten := *page
-			rewritten.Body = strings.Replace(page.Body, oldLine, newLine, 1)
 			if _, err := e.Append(Op{
-				Kind:      OpPatchPage,
-				Path:      page.Path,
-				Section:   "## Related",
-				Before:    page.SHA256(),
-				Content:   rewritten.Serialize(),
-				Rationale: "race traffic",
-				Hunks: []Hunk{{
-					ID:   "h1",
-					Path: page.Path,
-					Del:  []string{oldLine},
-					Add:  []string{newLine},
-				}},
+				Kind: OpAddLink,
+				From: "wiki/concepts/kv-cache.md",
+				To:   "wiki/entities/gpt-4.md",
 			}); err != nil {
 				t.Fatalf("Append %d: %v", i, err)
 			}
