@@ -323,7 +323,11 @@ func applyMathMacro(b *strings.Builder, s string, start int, name string, i *int
 			*i = j + 1
 			return
 		}
-		b.WriteByte(s[j])
+		if s[j] == '|' { // A15-2: bare \left|/\right| — never emit ASCII |
+			b.WriteString("∣")
+		} else {
+			b.WriteByte(s[j])
+		}
 		*i = j + 1
 	case "begin", "end":
 		if _, e, ok := readGroup(s, *i); ok {
@@ -362,6 +366,9 @@ func applyMathMacro(b *strings.Builder, s string, start int, name string, i *int
 	default:
 		if g, ok := mathMacroGlyphs[name]; ok {
 			b.WriteString(g)
+			// TeX control words gobble the space after them: $\vert v$
+			// renders ∣v, not ∣ v (A15-2 frozen case 19).
+			*i = skipHorizSpace(s, *i)
 			return
 		}
 		// Unknown macro: pass through literally, with its braced group

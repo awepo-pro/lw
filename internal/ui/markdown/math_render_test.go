@@ -100,6 +100,23 @@ func TestMathSGRParityPageAndFragment(t *testing.T) {
 	}
 }
 
+// TestVertTableCellSurvives pins A15-2: a table cell holding $\vert v\vert^2$
+// renders with the converted ∣v∣² visible in that cell. Before the fix \vert
+// emitted ASCII |, glamour's table parser reshaped the row on it, and the
+// value cell rendered empty — silent content loss.
+func TestVertTableCellSurvives(t *testing.T) {
+	const src = "| norm | value |\n" +
+		"| ---- | ---- |\n" +
+		"| norm | $\\vert v\\vert^2$ |\n"
+
+	out, err := NewRenderer().Render([]byte(src), Options{Width: 80, Style: darkStyle})
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	// Fails with "no line contains ∣v∣²" exactly when the cell was dropped.
+	lineWithMath(t, out, "∣v∣²")
+}
+
 // cutAtText drops a line's trailing pad — whitespace and the SGR wrappers
 // around it — until the line ends at visible text. The page path pads its
 // lines to the width inside styled chunks while the fragment path truncates

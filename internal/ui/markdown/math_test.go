@@ -102,6 +102,14 @@ func TestMathToUnicode(t *testing.T) {
 			in:   "$x^{2n}$",
 			want: "x^(2n)",
 		},
+		{
+			// A15-2: \vert maps to ∣ (U+2223), never ASCII | — a bare |
+			// inside a table cell lets glamour reshape the row and the
+			// cell renders empty.
+			name: "vert divides glyph",
+			in:   "$\\vert v\\vert^2$",
+			want: "∣v∣²",
+		},
 	}
 	for _, tc := range cases {
 		tc := tc

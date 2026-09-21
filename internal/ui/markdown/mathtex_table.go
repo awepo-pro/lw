@@ -66,8 +66,10 @@ var mathMacroGlyphs = map[string]string{
 	// Dots
 	"dots": "…", "ldots": "…", "cdots": "⋯", "vdots": "⋮",
 	"ddots": "⋱",
-	// Delimiters (also usable after \left / \right)
-	"{": "{", "}": "}", "|": "‖", "vert": "|", "Vert": "‖",
+	// Delimiters (also usable after \left / \right). "vert" must not emit
+	// ASCII | — A15-2: a bare | inside a table cell lets glamour's table
+	// parser reshape the row and drop the cell. | and Vert keep ‖ (U+2016).
+	"{": "{", "}": "}", "|": "‖", "vert": "∣", "Vert": "‖",
 	"backslash": "\\", "langle": "⟨", "rangle": "⟩",
 	"lceil": "⌈", "rceil": "⌉", "lfloor": "⌊", "rfloor": "⌋",
 }
