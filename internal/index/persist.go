@@ -23,23 +23,28 @@ type gobIndex struct {
 	Docs []gobDoc
 }
 
-// gobDoc is the exported, gob-encodable mirror of docEntry.
+// gobDoc is the exported, gob-encodable mirror of docEntry. It must change
+// in lockstep with docEntry — gob encodes exported fields, so a field
+// present on docEntry but missing here is silently dropped by Save/Load.
 type gobDoc struct {
-	Path    string
-	Title   string
-	Type    string
-	Tags    []string
-	Created vault.Date
-	Updated vault.Date
-	SHA256  string
-	Body    string
+	Path     string
+	Title    string
+	Type     string
+	Tags     []string
+	Created  vault.Date
+	Updated  vault.Date
+	SHA256   string
+	Body     string
+	Abstract string
 
-	BodyTermFreq  map[string]int
-	TitleTermFreq map[string]int
-	TagTermFreq   map[string]int
-	BodyLen       int
-	TitleLen      int
-	TagLen        int
+	BodyTermFreq     map[string]int
+	TitleTermFreq    map[string]int
+	TagTermFreq      map[string]int
+	AbstractTermFreq map[string]int
+	BodyLen          int
+	TitleLen         int
+	TagLen           int
+	AbstractLen      int
 }
 
 // GobEncode implements gob.GobEncoder so Save can gob.Encode an *Index
@@ -61,21 +66,24 @@ func (ix *Index) GobEncode() ([]byte, error) {
 	for _, p := range paths {
 		d := docs[p]
 		g.Docs = append(g.Docs, gobDoc{
-			Path:    d.Path,
-			Title:   d.Title,
-			Type:    d.Type,
-			Tags:    d.Tags,
-			Created: d.Created,
-			Updated: d.Updated,
-			SHA256:  d.SHA256,
-			Body:    d.Body,
+			Path:     d.Path,
+			Title:    d.Title,
+			Type:     d.Type,
+			Tags:     d.Tags,
+			Created:  d.Created,
+			Updated:  d.Updated,
+			SHA256:   d.SHA256,
+			Body:     d.Body,
+			Abstract: d.Abstract,
 
-			BodyTermFreq:  d.BodyTermFreq,
-			TitleTermFreq: d.TitleTermFreq,
-			TagTermFreq:   d.TagTermFreq,
-			BodyLen:       d.BodyLen,
-			TitleLen:      d.TitleLen,
-			TagLen:        d.TagLen,
+			BodyTermFreq:     d.BodyTermFreq,
+			TitleTermFreq:    d.TitleTermFreq,
+			TagTermFreq:      d.TagTermFreq,
+			AbstractTermFreq: d.AbstractTermFreq,
+			BodyLen:          d.BodyLen,
+			TitleLen:         d.TitleLen,
+			TagLen:           d.TagLen,
+			AbstractLen:      d.AbstractLen,
 		})
 	}
 
@@ -96,21 +104,24 @@ func (ix *Index) GobDecode(data []byte) error {
 	docs := make(map[string]*docEntry, len(g.Docs))
 	for _, gd := range g.Docs {
 		docs[gd.Path] = &docEntry{
-			Path:    gd.Path,
-			Title:   gd.Title,
-			Type:    gd.Type,
-			Tags:    gd.Tags,
-			Created: gd.Created,
-			Updated: gd.Updated,
-			SHA256:  gd.SHA256,
-			Body:    gd.Body,
+			Path:     gd.Path,
+			Title:    gd.Title,
+			Type:     gd.Type,
+			Tags:     gd.Tags,
+			Created:  gd.Created,
+			Updated:  gd.Updated,
+			SHA256:   gd.SHA256,
+			Body:     gd.Body,
+			Abstract: gd.Abstract,
 
-			BodyTermFreq:  gd.BodyTermFreq,
-			TitleTermFreq: gd.TitleTermFreq,
-			TagTermFreq:   gd.TagTermFreq,
-			BodyLen:       gd.BodyLen,
-			TitleLen:      gd.TitleLen,
-			TagLen:        gd.TagLen,
+			BodyTermFreq:     gd.BodyTermFreq,
+			TitleTermFreq:    gd.TitleTermFreq,
+			TagTermFreq:      gd.TagTermFreq,
+			AbstractTermFreq: gd.AbstractTermFreq,
+			BodyLen:          gd.BodyLen,
+			TitleLen:         gd.TitleLen,
+			TagLen:           gd.TagLen,
+			AbstractLen:      gd.AbstractLen,
 		}
 	}
 	ix.docs.Store(&docs) // one store: a concurrent reader sees old or new, never a partial map (008 A-802)
