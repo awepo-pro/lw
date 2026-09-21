@@ -28,7 +28,8 @@ var (
 
 // lexersHave reports whether chroma has a lexer for lang, memoized in
 // lexerCache. The registry call itself runs outside the mutex: it is
-// read-only and already ran concurrently per fence before this memo
+// read-only (chroma v2.20.0 registry Get: map reads + glob scans, no
+// registry writes) and already ran concurrently per fence before this memo
 // existed, and serializing first-sight misses (~ms each) behind one
 // lock would stagger concurrent renders for no correctness gain — two
 // goroutines first-seeding the same tag both compute Get's answer and
