@@ -14,7 +14,13 @@ type Config struct {
 	APIKey      string // already resolved from env:/keyring:/literal
 	Temperature float64
 	MaxTokens   int
-	Timeout     time.Duration
+	// Thinking is the GLM thinking-mode switch (022): "off" sends
+	// thinking:{"type":"disabled"} on every request, "on" sends
+	// thinking:{"type":"enabled"}, and "default" or "" sends no thinking key
+	// at all — the provider's own default applies. buildRequestBody
+	// (client.go) owns the mapping, for Stream and Probe alike.
+	Thinking string
+	Timeout  time.Duration
 }
 
 // Message is one chat-completions message, tagged exactly as the

@@ -288,7 +288,7 @@ The same Go functions are exposed twice: to the in-process agent loop, and over 
 
 | Tool | Why it exists |
 |---|---|
-| `vault.orient()` | SCHEMA.md + index.md + `curator-memory.md` + last 30 log entries in one call. Orientation is a mandatory ritual; one tool means it can't be half-done |
+| `vault.orient()` | SCHEMA.md + index.md + `curator-memory.md` + last 30 log entries in one call. The engine injects the digest itself each session (§11.3); the tool stays available on demand |
 | `wiki.search(q, {type, tags, limit})` | Word search over pages with structured filters (§11.4) |
 | `wiki.get(page, {section})` | Whole page or one section — keeps context small |
 | `wiki.neighbors(page, depth)` / `wiki.backlinks(page)` | Graph slice. This is what stops duplicate pages: before creating `speculative-decoding`, the agent sees `assisted-generation` exists |
@@ -417,6 +417,7 @@ model       = "deepseek-v4-flash"
 api_key     = "env:DEEPSEEK_API_KEY"      # env: | keyring: | literal (discouraged)
 temperature = 0.2
 max_tokens  = 32768
+thinking    = "off"                        # off | on | default (sends no thinking key)
 
 [llm.limits]
 max_tool_rounds = 24       # hard stop; a runaway agent costs review time, not money
@@ -440,10 +441,11 @@ Context assembled per turn:
 
 1. **System prompt** — the curator role and operating procedure. Static per
    session; since 012 its two web-lookup paragraphs are included only when the
-   vault's registry actually offers `web.search`.
+   vault's registry actually offers `web.search`. It mandates no orientation
+   round trip — orientation is item 3, not a prompted first move.
 2. **`curator-memory.md`** — verbatim. Small by design (D8).
-3. **Orientation digest** — from `vault.orient()`, injected once per session, refreshed
-   if `index.md` changes.
+3. **Orientation digest** — from `vault.orient()`, injected once per session by
+   the engine, refreshed if `index.md` changes.
 4. **Session history** — compacted when over budget.
 5. **User message.**
 

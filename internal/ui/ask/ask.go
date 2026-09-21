@@ -108,6 +108,22 @@ type Model struct {
 	filingTurn bool
 
 	ch <-chan agent.Event // installed by StreamMsg; nil = no stream to re-arm
+
+	// Reasoning state (022 T2) — pane-only, in-memory, never written into
+	// entries, records or session.ndjson. reasonChars counts the current
+	// TURN's reasoning runes and reasonTail keeps its rolling last-8-KiB
+	// buffer for the ctrl+t view; both reset when a new turn starts. The
+	// two round flags drive the thinking status line: it shows while the
+	// CURRENT round has seen reasoning and no text yet, so ToolCallEv/
+	// ToolResEv reset them (a new round) until reasoning resumes.
+	reasonChars       int
+	reasonTail        string
+	roundSawReasoning bool
+	roundSawText      bool
+
+	// showReasoning is the ctrl+t toggle: the transcript area swaps to the
+	// dimmed reasoning-tail view until it is pressed again.
+	showReasoning bool
 }
 
 var _ ui.Pane = (*Model)(nil)
@@ -245,7 +261,8 @@ func (m *Model) Update(msg tea.Msg) (ui.Pane, tea.Cmd) {
 	case StreamClosedMsg:
 		m.ch = nil
 		m.turnActive = false
-		m.hintAfterTurn = "" // a turn cancelled before its terminal line owes no hint
+		m.resetReasoningRound() // a turn cut off mid-round leaves no thinking line behind
+		m.hintAfterTurn = ""    // a turn cancelled before its terminal line owes no hint
 		// ...and records nothing, so its filing marker (file.go) must not
 		// leak onto the next turn's answer either.
 		m.filingTurn = false
@@ -296,14 +313,19 @@ func (m *Model) Update(msg tea.Msg) (ui.Pane, tea.Cmd) {
 }
 
 // handleKey dispatches one tea.KeyPressMsg: Ctrl-R switches to Review
-// (s4-tui.md S4-T6 pinned item 3), enter sends the typed message or
-// expands the selected tool call, the shell's scroll bindings move the
-// transcript (scroll.go, W5 F2/C36), and everything else edits the input
-// box.
+// (s4-tui.md S4-T6 pinned item 3), ctrl+t flips the reasoning-tail view
+// (022 T2), enter sends the typed message or expands the selected tool
+// call, the shell's scroll bindings move the transcript (scroll.go, W5
+// F2/C36), and everything else edits the input box.
 func (m *Model) handleKey(msg tea.KeyPressMsg) (ui.Pane, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+r":
 		return m, func() tea.Msg { return ui.SwitchScreenMsg{To: ui.ScreenReview} }
+	case "ctrl+t":
+		// 022 T2: flip the reasoning view over the transcript area. Pane
+		// state only — nothing here touches entries or the input box.
+		m.showReasoning = !m.showReasoning
+		return m, nil
 	case "ctrl+s":
 		// 009 contract §3.3: file the last answer as a query page — before
 		// the printable path, like every other bound key.

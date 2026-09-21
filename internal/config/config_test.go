@@ -445,3 +445,41 @@ model = "custom-model"
 		t.Fatalf("round trip mismatch:\n got  %+v\n want %+v", *again, *got)
 	}
 }
+
+// TestThinkingConfigRoundTrip pins the llm.thinking key end to end (022 T1):
+// lw's default is "off" — the explicit thinking:disabled that keeps a
+// thinking-mode provider from spending the round's budget reasoning — a file
+// that names the key wins over that default, and a file that omits it keeps
+// "off" through the merge-over-default, like every other [llm] key.
+func TestThinkingConfigRoundTrip(t *testing.T) {
+	if got := Default().LLM.Thinking; got != "off" {
+		t.Fatalf("Default().LLM.Thinking = %q, want off", got)
+	}
+
+	dir := withConfigDir(t)
+	writeConfig(t, dir, `[llm]
+thinking = "on"
+`)
+	got, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.LLM.Thinking != "on" {
+		t.Errorf("Thinking = %q, want the file's on", got.LLM.Thinking)
+	}
+
+	dir = withConfigDir(t)
+	writeConfig(t, dir, `[llm]
+model = "custom-model"
+`)
+	got, err = Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.LLM.Thinking != "off" {
+		t.Errorf("Thinking = %q, want the default off for a key the file omits", got.LLM.Thinking)
+	}
+	if got.LLM.Model != "custom-model" {
+		t.Errorf("Model = %q, want the file's custom-model", got.LLM.Model)
+	}
+}

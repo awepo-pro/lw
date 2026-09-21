@@ -73,3 +73,20 @@ func TestPromptWebRules(t *testing.T) {
 		})
 	}
 }
+
+// TestSystemPromptHasNoOrientRitual is 022's pin: the orientation ritual
+// left the system prompt. The digest itself is ContextBuilder.Build's job —
+// injected as its own system message once per session, refreshed on an
+// index.md change (context.go, §11.3 item 3) — and vault.orient stays
+// registered for on-demand calls, so neither the ritual's name nor the
+// tool's belongs in the prompt on either assembly.
+func TestSystemPromptHasNoOrientRitual(t *testing.T) {
+	for _, hasSearch := range []bool{false, true} {
+		prompt := systemPromptFor(hasSearch)
+		for _, banned := range []string{"Orientation ritual", "vault.orient"} {
+			if strings.Contains(prompt, banned) {
+				t.Errorf("systemPromptFor(%v) still carries %q:\n%s", hasSearch, banned, prompt)
+			}
+		}
+	}
+}

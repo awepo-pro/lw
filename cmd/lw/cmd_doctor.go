@@ -77,6 +77,7 @@ var probeProvider = func(ctx context.Context, cfg *config.Config) llm.ProbeResul
 		APIKey:      apiKey,
 		Temperature: cfg.LLM.Temperature,
 		MaxTokens:   cfg.LLM.MaxTokens,
+		Thinking:    cfg.LLM.Thinking,
 		Timeout:     doctorProbeTimeout,
 	})
 	return client.Probe(ctx)

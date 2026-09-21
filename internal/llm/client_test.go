@@ -118,6 +118,39 @@ func TestBuildRequestBodyNoTools(t *testing.T) {
 	}
 }
 
+// TestBuildRequestBodyThinkingField pins the Config.Thinking → wire mapping
+// (022): "off" sends exactly thinking:{"type":"disabled"}, "on" sends
+// thinking:{"type":"enabled"}, and "default" and "" send no thinking key at
+// all — the escape hatch that leaves the provider's own default in force.
+// Stream and Probe share buildRequestBody, so one table covers both.
+func TestBuildRequestBodyThinkingField(t *testing.T) {
+	tests := []struct {
+		thinking string
+		want     string // byte fragment the body must contain; "" = key must be absent
+	}{
+		{thinking: "off", want: `"thinking":{"type":"disabled"}`},
+		{thinking: "on", want: `"thinking":{"type":"enabled"}`},
+		{thinking: "default", want: ""},
+		{thinking: "", want: ""},
+	}
+	for _, tt := range tests {
+		c := New(Config{BaseURL: "http://example.com", Model: "test-model", Thinking: tt.thinking})
+		b, err := c.buildRequestBody(Request{Messages: []Message{{Role: "user", Content: "hi"}}})
+		if err != nil {
+			t.Fatalf("buildRequestBody (Thinking=%q): %v", tt.thinking, err)
+		}
+		if tt.want == "" {
+			if bytes.Contains(b, []byte(`"thinking"`)) {
+				t.Errorf("Thinking=%q: wire body = %s, want no thinking key (provider default)", tt.thinking, b)
+			}
+			continue
+		}
+		if !bytes.Contains(b, []byte(tt.want)) {
+			t.Errorf("Thinking=%q: wire body = %s, want it to contain %s", tt.thinking, b, tt.want)
+		}
+	}
+}
+
 // flakyTransport fails the first N RoundTrips at the transport level (no
 // response, just an error) and delegates the rest to inner — used to test
 // Client.do's single-retry behavior without a real network failure.

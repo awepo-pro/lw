@@ -24,11 +24,19 @@ import (
 // becomes an import cycle or a merge conflict several subtasks from now.
 
 // Event is one item streamed out of an Agent turn. The concrete types are
-// TextDelta, ToolCallEv, ToolResEv, StageEv, DoneEv and ErrorEv.
+// TextDelta, ReasoningDelta, ToolCallEv, ToolResEv, StageEv, DoneEv and
+// ErrorEv.
 type Event interface{ isEvent() }
 
 // TextDelta is one streamed chunk of assistant prose.
 type TextDelta struct{ Text string }
+
+// ReasoningDelta is one streamed chunk of the model's thinking, the same
+// bytes Reasoning accumulates into the round's Record (005) — carried out
+// live so a UI can show the thinking while it streams (022 T2). It is a
+// display-only event: nothing records it, and a consumer may ignore it
+// freely.
+type ReasoningDelta struct{ Text string }
 
 // ToolCallEv fires when the model requests a tool call.
 type ToolCallEv struct{ ID, Name, Args string }
@@ -55,12 +63,13 @@ type DoneEv struct {
 // ErrorEv fires when a turn ends in an error.
 type ErrorEv struct{ Err error }
 
-func (TextDelta) isEvent()  {}
-func (ToolCallEv) isEvent() {}
-func (ToolResEv) isEvent()  {}
-func (StageEv) isEvent()    {}
-func (DoneEv) isEvent()     {}
-func (ErrorEv) isEvent()    {}
+func (TextDelta) isEvent()      {}
+func (ReasoningDelta) isEvent() {}
+func (ToolCallEv) isEvent()     {}
+func (ToolResEv) isEvent()      {}
+func (StageEv) isEvent()        {}
+func (DoneEv) isEvent()         {}
+func (ErrorEv) isEvent()        {}
 
 // Agent drives one curator turn, streaming Events to out and persisting the
 // turn through its SessionStore. Loop (S5-T3) is the only implementation in

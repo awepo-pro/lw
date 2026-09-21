@@ -118,6 +118,7 @@ var newIngestAgent = func(e *stage.Engine, cfg *config.Config, sessions agent.Se
 		APIKey:      apiKey,
 		Temperature: cfg.LLM.Temperature,
 		MaxTokens:   cfg.LLM.MaxTokens,
+		Thinking:    cfg.LLM.Thinking,
 	})
 	reg := tools.NewRegistry(agentToolDeps(e, cfg, ex))
 	loopCfg := agent.LoopConfig{

@@ -44,12 +44,23 @@ func (c *Client) endpoint() string {
 // no OpenAI "type":"function" wrapper, so buildRequestBody constructs one
 // here instead of exporting it onto ToolDef.
 type wireRequest struct {
-	Model       string     `json:"model"`
-	Messages    []Message  `json:"messages"`
-	Tools       []wireTool `json:"tools,omitempty"`
-	Temperature float64    `json:"temperature,omitempty"`
-	MaxTokens   int        `json:"max_tokens,omitempty"`
-	Stream      bool       `json:"stream"`
+	Model       string        `json:"model"`
+	Messages    []Message     `json:"messages"`
+	Tools       []wireTool    `json:"tools,omitempty"`
+	Temperature float64       `json:"temperature,omitempty"`
+	MaxTokens   int           `json:"max_tokens,omitempty"`
+	Thinking    *wireThinking `json:"thinking,omitempty"`
+	Stream      bool          `json:"stream"`
+}
+
+// wireThinking is the GLM thinking-mode switch on the wire (022): z.ai's
+// OpenAI-compatible API takes thinking:{"type":"enabled"|"disabled"}, with
+// enabled as its own default. The pointer is nil — and the whole key omitted
+// — unless Config.Thinking asked for one of the explicit values, so the
+// "default" escape hatch leaves the provider's choice in force and no
+// existing body moves a byte.
+type wireThinking struct {
+	Type string `json:"type"`
 }
 
 // wireTool and wireFunction are the OpenAI-compatible wire shape for one
@@ -88,6 +99,16 @@ func (c *Client) buildRequestBody(req Request) ([]byte, error) {
 				},
 			}
 		}
+	}
+	// Config.Thinking maps onto the GLM thinking switch (022): the explicit
+	// values send their exact wire shape, "default" and "" leave the key out
+	// so the provider's default applies. Stream and Probe share this body,
+	// so one mapping covers both.
+	switch c.cfg.Thinking {
+	case "off":
+		wr.Thinking = &wireThinking{Type: "disabled"}
+	case "on":
+		wr.Thinking = &wireThinking{Type: "enabled"}
 	}
 	b, err := json.Marshal(wr)
 	if err != nil {

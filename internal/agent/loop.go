@@ -224,6 +224,14 @@ func (l *Loop) runRound(ctx context.Context, sessionID string, msgs []llm.Messag
 				finish = chunk.Finish
 			}
 			if chunk.Reasoning != "" {
+				// 022 T2: the thinking streams out live, one ReasoningDelta
+				// per non-empty chunk in stream order — always before the
+				// round's text, which arrives later in the same stream.
+				// Display-only: the accumulation below (and the records it
+				// feeds) is unchanged.
+				if !l.send(ctx, out, ReasoningDelta{Text: chunk.Reasoning}) {
+					return nil, false, "", ctx.Err()
+				}
 				roundReasoning.WriteString(chunk.Reasoning)
 				pendingReasoning.WriteString(chunk.Reasoning)
 			}

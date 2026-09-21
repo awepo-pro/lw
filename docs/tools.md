@@ -20,7 +20,7 @@ Each tool is defined once in `internal/tools` and consumed twice:
 
 | # | Tool | MCP name | What it reads |
 |---|---|---|---|
-| 1 | `vault.orient` | `vault_orient` | `SCHEMA.md`, `index.md` (truncated to 200 lines), `curator-memory.md` and the last 30 `log.md` lines **in one call**. Orientation is a mandatory ritual; one tool means it cannot be half-done |
+| 1 | `vault.orient` | `vault_orient` | `SCHEMA.md`, `index.md` (truncated to 200 lines), `curator-memory.md` and the last 30 `log.md` lines **in one call**. On demand: the engine injects the orientation digest itself once per session (§11.3), so the tool is there when the agent wants a fresh look |
 | 2 | `wiki.search` | `wiki_search` | The word index: `{q, type?, tags?, limit?}` → at most 20 hits of title plus a short snippet, **never a page body** |
 | 3 | `wiki.get` | `wiki_get` | One page in full, or one section (`{page, section?}`, the section being the exact heading line). When the open changeset already stages the page, the staged bytes are what comes back — under a staged notice, so the agent reads its own staged edits before composing the next one |
 | 4 | `wiki.neighbors` | `wiki_neighbors` | `{page, depth?}` (1–2 hops) in either link direction — the duplicate-page check |
