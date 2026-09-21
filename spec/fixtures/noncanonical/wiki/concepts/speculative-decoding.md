@@ -17,6 +17,13 @@ Speculative decoding accelerates autoregressive generation by drafting several
 candidate tokens with a small model and verifying them in one parallel pass of
 the large target model.^[raw/papers/leviathan-2023.md]
 
+## Abstract
+
+Speculative decoding drafts a short continuation with a small model and has the
+large target model verify the whole continuation in one forward pass, accepting
+the longest prefix it agrees with. This accelerates autoregressive generation
+without changing the target model's output distribution.
+
 ## How it works
 
 A cheap draft model proposes a short continuation. The target model then

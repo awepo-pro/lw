@@ -15,6 +15,13 @@ GPT-4 is a large multimodal language model whose inference cost motivates much
 of the systems work on faster decoding, including speculative
 decoding.^[raw/papers/leviathan-2023.md]
 
+## Abstract
+
+GPT-4 is a large multimodal language model whose serving cost has made
+inference efficiency a first-class systems problem. Techniques such as
+speculative decoding and fused attention kernels exist largely to reduce its
+latency and per-token cost.
+
 ## Notes
 
 Curator preference: use the hyphenated vendor form `gpt-4`, never `gpt4`, per

@@ -73,7 +73,9 @@ func TestCommitEndOmitsForcedByDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("query journal: %v", err)
 	}
-	if got, want := string(evs[len(evs)-1].Data), `{"lint_errors":0,"lint_warns":1}`; got != want {
+	// 014 amendment (workflow §9 A6): lint_warns 1 → 2 — brand-new.md (no
+	// inbound links, no ## Abstract) now also earns a page-abstract warn.
+	if got, want := string(evs[len(evs)-1].Data), `{"lint_errors":0,"lint_warns":2}`; got != want {
 		t.Errorf("commit_end Data = %s, want %s (forced must be omitted entirely)", got, want)
 	}
 }

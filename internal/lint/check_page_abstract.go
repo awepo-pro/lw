@@ -35,6 +35,7 @@ func (pageAbstractCheck) Run(ctx *Context) []Finding {
 			Path:     p.Path,
 			Severity: SevWarn,
 			Message:  "no ## Abstract section; open the page with a 2-4 sentence summary",
+			Fixable:  true, // an agent can draft the summary; parity with path-convention
 		})
 	}
 	return findings

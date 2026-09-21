@@ -15,7 +15,7 @@
 +See [[kv-cache]] and [[gpt-4]] for background.
 --- /dev/null
 +++ b/wiki/concepts/kv-cache-v2.md
-@@ -0,0 +1,38 @@
+@@ -0,0 +1,45 @@
 +---
 +title: KV Cache
 +created: 2026-08-20
@@ -31,6 +31,13 @@
 +The key/value cache stores per-layer attention projections from previous
 +decoding steps so each new token only attends to cached keys and values
 +instead of recomputing them.^[raw/articles/kv-cache-explained.md]
++
++## Abstract
++
++The key/value cache stores per-layer attention projections from earlier
++decoding steps so a new token attends to cached keys and values instead of
++recomputing them. This turns per-token work into a constant amount of new
++computation at the cost of memory that grows with sequence length.
 +
 +## Why it matters
 +
@@ -56,7 +63,7 @@
 +  during verification.
 --- a/wiki/concepts/kv-cache.md
 +++ /dev/null
-@@ -1,38 +0,0 @@
+@@ -1,45 +0,0 @@
 ----
 -title: KV Cache
 -created: 2026-08-20
@@ -72,6 +79,13 @@
 -The key/value cache stores per-layer attention projections from previous
 -decoding steps so each new token only attends to cached keys and values
 -instead of recomputing them.^[raw/articles/kv-cache-explained.md]
+-
+-## Abstract
+-
+-The key/value cache stores per-layer attention projections from earlier
+-decoding steps so a new token attends to cached keys and values instead of
+-recomputing them. This turns per-token work into a constant amount of new
+-computation at the cost of memory that grows with sequence length.
 -
 -## Why it matters
 -
@@ -110,7 +124,7 @@
  
 --- a/wiki/concepts/flash-attention.md
 +++ b/wiki/concepts/flash-attention.md
-@@ -16,7 +16,7 @@
+@@ -23,7 +23,7 @@
  
  ## Why it matters
  
@@ -121,7 +135,7 @@
  
 --- a/wiki/concepts/flash-attention.md
 +++ b/wiki/concepts/flash-attention.md
-@@ -16,12 +16,12 @@
+@@ -23,12 +23,12 @@
  
  ## Why it matters
  
@@ -153,7 +167,7 @@
 +See [[kv-cache-v2]] and [[gpt-4]] for background.
 --- a/wiki/concepts/speculative-decoding.md
 +++ b/wiki/concepts/speculative-decoding.md
-@@ -23,7 +23,7 @@
+@@ -30,7 +30,7 @@
  
  ## Related
  

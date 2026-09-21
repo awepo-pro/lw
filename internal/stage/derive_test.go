@@ -248,8 +248,10 @@ func TestT8TwoCreatesInOneChangesetBothIndexed(t *testing.T) {
 
 // TestT8SplitPageCommitsLintClean pins the measured C-66 baseline (7
 // errors: 4 link-broken + 3 index-sync on minimal, splitting kv-cache.md)
-// going to 0 errors, 0 warns, with the source path left holding a stub
-// that links to both products.
+// going to 0 errors, with the source path left holding a stub
+// that links to both products. 014 amendment (workflow §9 A6): the stub
+// and the two new parts each carry no ## Abstract, so the committed vault
+// reports exactly 3 page-abstract warns.
 func TestT8SplitPageCommitsLintClean(t *testing.T) {
 	e, _ := newTestEngine(t)
 
@@ -278,8 +280,10 @@ func TestT8SplitPageCommitsLintClean(t *testing.T) {
 	}
 
 	report := lint.Run(e.vaultLintContext(), nil)
-	if report.Errors != 0 || report.Warns != 0 {
-		t.Fatalf("Errors=%d Warns=%d, want 0/0: %+v", report.Errors, report.Warns, report.Findings)
+	// 014 amendment (workflow §9 A6): 0/0 → 0 errors, 3 warns (one
+	// page-abstract each for the stub and the two parts).
+	if report.Errors != 0 || report.Warns != 3 {
+		t.Fatalf("Errors=%d Warns=%d, want 0/3: %+v", report.Errors, report.Warns, report.Findings)
 	}
 
 	page, ok := e.vault.Page(source)
