@@ -15,6 +15,8 @@ import (
 	"strings"
 
 	lipgloss "charm.land/lipgloss/v2"
+
+	"github.com/awepo-pro/lw/internal/ui/markdown"
 )
 
 // cell is one character of a styled transcript line: its rune plus the id
@@ -88,14 +90,16 @@ func linkTarget(s string) string {
 // inlineWrap renders assistant text at w: each line inline-marked, then
 // word-wrapped as styled cells — the markers change the text before it
 // wraps (mockgen.ask_conversation wraps inline(ANSWER)), so wrapping must
-// see the converted text, not the source.
+// see the converted text, not the source. Inline $…$ math converts first
+// through the markdown package's exported wrapper, so the tail's math
+// reads the same as the settled blocks' (§F.2.5).
 func (m *Model) inlineWrap(text string, w int) []string {
 	if w < 1 {
 		w = 1
 	}
 	table := m.inlineStyleTable()
 	var out []string
-	for _, para := range strings.Split(text, "\n") {
+	for _, para := range strings.Split(markdown.MathToUnicodeInline(text), "\n") {
 		out = append(out, wrapStyled(inlineCells(para), table, w, 0)...)
 	}
 	return out
