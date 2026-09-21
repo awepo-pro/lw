@@ -81,14 +81,16 @@ func TestMathToUnicode(t *testing.T) {
 			want: `\foo{x}²`,
 		},
 		{
+			// A15-1: alias retired — escaped punctuation passes through.
 			name: "paren alias",
 			in:   `\(x^2\)`,
-			want: "x²",
+			want: `\(x^2\)`,
 		},
 		{
+			// A15-1: alias retired — escaped punctuation passes through.
 			name: "bracket alias",
 			in:   `\[y = mx + b\]`,
-			want: "y = mx + b",
+			want: `\[y = mx + b\]`,
 		},
 		{
 			name: "aligned environment",

@@ -5,14 +5,14 @@ import (
 	"unicode/utf8"
 )
 
-// mathToUnicode rewrites TeX math — $…$, $$…$$, \(…\) and \[…\] — into
-// unicode-markdown inside src. Everything outside math delimiters (and
-// inside code spans) is byte-identical; a $-delimited candidate is only
-// converted when its content holds at least one recognized TeX construct,
-// so money and shell dollars pass through untouched.
+// mathToUnicode rewrites TeX math — $…$ and $$…$$ — into unicode-markdown
+// inside src. Everything outside math delimiters (and inside code spans) is
+// byte-identical; a $-delimited candidate is only converted when its content
+// holds at least one recognized TeX construct, so money and shell dollars
+// pass through untouched. \(…\)/\[…\] are CommonMark escaped punctuation and
+// always pass through as-is (A15-1).
 func mathToUnicode(src string) string {
-	if !strings.Contains(src, "$") &&
-		!strings.Contains(src, "\\(") && !strings.Contains(src, "\\[") {
+	if !strings.Contains(src, "$") {
 		return src
 	}
 	segs := splitCodeSpans(src)
@@ -140,24 +140,6 @@ func mathScan(s string) string {
 				b.WriteByte(c)
 				i++
 			}
-		case strings.HasPrefix(s[i:], "\\("): // inline alias
-			end := strings.Index(s[i+2:], "\\)")
-			if end < 0 {
-				b.WriteString(s[i : i+2])
-				i += 2
-				break
-			}
-			convertMathInto(&b, s[i+2:i+2+end])
-			i = i + 2 + end + 2
-		case strings.HasPrefix(s[i:], "\\["): // display alias
-			end := strings.Index(s[i+2:], "\\]")
-			if end < 0 {
-				b.WriteString(s[i : i+2])
-				i += 2
-				break
-			}
-			convertMathInto(&b, s[i+2:i+2+end])
-			i = i + 2 + end + 2
 		default:
 			b.WriteByte(c)
 			i++
