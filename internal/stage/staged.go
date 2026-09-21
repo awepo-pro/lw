@@ -20,11 +20,17 @@ import "errors"
 // OpIngestSource, OpCreatePage or OpPatchPage op in the changeset targets
 // path -> (nil, false, nil) — not found is not an error, so a tool handler
 // can turn it straight into a Result{IsError:true} without inventing its
-// own error path. When more than one live op targets path (e.g. a
-// create_page later patched in the same changeset), the LAST such op in
-// Changeset.Live() order wins — the same op whose After Commit will
-// actually write. A real CAS or engine read failure is returned as an
-// error.
+// own error path. The scan walks the ops in Changeset.Live() order and,
+// within each op, the op itself then its Cascade entries depth-first — the
+// same order projection.go's applyOp applies them — and the LAST
+// content-op targeting path wins, so a path a rename/merge cascade rewrote
+// (020 FIX-1) resolves to the rewrite, not to the committed page the
+// projection has already moved past. When more than one live op targets
+// path (e.g. a create_page later patched in the same changeset), that last
+// op is likewise the one whose After Commit will actually write. Cascade
+// sub-ops' After shas sit in the CAS (storeOpContent recurses), so the
+// store.Get below works unchanged for them. A real CAS or engine read
+// failure is returned as an error.
 //
 // StagedFile takes the same lock/read discipline as Current and Diff: it
 // never acquires the vault lock (§5.2 names those two explicitly; Append,
@@ -40,18 +46,21 @@ func (e *Engine) StagedFile(path string) ([]byte, bool, error) {
 		return nil, false, err
 	}
 
-	live := c.Live()
 	var match *Op
-	for i := range live {
-		op := &live[i]
-		if op.Path != path {
-			continue
-		}
-		switch op.Kind {
-		case OpIngestSource, OpCreatePage, OpPatchPage:
-			match = op
+	var scan func(ops []Op)
+	scan = func(ops []Op) {
+		for i := range ops {
+			op := &ops[i]
+			switch op.Kind {
+			case OpIngestSource, OpCreatePage, OpPatchPage:
+				if op.Path == path {
+					match = op
+				}
+			}
+			scan(op.Cascade)
 		}
 	}
+	scan(c.Live())
 	if match == nil {
 		return nil, false, nil
 	}

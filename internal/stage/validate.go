@@ -90,6 +90,19 @@ func validateHunks(hunks []Hunk) error {
 // equality — it does not loosen validVaultPath or vaultPathFilenameRE for
 // any other path any op kind could ever name.
 func ValidateOp(op Op, v *vault.Vault, s *vault.Schema) error {
+	return validateOpForAppend(op, v, v, s)
+}
+
+// validateOpForAppend is ValidateOp with the committed vault named
+// separately (020 FIX-1). Append validates a content op against
+// cascadeBase's projection, so "already exists" and basename-collision
+// refusals can fire on a path that exists only in the open changeset's
+// staged state; committed tells the message builders whether the blocker
+// also exists in the working tree, so the refusal can say which world it
+// is describing and a proposing agent that re-checks the tree is not sent
+// in a loop. committed must be non-nil; for every ValidateOp caller v IS
+// the committed vault, and ValidateOp simply passes it twice.
+func validateOpForAppend(op Op, v, committed *vault.Vault, s *vault.Schema) error {
 	if op.Kind == OpPatchPage && isKnownRootFile(op.Path) {
 		if err := validateHunks(op.Hunks); err != nil {
 			return err
@@ -125,7 +138,7 @@ func ValidateOp(op Op, v *vault.Vault, s *vault.Schema) error {
 	case OpIngestSource:
 		return validateIngestSource(op, v)
 	case OpCreatePage:
-		return validateCreatePage(op, v, s)
+		return validateCreatePage(op, v, committed, s)
 	case OpPatchPage:
 		return validatePatchPage(op, v, s)
 	case OpRenamePage:
@@ -169,14 +182,18 @@ func validateIngestSource(op Op, v *vault.Vault) error {
 // validateCreatePage enforces: path does not exist; frontmatter valid
 // against the schema; at least 2 outbound wikilinks; type matches the
 // directory; plus the schema's required Rationale and Provenance (D-BH).
-// The three content-dependent bullets read op.Content (D-AY).
-func validateCreatePage(op Op, v *vault.Vault, s *vault.Schema) error {
+// The three content-dependent bullets read op.Content (D-AY). When a
+// blocker exists only in the staged changeset state (v is a projection and
+// committed does not hold it), the refusal says so (020 FIX-1, T-A review
+// finding 4) — the working tree genuinely does not have the path, and a
+// proposing agent that re-checks it must not conclude the error is wrong.
+func validateCreatePage(op Op, v, committed *vault.Vault, s *vault.Schema) error {
 	if v.Exists(op.Path) {
-		return fmt.Errorf("%w: create_page: %s already exists", ErrValidation, op.Path)
+		return fmt.Errorf("%w: create_page: %s already exists%s", ErrValidation, op.Path, stagedOnlyClause(committed, op.Path))
 	}
 	if other, ok := basenameCollision(v, op.Path); ok {
-		return fmt.Errorf("%w: create_page: %s collides with the existing %s: both answer the bare wikilink [[%s]], which makes it ambiguous and resolve to nothing everywhere in the vault. Give the page a distinct name",
-			ErrValidation, op.Path, other, strings.TrimSuffix(path.Base(op.Path), ".md"))
+		return fmt.Errorf("%w: create_page: %s collides with the existing %s%s: both answer the bare wikilink [[%s]], which makes it ambiguous and resolve to nothing everywhere in the vault. Give the page a distinct name",
+			ErrValidation, op.Path, other, stagedOnlyClause(committed, other), strings.TrimSuffix(path.Base(op.Path), ".md"))
 	}
 	if op.Rationale == "" {
 		return fmt.Errorf("%w: create_page: rationale is required", ErrValidation)
@@ -208,6 +225,18 @@ func validateCreatePage(op Op, v *vault.Vault, s *vault.Schema) error {
 	// (TestOneWriterGuardReverseOrderCreateDerivation) so S4-T7 only has
 	// to add "index.md" to patchableRootFiles.
 	return checkNewWriterOneWriter(v, op)
+}
+
+// stagedOnlyClause returns the parenthetical appended to a
+// create_page refusal whose blocker path is absent from committed — the
+// path exists only because a live op in the open changeset writes it
+// (020 FIX-1, T-A review finding 4) — and "" when committed holds the
+// path, keeping every pre-existing refusal byte-for-byte.
+func stagedOnlyClause(committed *vault.Vault, p string) string {
+	if committed.Exists(p) {
+		return ""
+	}
+	return " (it exists in the staged changeset state, not yet committed)"
 }
 
 // basenameCollision returns an existing page whose basename equals p's —

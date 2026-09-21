@@ -498,8 +498,11 @@ func (e *Engine) Append(op Op) (string, error) {
 		// on-disk open changeset from it, and the projection is rootless
 		// (openProjection) — so a patch on one of OQ-9's named root
 		// files keeps validating against the working tree, exactly as
-		// before. Root files are not chainable content; nobody stages a
-		// predecessor for them.
+		// before. Root files are not chainable content: the one-writer
+		// guard's patch-vs-patch arm (checkRootFileOneWriter, rootfile.go,
+		// 020 FIX-1) refuses a second patch on an already-patched root
+		// file at proposal time, so no staged predecessor for a root file
+		// can exist.
 		if op.Kind == OpPatchPage && isKnownRootFile(op.Path) {
 			break
 		}
@@ -509,7 +512,11 @@ func (e *Engine) Append(op Op) (string, error) {
 		}
 	}
 
-	if err := ValidateOp(op, cv, cv.Schema()); err != nil {
+	// validateOpForAppend is ValidateOp with the committed vault named
+	// separately (020 FIX-1): cv may be a projection, and the
+	// already-exists/basename-collision refusals must say when their
+	// blocker exists only in that staged state.
+	if err := validateOpForAppend(op, cv, e.vault, cv.Schema()); err != nil {
 		return "", err
 	}
 

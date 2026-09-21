@@ -187,6 +187,46 @@ func TestStagedFileAfterCommit(t *testing.T) {
 	}
 }
 
+// TestStagedFileSeesCascadeSubOps pins the cascade half of the contract
+// (020 FIX-1, closing the T-B review's finding 1): a rename_page attaches
+// OpPatchPage sub-ops to its Cascade, the engine's own projection recurses
+// into them (projection.go applyOp), and their After shas sit in the CAS —
+// so StagedFile must return a cascaded path's REWRITTEN bytes. Before the
+// fix this scan read top-level ops only, so after a rename every
+// stage.patch_page and wiki.get on an inbound-linking neighbour fell back
+// to the committed page, proposed an unchained Before, and was refused.
+func TestStagedFileSeesCascadeSubOps(t *testing.T) {
+	e, _ := newTestEngine(t)
+	if _, err := e.OpenChangeset("rename with cascade", testAuthor); err != nil {
+		t.Fatalf("OpenChangeset: %v", err)
+	}
+	if _, err := e.Append(Op{
+		Kind:      OpRenamePage,
+		From:      "wiki/concepts/kv-cache.md",
+		To:        "wiki/concepts/kv-cache-v2.md",
+		Rationale: "versioned name",
+	}); err != nil {
+		t.Fatalf("Append rename: %v", err)
+	}
+
+	// flash-attention.md links [[kv-cache]], so the engine-built cascade
+	// rewrites it — the bare-basename spelling becomes [[kv-cache-v2]]
+	// (reverseAddressing, op.go).
+	got, ok, err := e.StagedFile("wiki/concepts/flash-attention.md")
+	if err != nil {
+		t.Fatalf("StagedFile: %v", err)
+	}
+	if !ok {
+		t.Fatal("StagedFile ok = false for a cascade-rewritten path, want true")
+	}
+	if !strings.Contains(string(got), "[[kv-cache-v2]]") {
+		t.Fatalf("StagedFile bytes are not the cascade rewrite:\n%s", got)
+	}
+	if strings.Contains(string(got), "[[kv-cache]]") {
+		t.Fatalf("StagedFile bytes still carry the pre-rename link:\n%s", got)
+	}
+}
+
 // TestStagedFileRealEngineErrorPropagates pins "real CAS/engine read
 // failure -> error": an op whose After sha the store does not hold (an
 // impossible state through the public API, forced here to prove the error

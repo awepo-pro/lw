@@ -761,3 +761,57 @@ func TestUndropHunkUnknownIDsError(t *testing.T) {
 		t.Fatal("UndropHunk with an unknown hunk id: got nil, want an error")
 	}
 }
+
+// TestAppendRefusesSecondPatchOnSameRootFile pins the one-writer guard's
+// patch-vs-patch arm (020 FIX-1, closing the T-A review's finding 1).
+// Root-file patches validate against the working tree — Append's root-file
+// exception keeps cv = e.vault, so chaining is structurally impossible and
+// both patches carry the same committed Before — which let TWO live patches
+// on one root file through, after which the first Refresh re-anchored the
+// second on the first's projection and flipped it StateStale with a false
+// "the working tree changed" cause no review verb could clear. The guard
+// must refuse the second patch at proposal time, naming the first op's id.
+func TestAppendRefusesSecondPatchOnSameRootFile(t *testing.T) {
+	e, dir := newTestEngine(t)
+	const path = "curator-memory.md"
+	orig, err := os.ReadFile(filepath.Join(dir, path))
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	before, ok := canonicalSHA(e.Vault(), path)
+	if !ok {
+		t.Fatalf("canonicalSHA(%s): not found", path)
+	}
+
+	if _, err := e.OpenChangeset("two root patches", testAuthor); err != nil {
+		t.Fatalf("OpenChangeset: %v", err)
+	}
+	op1, err := e.Append(Op{
+		Kind:    OpPatchPage,
+		Path:    path,
+		Before:  before,
+		Content: append(append([]byte(nil), orig...), []byte("\n- First note.\n")...),
+	})
+	if err != nil {
+		t.Fatalf("first root patch refused: %v", err)
+	}
+
+	// Still the committed sha: root files never see a staged predecessor,
+	// which is exactly why a second patch on the same file must be refused
+	// rather than chained.
+	_, err = e.Append(Op{
+		Kind:    OpPatchPage,
+		Path:    path,
+		Before:  before,
+		Content: append(append([]byte(nil), orig...), []byte("\n- Second note.\n")...),
+	})
+	if err == nil {
+		t.Fatal("Append accepted a second patch_page on an already-patched root file")
+	}
+	if !errors.Is(err, ErrValidation) {
+		t.Fatalf("Append error = %v; want ErrValidation", err)
+	}
+	if !strings.Contains(err.Error(), op1) {
+		t.Errorf("refusal does not name the live writer %s: %v", op1, err)
+	}
+}

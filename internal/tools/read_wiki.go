@@ -80,7 +80,10 @@ func wikiGetTool(d Deps) Tool {
 	return Tool{
 		Name: "wiki.get",
 		Description: "Read one wiki page in full, or a single named section " +
-			"of it (section is the exact heading line, e.g. \"## Related\").",
+			"of it (section is the exact heading line, e.g. \"## Related\"). " +
+			"If the page has staged bytes in the open changeset, the staged " +
+			"content is returned, prefixed with a (staged in the open " +
+			"changeset, not yet committed) notice.",
 		Schema:   json.RawMessage(wikiGetSchema),
 		ReadOnly: true,
 		Handler: func(ctx context.Context, args json.RawMessage) (Result, error) {
@@ -154,16 +157,16 @@ func wikiNeighborsTool(d Deps) Tool {
 	}
 }
 
+// wikiNeighborsHandler answers from the committed graph only (see
+// resolvePagePath): Neighbors walks d.Vault's index, so a staged rewrite
+// of the page's links is invisible here by contract, not by accident.
 func wikiNeighborsHandler(ctx context.Context, d Deps, args json.RawMessage) (Result, error) {
 	var a wikiNeighborsArgs
 	if err := decodeArgs(args, &a); err != nil {
 		return badArgs("wiki.neighbors", err, `{"page": "kv-cache"}`), nil
 	}
 
-	resolved, _, _, res, ok, err := resolvePageArg(d, "wiki.neighbors", a.Page)
-	if err != nil {
-		return Result{}, fmt.Errorf("tools: wiki.neighbors: %w", err)
-	}
+	resolved, res, ok := resolvePagePath(d, "wiki.neighbors", a.Page)
 	if !ok {
 		return res, nil
 	}
@@ -211,16 +214,16 @@ func wikiBacklinksTool(d Deps) Tool {
 	}
 }
 
+// wikiBacklinksHandler answers from the committed graph only (see
+// resolvePagePath): Backlinks walks d.Vault's index, so a staged rewrite
+// of inbound links is invisible here by contract, not by accident.
 func wikiBacklinksHandler(ctx context.Context, d Deps, args json.RawMessage) (Result, error) {
 	var a wikiBacklinksArgs
 	if err := decodeArgs(args, &a); err != nil {
 		return badArgs("wiki.backlinks", err, `{"page": "kv-cache"}`), nil
 	}
 
-	resolved, _, _, res, ok, err := resolvePageArg(d, "wiki.backlinks", a.Page)
-	if err != nil {
-		return Result{}, fmt.Errorf("tools: wiki.backlinks: %w", err)
-	}
+	resolved, res, ok := resolvePagePath(d, "wiki.backlinks", a.Page)
 	if !ok {
 		return res, nil
 	}
@@ -329,20 +332,21 @@ func badArgs(tool string, err error, example string) Result {
 	)}
 }
 
-// resolvePageArg validates and resolves a "page" argument shared by
-// wiki.get, wiki.neighbors and wiki.backlinks: trims it, resolves it
-// through vault.Resolve (so a bare filename basename works, not just a
-// full path), and returns a ready-to-use Result on any failure so the
-// caller can just return it.
+// resolvePageArg validates and resolves a "page" argument for wiki.get:
+// trims it, resolves it through vault.Resolve (so a bare filename basename
+// works, not just a full path), and returns a ready-to-use Result on any
+// failure so the caller can just return it.
 //
 // After the committed hit, the resolver prefers the open changeset's
 // staged bytes for the resolved path (020 T-B) — the agent must be able
 // to READ BACK its own staged edit before committing it, and the F2
 // blindness ran through reads too. staged reports which body the returned
 // page was parsed from: wiki.get marks staged results with
-// stagedSourceMarker, the way raw.get marks a staged source (S6-C121);
-// wiki.neighbors and wiki.backlinks ignore the flag, because they report
-// the committed graph's link data and carry no staged bytes to mark.
+// stagedSourceMarker, the way raw.get marks a staged source (S6-C121).
+// The graph tools (wiki.neighbors, wiki.backlinks) do not come through
+// here at all: they report the committed graph's link data and carry no
+// staged bytes to mark, so they use resolvePagePath and never pay for a
+// staged read they would throw away (020 FIX-1).
 //
 // The staged preference is a read-back, not a discovery channel:
 // vault.Resolve walks the committed index, so a page that exists only as
@@ -364,20 +368,9 @@ func badArgs(tool string, err error, example string) Result {
 // path, and a description promising titles resolve sends it round the loop
 // search -> title -> not found -> search (MASTER §10 OR-15).
 func resolvePageArg(d Deps, tool, page string) (resolved string, p *vault.Page, staged bool, onFail Result, ok bool, err error) {
-	page = strings.TrimSpace(page)
-	if page == "" {
-		return "", nil, false, Result{IsError: true, Content: fmt.Sprintf(
-			`page is required for %s: provide a page path or filename basename, e.g. {"page": "kv-cache"}`, tool,
-		)}, false, nil
-	}
-
-	resolved, found := vault.Resolve(d.Vault, page)
-	if !found {
-		return "", nil, false, Result{IsError: true, Content: fmt.Sprintf(
-			"page %q was not found; pass the vault-relative path or the filename basename "+
-				"(e.g. \"kv-cache\"), not the page title — wiki.search lists each result's "+
-				"path before the em dash", page,
-		)}, false, nil
+	resolved, onFail, ok = resolvePagePath(d, tool, page)
+	if !ok {
+		return "", nil, false, onFail, false, nil
 	}
 
 	pg, found := d.Vault.Page(resolved)
@@ -398,12 +391,38 @@ func resolvePageArg(d Deps, tool, page string) (resolved string, p *vault.Page, 
 		if has {
 			sp, perr := vault.ParsePage(resolved, b)
 			if perr != nil {
-				return "", nil, false, Result{IsError: true, Content: fmt.Sprintf(
-					"staged content for %s does not parse as a wiki page: %v — the changeset only holds bytes the engine validated, so this is an internal invariant violation; inspect the changeset instead of reading on top of it", resolved, perr,
-				)}, false, nil
+				return "", nil, false, Result{}, false, fmt.Errorf("parse staged page %s: %w", resolved, perr)
 			}
 			return resolved, sp, true, Result{}, true, nil
 		}
 	}
 	return resolved, pg, false, Result{}, true, nil
+}
+
+// resolvePagePath is resolvePageArg's path-only half, shared by both
+// resolvers' front matter: trim the argument and resolve it to a
+// committed page path through vault.Resolve. It carries no staged read
+// and no parse — wiki.neighbors and wiki.backlinks resolve through it
+// because their answers are COMMITTED-INDEX ONLY (Graph().Backlinks and
+// Neighbors over d.Vault): staged bytes would be parsed and immediately
+// discarded, and a staged parse failure would turn a healthy committed
+// page's graph query into an invariant error for nothing (020 FIX-1, T-B
+// review finding 4). onFail is meaningful only when ok is false.
+func resolvePagePath(d Deps, tool, page string) (resolved string, onFail Result, ok bool) {
+	page = strings.TrimSpace(page)
+	if page == "" {
+		return "", Result{IsError: true, Content: fmt.Sprintf(
+			`page is required for %s: provide a page path or filename basename, e.g. {"page": "kv-cache"}`, tool,
+		)}, false
+	}
+
+	resolved, found := vault.Resolve(d.Vault, page)
+	if !found {
+		return "", Result{IsError: true, Content: fmt.Sprintf(
+			"page %q was not found; pass the vault-relative path or the filename basename "+
+				"(e.g. \"kv-cache\"), not the page title — wiki.search lists each result's "+
+				"path before the em dash", page,
+		)}, false
+	}
+	return resolved, Result{}, true
 }
