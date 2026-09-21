@@ -88,8 +88,12 @@ command still exits 0. A vault with no findings prints `clean`.
 | `size-split` | info | body exceeds 200 lines — split candidate |
 
 `lw lint --json` emits the report as indented JSON; `lw lint --fix` hands the
-findings to the agent — and its repairs arrive as a **changeset**, so even a
-lint fix goes through review.
+findings to the agent one page at a time — the report's findings are grouped
+per page and the agent drives one round per page, inside a single changeset
+and session — and its repairs arrive as a **changeset**, so even a lint fix
+goes through review. A page whose round fails is named in the output with its
+error, the other pages' repairs still stage, and the command exits non-zero
+when any page failed.
 
 ## Deeper reading
 
