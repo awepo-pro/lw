@@ -301,7 +301,7 @@ The same Go functions are exposed twice: to the in-process agent loop, and over 
 |---|---|
 | `stage.open(intent)` | Opens the buffer and the session |
 | `stage.create_page({…})` | Validates frontmatter, rejects out-of-taxonomy tags, enforces ≥2 outbound wikilinks *at proposal time* |
-| `stage.patch_page({path, section, op})` | **Section-level**, not line-level: `replace_section`, `append_section`, `insert_after`. Survives reformatting; diffs a human can read |
+| `stage.patch_page({path, section, op})` | **Section-level**, not line-level: `replace_section`, `append_section`, `insert_after`, `insert_before`, `remove_section`. Survives reformatting; diffs a human can read |
 | `stage.rename_page(old, new)` | Rewrites every inbound wikilink atomically, each rewrite its own hunk. The flagship case: `mv` silently breaks the graph |
 | `stage.merge_pages([a,b] → c)` / `stage.split_page(p, sections)` | Redirects and backlink rewrites as one reviewable unit |
 | `stage.add_link(from, to, {context})` | Bidirectional; refuses to create broken links |

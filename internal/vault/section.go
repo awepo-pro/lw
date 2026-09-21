@@ -216,3 +216,30 @@ func InsertAfterSection(body string, sec Section, block string) string {
 	}
 	return head + "\n\n" + inserted + "\n\n" + tail
 }
+
+// InsertBeforeSection inserts block as a new section immediately before sec's
+// heading line, separated from the preceding content and from sec by a single
+// blank line each — the same convention InsertAfterSection follows. When
+// nothing precedes sec, block becomes the body's opening.
+func InsertBeforeSection(body string, sec Section, block string) string {
+	head := strings.TrimRight(body[:sec.Start], "\n")
+	inserted := strings.TrimRight(block, "\n")
+	if head == "" {
+		return inserted + "\n\n" + body[sec.Start:]
+	}
+	return head + "\n\n" + inserted + "\n\n" + body[sec.Start:]
+}
+
+// RemoveSection cuts [sec.Start, sec.End) — the heading line and its
+// content — and re-normalizes the seam: exactly one blank line between the
+// surviving neighbours, and a body that still ends in exactly one "\n"
+// (normalizeTrailingNewline). Removing the first section leaves no leading
+// blank line; removing the only section yields "".
+func RemoveSection(body string, sec Section) string {
+	head := strings.TrimRight(body[:sec.Start], "\n")
+	tail := body[sec.End:]
+	if head == "" {
+		return normalizeTrailingNewline(strings.TrimLeft(tail, "\n"))
+	}
+	return normalizeTrailingNewline(head + "\n\n" + tail)
+}

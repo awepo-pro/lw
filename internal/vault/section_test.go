@@ -245,6 +245,100 @@ func TestSection(t *testing.T) {
 			t.Errorf("InsertAfterSection = %q, want %q", got, want)
 		}
 	})
+
+	t.Run("insert_before_first_section_after_preamble", func(t *testing.T) {
+		body := "Preamble prose before any section.\n\n## First\n\nfirst body\n\n## Second\n\nsecond body\n"
+		secs := ParseSections(body)
+		if len(secs) != 2 {
+			t.Fatalf("len(sections) = %d, want 2", len(secs))
+		}
+		// Extra trailing newlines in block prove it is seam-normalized,
+		// same as insert_after_last_section.
+		got := InsertBeforeSection(body, secs[0], "## New Head\n\nnew body\n\n\n")
+		want := "Preamble prose before any section.\n\n## New Head\n\nnew body\n\n## First\n\nfirst body\n\n## Second\n\nsecond body\n"
+		if got != want {
+			t.Errorf("InsertBeforeSection = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("insert_before_mid_section", func(t *testing.T) {
+		body := "## First\n\nfirst body\n\n## Second\n\nsecond body\n\n## Third\n\nthird body\n"
+		secs := ParseSections(body)
+		got := InsertBeforeSection(body, secs[1], "## Inserted\n\ninserted body")
+		want := "## First\n\nfirst body\n\n## Inserted\n\ninserted body\n\n## Second\n\nsecond body\n\n## Third\n\nthird body\n"
+		if got != want {
+			t.Errorf("InsertBeforeSection = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("insert_before_last_section", func(t *testing.T) {
+		body := "## First\n\nfirst body\n\n## Last\n\nlast body\n"
+		secs := ParseSections(body)
+		got := InsertBeforeSection(body, secs[1], "## Inserted\n\ninserted body")
+		want := "## First\n\nfirst body\n\n## Inserted\n\ninserted body\n\n## Last\n\nlast body\n"
+		if got != want {
+			t.Errorf("InsertBeforeSection = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("insert_before_only_section_opens_body", func(t *testing.T) {
+		body := "## Only\n\nonly body\n"
+		secs := ParseSections(body)
+		got := InsertBeforeSection(body, secs[0], "## New\n\nnew body")
+		want := "## New\n\nnew body\n\n## Only\n\nonly body\n"
+		if got != want {
+			t.Errorf("InsertBeforeSection = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("remove_first_section_keeps_preamble", func(t *testing.T) {
+		body := "Preamble prose.\n\n## First\n\nfirst body\n\n## Second\n\nsecond body\n"
+		secs := ParseSections(body)
+		got := RemoveSection(body, secs[0])
+		want := "Preamble prose.\n\n## Second\n\nsecond body\n"
+		if got != want {
+			t.Errorf("RemoveSection = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("remove_first_section_no_leading_blank_line", func(t *testing.T) {
+		body := "## First\n\nfirst body\n\n## Second\n\nsecond body\n"
+		secs := ParseSections(body)
+		got := RemoveSection(body, secs[0])
+		want := "## Second\n\nsecond body\n"
+		if got != want {
+			t.Errorf("RemoveSection = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("remove_mid_section_single_blank_seam", func(t *testing.T) {
+		body := "## First\n\nfirst body\n\n## Second\n\nsecond body\n\n## Third\n\nthird body\n"
+		secs := ParseSections(body)
+		got := RemoveSection(body, secs[1])
+		want := "## First\n\nfirst body\n\n## Third\n\nthird body\n"
+		if got != want {
+			t.Errorf("RemoveSection = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("remove_last_section_normalizes_trailing_newline", func(t *testing.T) {
+		body := "## First\n\nfirst body\n\n## Last\n\nlast body\n"
+		secs := ParseSections(body)
+		got := RemoveSection(body, secs[1])
+		want := "## First\n\nfirst body\n"
+		if got != want {
+			t.Errorf("RemoveSection = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("remove_only_section_yields_empty", func(t *testing.T) {
+		body := "## Only\n\nonly body\n"
+		secs := ParseSections(body)
+		got := RemoveSection(body, secs[0])
+		if got != "" {
+			t.Errorf("RemoveSection = %q, want empty string", got)
+		}
+	})
 }
 
 // checkSingleSectionSurvives parses spec/fixtures/pages/<name>'s body and
