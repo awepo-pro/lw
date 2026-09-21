@@ -49,12 +49,14 @@ func TestNewConstructibleWithNilEngine(t *testing.T) {
 	}
 }
 
-// TestDirtyFixtureFourteenRowsSixteenFindings is the stage file's own
-// verification: lint.All() is 14 checks (C-85/D-V, not the 11 the stage
-// file originally said) and spec/fixtures/dirty totals 16 findings
-// (EXPECTED-LINT.md). Both numbers are read from the model's own state,
-// never hardcoded from a rendered string.
-func TestDirtyFixtureFourteenRowsSixteenFindings(t *testing.T) {
+// TestDirtyFixtureFifteenRowsTwentySixFindings is the stage file's own
+// verification: lint.All() is 15 checks (C-85/D-V, not the 11 the stage
+// file originally said; 014 added page-abstract as the 15th) and
+// spec/fixtures/dirty totals 26 findings (EXPECTED-LINT.md — 014
+// amendment, workflow §9 A6: 16 → 26, the ten dirty wiki pages each
+// gained a page-abstract warn). Both numbers are read from the model's
+// own state, never hardcoded from a rendered string.
+func TestDirtyFixtureFifteenRowsTwentySixFindings(t *testing.T) {
 	d, _ := newTestDeps(t, "dirty")
 	p := initModel(t, d)
 	m := p.(*Model)
@@ -62,22 +64,22 @@ func TestDirtyFixtureFourteenRowsSixteenFindings(t *testing.T) {
 	if !m.hasReport {
 		t.Fatalf("report did not load: %v", m.loadErr)
 	}
-	if got := len(m.checks); got != 14 {
-		t.Fatalf("len(lint.All()) = %d, want 14", got)
+	if got := len(m.checks); got != 15 {
+		t.Fatalf("len(lint.All()) = %d, want 15", got)
 	}
-	if got := len(m.report.Findings); got != 16 {
-		t.Fatalf("len(report.Findings) = %d, want 16", got)
+	if got := len(m.report.Findings); got != 26 {
+		t.Fatalf("len(report.Findings) = %d, want 26", got)
 	}
 
-	// Every one of the 14 checks fires at least once on dirty
+	// Every one of the 15 checks fires at least once on dirty
 	// (EXPECTED-LINT.md's own claim) — cross-checked here via ByCheck
 	// rather than trusted blindly.
 	var total int
 	for _, c := range m.checks {
 		total += len(m.report.ByCheck[c.ID()])
 	}
-	if total != 16 {
-		t.Fatalf("sum of ByCheck findings = %d, want 16", total)
+	if total != 26 {
+		t.Fatalf("sum of ByCheck findings = %d, want 26", total)
 	}
 }
 
@@ -90,16 +92,19 @@ func TestReportRowsAreFlatFindings(t *testing.T) {
 	p := initModel(t, d)
 	m := p.(*Model)
 
-	if got := len(m.report.Findings); got != 16 {
-		t.Fatalf("len(report.Findings) = %d, want 16", got)
+	// 014 amendment (workflow §9 A6): 16 → 26 findings (10 page-abstract).
+	if got := len(m.report.Findings); got != 26 {
+		t.Fatalf("len(report.Findings) = %d, want 26", got)
 	}
 
 	// Rendered tall enough to show every row: one content row per finding,
-	// each carrying a severity glyph, with nothing between them.
-	plain := plainView(p, 120, 20)
+	// each carrying a severity glyph, with nothing between them. 014
+	// amendment (workflow §9 A6): 20 → 28 rows — 16 findings fit under the
+	// old height, 26 do not.
+	plain := plainView(p, 120, 28)
 	lines := splitRows(plain)
-	if got := len(nonPanelLines(lines)); got != 16 {
-		t.Fatalf("content rows rendered = %d, want 16 (one per finding)\n%s", got, plain)
+	if got := len(nonPanelLines(lines)); got != 26 {
+		t.Fatalf("content rows rendered = %d, want 26 (one per finding)\n%s", got, plain)
 	}
 }
 

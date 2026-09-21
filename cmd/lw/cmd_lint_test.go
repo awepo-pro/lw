@@ -103,8 +103,11 @@ func TestCmdLintDirtyGolden(t *testing.T) {
 	}
 
 	lines := strings.Split(strings.TrimRight(stdout, "\n"), "\n")
-	if len(lines) != 17 {
-		t.Fatalf("got %d lines, want 17 (16 findings + summary):\n%s", len(lines), stdout)
+	// 014 amendment (workflow §9 A6): 26 findings + summary — the dirty
+	// fixture's 11 wiki pages (malformed.md excluded: it never parses) each
+	// gained a page-abstract warn.
+	if len(lines) != 27 {
+		t.Fatalf("got %d lines, want 27 (26 findings + summary):\n%s", len(lines), stdout)
 	}
 
 	wantFirst := "index.md:0: error: wiki/concepts/thin-links.md has no line in index.md; add one (index-sync)"
@@ -112,7 +115,8 @@ func TestCmdLintDirtyGolden(t *testing.T) {
 		t.Errorf("first line = %q, want %q", lines[0], wantFirst)
 	}
 
-	wantSummary := "7 errors, 6 warnings, 3 info"
+	// 014 amendment (workflow §9 A6): 6 → 16 warnings (10 page-abstract).
+	wantSummary := "7 errors, 16 warnings, 3 info"
 	if lines[len(lines)-1] != wantSummary {
 		t.Errorf("summary line = %q, want %q", lines[len(lines)-1], wantSummary)
 	}
@@ -135,8 +139,9 @@ func TestCmdLintJSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
 		t.Fatalf("invalid JSON: %v\noutput:\n%s", err, stdout)
 	}
-	if len(report.Findings) != 16 {
-		t.Fatalf("Findings count = %d, want 16", len(report.Findings))
+	// 014 amendment (workflow §9 A6): 16 → 26 findings (10 page-abstract).
+	if len(report.Findings) != 26 {
+		t.Fatalf("Findings count = %d, want 26", len(report.Findings))
 	}
 }
 

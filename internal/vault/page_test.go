@@ -52,7 +52,9 @@ func TestParsePage(t *testing.T) {
 		t.Errorf("Body ends with more than one trailing newline: %q", lastBytes(p.Body, 20))
 	}
 
-	wantHeadings := []string{"# KV Cache", "## Why it matters", "## Example", "## Related"}
+	// 014 amendment (workflow §9 A6): kv-cache.md gained an ## Abstract
+	// section between the intro and ## Why it matters.
+	wantHeadings := []string{"# KV Cache", "## Abstract", "## Why it matters", "## Example", "## Related"}
 	if len(p.Sections) != len(wantHeadings) {
 		t.Fatalf("len(Sections) = %d, want %d: %+v", len(p.Sections), len(wantHeadings), p.Sections)
 	}

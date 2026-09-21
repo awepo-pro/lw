@@ -1,10 +1,17 @@
 ╭ Findings ────────────────────────────────────────────────────────────────────╮
 │▌✗  index-sync      index.md                        wiki/concepts/windowpane… │
+│ !  page-abstract   wiki/comparisons/commercial-y…  no ## Abstract section; … │
+│ !  page-abstract   wiki/comparisons/kneading-vs-…  no ## Abstract section; … │
+│ !  page-abstract   wiki/concepts/autolyse.md       no ## Abstract section; … │
 │ ·  fm-quality      wiki/concepts/windowpane-frag…  confidence is low; corro… │
 │ !  link-min-out    wiki/concepts/windowpane-frag…  only 1 outbound wikilink… │
 │ !  link-orphan     wiki/concepts/windowpane-frag…  no inbound links; link t… │
+│ !  page-abstract   wiki/concepts/windowpane-frag…  no ## Abstract section; … │
 │ ✗  link-broken     wiki/concepts/windowpane-frag…  [[gluten-network]] resol… │
+│ !  page-abstract   wiki/concepts/windowpane-test…  no ## Abstract section; … │
+│ !  page-abstract   wiki/entities/banneton.md       no ## Abstract section; … │
 │ !  src-provenance  wiki/entities/banneton.md       cites raw/articles/the-s… │
+│ !  page-abstract   wiki/entities/dutch-oven.md     no ## Abstract section; … │
 │                                                                              │
 │                                                                              │
 │                                                                              │
@@ -12,11 +19,4 @@
 │                                                                              │
 │                                                                              │
 │                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-╰────────────────────────────────────────────────────────────────────── 1 of 6 ╯
+╰───────────────────────────────────────────────────────────────────── 1 of 13 ╯

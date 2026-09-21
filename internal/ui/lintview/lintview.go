@@ -36,7 +36,7 @@ type Model struct {
 	deps  ui.Deps
 	theme ui.Theme // C-81: a copy taken at construction, rebuilt locally on tea.BackgroundColorMsg
 
-	checks []lint.Check // lint.All(), fixed at 14 (C-85/D-V); the fixed set the report runs
+	checks []lint.Check // lint.All(), fixed at 15 (014); the fixed set the report runs
 
 	hasReport bool
 	loadErr   error

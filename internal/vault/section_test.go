@@ -125,7 +125,9 @@ func TestSection(t *testing.T) {
 		for _, s := range secs {
 			titles = append(titles, s.Title)
 		}
-		want := []string{"KV Cache", "Why it matters", "Example", "Related"}
+		// 014 amendment (workflow §9 A6): kv-cache.md gained an ## Abstract
+		// section between the intro and ## Why it matters.
+		want := []string{"KV Cache", "Abstract", "Why it matters", "Example", "Related"}
 		if len(titles) != len(want) {
 			t.Fatalf("titles = %v, want %v", titles, want)
 		}

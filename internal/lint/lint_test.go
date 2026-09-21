@@ -5,8 +5,8 @@ import (
 	"testing"
 )
 
-// wantCheckOrder is backbone §4's table order for the fixed 14 checks
-// (MASTER §9 D-V).
+// wantCheckOrder is backbone §4's table order for the checks (MASTER §9 D-V).
+// 014 amendment (workflow §9 A2): page-abstract joins as check 15.
 var wantCheckOrder = []string{
 	"fm-required",
 	"fm-taxonomy",
@@ -22,12 +22,15 @@ var wantCheckOrder = []string{
 	"fm-quality",
 	"src-stale",
 	"log-rotate",
+	"page-abstract",
 }
 
-func TestAllReturnsFourteenInTableOrder(t *testing.T) {
+// TestAllReturnsFifteenInTableOrder — renamed by the 014 amendment
+// (workflow §9 A2): page-abstract joins as check 15.
+func TestAllReturnsFifteenInTableOrder(t *testing.T) {
 	checks := All()
-	if len(checks) != 14 {
-		t.Fatalf("len(All()) = %d, want 14", len(checks))
+	if len(checks) != 15 {
+		t.Fatalf("len(All()) = %d, want 15", len(checks))
 	}
 
 	var got []string
@@ -50,11 +53,12 @@ func TestAllIDsAreUnique(t *testing.T) {
 }
 
 func TestSelectChecksEmptyMeansAll(t *testing.T) {
-	if got := len(selectChecks(nil)); got != 14 {
-		t.Fatalf("selectChecks(nil) has %d checks, want 14", got)
+	// 014 amendment (workflow §9 A2): page-abstract joins as check 15.
+	if got := len(selectChecks(nil)); got != 15 {
+		t.Fatalf("selectChecks(nil) has %d checks, want 15", got)
 	}
-	if got := len(selectChecks([]string{})); got != 14 {
-		t.Fatalf("selectChecks([]string{}) has %d checks, want 14", got)
+	if got := len(selectChecks([]string{})); got != 15 {
+		t.Fatalf("selectChecks([]string{}) has %d checks, want 15", got)
 	}
 }
 

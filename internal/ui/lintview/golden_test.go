@@ -62,9 +62,13 @@ const dirtyPagePath = "wiki/concepts/windowpane-fragility.md"
 // reports. The PublicVault fixture itself carries one finding —
 // src-provenance (warn) on wiki/entities/banneton.md, which cites a source
 // without a ^[...] marker — so the staged page's five bring the total to
-// six. Pinned here so a fixture or engine change that silently alters the
-// report fails as a loud setup error instead of a mysterious golden diff.
-const dirtyPageFindings = 6
+// six. 014 amendment (workflow §9 A6): page-abstract (warn) now fires on
+// every wiki/ page of the vault — PublicVault's six plus the staged
+// dirtyPage itself, none of which carries an ## Abstract — bringing the
+// total to 13. Pinned here so a fixture or engine change that silently
+// alters the report fails as a loud setup error instead of a mysterious
+// golden diff.
+const dirtyPageFindings = 13
 
 // findingsVault returns a uitest.PublicVault copy carrying dirtyPage.
 //

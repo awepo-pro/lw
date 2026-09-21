@@ -17,6 +17,13 @@ FlashAttention is a fused attention kernel that avoids materializing the full
 attention matrix in slow GPU memory, instead tiling the computation to keep
 intermediate values in fast on-chip memory.^[raw/articles/kv-cache-explained.md]
 
+## Abstract
+
+FlashAttention is a fused attention kernel that tiles the computation to keep
+intermediate values in fast on-chip memory rather than materializing the full
+attention matrix. It cuts the memory-bandwidth traffic that dominates
+attention's runtime cost while producing numerically identical results.
+
 ## Why it matters
 
 - Reduces memory-bandwidth traffic, which dominates attention's runtime cost.

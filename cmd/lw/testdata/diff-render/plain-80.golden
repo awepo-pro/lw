@@ -34,6 +34,13 @@
   decoding steps so each new token only attends to cached keys and values
   instead of recomputing them.[kv-cache-explained.md]
 
+  Abstract
+
+  The key/value cache stores per-layer attention projections from earlier
+  decoding steps so a new token attends to cached keys and values instead of
+  recomputing them. This turns per-token work into a constant amount of new
+  computation at the cost of memory that grows with sequence length.
+
   Why it matters
 
   Without caching, generating token n would repeat O(n) work already done for

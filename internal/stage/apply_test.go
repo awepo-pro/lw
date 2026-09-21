@@ -632,7 +632,9 @@ func TestRecoverReportsUnmovedChangeset(t *testing.T) {
 // except sources is dropped and retracted: <date> is added, the body
 // opens with the title and a Retracted block, the original ## Related
 // section is copied verbatim, and — the assertion nothing else makes —
-// the committed vault lints at 0 errors AND 0 warns.
+// the committed vault lints at 0 errors. 014 amendment (workflow §9 A6):
+// the tombstone body is title + Retracted block + Related by design, so
+// it carries no ## Abstract and earns exactly one page-abstract warn.
 func TestRetractLeavesTombstone(t *testing.T) {
 	e, dir := newTestEngine(t)
 
@@ -700,8 +702,14 @@ func TestRetractLeavesTombstone(t *testing.T) {
 	}
 
 	report := lint.Run(&lint.Context{Vault: e.Vault(), Index: e.Index(), Graph: e.Vault().Graph()}, nil)
-	if report.Errors != 0 || report.Warns != 0 {
-		t.Fatalf("lint over the committed vault: errors=%d warns=%d, want 0/0\nfindings: %+v", report.Errors, report.Warns, report.Findings)
+	// 014 amendment (workflow §9 A6): want 0 errors and exactly the one
+	// page-abstract warn on the tombstone itself — nothing else.
+	if report.Errors != 0 || report.Warns != 1 {
+		t.Fatalf("lint over the committed vault: errors=%d warns=%d, want 0/1\nfindings: %+v", report.Errors, report.Warns, report.Findings)
+	}
+	if len(report.Findings) != 1 || report.Findings[0].Check != "page-abstract" ||
+		report.Findings[0].Path != "wiki/concepts/kv-cache.md" {
+		t.Fatalf("the single warn is not the tombstone's page-abstract: %+v", report.Findings)
 	}
 }
 

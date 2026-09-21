@@ -85,7 +85,7 @@ rationale attached.
 |---|---|
 | `internal/vault` | Frontmatter parsing, canonical serialization (byte-stable round-trip), wikilinks, the schema, the graph |
 | `internal/index` | In-memory inverted word index — no SQLite, no FTS5 |
-| `internal/lint` | The 14 checks ([vault-schema.md](vault-schema.md#the-14-lint-checks)) |
+| `internal/lint` | The 15 checks ([vault-schema.md](vault-schema.md#the-15-lint-checks)) |
 | `internal/stage` | CAS (`objects/`), journal, changesets, lock, apply/revert, snapshots, recovery |
 | `internal/tools` | The 18 vault tools plus the conditional web.search ([tools.md](tools.md)) — one definition, two consumers |
 | `internal/mcp` | stdio transport for the same registry; name mapping only, no new tools |

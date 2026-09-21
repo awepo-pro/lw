@@ -1,10 +1,17 @@
 ╭ Findings ────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│▌✗  index-sync      index.md                                 wiki/concepts/windowpane-fragility.md has no line in in… │
-│ ·  fm-quality      wiki/concepts/windowpane-fragility.md    confidence is low; corroborate with another source or r… │
-│ !  link-min-out    wiki/concepts/windowpane-fragility.md    only 1 outbound wikilink; add at least one more          │
-│ !  link-orphan     wiki/concepts/windowpane-fragility.md    no inbound links; link to it from a related page or ret… │
-│ ✗  link-broken     wiki/concepts/windowpane-fragility.md:4  [[gluten-network]] resolves to nothing; fix the target … │
-│ !  src-provenance  wiki/entities/banneton.md                cites raw/articles/the-science-of-a-good-loaf.md but ha… │
+│▌✗  index-sync      index.md                                        wiki/concepts/windowpane-fragility.md has no lin… │
+│ !  page-abstract   wiki/comparisons/commercial-yeast-vs-sourdoug…  no ## Abstract section; open the page with a 2-4… │
+│ !  page-abstract   wiki/comparisons/kneading-vs-folding.md         no ## Abstract section; open the page with a 2-4… │
+│ !  page-abstract   wiki/concepts/autolyse.md                       no ## Abstract section; open the page with a 2-4… │
+│ ·  fm-quality      wiki/concepts/windowpane-fragility.md           confidence is low; corroborate with another sour… │
+│ !  link-min-out    wiki/concepts/windowpane-fragility.md           only 1 outbound wikilink; add at least one more   │
+│ !  link-orphan     wiki/concepts/windowpane-fragility.md           no inbound links; link to it from a related page… │
+│ !  page-abstract   wiki/concepts/windowpane-fragility.md           no ## Abstract section; open the page with a 2-4… │
+│ ✗  link-broken     wiki/concepts/windowpane-fragility.md:4         [[gluten-network]] resolves to nothing; fix the … │
+│ !  page-abstract   wiki/concepts/windowpane-test.md                no ## Abstract section; open the page with a 2-4… │
+│ !  page-abstract   wiki/entities/banneton.md                       no ## Abstract section; open the page with a 2-4… │
+│ !  src-provenance  wiki/entities/banneton.md                       cites raw/articles/the-science-of-a-good-loaf.md… │
+│ !  page-abstract   wiki/entities/dutch-oven.md                     no ## Abstract section; open the page with a 2-4… │
 │                                                                                                                      │
 │                                                                                                                      │
 │                                                                                                                      │
@@ -28,11 +35,4 @@
 │                                                                                                                      │
 │                                                                                                                      │
 │                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-╰────────────────────────────────────────────────────────────────────────────────────────────────────────────── 1 of 6 ╯
+╰───────────────────────────────────────────────────────────────────────────────────────────────────────────── 1 of 13 ╯

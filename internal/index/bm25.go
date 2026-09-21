@@ -15,23 +15,32 @@ const (
 // BM25 computation — an occurrence in the title counts as three body
 // occurrences worth of evidence, which is what "scores x3" means in
 // practice.
+//
+// weights extended by 014 (backbone §3 amendment — 014 workflow §9): the
+// page's ## Abstract joins as a fourth field at x4, above title, so a page
+// is found by the summary it leads with. A page with no abstract section
+// contributes exactly zero from the field. The abstract is a slice of the
+// body, so its terms also count ×1 in the body field: an abstract hit
+// weighs effectively ×5 (4+1), not ×4 — and the 4-vs-3 ordering above
+// title holds a fortiori.
 const (
-	bodyWeight  = 1
-	tagWeight   = 2
-	titleWeight = 3
+	bodyWeight     = 1
+	tagWeight      = 2
+	titleWeight    = 3
+	abstractWeight = 4
 )
 
 // combinedFreq returns d's weighted term frequency for term across the
-// three fields.
+// four fields.
 func combinedFreq(d *docEntry, term string) int {
-	return bodyWeight*d.BodyTermFreq[term] + tagWeight*d.TagTermFreq[term] + titleWeight*d.TitleTermFreq[term]
+	return bodyWeight*d.BodyTermFreq[term] + tagWeight*d.TagTermFreq[term] + titleWeight*d.TitleTermFreq[term] + abstractWeight*d.AbstractTermFreq[term]
 }
 
-// combinedLen returns d's weighted document length across the three
+// combinedLen returns d's weighted document length across the four
 // fields, on the same scale as combinedFreq, for the BM25 length
 // normalization term.
 func combinedLen(d *docEntry) int {
-	return bodyWeight*d.BodyLen + tagWeight*d.TagLen + titleWeight*d.TitleLen
+	return bodyWeight*d.BodyLen + tagWeight*d.TagLen + titleWeight*d.TitleLen + abstractWeight*d.AbstractLen
 }
 
 // idf is the standard BM25 inverse document frequency, using the "+1"

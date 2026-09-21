@@ -62,7 +62,7 @@ later at lint time:
 - provenance markers back to `raw/` on synthesized claims
 - a `rename`/`merge` computes and stages every inbound backlink rewrite itself
 
-## The 14 lint checks
+## The 15 lint checks
 
 `lw lint [--checks <ids>]` runs all of them; the model can only read what the
 engine reports. Severity is three-level — **error**, **warn**, **info** — and
@@ -79,6 +79,7 @@ command still exits 0. A vault with no findings prints `clean`.
 | `fm-dates` | warn | `created`/`updated` malformed, or `created > updated` |
 | `link-min-out` | warn | fewer than 2 outbound wikilinks |
 | `link-orphan` | warn | no inbound links |
+| `page-abstract` | warn | a `wiki/` page has no `## Abstract` section |
 | `path-convention` | warn | filename is not `lowercase-hyphen.md`, or the directory does not match `type` |
 | `src-provenance` | warn | a page with `sources:` carries no `^[raw/...]` provenance marker |
 | `src-stale` | warn | a page's `updated` is more than 90 days earlier than a cited source's ingested date |

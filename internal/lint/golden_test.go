@@ -45,7 +45,7 @@ func TestMinimalIsClean(t *testing.T) {
 }
 
 // TestDirtyGolden asserts lint.Run over spec/fixtures/dirty reproduces all
-// 16 rows of EXPECTED-LINT.md exactly, across all 14 checks — same order
+// 26 rows of EXPECTED-LINT.md exactly, across all 15 checks — same order
 // (already Path/Line/Check sorted by Run), same Path, Line, Severity and
 // Message. Comparison is done in memory against a hard-coded golden, never
 // through testutil's golden-file helper against a path under
@@ -55,6 +55,7 @@ func TestDirtyGolden(t *testing.T) {
 	ctx := openFixtureContext(t, "dirty")
 	report := lint.Run(ctx, nil)
 
+	// 014 amendment (workflow §9 A2): ten page-abstract warn rows join the golden.
 	want := []lint.Finding{
 		{
 			Check: "index-sync", Path: "index.md", Line: 0, Severity: lint.SevError,
@@ -73,6 +74,10 @@ func TestDirtyGolden(t *testing.T) {
 			Message: "body sha256 does not match frontmatter sha256; re-ingest to refresh the hash",
 		},
 		{
+			Check: "page-abstract", Path: "wiki/concepts/KV_Cache.md", Line: 0, Severity: lint.SevWarn,
+			Message: "no ## Abstract section; open the page with a 2-4 sentence summary",
+		},
+		{
 			Check: "path-convention", Path: "wiki/concepts/KV_Cache.md", Line: 0, Severity: lint.SevWarn,
 			Message: "filename is not lowercase-hyphen.md; rename to kv-cache.md",
 		},
@@ -81,8 +86,24 @@ func TestDirtyGolden(t *testing.T) {
 			Message: "created 2026-09-05 is after updated 2026-08-01; fix one of the dates",
 		},
 		{
+			Check: "page-abstract", Path: "wiki/concepts/backwards-dates.md", Line: 0, Severity: lint.SevWarn,
+			Message: "no ## Abstract section; open the page with a 2-4 sentence summary",
+		},
+		{
+			Check: "page-abstract", Path: "wiki/concepts/broken-target.md", Line: 0, Severity: lint.SevWarn,
+			Message: "no ## Abstract section; open the page with a 2-4 sentence summary",
+		},
+		{
 			Check: "link-broken", Path: "wiki/concepts/broken-target.md", Line: 7, Severity: lint.SevError,
 			Message: "[[nonexistent-target]] resolves to nothing; fix the target or create the page",
+		},
+		{
+			Check: "page-abstract", Path: "wiki/concepts/drift-cite.md", Line: 0, Severity: lint.SevWarn,
+			Message: "no ## Abstract section; open the page with a 2-4 sentence summary",
+		},
+		{
+			Check: "page-abstract", Path: "wiki/concepts/long-page.md", Line: 0, Severity: lint.SevWarn,
+			Message: "no ## Abstract section; open the page with a 2-4 sentence summary",
 		},
 		{
 			Check: "size-split", Path: "wiki/concepts/long-page.md", Line: 0, Severity: lint.SevInfo,
@@ -93,8 +114,16 @@ func TestDirtyGolden(t *testing.T) {
 			Message: "frontmatter block never closes; add the closing --- delimiter or fix the YAML",
 		},
 		{
+			Check: "page-abstract", Path: "wiki/concepts/missing-raw.md", Line: 0, Severity: lint.SevWarn,
+			Message: "no ## Abstract section; open the page with a 2-4 sentence summary",
+		},
+		{
 			Check: "src-integrity", Path: "wiki/concepts/missing-raw.md", Line: 0, Severity: lint.SevError,
 			Message: "sources entry raw/papers/nonexistent-source.md not found under raw/; ingest it or drop the citation",
+		},
+		{
+			Check: "page-abstract", Path: "wiki/concepts/no-provenance.md", Line: 0, Severity: lint.SevWarn,
+			Message: "no ## Abstract section; open the page with a 2-4 sentence summary",
 		},
 		{
 			Check: "src-provenance", Path: "wiki/concepts/no-provenance.md", Line: 0, Severity: lint.SevWarn,
@@ -109,8 +138,16 @@ func TestDirtyGolden(t *testing.T) {
 			Message: "no inbound links; link to it from a related page or retract it",
 		},
 		{
+			Check: "page-abstract", Path: "wiki/concepts/orphan-page.md", Line: 0, Severity: lint.SevWarn,
+			Message: "no ## Abstract section; open the page with a 2-4 sentence summary",
+		},
+		{
 			Check: "fm-taxonomy", Path: "wiki/concepts/rogue-tag.md", Line: 0, Severity: lint.SevError,
 			Message: "tag `nonexistent-tag` is not in SCHEMA.md; add it to the taxonomy or retag",
+		},
+		{
+			Check: "page-abstract", Path: "wiki/concepts/rogue-tag.md", Line: 0, Severity: lint.SevWarn,
+			Message: "no ## Abstract section; open the page with a 2-4 sentence summary",
 		},
 		{
 			Check: "fm-quality", Path: "wiki/concepts/thin-links.md", Line: 0, Severity: lint.SevInfo,
@@ -119,6 +156,10 @@ func TestDirtyGolden(t *testing.T) {
 		{
 			Check: "link-min-out", Path: "wiki/concepts/thin-links.md", Line: 0, Severity: lint.SevWarn,
 			Message: "only 1 outbound wikilink; add at least one more",
+		},
+		{
+			Check: "page-abstract", Path: "wiki/concepts/thin-links.md", Line: 0, Severity: lint.SevWarn,
+			Message: "no ## Abstract section; open the page with a 2-4 sentence summary",
 		},
 	}
 

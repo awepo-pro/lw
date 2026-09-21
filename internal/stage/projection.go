@@ -189,7 +189,8 @@ func openProjection(tree map[string][]byte) (*vault.Vault, error) {
 	return vault.OpenFS(mfs)
 }
 
-// lintProjection runs the 14 checks over an opened projection.
+// lintProjection runs the 15 checks (page-abstract added by 014) over an
+// opened projection.
 func lintProjection(pv *vault.Vault) lint.Report {
 	return lint.Run(&lint.Context{Vault: pv, Index: index.Build(pv), Graph: pv.Graph()}, nil)
 }
