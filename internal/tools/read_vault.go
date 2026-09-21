@@ -18,8 +18,9 @@ const orientIndexMaxLines = 200
 const orientLogMaxLines = 30
 
 // vaultOrientTool builds "vault.orient": SCHEMA.md, index.md, curator
-// memory and the tail of log.md, all in one call. Orientation is a
-// mandatory ritual and one tool means it cannot be half-done (/docs/design.md §8).
+// memory and the tail of log.md, all in one call. The engine injects the
+// same digest per session (022); the tool stays for on-demand re-orientation
+// (/docs/design.md §8, §11.3).
 func vaultOrientTool(d Deps) Tool {
 	return Tool{
 		Name: "vault.orient",
