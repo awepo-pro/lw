@@ -49,13 +49,15 @@ func TestNewConstructibleWithNilEngine(t *testing.T) {
 	}
 }
 
-// TestDirtyFixtureFifteenRowsTwentySixFindings is the stage file's own
-// verification: lint.All() is 15 checks (C-85/D-V, not the 11 the stage
-// file originally said; 014 added page-abstract as the 15th) and
-// spec/fixtures/dirty totals 26 findings (EXPECTED-LINT.md — 014
-// amendment, workflow §9 A6: 16 → 26, the ten dirty wiki pages each
-// gained a page-abstract warn). Both numbers are read from the model's
-// own state, never hardcoded from a rendered string.
+// TestDirtyFixtureSixteenRowsTwentySixFindings is the stage file's own
+// verification: lint.All() is 16 checks (C-85/D-V, not the 11 the stage
+// file originally said; 014 added page-abstract as the 15th, 020 added
+// duplicate-section as the 16th) and spec/fixtures/dirty totals 26
+// findings (EXPECTED-LINT.md — 014 amendment, workflow §9 A6: 16 → 26,
+// the ten dirty wiki pages each gained a page-abstract warn; duplicate-
+// section fires 0 times on the fixtures, so 020 left the total alone).
+// Both numbers are read from the model's own state, never hardcoded from
+// a rendered string.
 func TestDirtyFixtureSixteenRowsTwentySixFindings(t *testing.T) {
 	d, _ := newTestDeps(t, "dirty")
 	p := initModel(t, d)
@@ -64,9 +66,6 @@ func TestDirtyFixtureSixteenRowsTwentySixFindings(t *testing.T) {
 	if !m.hasReport {
 		t.Fatalf("report did not load: %v", m.loadErr)
 	}
-	// 020 amendment (workflow T-C): duplicate-section joins as check 16; it
-	// fires 0 times on dirty (no duplicate sections in the fixtures), so the
-	// totals below are unchanged.
 	if got := len(m.checks); got != 16 {
 		t.Fatalf("len(lint.All()) = %d, want 16", got)
 	}

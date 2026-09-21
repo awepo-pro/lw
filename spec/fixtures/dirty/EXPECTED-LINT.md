@@ -75,3 +75,14 @@ vault and inserted at their `Path`→`Line`→`Check` sorted positions; every
 pre-existing row is byte-unchanged. `malformed.md` has no row because it
 never parses into a `Page`. The header prose above already reflects the
 amended golden (26 findings, 15 checks).
+
+## 020 amendment (duplicate-section joins, fires 0)
+
+Workflow 020 added the `duplicate-section` check (check 16, warn). It fires
+0 times on this vault — no fixture page carries two body sections whose
+headings normalize to the same slug — so the 26 rows and their totals are
+unchanged, byte-for-byte. The header's "15 checks" phrasing stays literally
+true of the table: the 26 findings still come from exactly the 15 checks
+listed above, and every one of those 15 still fires at least once. The full
+check set is now 16; the table of record is
+[docs/vault-schema.md](../../../docs/vault-schema.md#the-16-lint-checks).

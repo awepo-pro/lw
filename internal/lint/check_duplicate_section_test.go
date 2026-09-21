@@ -206,6 +206,93 @@ sha256: %x
 	}
 }
 
+// triplePage is the 3+-copy shape the check's doc comment promises to
+// collapse into ONE finding (check_duplicate_section.go: "A page with three
+// copies of one slug earns one finding naming all three lines, not three
+// findings"), including the case-variant collision the slug normalization
+// admits. Extra distinct sections bracket the copies so the pin also proves
+// the finding's Line lands on the second occurrence, not the first heading
+// or the page's first section.
+func triplePage() string {
+	return `---
+title: Triple Abstract
+created: 2026-09-01
+updated: 2026-09-02
+type: concept
+tags: [test]
+---
+
+# Triple Abstract
+
+## Abstract
+
+The first copy, correctly placed.
+
+## Details
+
+Filler between the copies.
+
+## Abstract
+
+The second copy, the chimera mid-page.
+
+## Context
+
+More filler, so the last copy is not the last section either.
+
+## abstract
+
+The third copy, differing from the others only in heading case.
+`
+}
+
+// TestDuplicateSectionThreeCopiesPinLineAndMessage pins the two documented
+// facts no other test reaches: the 3+-copy page earns exactly ONE finding
+// (the `reported` dedup, not one per copy), and Finding.Line is the SECOND
+// occurrence's body line (`lines[slug][1]`), while the message names all
+// three lines in document order (020 fix wave 2, T-C review Minor 1).
+// Flipping the implementation's `[1]` to `[0]` fails the Finding.Line
+// assertion below; dropping the `reported` map fails the count assertion.
+func TestDuplicateSectionThreeCopiesPinLineAndMessage(t *testing.T) {
+	ctx := buildVault(t, map[string]string{
+		"wiki/concepts/triple.md": triplePage(),
+	})
+	report := lint.Run(ctx, []string{"duplicate-section"})
+
+	if len(report.Findings) != 1 {
+		t.Fatalf("got %d findings, want 1: %+v", len(report.Findings), report.Findings)
+	}
+	f := report.Findings[0]
+
+	body := ""
+	for _, p := range ctx.Vault.Pages() {
+		if p.Path == "wiki/concepts/triple.md" {
+			body = p.Body
+		}
+	}
+	if body == "" {
+		t.Fatalf("triple page did not load as a Page")
+	}
+	// bodyLinesOf is case-sensitive, so abstracts = the two `## Abstract`
+	// copies and lower = the `## abstract` copy; document order is
+	// abstracts[0], abstracts[1], lower[0].
+	abstracts := bodyLinesOf(body, "## Abstract")
+	lower := bodyLinesOf(body, "## abstract")
+	if len(abstracts) != 2 || len(lower) != 1 {
+		t.Fatalf("fixture carries %d `## Abstract` + %d `## abstract` lines, want 2 + 1", len(abstracts), len(lower))
+	}
+	first, second, third := abstracts[0], abstracts[1], lower[0]
+
+	if f.Line != second {
+		t.Errorf("Finding.Line = %d, want the SECOND occurrence's line %d (first = %d, third = %d)",
+			f.Line, second, first, third)
+	}
+	wantOrder := fmt.Sprintf("line %d, line %d, line %d", first, second, third)
+	if !strings.Contains(f.Message, wantOrder) {
+		t.Errorf("Message = %q, want it to name all three lines in document order (%q)", f.Message, wantOrder)
+	}
+}
+
 // TestDuplicateSectionRegistered asserts the check runs both in Run's default
 // set and via only=["duplicate-section"] (020 T-C, semantics 4).
 func TestDuplicateSectionRegistered(t *testing.T) {

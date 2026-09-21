@@ -62,7 +62,7 @@ later at lint time:
 - provenance markers back to `raw/` on synthesized claims
 - a `rename`/`merge` computes and stages every inbound backlink rewrite itself
 
-## The 15 lint checks
+## The 16 lint checks
 
 `lw lint [--checks <ids>]` runs all of them; the model can only read what the
 engine reports. Severity is three-level — **error**, **warn**, **info** — and
@@ -76,6 +76,7 @@ command still exits 0. A vault with no findings prints `clean`.
 | `index-sync` | error | `index.md` and the `wiki/` page set are not 1:1 |
 | `link-broken` | error | a `[[wikilink]]` resolves to nothing |
 | `src-integrity` | error | a `sources:` entry is missing from `raw/`, or its body `sha256` differs from the frontmatter hash (drift) |
+| `duplicate-section` | warn | a `wiki/` page carries two body sections whose headings normalize to the same slug |
 | `fm-dates` | warn | `created`/`updated` malformed, or `created > updated` |
 | `link-min-out` | warn | fewer than 2 outbound wikilinks |
 | `link-orphan` | warn | no inbound links |
