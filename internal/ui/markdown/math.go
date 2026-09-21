@@ -7,10 +7,11 @@ import (
 
 // mathToUnicode rewrites TeX math — $…$ and $$…$$ — into unicode-markdown
 // inside src. Everything outside math delimiters (and inside code spans) is
-// byte-identical; a $-delimited candidate is only converted when its content
-// holds at least one recognized TeX construct, so money and shell dollars
-// pass through untouched. \(…\)/\[…\] are CommonMark escaped punctuation and
-// always pass through as-is (A15-1).
+// byte-identical; a $-delimited candidate is only converted when it is
+// admitted (no digit opener — $5 is currency, fix2 rule 1) and passes the
+// math-shape gate (fix2 rule 3), so money and shell dollars pass through
+// untouched. \(…\)/\[…\] are CommonMark escaped punctuation and always pass
+// through as-is (A15-1).
 func mathToUnicode(src string) string {
 	if !strings.Contains(src, "$") {
 		return src
@@ -121,22 +122,31 @@ func mathScan(s string) string {
 				break
 			}
 			content := rest[:end]
-			if hasTeXConstruct(content) {
+			// fix2 (A15-3): the display branch runs the same admission +
+			// math-shape gate as the inline branch — hasTeXConstruct alone
+			// let $$ v = [0, x, y, z] $$ and $$ θ $$ stay dollar-wrapped.
+			if displayMathAdmitted(content) {
 				convertMathInto(&b, content)
 			} else {
+				// Rejection emits the whole $$…$$ span verbatim and
+				// consumes it: a display closer is $$, unambiguous, so
+				// the inline branch's one-rune resync has nothing to
+				// resync into mid-span.
 				b.WriteString(s[i : i+2+end+2])
 			}
 			i = i + 2 + end + 2
 		case c == '$': // inline $…$
-			if j := inlineMathClose(s, i); j >= 0 {
-				content := s[i+1 : j]
-				if hasTeXConstruct(content) {
-					convertMathInto(&b, content)
-				} else {
-					b.WriteString(s[i : j+1])
-				}
+			j := inlineMathClose(s, i)
+			if j >= 0 && mathShapeGate(s[i+1:j]) {
+				convertMathInto(&b, s[i+1:j])
 				i = j + 1
 			} else {
+				// fix2 (A15-3) rule 2, uniform resync: any rejection —
+				// boundary, digit opener, newline, gate fail — emits the
+				// opener and advances one rune. A rejected candidate must
+				// not consume its closer: i = j+1 here used to steal the
+				// closing $ from the candidate that actually needed it and
+				// poison every pairing downstream.
 				b.WriteByte(c)
 				i++
 			}
@@ -149,16 +159,22 @@ func mathScan(s string) string {
 }
 
 // inlineMathClose finds the closing $ for the candidate opening at open:
-// the opener must be followed by a non-space rune, the closer must be
+// the opener must be followed by a non-space rune and not by an ASCII digit
+// ($5, $10 are currency, never math — fix2 rule 1), the closer must be
 // preceded by a non-space rune, and no $ may appear inside the content
-// (\$ escapes). The first unescaped $ decides — an invalid one means no
-// candidate. Returns the closer index or -1.
+// (\$ escapes). The candidate must span no newline — inline math never
+// crosses a line (fix2 rule 1; the $$…$$ display branch may). The first
+// unescaped $ decides — an invalid one means no candidate. Returns the
+// closer index or -1.
 func inlineMathClose(s string, open int) int {
 	if open+1 >= len(s) {
 		return -1
 	}
 	r, _ := utf8.DecodeRuneInString(s[open+1:])
 	if r == ' ' || r == '\t' || r == '\n' {
+		return -1
+	}
+	if s[open+1] >= '0' && s[open+1] <= '9' {
 		return -1
 	}
 	for j := open + 1; j < len(s); {
@@ -170,12 +186,52 @@ func inlineMathClose(s string, open int) int {
 			if p == ' ' || p == '\t' || p == '\n' {
 				return -1
 			}
+			// Authoritative newline check: the \\ skip above can step over
+			// a \n, and the candidate must span none.
+			if strings.IndexByte(s[open+1:j], '\n') >= 0 {
+				return -1
+			}
 			return j
 		default:
 			j++
 		}
 	}
 	return -1
+}
+
+// mathShapeGate is the math-shape gate of fix2 rule 3, applied to an
+// admitted candidate's content: convert when it holds a TeX construct, or
+// contains '=' or '[', or is a token of at most three runes with no
+// internal horizontal space ($u$, $θ$ convert to u, θ). Anything else
+// stays verbatim with its dollars.
+func mathShapeGate(content string) bool {
+	if hasTeXConstruct(content) {
+		return true
+	}
+	if strings.ContainsAny(content, "=[") {
+		return true
+	}
+	if strings.ContainsAny(content, " \t") {
+		return false
+	}
+	return utf8.RuneCountInString(content) <= 3
+}
+
+// displayMathAdmitted is the admission + math-shape gate for a $$…$$
+// display candidate — the same gate the inline branch applies (fix2 rule 3,
+// digit-opener guard of rule 1 included), evaluated on the content with its
+// surrounding whitespace trimmed: display blocks conventionally carry
+// padding spaces and may span lines, so the inline adjacency and newline
+// restrictions do not apply here. $$5$$ is money, never math.
+func displayMathAdmitted(content string) bool {
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
+		return false
+	}
+	if r, _ := utf8.DecodeRuneInString(trimmed); r >= '0' && r <= '9' {
+		return false
+	}
+	return mathShapeGate(trimmed)
 }
 
 // hasTeXConstruct reports whether s holds at least one recognized TeX
@@ -253,8 +309,16 @@ func convertMathInto(b *strings.Builder, s string) {
 			b.WriteRune('′')
 			i++
 		default:
-			b.WriteByte(c)
-			i++
+			// fix2 (A15-3) rule 4: a typographic apostrophe inside math
+			// content is a prime, never a quote — prose outside $…$ is
+			// untouched because only math content reaches this converter.
+			if r, size := utf8.DecodeRuneInString(s[i:]); r == '’' {
+				b.WriteRune('′')
+				i += size
+			} else {
+				b.WriteByte(c)
+				i++
+			}
 		}
 	}
 }
@@ -410,6 +474,17 @@ func applyMathScript(b *strings.Builder, s string, i *int, marker byte) {
 		b.WriteByte(marker)
 		*i = end
 		return
+	}
+	// fix2 (A15-3) rule 4: interior horizontal whitespace of a braced
+	// script group is stripped before the all-or-nothing glyph mapping —
+	// x^{- 1} renders x⁻¹, not the x^(- 1) fallback shape.
+	if s[*i+1] == '{' {
+		raw = strings.Map(func(r rune) rune {
+			if r == ' ' || r == '\t' {
+				return -1
+			}
+			return r
+		}, raw)
 	}
 	all := true
 	for _, r := range raw {

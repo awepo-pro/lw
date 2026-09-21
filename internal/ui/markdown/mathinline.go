@@ -4,8 +4,9 @@ import "strings"
 
 // MathToUnicodeInline rewrites only inline $…$ math in src, through the
 // same macro and glyph tables the page converter uses: a candidate converts
-// only when it holds a recognized TeX construct, code spans are masked, and
-// display $$…$$ regions pass through byte-identical.
+// only when the fix2 admission rules and the math-shape gate admit it (TeX
+// construct, '=' or '[', or a ≤3-rune token; $5 is currency), code spans
+// are masked, and display $$…$$ regions pass through byte-identical.
 //
 // It exists because the ask screen's live answer tail renders through the
 // ask package's own inline cell renderer, not through this package's
@@ -60,15 +61,14 @@ func mathScanInline(s string) string {
 			b.WriteString(s[i : i+2+end+2])
 			i = i + 2 + end + 2
 		case c == '$': // inline $…$
-			if j := inlineMathClose(s, i); j >= 0 {
-				content := s[i+1 : j]
-				if hasTeXConstruct(content) {
-					convertMathInto(&b, content)
-				} else {
-					b.WriteString(s[i : j+1])
-				}
+			j := inlineMathClose(s, i)
+			if j >= 0 && mathShapeGate(s[i+1:j]) {
+				convertMathInto(&b, s[i+1:j])
 				i = j + 1
 			} else {
+				// fix2 (A15-3) rule 2, uniform resync — identical to the
+				// page path: any rejection emits the opener and advances
+				// one rune, never consuming the closer.
 				b.WriteByte(c)
 				i++
 			}
