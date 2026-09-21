@@ -49,13 +49,18 @@ type docEntry struct {
 	Updated vault.Date
 	SHA256  string
 	Body    string // raw body text, kept for snippet extraction
+	// Abstract is the raw body slice of the page's "## Abstract" section,
+	// "" when the page has none (014: fourth weighted field, above title).
+	Abstract string
 
-	BodyTermFreq  map[string]int
-	TitleTermFreq map[string]int
-	TagTermFreq   map[string]int
-	BodyLen       int
-	TitleLen      int
-	TagLen        int
+	BodyTermFreq     map[string]int
+	TitleTermFreq    map[string]int
+	TagTermFreq      map[string]int
+	AbstractTermFreq map[string]int
+	BodyLen          int
+	TitleLen         int
+	TagLen           int
+	AbstractLen      int
 }
 
 // Index is the in-memory inverted word index over a vault's pages.
@@ -88,6 +93,7 @@ func buildDocEntry(p *vault.Page) *docEntry {
 	body := bodyTokens(p)
 	title := Tokenize(p.FM.Title)
 	tags := tagTokens(p.FM.Tags)
+	absTokens, absText := abstractTokens(p)
 
 	return &docEntry{
 		Path:    p.Path,
@@ -99,13 +105,64 @@ func buildDocEntry(p *vault.Page) *docEntry {
 		SHA256:  p.SHA256(),
 		Body:    p.Body,
 
-		BodyTermFreq:  freqMap(body),
-		TitleTermFreq: freqMap(title),
-		TagTermFreq:   freqMap(tags),
-		BodyLen:       len(body),
-		TitleLen:      len(title),
-		TagLen:        len(tags),
+		BodyTermFreq:     freqMap(body),
+		TitleTermFreq:    freqMap(title),
+		TagTermFreq:      freqMap(tags),
+		AbstractTermFreq: freqMap(absTokens),
+		BodyLen:          len(body),
+		TitleLen:         len(title),
+		TagLen:           len(tags),
+		AbstractLen:      len(absTokens),
+
+		Abstract: absText,
 	}
+}
+
+// abstractTokens returns p's "## Abstract" section text — the first Section
+// whose Slug is "abstract" — and its tokens, tokenized with the exact same
+// rule bodyTokens applies to p.Body: wikilink spans are excluded from the
+// plain-text pass, and each wikilink inside the abstract contributes
+// wikilinkTokens(target) plus Tokenize(alias). The abstract is a body
+// slice, so the tokens derived from it must equal what the body field
+// derives from the same bytes; delegating to bodyTokens over the rebased
+// slice is what keeps the two rules from drifting apart (014).
+//
+// A page with no "## Abstract" section yields ("", nil) and therefore zero
+// contribution from the abstract field — today's pre-014 behavior,
+// unchanged.
+func abstractTokens(p *vault.Page) (tokens []string, text string) {
+	for _, sec := range p.Sections {
+		if sec.Slug != "abstract" {
+			continue
+		}
+		// Defensive: offsets index into Body per backbone §2.4, but a
+		// corrupt section must not corrupt indexing (same stance as
+		// bodyTokens' malformed-link guard).
+		if sec.Body < 0 || sec.Body > sec.End || sec.End > len(p.Body) {
+			return nil, ""
+		}
+		text = p.Body[sec.Body:sec.End]
+
+		// Rebase the wikilinks fully inside the abstract onto the slice's
+		// own coordinates, then let bodyTokens run its exact walk. Links
+		// are in ascending Start order (backbone §2.5), which the walk
+		// relies on; rebasing preserves that order.
+		var links []vault.Wikilink
+		for _, l := range p.Links {
+			if l.Start >= sec.Body && l.End <= sec.End && l.Start <= l.End {
+				links = append(links, vault.Wikilink{
+					Target:   l.Target,
+					Fragment: l.Fragment,
+					Alias:    l.Alias,
+					Start:    l.Start - sec.Body,
+					End:      l.End - sec.Body,
+					Line:     l.Line,
+				})
+			}
+		}
+		return bodyTokens(&vault.Page{Body: text, Links: links}), text
+	}
+	return nil, ""
 }
 
 // freqMap counts occurrences of each token.

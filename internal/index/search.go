@@ -12,7 +12,7 @@ import (
 )
 
 // Search tokenizes q, applies o's filters structurally, scores the
-// surviving candidates with BM25 over the three weighted fields, and
+// surviving candidates with BM25 over the four weighted fields, and
 // returns the results sorted by Score descending, ties broken by Path
 // ascending (backbone §3) — never by map iteration order.
 func (ix *Index) Search(q string, o Options) []Hit {
@@ -66,7 +66,7 @@ func (ix *Index) Search(q string, o Options) []Hit {
 			Path:    d.Path,
 			Title:   d.Title,
 			Score:   score,
-			Snippet: buildSnippet(d.Body, rarest),
+			Snippet: buildSnippet(d.Abstract, d.Body, rarest),
 		})
 	}
 
@@ -138,7 +138,7 @@ func containsString(list []string, s string) bool {
 }
 
 // documentFrequencies counts, for each term, how many of candidates contain
-// it at all (in any of the three fields).
+// it at all (in any of the four fields).
 func documentFrequencies(candidates []*docEntry, terms []string) map[string]int {
 	df := make(map[string]int, len(terms))
 	for _, t := range terms {
@@ -181,23 +181,39 @@ func uniqueSortedTokens(tokens []string) []string {
 	return out
 }
 
-// buildSnippet extracts Hit.Snippet from body: a window of at most
-// snippetMaxRunes runes centred on the first literal occurrence of the
-// earliest term (by rarity) that actually appears in body, elided with "…"
-// on whichever side was cut. Falls back to the start of body when none of
-// the query terms occurs there literally (e.g. every match came from the
-// title or tag fields only).
-func buildSnippet(body string, orderedTerms []string) string {
-	lowerBody := strings.ToLower(body)
+// buildSnippet extracts Hit.Snippet from a hit's abstract and body: a
+// window of at most snippetMaxRunes runes centred on the first literal
+// occurrence of the earliest term (by rarity) that actually appears — in
+// the abstract first (014: the abstract is the summary a reader scans
+// first), else in the body — elided with "…" on whichever side was cut.
+// When no query term occurs in either field literally (e.g. every match
+// came from the title or tag fields only), it falls back to the start of
+// the abstract when the abstract is non-empty, else the start of body.
+// An empty abstract leaves exactly the pre-014 behavior.
+func buildSnippet(abstract, body string, orderedTerms []string) string {
+	if idx, ok := firstTermIndex(abstract, orderedTerms); ok {
+		return runeWindow(abstract, idx)
+	}
+	if idx, ok := firstTermIndex(body, orderedTerms); ok {
+		return runeWindow(body, idx)
+	}
+	if abstract != "" {
+		return runeWindow(abstract, 0)
+	}
+	return runeWindow(body, 0)
+}
 
-	center := 0
+// firstTermIndex returns the byte offset of the first literal,
+// case-insensitive occurrence of the earliest term (by rarity) that appears
+// in s, and whether any term does.
+func firstTermIndex(s string, orderedTerms []string) (int, bool) {
+	lower := strings.ToLower(s)
 	for _, t := range orderedTerms {
-		if idx := strings.Index(lowerBody, t); idx >= 0 {
-			center = idx
-			break
+		if idx := strings.Index(lower, t); idx >= 0 {
+			return idx, true
 		}
 	}
-	return runeWindow(body, center)
+	return 0, false
 }
 
 // runeWindow returns the at-most-snippetMaxRunes-rune window of body
