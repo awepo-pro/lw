@@ -145,14 +145,23 @@ func consumeStream(ctx context.Context, body io.ReadCloser, out chan<- Chunk) {
 // consumeStreamTimed is consumeStream with the 025-T4 timing anchor: t0 is
 // the instant the HTTP response's headers were parsed (client.do), and the
 // finish log line grows a first_delta_ms field — milliseconds from t0 to
-// the first visible delta, i.e. the first reasoning or content chunk the
-// UI can actually render. The existing "llm response" line only shows when
-// headers arrived; when a provider sends headers eagerly and the first SSE
-// chunk late, that line hides the user's real wait, and first_delta_ms is
-// the part it hides. A stream that finishes with no visible delta at all
-// (a tool-call-only turn, say) reports the -1 sentinel, so the field is
-// always present on finish lines and cold-start analysis stays a flat
-// parse rather than a conditional one.
+// the first visible delta. "Visible" is defined to match the ask pane's
+// waiting state (025 T2's waitingVisible, which turns off on the first
+// ReasoningDelta, TextDelta or ToolCallEv): the first chunk the UI can
+// actually render — a reasoning fragment, a content fragment, or a
+// COMPLETED tool call. Tool-call argument fragments do not count (they
+// accumulate silently and the mascot keeps spinning through them), but the
+// completed call does: it lands in the transcript the moment it is emitted
+// (ask state.go startToolCall), so on a tool-first round — the shape a
+// cold first ask can take, e.g. vault.orient — the user-visible wait ends
+// there and the metric must too. The existing "llm response" line only
+// shows when headers arrived; when a provider sends headers eagerly and
+// the first SSE chunk late, that line hides the user's real wait, and
+// first_delta_ms is the part it hides. A stream that finishes without
+// ever producing a renderable chunk at all (a finish-only degenerate)
+// reports the -1 sentinel, so the field is always present on finish lines
+// and cold-start analysis stays a flat parse rather than a conditional
+// one.
 func consumeStreamTimed(ctx context.Context, body io.ReadCloser, out chan<- Chunk, t0 time.Time) {
 	defer close(out)
 	defer body.Close()
@@ -231,6 +240,10 @@ func consumeStreamTimed(ctx context.Context, body io.ReadCloser, out chan<- Chun
 		for _, d := range choice.Delta.ToolCalls {
 			if current != nil && d.Index != current.index {
 				// A new index starting means the previous tool call is done.
+				// Completed calls render on arrival (025 T2 waitingVisible),
+				// so they anchor the first-delta measurement like any other
+				// visible chunk.
+				markDelta()
 				if !emit(Chunk{ToolCall: current.finish()}) {
 					return
 				}
@@ -244,6 +257,7 @@ func consumeStreamTimed(ctx context.Context, body io.ReadCloser, out chan<- Chun
 
 		if choice.FinishReason != nil && *choice.FinishReason != "" {
 			if current != nil {
+				markDelta() // the call completes here; the UI renders it now
 				if !emit(Chunk{ToolCall: current.finish()}) {
 					return
 				}
@@ -254,11 +268,11 @@ func consumeStreamTimed(ctx context.Context, body io.ReadCloser, out chan<- Chun
 			}
 			// The file log's stream-end line (010 contract §0), written
 			// only once the finish chunk is actually delivered — extended
-			// by first_delta_ms (025 T4, see consumeStreamTimed). The
-			// measurement is taken at firstDeltaAt, not here: this line's
-			// own delivery latency is not part of headers→first delta.
-			// Tool-call chunks do not count as the first delta — the UI
-			// renders them later, as a completed call.
+			// by first_delta_ms (025 T4, see consumeStreamTimed for the
+			// visible-delta definition and its agreement with the ask
+			// pane's waitingVisible). The measurement is taken at
+			// firstDeltaAt, not here: this line's own delivery latency is
+			// not part of headers→first delta.
 			finishAttrs := []any{"finish", *choice.FinishReason}
 			if !t0.IsZero() {
 				if firstDeltaAt.IsZero() {

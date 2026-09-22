@@ -147,10 +147,12 @@ func TestFirstDeltaExcludesTimeBeforeHeaders(t *testing.T) {
 }
 
 // TestFinishLineWithoutDeltaUsesSentinel: a stream that reaches
-// finish_reason without ever emitting a reasoning or content delta — a
-// tool-call-only turn, say — pins the -1 sentinel, so the field stays
-// present on every finish line and log analysis never branches on
-// presence.
+// finish_reason without ever emitting a chunk the UI can render — no
+// reasoning, no content, no completed tool call, e.g. a finish-only
+// degenerate — pins the -1 sentinel, so the field stays present on every
+// finish line and log analysis never branches on presence. A
+// tool-call-only turn is NOT this case: its completed call renders on
+// arrival (TestToolCallOnlyStreamAnchorsFirstDelta).
 func TestFinishLineWithoutDeltaUsesSentinel(t *testing.T) {
 	logPath := installFileLog(t)
 	body := []byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
@@ -170,5 +172,49 @@ func TestFinishLineWithoutDeltaUsesSentinel(t *testing.T) {
 
 	if d := finishDeltaFromLog(t, readLog(t, logPath)); d != -1 {
 		t.Fatalf("first_delta_ms = %d, want the -1 no-visible-delta sentinel", d)
+	}
+}
+
+// TestToolCallOnlyStreamAnchorsFirstDelta pins the 025-T4/T2 agreement on
+// the path where the two definitions used to diverge: a stream whose only
+// renderable output is a completed tool call (a cold first ask that opens
+// with vault.orient, say). The ask pane ends its waiting state at the
+// ToolCallEv — the transcript renders the call the moment it is emitted —
+// so the finish line must anchor first_delta_ms to that completed call
+// and NOT report the -1 sentinel: on tool-first rounds -1 would excise
+// exactly the rounds the cold-start numbers exist to measure. The staged
+// gap (150ms of silence between the header flush and the tool-call
+// chunks) sits strictly inside the measured window, so the value must
+// clear it minus slop for the headers-arrival capture (100ms floor).
+func TestToolCallOnlyStreamAnchorsFirstDelta(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher := w.(http.Flusher)
+		flusher.Flush()
+		time.Sleep(preDeltaGap)
+		// The wire shape of split_tool_call.sse: silent argument
+		// fragments, the completed call only assembling at finish_reason.
+		_, _ = fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"vault.orient\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n\n")
+		_, _ = fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\n")
+		_, _ = fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n")
+		_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
+	defer srv.Close()
+
+	logPath := installFileLog(t)
+	c := New(Config{BaseURL: srv.URL, Model: "test-model", Timeout: 5 * time.Second})
+	ch, err := c.Stream(context.Background(), Request{Messages: []Message{{Role: "user", Content: "hi"}}})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	chunks := collect(t, ch)
+	if len(chunks) == 0 || chunks[len(chunks)-1].Finish != "tool_calls" {
+		t.Fatalf("scripted stream did not finish with tool_calls: %#v", chunks)
+	}
+
+	if d := finishDeltaFromLog(t, readLog(t, logPath)); d < preDeltaGap.Milliseconds()-50 {
+		t.Fatalf("first_delta_ms = %d, want ~%d — a completed tool call must anchor the metric, not the -1 sentinel", d, preDeltaGap.Milliseconds())
 	}
 }
