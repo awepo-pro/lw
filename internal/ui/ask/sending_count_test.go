@@ -9,6 +9,7 @@
 package ask
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -172,6 +173,47 @@ func TestSendingCount(t *testing.T) {
 		}
 		if got := m.sendSecs; got != 0 {
 			t.Fatalf("a stale beat moved the count: sendSecs = %d, want 0 (F.C3)", got)
+		}
+	})
+
+	t.Run("restart_after_start_error", func(t *testing.T) {
+		// A turn that dies before its stream exists — turnStartedMsg's own
+		// error report, runTurn failing before Agent.Send ever ran — ends
+		// the turn through endTurnError on a path that must still run
+		// animArm: the edge tracker it brings down to date is what the NEXT
+		// window's edge reads. Miss the update and the next submit inherits
+		// the dead window's seconds — no reset, no gen bump, no chain — the
+		// row frozen at the old count from its very first frame (F.C3).
+		m := countingPane(t, "first try")
+		if cmd := beat(t, m); cmd == nil {
+			t.Fatal("precondition: the first beat re-armed nothing")
+		}
+		if cmd := beat(t, m); cmd == nil {
+			t.Fatal("precondition: the second beat re-armed nothing")
+		}
+		if _, cmd := m.Update(turnStartedMsg{err: errors.New("no changeset")}); cmd != nil {
+			t.Fatal("a failed turn's report produced a command")
+		}
+		if m.turnActive {
+			t.Fatal("the failed turn's report left the turn active")
+		}
+		// The next submit opens a fresh window: the edge must fire — the
+		// count restarts from zero under a bumped generation, bare until
+		// the first beat.
+		m, _ = typeAndSubmit(t, m, "second try")
+		if !m.waitingVisible() {
+			t.Fatal("the second submit never opened a window")
+		}
+		if got := m.sendSecs; got != 0 {
+			t.Fatalf("the new wait inherited the dead turn's count: sendSecs = %d, want 0 (F.C3)", got)
+		}
+		bareRow(t, m)
+		// And the chain lives: a beat of the new generation counts from one.
+		if cmd := beat(t, m); cmd == nil {
+			t.Fatal("the new wait armed no count chain (F.C2)")
+		}
+		if got := m.sendSecs; got != 1 {
+			t.Fatalf("the new wait's first beat left sendSecs = %d, want 1 (F.C2)", got)
 		}
 	})
 

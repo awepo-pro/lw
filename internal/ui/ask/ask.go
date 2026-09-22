@@ -295,7 +295,15 @@ func (m *Model) Update(msg tea.Msg) (ui.Pane, tea.Cmd) {
 				m.cancel = nil
 			}
 			m.endTurnError(msg.err.Error())
-			return m, nil
+			// animArm even on the failure report: endTurnError flipped the
+			// round flags the waiting edge tracks (026 F.C3), and the NEXT
+			// submit's edge reads this tracker — leaving it stale would make
+			// that submit miss its invisible→visible edge entirely, keeping
+			// the dead turn's seconds and arming no count chain. With the
+			// pane idle and errored it arms nothing (msError is not blink
+			// eligible); it only brings the trackers down to date. nil with
+			// anim off.
+			return m, m.animArm()
 		}
 		m.sessionID = msg.sessionID
 		m.convID = msg.sessionID  // 009 §3.1: the pane remembers its latest session even after changesetGone
