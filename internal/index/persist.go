@@ -20,7 +20,13 @@ import (
 // so the encoded bytes — and therefore Save's output — are the same every
 // time for the same index content.
 type gobIndex struct {
-	Docs []gobDoc
+	// Schema is the layout version the docs were built with (indexSchema).
+	// It is what makes a tokenizer change visible to StaleAgainst: pre-028
+	// files have no Schema field on the wire, which decodes as 0 — never
+	// equal to indexSchema — so the engine rebuilds them through its
+	// existing stale path (028 F.S4).
+	Schema int
+	Docs   []gobDoc
 }
 
 // gobDoc is the exported, gob-encodable mirror of docEntry. It must change
@@ -62,7 +68,7 @@ func (ix *Index) GobEncode() ([]byte, error) {
 	}
 	sort.Strings(paths)
 
-	g := gobIndex{Docs: make([]gobDoc, 0, len(paths))}
+	g := gobIndex{Schema: int(ix.schema.Load()), Docs: make([]gobDoc, 0, len(paths))}
 	for _, p := range paths {
 		d := docs[p]
 		g.Docs = append(g.Docs, gobDoc{
@@ -125,6 +131,7 @@ func (ix *Index) GobDecode(data []byte) error {
 		}
 	}
 	ix.docs.Store(&docs) // one store: a concurrent reader sees old or new, never a partial map (008 A-802)
+	ix.schema.Store(int32(g.Schema))
 	return nil
 }
 

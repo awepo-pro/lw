@@ -206,7 +206,9 @@ func TestGobRoundTripKeepsAbstract(t *testing.T) {
 	if want := "\nthe tapir summary mentions foraging and habitat.\n\n"; after.Abstract != want {
 		t.Fatalf("loaded Abstract = %q, want %q", after.Abstract, want)
 	}
-	wantFreq := map[string]int{"tapir": 1, "summary": 1, "mentions": 1, "foraging": 1, "habitat": 1}
+	// 028: field tokens are stemmed (stem.go), so the freq keys are stems —
+	// the snowball library's actual outputs, not hand-picked ones.
+	wantFreq := map[string]int{"tapir": 1, "summari": 1, "mention": 1, "forag": 1, "habitat": 1}
 	if !reflect.DeepEqual(after.AbstractTermFreq, wantFreq) {
 		t.Fatalf("loaded AbstractTermFreq = %#v, want %#v", after.AbstractTermFreq, wantFreq)
 	}

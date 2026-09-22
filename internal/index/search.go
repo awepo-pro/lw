@@ -11,15 +11,20 @@ import (
 	"strings"
 )
 
-// Search tokenizes q, applies o's filters structurally, scores the
-// surviving candidates with BM25 over the four weighted fields, and
-// returns the results sorted by Score descending, ties broken by Path
-// ascending (backbone §3) — never by map iteration order.
+// Search stems q (028 analyze — the same step Build ran over every field),
+// applies o's filters structurally, scores the surviving candidates with
+// BM25 over the four weighted fields, and returns the results sorted by
+// Score descending, ties broken by Path ascending (backbone §3) — never by
+// map iteration order.
 func (ix *Index) Search(q string, o Options) []Hit {
-	terms := uniqueSortedTokens(Tokenize(q))
+	terms := uniqueSortedTokens(analyze(q))
 	if len(terms) == 0 {
 		return nil
 	}
+	// Snippets stay literal (correction log #2): the surface tokens —
+	// Tokenize's own output, unstemmed — are what the snippet matcher looks
+	// for in the text, ordered by the rarity of their stems.
+	surface := uniqueSortedTokens(Tokenize(q))
 
 	limit := o.Limit
 	if limit == 0 {
@@ -52,6 +57,7 @@ func (ix *Index) Search(q string, o Options) []Hit {
 
 	df := documentFrequencies(candidates, terms)
 	rarest := orderedByRarity(terms, df)
+	rarestSurface := orderedByStemRarity(surface, df)
 
 	var hits []Hit
 	for _, d := range candidates {
@@ -66,7 +72,7 @@ func (ix *Index) Search(q string, o Options) []Hit {
 			Path:    d.Path,
 			Title:   d.Title,
 			Score:   score,
-			Snippet: buildSnippet(d.Abstract, d.Body, rarest),
+			Snippet: buildSnippetStemmed(d.Abstract, d.Body, rarestSurface, rarest),
 		})
 	}
 
@@ -181,6 +187,22 @@ func uniqueSortedTokens(tokens []string) []string {
 	return out
 }
 
+// orderedByStemRarity returns the query's surface tokens sorted by the
+// document frequency of their stem (rarest, most distinguishing word
+// first), ties broken alphabetically on the surface form, so the snippet —
+// which looks for the surface tokens literally — is centred on the same
+// word BM25 found most distinguishing.
+func orderedByStemRarity(surface []string, df map[string]int) []string {
+	out := append([]string(nil), surface...)
+	sort.Slice(out, func(i, j int) bool {
+		if df[stem(out[i])] != df[stem(out[j])] {
+			return df[stem(out[i])] < df[stem(out[j])]
+		}
+		return out[i] < out[j]
+	})
+	return out
+}
+
 // buildSnippet extracts Hit.Snippet from a hit's abstract and body: a
 // window of at most snippetMaxRunes runes centred on the first literal
 // occurrence of the earliest term (by rarity) that actually appears — in
@@ -191,10 +213,29 @@ func uniqueSortedTokens(tokens []string) []string {
 // the abstract when the abstract is non-empty, else the start of body.
 // An empty abstract leaves exactly the pre-014 behavior.
 func buildSnippet(abstract, body string, orderedTerms []string) string {
-	if idx, ok := firstTermIndex(abstract, orderedTerms); ok {
+	return buildSnippetStemmed(abstract, body, orderedTerms, nil)
+}
+
+// buildSnippetStemmed is Search's 028 snippet rule. The query's SURFACE
+// tokens (ordered by the rarity of their stems) are looked for literally —
+// byte-for-byte today's rule, preferred wherever it hits, because a stem
+// substring usually stops mid-word and the text's own spelling is what a
+// reader should see. Only when no surface token occurs anywhere does the
+// stem pass run: the stems, in the same rarity order, are tried literally
+// (a stem is a substring of the inflected forms it came from, so "decod"
+// still centres the window on "decoding") before the existing
+// abstract/body-start fallback.
+func buildSnippetStemmed(abstract, body string, orderedSurface, orderedStems []string) string {
+	if idx, ok := firstTermIndex(abstract, orderedSurface); ok {
 		return runeWindow(abstract, idx)
 	}
-	if idx, ok := firstTermIndex(body, orderedTerms); ok {
+	if idx, ok := firstTermIndex(body, orderedSurface); ok {
+		return runeWindow(body, idx)
+	}
+	if idx, ok := firstTermIndex(abstract, orderedStems); ok {
+		return runeWindow(abstract, idx)
+	}
+	if idx, ok := firstTermIndex(body, orderedStems); ok {
 		return runeWindow(body, idx)
 	}
 	if abstract != "" {

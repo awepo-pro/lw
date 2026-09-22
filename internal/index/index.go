@@ -13,6 +13,17 @@ import (
 // defaultLimit is what Options.Limit == 0 means.
 const defaultLimit = 20
 
+// indexSchema is the current index schema version. 028 (schema 2) stems
+// every BM25 field's tokens (stem.go), which silently changes what the
+// saved term frequencies mean — a pre-028 file's surface-token index must
+// not be reused against a stemmed query side. Version 1 is intentionally
+// unused headroom between the unversioned files and 028's stemming schema.
+// gobIndex carries the version on disk; pre-028 files have no Schema field
+// at all and therefore decode as 0, which never equals indexSchema, so
+// StaleAgainst reports them stale and the engine's existing open path
+// rebuilds and re-saves them (correction log #4/#5 — no new error path).
+const indexSchema = 2
+
 // snippetMaxRunes is Hit.Snippet's maximum length, in runes, including any
 // elision marks.
 const snippetMaxRunes = 200
@@ -73,6 +84,10 @@ type docEntry struct {
 // makes sharing unchanged entries between the old and new maps safe.
 type Index struct {
 	docs atomic.Pointer[map[string]*docEntry] // keyed by Path
+	// schema is the layout version this in-memory index was built or
+	// decoded with (indexSchema). Atomic for the same reason docs is: a
+	// concurrent StaleAgainst must never catch Rebuild mid-update.
+	schema atomic.Int32
 }
 
 // Build constructs a fresh Index over every page in v.
@@ -83,6 +98,7 @@ func Build(v *vault.Vault) *Index {
 	}
 	ix := &Index{}
 	ix.docs.Store(&docs)
+	ix.schema.Store(indexSchema)
 	return ix
 }
 
@@ -90,10 +106,16 @@ func Build(v *vault.Vault) *Index {
 // result is identical regardless of whether it is produced by Build or by
 // Update.
 func buildDocEntry(p *vault.Page) *docEntry {
-	body := bodyTokens(p)
-	title := Tokenize(p.FM.Title)
-	tags := tagTokens(p.FM.Tags)
+	// 028: every BM25 field is stemmed after tokenizing (analyze/stemmed),
+	// so the query side — stemmed through the same step — meets an
+	// identically-stemmed index. The assembler helpers stay surface
+	// (backbone §3): bodyTokens applies the wikilink extra-segment rule
+	// BEFORE stemming, and the assembled lists pass through stemmed() here.
+	body := stemmed(bodyTokens(p))
+	title := analyze(p.FM.Title)
+	tags := stemmed(tagTokens(p.FM.Tags))
 	absTokens, absText := abstractTokens(p)
+	absTokens = stemmed(absTokens)
 
 	return &docEntry{
 		Path:    p.Path,
@@ -182,11 +204,15 @@ func freqMap(tokens []string) map[string]int {
 func (ix *Index) Rebuild(v *vault.Vault) {
 	fresh := Build(v)
 	ix.docs.Store(fresh.docs.Load())
+	ix.schema.Store(indexSchema)
 }
 
 // Update re-indexes the pages named by paths: a path still present in v is
 // (re-)built from the vault's current content, a path no longer present in
-// v is dropped from the index entirely.
+// v is dropped from the index entirely. It deliberately leaves ix's schema
+// alone: the unchanged entries it carries over keep whatever layout they
+// were built with, so a schema-old index stays stale (and will be rebuilt
+// on the next open) rather than masquerading as current.
 //
 // Copy-on-write (008 A-802): the unchanged entries are carried over by
 // pointer into a fresh map, which is then stored in one step — a concurrent
@@ -218,9 +244,14 @@ func (ix *Index) Len() int {
 	return 0
 }
 
-// StaleAgainst reports whether ix no longer matches v: a different set of
-// pages, or a page whose SHA256 has changed since it was indexed.
+// StaleAgainst reports whether ix no longer matches v: a schema version
+// other than the current one (028: a pre-028 file decodes as 0 and can
+// never be current), a different set of pages, or a page whose SHA256 has
+// changed since it was indexed.
 func (ix *Index) StaleAgainst(v *vault.Vault) bool {
+	if ix.schema.Load() != indexSchema {
+		return true
+	}
 	pages := v.Pages()
 	var docs map[string]*docEntry
 	if p := ix.docs.Load(); p != nil {

@@ -14,6 +14,7 @@ require (
 	github.com/charmbracelet/colorprofile v0.4.3
 	github.com/charmbracelet/x/ansi v0.11.8
 	github.com/charmbracelet/x/term v0.2.2
+	github.com/kljensen/snowball v0.10.0
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 	github.com/yuin/goldmark v1.8.5
 	go.abhg.dev/goldmark/wikilink v0.6.0
