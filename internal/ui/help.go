@@ -5,7 +5,10 @@
 // terminal (D11).
 package ui
 
-import "charm.land/bubbles/v2/key"
+import (
+	"charm.land/bubbles/v2/key"
+	lipgloss "charm.land/lipgloss/v2"
+)
 
 // HelpEntry is one row of the ? overlay.
 type HelpEntry struct {
@@ -45,6 +48,18 @@ const (
 // inside their own View.
 type StatusReporter interface {
 	Status() (msg string, level StatusLevel)
+}
+
+// FooterPrefix is implemented by a pane that wants a short morsel at the
+// footer's left edge, before its bindings — the ask mascot's compact form
+// (workflow 016 F.M3). The text must be plain single-width cells; the pane
+// styles it with its own theme and the footer writes the pair through the
+// row primitive exactly like a binding run. The morsel is chrome: at a
+// width where it cannot sit beside the pane's whole binding list it is
+// dropped whole, so no binding ever gives way to it and every pane without
+// one renders byte-identically.
+type FooterPrefix interface {
+	FooterPrefix() (text string, style lipgloss.Style)
 }
 
 // TextCapturer is implemented by a pane that is taking text input. While the ACTIVE pane's CapturesText() is true,

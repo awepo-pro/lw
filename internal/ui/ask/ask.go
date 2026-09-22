@@ -36,6 +36,15 @@ type Model struct {
 	selected   int            // index into entries the next enter expands/collapses; -1 = none
 	turnActive bool
 
+	// turnErrored is the last finished turn's verdict (016 F.M4): endTurn
+	// clears it, endTurnError sets it, nothing else writes it, and the
+	// mascot reverses on it while the pane is idle. It deliberately does
+	// not read the scrollback tail instead: an errored nothing-staged turn
+	// ends with its kept hint (title.go appendKeptHint) and a refused
+	// submit appends a notice, either of which would hide a real error
+	// behind a kindStatus tail entry.
+	turnErrored bool
+
 	input string // the box's current, unsent text
 
 	// back is the transcript's scroll position (scroll.go, W5 F2/C36): the

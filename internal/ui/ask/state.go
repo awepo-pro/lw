@@ -231,6 +231,7 @@ func (m *Model) endTurn(status string) {
 	m.entries = append(m.entries, entry{kind: kindStatus, text: status})
 	m.turnActive = false
 	m.selected = -1
+	m.turnErrored = false   // a clean stop is the mascot's reset (016 F.M4)
 	m.resetReasoningRound() // the turn ended: its thinking line goes with it
 }
 
@@ -243,6 +244,7 @@ func (m *Model) endTurnError(msg string) {
 	m.entries = append(m.entries, entry{kind: kindError, text: msg})
 	m.turnActive = false
 	m.selected = -1
+	m.turnErrored = true    // the last turn died: the mascot reverses until a clean stop
 	m.resetReasoningRound() // the turn ended: its thinking line goes with it
 	// A turn that ends in error can never reach recordLastAnswer, so its
 	// filing marker must not outlive it (009 §3.4): without this, a filing
