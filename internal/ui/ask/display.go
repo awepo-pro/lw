@@ -191,15 +191,23 @@ func closesFence(line string, ch byte, n int) bool {
 }
 
 // stripVaultLabel removes the `Not from your vault:` line — and, when that
-// removal leaves the text starting with blank lines, those too. The rule is
-// a whole-line rule on PROSE: the same words inside a fenced code block are
-// the answer's own code and stay, so the fence state walks the lines exactly
-// as stripMarkers walked them (the markers pass never rewrites a fence
-// line, so both passes see the same fences). With live, a line that is a
-// non-empty prefix of the label is still arriving and is hidden — the FIRST
-// line, and also the LAST while no fence is open, because the label can sit
-// mid-answer after a vault-backed part; so the label never flashes
-// half-written on any line it may land on.
+// removal leaves the text starting with blank lines, those too. 027 T3
+// (F.N2) adds the inline form: a label that OPENS the FIRST line — the
+// answer's text following it on the same line, as a real provider turn
+// wrote it — loses the label and the spaces after it, the rest of the line
+// staying. Only there: the prompt mandates the label as the answer's first
+// line, so an inline label anywhere else is the answer's own words and
+// stays, and the same words inside a fenced code block are the answer's own
+// code and stay (the first line cannot be fence content — a fence opening
+// before it would occupy the first line itself). The rule is a rule on
+// PROSE, so the fence state walks the lines exactly as stripMarkers walked
+// them (the markers pass never rewrites a fence line, so both passes see
+// the same fences). With live, a line that is a non-empty prefix of the
+// label is still arriving and is hidden — the FIRST line, and also the LAST
+// while no fence is open, because the label can sit mid-answer after a
+// vault-backed part; so the label never flashes half-written on any line it
+// may land on, and an inline label already arrived strips live exactly as
+// it will when finished.
 func stripVaultLabel(text string, live bool) string {
 	lines := strings.Split(text, "\n")
 	kept := make([]string, 0, len(lines))
@@ -207,7 +215,7 @@ func stripVaultLabel(text string, live bool) string {
 	var fenceCh byte
 	var fenceLen int
 	removed := false
-	for _, l := range lines {
+	for i, l := range lines {
 		if inFence {
 			kept = append(kept, l) // fence content is code, never the label
 			if closesFence(l, fenceCh, fenceLen) {
@@ -223,6 +231,9 @@ func stripVaultLabel(text string, live bool) string {
 		if strings.TrimSpace(l) == vaultLabel {
 			removed = true
 			continue
+		}
+		if i == 0 && strings.HasPrefix(l, vaultLabel) {
+			l = strings.TrimLeft(l[len(vaultLabel):], " \t")
 		}
 		kept = append(kept, l)
 	}

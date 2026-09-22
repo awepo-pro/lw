@@ -5,13 +5,19 @@ package agent
 // paragraph block; the old "say so in one sentence" narration bytes are
 // gone from the base prompt, while the provenance-mandatory and filing
 // paragraphs stay byte-identical.
+//
+// 027 T3 (F.N1): a live GLM turn narrated anyway — named pages, stated
+// vault coverage — so the line is rewritten to ban the source name, the
+// "wiki page on X" recommendation and the coverage claim outright, and to
+// state the label carve-out positively: the label must stand alone as the
+// answer's first line, which is also what the pane's display rules key on.
 import (
 	"strings"
 	"testing"
 )
 
 const (
-	noNarrationLine = `Answer the question itself. Do not narrate your process: never say which notes, pages or sources you read or searched; apart from the exact "Not from your vault:" line, never say whether the vault covers the topic. The provenance markers are the record of where each claim came from.`
+	noNarrationLine = `Answer the question itself, in the answer's own voice. Never narrate your sources or your process: do not say which notes, pages, wiki entries or searches you used, do not recommend "the wiki page on X", and do not state whether the vault covers the topic — the provenance markers carry that record. The one exception is the exact line "Not from your vault:", which, when it applies, must stand alone as the answer's first line with nothing else on it.`
 
 	outsideVaultRule027 = `If neither the wiki nor the raw sources answer a question, answer from your own knowledge under a first line that reads exactly "Not from your vault:"; carry no provenance marker on those claims, and say plainly when the topic may be newer than your training data.`
 )
@@ -41,13 +47,14 @@ func TestPromptNoNarration(t *testing.T) {
 			t.Errorf("systemPromptFor(%v): still contains the old narration bytes", hasSearch)
 		}
 
-		// The coverage ban carries the label's carve-out: without it the ban
-		// contradicts F.P1's mandatory first line one sentence earlier, and a
-		// strict model may resolve the conflict by dropping the exact label
-		// the filing paragraph and the UI depend on. The byte pin above
-		// already holds the carve-out; this assertion states why it must
-		// never be reworded away.
-		if !strings.Contains(noNarrationLine, `apart from the exact "Not from your vault:" line, never say whether the vault covers the topic`) {
+		// The coverage ban carries the label's carve-out, stated positively:
+		// without it the ban contradicts F.P1's mandatory first line one
+		// sentence earlier, and a strict model may resolve the conflict by
+		// dropping the exact label the filing paragraph and the pane's
+		// display rules depend on. The byte pin above already holds the
+		// carve-out; this assertion states why it must never be reworded
+		// away.
+		if !strings.Contains(noNarrationLine, `must stand alone as the answer's first line`) {
 			t.Fatal("no-narration line lost the carve-out that keeps F.P1's mandatory outside-vault label sanctioned")
 		}
 

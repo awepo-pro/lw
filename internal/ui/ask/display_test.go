@@ -538,6 +538,63 @@ func TestAnswerDisplay(t *testing.T) {
 		}
 	})
 
+	// inline_label_stripped: the live GLM turn wrote the label INLINE —
+	// `Not from your vault: There isn't one — …` on one line with the
+	// answer — so the whole-line hide never fired and the label showed
+	// (027 T3, F.N2). With sources hidden, a label opening the FIRST line
+	// inline loses the label and the spaces after it; the answer text
+	// stays. Only at the very start: a mid-answer inline label (line 3,
+	// not first) is the answer's own words and a fenced one is code —
+	// neither is stripped. Live, the same first-line guard hides the
+	// arrived label; ctrl+p renders every byte, as pre-027.
+	t.Run("inline_label_stripped", func(t *testing.T) {
+		inline := "Not from your vault: There isn't one — Rust has no such crate."
+		want := "There isn't one — Rust has no such crate."
+
+		if got := displayAnswer(inline, false, false); got != want {
+			t.Fatalf("displayAnswer did not strip the first-line inline label:\n  got  %q\n  want %q", got, want)
+		}
+		if got := displayAnswer(inline, true, false); got != inline {
+			t.Fatalf("showProv did not render the inline label unchanged: %q", got)
+		}
+		if got := displayAnswer("Not from your vault: The re", false, true); got != "The re" {
+			t.Fatalf("live did not strip the arrived inline label: %q", got)
+		}
+
+		// Line 3, not the first line: outside the mandated position the
+		// inline label is the answer's own words and stays.
+		mid := "Vault claim. ^[raw/a.md]\n\nNot from your vault: outside bit"
+		if got := displayAnswer(mid, false, false); !strings.Contains(got, "Not from your vault: outside bit") {
+			t.Fatalf("the mid-answer inline label was stripped: %q", got)
+		}
+
+		// Inside a fence the words are code and stay.
+		fenced := "```\nNot from your vault: not a label\n```"
+		if got := displayAnswer(fenced, false, false); !strings.Contains(got, "Not from your vault: not a label") {
+			t.Fatalf("the fenced inline label was stripped: %q", got)
+		}
+
+		// The real render path: the pane shows the answer without the
+		// label, and ctrl+p shows the raw line unchanged.
+		m := newRenderModel(t)
+		m.applyEvent(agent.TextDelta{Text: inline})
+		m.applyEvent(agent.DoneEv{Reason: "stop", Rounds: 1})
+		lines, _ := m.conversationLines(76)
+		got := displayPlain(lines)
+		if strings.Contains(got, "Not from your vault") {
+			t.Fatalf("the inline label still renders:\n%s", got)
+		}
+		if !strings.Contains(got, want) {
+			t.Fatalf("the inline answer was lost:\n%s", got)
+		}
+		pane, _ := m.Update(specialKey('p', tea.ModCtrl))
+		m = pane.(*Model)
+		lines, _ = m.conversationLines(76)
+		if got := displayPlain(lines); !strings.Contains(got, inline) {
+			t.Fatalf("ctrl+p did not render the raw inline line:\n%s", got)
+		}
+	})
+
 	// help_lists_ctrl_p: the ? overlay names the toggle, directly after
 	// the ctrl+s entry.
 	t.Run("help_lists_ctrl_p", func(t *testing.T) {
