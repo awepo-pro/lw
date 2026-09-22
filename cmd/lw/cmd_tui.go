@@ -82,7 +82,16 @@ func cmdTUI(args []string) error {
 		Keys:      keys,
 	}
 
-	app := ui.NewApp(buildTUIOptions(deps))
+	// 023 F.A6: the mascot's motion is the real TUI's switch, and cmdTUI
+	// is the one place that builds the real thing — buildTUIOptions is
+	// also every harness's fixture (its doc comment, C-83), and a harness
+	// must never carry a timer. Every pane constructs with anim off; the
+	// shipped shell alone turns it on.
+	opts := buildTUIOptions(deps)
+	if p, ok := opts.Panes[ui.ScreenAsk].(*ask.Model); ok {
+		p.EnableAnim()
+	}
+	app := ui.NewApp(opts)
 
 	p := tea.NewProgram(app)
 	// Kill restores the terminal unconditionally, so a panic inside

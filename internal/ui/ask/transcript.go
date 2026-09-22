@@ -189,10 +189,18 @@ func (m *Model) conversationLines(w int) (lines []string, cursor int) {
 	}
 	// 022 T2: the thinking status line rides at the tail of the
 	// conversation while the current round is thinking — one clipped,
-	// dimmed line, never an entry of its own. 016 F.M3: the mascot's
-	// compact form sits at its left while it shows.
+	// dimmed line, never an entry of its own. 023 F.A4 (amendment
+	// A-023-2): the full form rises directly above it for the length of
+	// the thinking, in the current scan pose, and the line is bare — no
+	// compact art at its left, the full form replaced it, no double head.
+	// Both drop together on the round's first answer token; the ctrl+t
+	// view (reasoningViewLines) keeps the old compact+status row byte for
+	// byte. The mount lives here and only here: the welcome art (an empty
+	// transcript) and the rise can never coexist, because beginTurn's
+	// echo precedes every turn's first event.
 	if m.thinkingVisible() {
-		lines = append(lines, ui.Clip(m.mascotStatusRow(), w))
+		lines = append(lines, m.renderMascotFull()...)
+		lines = append(lines, ui.Clip(m.theme.Faint.Render(m.thinkingStatusLine()), w))
 	}
 	return lines, cursor
 }
