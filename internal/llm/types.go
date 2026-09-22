@@ -21,6 +21,14 @@ type Config struct {
 	// (client.go) owns the mapping, for Stream and Probe alike.
 	Thinking string
 	Timeout  time.Duration
+	// StallTimeout is 026 T2's silence bound: the longest the client waits
+	// with no bytes from the provider — before the response headers or
+	// between body reads — before failing the turn with ErrStalled. It is
+	// deliberately not more Timeout: Timeout bounds the WHOLE streaming
+	// read and would cut a long answer, while StallTimeout only fires when
+	// nothing arrives at all — a stream that keeps sending bytes is never
+	// cut, however long it runs. 0 = no bound (today's behaviour).
+	StallTimeout time.Duration
 }
 
 // Message is one chat-completions message, tagged exactly as the
