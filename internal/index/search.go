@@ -11,6 +11,16 @@ import (
 	"strings"
 )
 
+// surfaceBoost is A-028-2's exact-surface ceiling: a hit whose doc contains
+// every distinct surface query token scores at most 1+surfaceBoost times its
+// BM25F sum, and a hit with none of them scores exactly the BM25F sum. The
+// measured reason it exists: Porter2 over-merges — "lateral" and "later"
+// share a stem — so raw stemmed BM25F lets a page whose prose says "later"
+// outrank the page that actually spells "lateral". The stemmed fields keep
+// their recall; this factor restores the precision the stemmer cost. It is
+// 028's addition on top of BM25F, not a backbone §3 constant.
+const surfaceBoost = 0.25
+
 // Search stems q (028 analyze — the same step Build ran over every field),
 // applies o's filters structurally, scores the surviving candidates with
 // BM25 over the four weighted fields, and returns the results sorted by
@@ -68,6 +78,11 @@ func (ix *Index) Search(q string, o Options) []Hit {
 		if score <= 0 {
 			continue
 		}
+		// A-028-2: one bounded multiplication over the whole BM25F sum —
+		// never per term, so a full surface match is exactly 1.25×, not
+		// 1.25ⁿ. A nil SurfaceSet (a schema-2 decode, stale and rebuilt
+		// before any real query) yields matched 0 and the factor 1.
+		score *= surfaceMultiplier(d, surface)
 		hits = append(hits, Hit{
 			Path:    d.Path,
 			Title:   d.Title,
@@ -87,6 +102,25 @@ func (ix *Index) Search(q string, o Options) []Hit {
 		hits = hits[:limit]
 	}
 	return hits
+}
+
+// surfaceMultiplier is A-028-2's exact-surface factor: 1 + surfaceBoost ×
+// matched/total, where total is the number of distinct surface query tokens
+// and matched how many of them are in the doc's own surface set. Exactly 1.0
+// when no surface form is present — a pure morphological hit scores as T1
+// scored it — and at most 1+surfaceBoost, since the division is by total.
+// The boost can therefore only reorder hits, never remove one.
+func surfaceMultiplier(d *docEntry, surface []string) float64 {
+	if len(surface) == 0 {
+		return 1
+	}
+	matched := 0
+	for _, tok := range surface {
+		if _, ok := d.SurfaceSet[tok]; ok {
+			matched++
+		}
+	}
+	return 1 + surfaceBoost*float64(matched)/float64(len(surface))
 }
 
 // filteredCandidates returns every doc matching o's Type/Tags/date filters,

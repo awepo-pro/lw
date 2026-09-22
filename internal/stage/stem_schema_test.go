@@ -86,8 +86,8 @@ func TestEngineRebuildsOldSchemaIndex(t *testing.T) {
 	_, dir := newTestEngine(t)
 	indexPath := filepath.Join(dir, ".llmwiki", "index.gob")
 
-	if got := readIndexGobSchema(t, indexPath); got != 2 {
-		t.Fatalf("freshly saved index.gob has schema %d, want 2 (test setup is wrong)", got)
+	if got := readIndexGobSchema(t, indexPath); got != index.SchemaVersion {
+		t.Fatalf("freshly saved index.gob has schema %d, want %d (test setup is wrong)", got, index.SchemaVersion)
 	}
 
 	// Harvest the real docs so the legacy file is a fully valid index for
@@ -123,7 +123,7 @@ func TestEngineRebuildsOldSchemaIndex(t *testing.T) {
 	}
 	t.Cleanup(func() { e2.Close() })
 
-	if got := readIndexGobSchema(t, indexPath); got != 2 {
-		t.Fatalf("index.gob after reopen has schema %d, want 2 — the engine did not rebuild the pre-028 index", got)
+	if got := readIndexGobSchema(t, indexPath); got != index.SchemaVersion {
+		t.Fatalf("index.gob after reopen has schema %d, want %d — the engine did not rebuild the pre-028 index", got, index.SchemaVersion)
 	}
 }

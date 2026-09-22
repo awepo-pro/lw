@@ -51,6 +51,14 @@ type gobDoc struct {
 	TitleLen         int
 	TagLen           int
 	AbstractLen      int
+
+	// Surface is docEntry.SurfaceSet's wire form (A-028-2): the set's tokens
+	// as one sorted slice, not a map, so Save's bytes stay deterministic —
+	// gob walks a map in Go's randomized order, and every other encoded
+	// shape here is ordered for the same reason. A schema-2 file has no
+	// Surface field at all; it decodes as nil and the schema check rebuilds
+	// the index before any query can score against the missing sets.
+	Surface []string
 }
 
 // GobEncode implements gob.GobEncoder so Save can gob.Encode an *Index
@@ -98,6 +106,8 @@ func (ix *Index) GobEncode() ([]byte, error) {
 			TitleLen:         d.TitleLen,
 			TagLen:           d.TagLen,
 			AbstractLen:      d.AbstractLen,
+
+			Surface: sortedSurfaceKeys(d.SurfaceSet),
 		})
 	}
 
@@ -136,11 +146,42 @@ func (ix *Index) GobDecode(data []byte) error {
 			TitleLen:         gd.TitleLen,
 			TagLen:           gd.TagLen,
 			AbstractLen:      gd.AbstractLen,
+
+			SurfaceSet: surfaceSetFrom(gd.Surface),
 		}
 	}
 	ix.docs.Store(&docs) // one store: a concurrent reader sees old or new, never a partial map (008 A-802)
 	ix.schema.Store(int32(g.Schema))
 	return nil
+}
+
+// sortedSurfaceKeys flattens a surface set into its token-sorted slice, the
+// wire form gobDoc.Surface carries.
+func sortedSurfaceKeys(set map[string]struct{}) []string {
+	if len(set) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(set))
+	for tok := range set {
+		out = append(out, tok)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// surfaceSetFrom rebuilds a SurfaceSet from its encoded slice. A schema-2
+// file has no Surface field, which decodes as an empty slice and therefore
+// a nil set — safe for Search (matched 0, factor 1) and irrelevant in
+// practice, because the schema check rebuilds such a file before it serves.
+func surfaceSetFrom(toks []string) map[string]struct{} {
+	if len(toks) == 0 {
+		return nil
+	}
+	set := make(map[string]struct{}, len(toks))
+	for _, t := range toks {
+		set[t] = struct{}{}
+	}
+	return set
 }
 
 // Save writes ix to path via encoding/gob, atomically: it encodes into a

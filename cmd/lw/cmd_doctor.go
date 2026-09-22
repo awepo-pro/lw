@@ -464,6 +464,18 @@ func checkIndex(root string, v *vault.Vault) doctorCheck {
 			Remedy: "run lw doctor --rebuild-index to rebuild it from the vault",
 		}
 	}
+	// A version mismatch is not staleness (028 review nit): every page SHA
+	// can match and the file still cannot be trusted, because the older
+	// lw's layout means something different by the same bytes. Say so —
+	// "written by an older lw", with both format numbers — instead of the
+	// generic stale wording that would blame the vault's content.
+	if s := ix.Schema(); s != index.SchemaVersion {
+		return doctorCheck{
+			Name:   name,
+			Detail: fmt.Sprintf("%s was written by an older lw (index format %d, want %d); %d document(s) indexed", indexRel, s, index.SchemaVersion, ix.Len()),
+			Remedy: "run lw doctor --rebuild-index to rebuild it in the current format",
+		}
+	}
 	if ix.StaleAgainst(v) {
 		return doctorCheck{
 			Name:   name,

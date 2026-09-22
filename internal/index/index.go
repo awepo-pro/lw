@@ -16,13 +16,23 @@ const defaultLimit = 20
 // indexSchema is the current index schema version. 028 (schema 2) stems
 // every BM25 field's tokens (stem.go), which silently changes what the
 // saved term frequencies mean — a pre-028 file's surface-token index must
-// not be reused against a stemmed query side. Version 1 is intentionally
-// unused headroom between the unversioned files and 028's stemming schema.
-// gobIndex carries the version on disk; pre-028 files have no Schema field
-// at all and therefore decode as 0, which never equals indexSchema, so
-// StaleAgainst reports them stale and the engine's existing open path
-// rebuilds and re-saves them (correction log #4/#5 — no new error path).
-const indexSchema = 2
+// not be reused against a stemmed query side. 028 A-028-2 (schema 3) adds
+// each doc's surface-token set (docEntry.SurfaceSet), which a schema-2 file
+// simply does not carry — scoring an exact-surface boost over a file without
+// the sets would read every doc as a pure morphological match. Version 1 is
+// intentionally unused headroom between the unversioned files and 028's
+// stemming schema. gobIndex carries the version on disk; pre-028 files have
+// no Schema field at all and therefore decode as 0, which never equals
+// indexSchema, so StaleAgainst reports them stale and the engine's existing
+// open path rebuilds and re-saves them (correction log #4/#5 — no new error
+// path).
+const indexSchema = 3
+
+// SchemaVersion is indexSchema, exported for the one caller outside this
+// package that must word a version mismatch honestly (lw doctor's index
+// check reports "written by an older lw (index format N, want M)" rather
+// than folding it into a generic "stale against the vault").
+const SchemaVersion = indexSchema
 
 // snippetMaxRunes is Hit.Snippet's maximum length, in runes, including any
 // elision marks.
@@ -72,6 +82,14 @@ type docEntry struct {
 	TitleLen         int
 	TagLen           int
 	AbstractLen      int
+
+	// SurfaceSet is the doc's surface vocabulary (A-028-2): every token the
+	// pre-stem Tokenize produced over title, tags, abstract and body. A set,
+	// not a frequency map — the surface boost asks "does the doc spell the
+	// query this way at all", never "how often". Kept separate from the
+	// stemmed freq maps above on purpose: same tokens, different derivation
+	// (pre-stem) and different shape (membership, not counts).
+	SurfaceSet map[string]struct{}
 }
 
 // Index is the in-memory inverted word index over a vault's pages.
@@ -111,11 +129,15 @@ func buildDocEntry(p *vault.Page) *docEntry {
 	// identically-stemmed index. The assembler helpers stay surface
 	// (backbone §3): bodyTokens applies the wikilink extra-segment rule
 	// BEFORE stemming, and the assembled lists pass through stemmed() here.
-	body := stemmed(bodyTokens(p))
+	// The unstemmed lists are kept alongside: A-028-2's SurfaceSet is their
+	// union, the doc's own spelling of every word the stemmed fields carry.
+	bodyRaw := bodyTokens(p)
+	body := stemmed(bodyRaw)
 	title := analyze(p.FM.Title)
-	tags := stemmed(tagTokens(p.FM.Tags))
-	absTokens, absText := abstractTokens(p)
-	absTokens = stemmed(absTokens)
+	tagsRaw := tagTokens(p.FM.Tags)
+	tags := stemmed(tagsRaw)
+	absRaw, absText := abstractTokens(p)
+	absTokens := stemmed(absRaw)
 
 	return &docEntry{
 		Path:    p.Path,
@@ -136,8 +158,28 @@ func buildDocEntry(p *vault.Page) *docEntry {
 		TagLen:           len(tags),
 		AbstractLen:      len(absTokens),
 
+		SurfaceSet: surfaceSet(bodyRaw, Tokenize(p.FM.Title), tagsRaw, absRaw),
+
 		Abstract: absText,
 	}
+}
+
+// surfaceSet unions every field's surface token list into one set — the
+// docEntry.SurfaceSet A-028-2 scores against. Duplicate tokens across fields
+// (an abstract word is also a body word) collapse: membership is the only
+// question the boost asks.
+func surfaceSet(fieldTokens ...[]string) map[string]struct{} {
+	n := 0
+	for _, toks := range fieldTokens {
+		n += len(toks)
+	}
+	set := make(map[string]struct{}, n)
+	for _, toks := range fieldTokens {
+		for _, t := range toks {
+			set[t] = struct{}{}
+		}
+	}
+	return set
 }
 
 // abstractTokens returns p's "## Abstract" section text — the first Section
@@ -242,6 +284,18 @@ func (ix *Index) Len() int {
 		return len(*p)
 	}
 	return 0
+}
+
+// Schema returns the layout version this index was built or decoded with
+// (indexSchema for anything this binary wrote; an older number for a file
+// an older lw saved). lw doctor reads it to tell "written by an older lw
+// (index format N, want M)" — a version problem every rebuild fixes — apart
+// from "stale against the vault", whose rebuild re-indexes the pages as
+// they are now. Atomic like every schema reader: writers store docs first
+// and schema second, so a current-schema answer never describes docs the
+// schema does not (schema_concurrency_test.go).
+func (ix *Index) Schema() int {
+	return int(ix.schema.Load())
 }
 
 // StaleAgainst reports whether ix no longer matches v: a schema version
