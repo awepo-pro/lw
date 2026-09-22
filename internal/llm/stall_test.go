@@ -275,6 +275,87 @@ func TestAsStalledClassification(t *testing.T) {
 	}
 }
 
+func TestStallHeaderTimeoutRetries(t *testing.T) {
+	// F.S2 correction log 3: the transport's single retry survives the stall
+	// machinery — a FIRST attempt whose headers outrun the bound is the
+	// same transient transport failure do() has always replayed, so the
+	// second attempt must be made and must succeed. The bound is two
+	// windows, not one; only a provider silent across BOTH reports
+	// ErrStalled (TestStallHeaderTimeout).
+	var attempts int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		if atomic.AddInt32(&attempts, 1) == 1 {
+			<-r.Context().Done() // first attempt: headers never come
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"second try\"},\"finish_reason\":\"stop\"}]}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		w.(http.Flusher).Flush()
+	}))
+	defer srv.Close()
+
+	c := New(Config{BaseURL: srv.URL, Model: "test-model", StallTimeout: testStall})
+	start := time.Now()
+	ch, err := c.Stream(context.Background(), Request{Messages: []Message{{Role: "user", Content: "hi"}}})
+	if err != nil {
+		t.Fatalf("Stream: %v — a header stall on the FIRST attempt must be retried, not reported", err)
+	}
+	var text strings.Builder
+	for chunk := range ch {
+		if chunk.Err != nil {
+			t.Fatalf("chunk: %v", chunk.Err)
+		}
+		text.WriteString(chunk.Text)
+	}
+	if text.String() != "second try" {
+		t.Errorf("streamed text = %q, want the retry attempt's answer", text.String())
+	}
+	if got := atomic.LoadInt32(&attempts); got != 2 {
+		t.Errorf("server saw %d attempts, want 2 (the stall window, then the retry)", got)
+	}
+	if elapsed := time.Since(start); elapsed >= time.Second {
+		t.Errorf("the retried turn took %s, want ~%s (one stall window + the retry)", elapsed, testStall)
+	}
+}
+
+func TestStallErrorStatusBodyStall(t *testing.T) {
+	// An error-status response whose BODY stalls: the status line and
+	// headers arrive, then the provider goes silent with the error body
+	// still open. The read of that body is byte-bounded by LimitReader —
+	// which bounds bytes, never time — so without the stall wrapper the
+	// turn parks here forever, exactly the silence F.S1 forbids. The same
+	// stall machinery the 200 path uses must end it with ErrStalled.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusInternalServerError)
+		w.(http.Flusher).Flush()
+		<-r.Context().Done() // silent forever after the headers
+	}))
+	defer srv.Close()
+
+	c := New(Config{BaseURL: srv.URL, Model: "test-model", StallTimeout: testStall})
+	start := time.Now()
+	_, err := c.Stream(context.Background(), Request{Messages: []Message{{Role: "user", Content: "hi"}}})
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("Stream: got nil error, want ErrStalled after the error body's silence exceeded the stall bound")
+	}
+	if !errors.Is(err, ErrStalled) {
+		t.Errorf("err = %v, want errors.Is(err, ErrStalled)", err)
+	}
+	if !wantStallMsg(err) {
+		t.Errorf("err = %v, want the message to carry %q", err, "no response bytes for "+testStall.String())
+	}
+	if elapsed >= time.Second {
+		t.Errorf("error-body stall surfaced after %s, want < 1s", elapsed)
+	}
+}
+
 func TestStallErrorStatusBodyPreserved(t *testing.T) {
 	// A non-200 response carries the provider's error text, and the turn's
 	// error must keep it: the request cancel that T2 arms must not fire

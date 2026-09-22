@@ -55,10 +55,21 @@ func (c *Client) Stream(ctx context.Context, req Request) (<-chan Chunk, error) 
 		// rate-limit text, a 400's validation message), so it is read BEFORE
 		// the request cancel fires — firing it first lets the connection
 		// close race this read and surface an empty error text. The read is
-		// bounded by LimitReader, so this cannot stall.
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		resp.Body.Close()
+		// byte-bounded by LimitReader and silence-bounded by the same stall
+		// wrapper the 200 path uses: LimitReader bounds bytes, never time,
+		// so without the wrapper an error-status response that goes quiet
+		// mid-body would park the turn here forever (F.S1).
+		body := wrapStallBody(resp.Body, c.cfg.StallTimeout, cancel)
+		b, rerr := io.ReadAll(io.LimitReader(body, 4096))
+		body.Close()
 		cancel()
+		// A stall with no body bytes at all is the turn's real cause — the
+		// status alone says nothing a curator can act on, so the stall
+		// error travels. Bytes that did arrive make the status the real
+		// information; the partial text travels with it.
+		if rerr != nil && errors.Is(rerr, ErrStalled) && len(b) == 0 {
+			return nil, rerr
+		}
 		return nil, fmt.Errorf("llm: unexpected status %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
 	}
 

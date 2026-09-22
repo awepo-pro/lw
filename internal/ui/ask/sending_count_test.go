@@ -275,6 +275,27 @@ func TestSendingCount(t *testing.T) {
 		if strings.Contains(screenOf(t, m), "· sending…") {
 			t.Fatal("the sending row survived the cut")
 		}
+
+		// The stall (026 T2's own terminal shape): a provider that goes
+		// silent ends the turn as an ErrorEv — "agent: stream: llm: …
+		// provider stalled: no response bytes for <T>" — the same terminal
+		// event class as a clean stop, so the chain must die the same way
+		// and the row's seconds must not leak into the next turn's window.
+		m = countingPane(t, "stall me")
+		if cmd := beat(t, m); cmd == nil {
+			t.Fatal("precondition: the first beat re-armed nothing")
+		}
+		stallErr := errors.New("agent: stream: llm: read stream: llm: provider stalled: no response bytes for 2m0s")
+		m = feedEvent(t, m, agent.ErrorEv{Err: stallErr})
+		if m.waitingVisible() {
+			t.Fatal("the pane still waits after the stall's ErrorEv")
+		}
+		if cmd := beat(t, m); cmd != nil {
+			t.Fatal("a count beat re-armed after the stall's ErrorEv (F.C2)")
+		}
+		if strings.Contains(screenOf(t, m), "· sending…") {
+			t.Fatal("the sending row survived the stall's ErrorEv")
+		}
 	})
 
 	t.Run("ctrl_t_view_counts", func(t *testing.T) {
