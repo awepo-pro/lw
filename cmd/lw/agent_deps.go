@@ -112,20 +112,31 @@ var newIngestAgent = func(e *stage.Engine, cfg *config.Config, sessions agent.Se
 	if err != nil {
 		return nil, fmt.Errorf("resolve api key: %w", err)
 	}
-	client := llm.New(llm.Config{
-		BaseURL:     cfg.LLM.BaseURL,
-		Model:       cfg.LLM.Model,
-		APIKey:      apiKey,
-		Temperature: cfg.LLM.Temperature,
-		MaxTokens:   cfg.LLM.MaxTokens,
-		Thinking:    cfg.LLM.Thinking,
-	})
+	client := llm.New(ingestLLMConfig(cfg, apiKey))
 	reg := tools.NewRegistry(agentToolDeps(e, cfg, ex))
 	loopCfg := agent.LoopConfig{
 		MaxToolRounds: cfg.Limits.MaxToolRounds,
 		ContextTokens: cfg.Limits.ContextTokens,
 	}
 	return agent.NewLoop(client, reg, sessions, e, loopCfg), nil
+}
+
+// ingestLLMConfig maps the [llm] config onto the llm.Config the agent client
+// is built over — the seam newIngestAgent hands llm.New, split out so the
+// mapping (including 026 T3's stall bound, F.K4) is testable without a
+// network. StallTimeout goes through cfg.LLM.StallTimeoutDuration, which
+// applies DefaultStallTimeout when the key is absent; cmd_doctor.go's probe
+// keeps its own doctorProbeTimeout and is deliberately not wired to this.
+func ingestLLMConfig(cfg *config.Config, apiKey string) llm.Config {
+	return llm.Config{
+		BaseURL:      cfg.LLM.BaseURL,
+		Model:        cfg.LLM.Model,
+		APIKey:       apiKey,
+		Temperature:  cfg.LLM.Temperature,
+		MaxTokens:    cfg.LLM.MaxTokens,
+		Thinking:     cfg.LLM.Thinking,
+		StallTimeout: cfg.LLM.StallTimeoutDuration(),
+	}
 }
 
 // newAgent is the seam cmd_query.go, cmd_lint.go and cmd_tui.go call and
