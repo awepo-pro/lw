@@ -89,6 +89,9 @@ var mathSupGlyphs = map[rune]rune{
 	'0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴',
 	'5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹',
 	'+': '⁺', '-': '⁻', '=': '⁼', '(': '⁽', ')': '⁾',
+	// fix2 (A15-3) rule 4: real-corpus primes in script groups — p^{'}
+	// and q^{’} render p′/q′, never the ^(') / ^(’ ) fallback shapes.
+	'\'': '′', '’': '′',
 }
 
 // mathSubGlyphs: subscript glyphs. Letters limited to the pinned ⱼ and ₖ;
