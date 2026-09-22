@@ -147,16 +147,15 @@ func (m *Model) mascotStatusRow() string {
 // FooterPrefix implements ui.FooterPrefix (F.M3): the compact form at the
 // shell footer's left edge, carried as plain cells plus the pane's own
 // style so the shell's row primitive can place it like any binding run.
-// While the round is thinking the compact form has moved to the status
-// line's own row inside the transcript (mascotStatusRow), so the footer
-// keeps its exact shape: the compact form shows in exactly one of the two
-// slots at a time. While the pane waits (025 F.W4) the compact form also
-// sits on the sending row — the footer keeps its morsel there, the
-// one-slot rule staying a rule about the thinking mount, which is the
-// mount that replaced the footer's. (The empty pane's full-form greeting
-// is plan 016 §5 candidate A's separate mount, above the intro.)
+// Whenever the compact form has moved into the transcript — the thinking
+// status row (022/023) or the waiting sending row (025 F.W4) — the footer
+// withdraws its morsel, so the compact form shows in exactly one of the
+// two slots at a time. One head per busy state: the user settled this
+// live on 2026-09-22 after the acceptance capture showed waiting rendering
+// two (amendment A-025-3). (The empty pane's full-form greeting is plan
+// 016 §5 candidate A's separate mount, above the intro.)
 func (m *Model) FooterPrefix() (string, lipgloss.Style) {
-	if m.thinkingVisible() {
+	if m.thinkingVisible() || m.waitingVisible() {
 		return "", lipgloss.Style{}
 	}
 	s := m.mascotState()

@@ -711,15 +711,52 @@ func TestMascotBlink(t *testing.T) {
 	t.Run("answering_is_still", func(t *testing.T) {
 		// turnActive suppresses the blink at the render too: a hold caught
 		// mid-flight when the turn started opens into stillness (F.A5).
+		//
+		// 025: roundSawText is what makes this leg ANSWERING. Before F.W1
+		// the setup was turnActive alone, which the old table read as
+		// msIdle — but that is the pre-first-byte window, now msWaiting, so
+		// the leg was never exercising the state its name claims. The
+		// missing delta is the setup's own blind spot (the 023 Tier-2
+		// lesson), not a weakening: with it the assertion is the same one,
+		// now actually about answering.
 		m := New(newTestDeps(t)).(*Model)
 		m.anim = true
 		m.turnActive = true
+		m.roundSawText = true // a TextDelta landed: the pane is answering
 		m.eyesShut = true
 		if got := ansi.Strip(m.renderMascotFull()[0]); got != mascotFull[frameIdle][0] {
 			t.Fatalf("answering top row = %q, want the still idle row %q", got, mascotFull[frameIdle][0])
 		}
 		if text, _ := m.FooterPrefix(); text != mascotCompact[frameIdle] {
 			t.Fatalf("answering morsel = %q, want the still idle morsel %q", text, mascotCompact[frameIdle])
+		}
+	})
+
+	// A-025-3 (user, 2026-09-22, settled on the acceptance capture): one
+	// head per busy state. The compact form shows in exactly ONE of the two
+	// slots at a time, so whenever it has moved into the transcript — the
+	// thinking status row or the waiting sending row — the footer withdraws
+	// its morsel. The acceptance capture showed waiting rendering two.
+	t.Run("waiting_withdraws_the_footer_morsel", func(t *testing.T) {
+		m := New(newTestDeps(t)).(*Model)
+		m.anim = true
+		m.turnActive = true // no deltas yet: the pre-first-byte window
+
+		if !m.waitingVisible() {
+			t.Fatal("setup did not reach the waiting window")
+		}
+		if text, _ := m.FooterPrefix(); text != "" {
+			t.Fatalf("waiting morsel = %q, want \"\" — the compact form is on the sending row (A-025-3)", text)
+		}
+		// Thinking already withdrew it; the two busy states now agree.
+		m.roundSawReasoning = true
+		if text, _ := m.FooterPrefix(); text != "" {
+			t.Fatalf("thinking morsel = %q, want \"\" (F.M3)", text)
+		}
+		// A finished turn hands the morsel back.
+		m.turnActive, m.roundSawReasoning = false, false
+		if text, _ := m.FooterPrefix(); text != mascotCompact[frameIdle] {
+			t.Fatalf("idle morsel = %q, want the idle morsel back %q", text, mascotCompact[frameIdle])
 		}
 	})
 }
