@@ -12,9 +12,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -188,5 +191,158 @@ func TestStallZeroIsUnbounded(t *testing.T) {
 	rc := io.NopCloser(strings.NewReader("data: x\n\n"))
 	if got := wrapStallBody(rc, 0, func() {}); got != rc {
 		t.Errorf("wrapStallBody(rc, 0, cancel) = %T, want the body itself, unwrapped", got)
+	}
+}
+
+// headerTimeoutErr builds the observable shape of a ResponseHeaderTimeout
+// failure as the transport delivers it to do(): a *url.Error whose Err is a
+// net.Error with Timeout() true and the transport's documented message. The
+// message differs per protocol — "net/http: …" on HTTP/1.1, "http2: …" on a
+// TLS connection that negotiated h2 (both verified against Go 1.27's
+// net/http and its bundled http2) — and asStalled must relabel BOTH; the
+// frozen header-stall e2e test above can only ever produce the h1 one.
+type headerTimeoutErr struct{ msg string }
+
+func (e headerTimeoutErr) Error() string { return e.msg }
+func (e headerTimeoutErr) Timeout() bool { return true }
+func (e headerTimeoutErr) Temporary() bool {
+	return true
+}
+
+func asStalledInput(msg string) error {
+	return &url.Error{
+		Op:  "Post",
+		URL: "https://api.example.com/v1/chat/completions",
+		Err: headerTimeoutErr{msg: msg},
+	}
+}
+
+func TestAsStalledClassification(t *testing.T) {
+	stallCases := []struct {
+		name string
+		err  error
+	}{
+		{"h1 header timeout", asStalledInput("net/http: timeout awaiting response headers")},
+		{"h2 header timeout", asStalledInput("http2: timeout awaiting response headers")},
+	}
+	for _, tc := range stallCases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := New(Config{StallTimeout: testStall})
+			got := c.asStalled(tc.err)
+			if !errors.Is(got, ErrStalled) {
+				t.Fatalf("asStalled(%v) = %v, want errors.Is(_, ErrStalled)", tc.err, got)
+			}
+			if !wantStallMsg(got) {
+				t.Errorf("err = %v, want the message to carry %q", got, "no response bytes for "+testStall.String())
+			}
+		})
+	}
+
+	// Timeouts that are NOT the provider going silent after connect: dial
+	// and TLS handshake failures, and the caller's own cancel/deadline.
+	// asStalled must hand every one of them back unchanged — a mislabelled
+	// retryable/connect error would report ErrStalled for a turn that
+	// never reached the provider.
+	unstalled := []struct {
+		name string
+		err  error
+	}{
+		{"dial timeout", &url.Error{Op: "Post", URL: "https://api.example.com/v1/chat/completions",
+			Err: headerTimeoutErr{msg: "dial tcp 1.2.3.4:443: i/o timeout"}}},
+		{"tls handshake timeout", &url.Error{Op: "Post", URL: "https://api.example.com/v1/chat/completions",
+			Err: headerTimeoutErr{msg: "net/http: TLS handshake timeout"}}},
+		{"caller cancel", &url.Error{Op: "Post", URL: "https://api.example.com/v1/chat/completions",
+			Err: headerTimeoutErr{msg: "context canceled"}}},
+	}
+	c := New(Config{StallTimeout: testStall})
+	for _, tc := range unstalled {
+		t.Run(tc.name, func(t *testing.T) {
+			got := c.asStalled(tc.err)
+			if errors.Is(got, ErrStalled) {
+				t.Fatalf("asStalled(%v) = %v, want the original error unchanged", tc.err, got)
+			}
+			if got.Error() != tc.err.Error() {
+				t.Errorf("asStalled(%v) = %v, want the error returned untouched", tc.err, got)
+			}
+		})
+	}
+
+	// StallTimeout 0 never relabels anything, whatever the text says.
+	c0 := New(Config{StallTimeout: 0})
+	got := c0.asStalled(asStalledInput("net/http: timeout awaiting response headers"))
+	if errors.Is(got, ErrStalled) {
+		t.Errorf("asStalled with StallTimeout 0 = %v, want the error unchanged", got)
+	}
+}
+
+func TestStallErrorStatusBodyPreserved(t *testing.T) {
+	// A non-200 response carries the provider's error text, and the turn's
+	// error must keep it: the request cancel that T2 arms must not fire
+	// before that 4KB error body has been read. The body arrives in two
+	// flushes with a gap, so a cancel fired before the read has a real
+	// window to close the connection mid-read — the fast-body shape wins
+	// that race locally every time and would let the broken order hide.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusTooManyRequests)
+		fmt.Fprint(w, "rate limit ")
+		w.(http.Flusher).Flush()
+		time.Sleep(50 * time.Millisecond)
+		fmt.Fprint(w, "exceeded for model test-model")
+	}))
+	defer srv.Close()
+
+	c := New(Config{BaseURL: srv.URL, Model: "test-model", StallTimeout: testStall})
+	_, err := c.Stream(context.Background(), Request{Messages: []Message{{Role: "user", Content: "hi"}}})
+	if err == nil {
+		t.Fatal("Stream: got nil error, want the 429 surfaced")
+	}
+	if !strings.Contains(err.Error(), "rate limit exceeded for model test-model") {
+		t.Errorf("err = %v, want it to carry the response body's error text", err)
+	}
+	if !strings.Contains(err.Error(), "429") {
+		t.Errorf("err = %v, want the status code in the message", err)
+	}
+}
+
+func TestStallStreamReuseAcrossTurns(t *testing.T) {
+	// Two full turns on one client must share ONE TCP connection: T2's
+	// wrapper and its cancel must not cost the 025 idle-pool reuse that the
+	// cold-start work exists for. The count is of connections the server
+	// accepted, not requests it served.
+	var conns int32
+	// Unstarted, so ConnState is installed before the server's Serve loop
+	// ever reads the Config field — assigning it post-Start is a data race.
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		w.(http.Flusher).Flush()
+	}))
+	srv.Config.ConnState = func(c net.Conn, s http.ConnState) {
+		if s == http.StateNew {
+			atomic.AddInt32(&conns, 1)
+		}
+	}
+	srv.Start()
+	defer srv.Close()
+
+	c := New(Config{BaseURL: srv.URL, Model: "test-model", StallTimeout: testStall})
+	for turn := 0; turn < 2; turn++ {
+		ch, err := c.Stream(context.Background(), Request{Messages: []Message{{Role: "user", Content: "hi"}}})
+		if err != nil {
+			t.Fatalf("turn %d: Stream: %v", turn, err)
+		}
+		for chunk := range ch {
+			if chunk.Err != nil {
+				t.Fatalf("turn %d: %v", turn, chunk.Err)
+			}
+		}
+	}
+	if got := atomic.LoadInt32(&conns); got != 1 {
+		t.Errorf("server accepted %d connections for 2 turns, want 1 (keep-alive reuse)", got)
 	}
 }

@@ -51,9 +51,14 @@ func (c *Client) Stream(ctx context.Context, req Request) (<-chan Chunk, error) 
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		defer resp.Body.Close()
-		cancel()
+		// The error body carries the provider's actual complaint (a 429's
+		// rate-limit text, a 400's validation message), so it is read BEFORE
+		// the request cancel fires — firing it first lets the connection
+		// close race this read and surface an empty error text. The read is
+		// bounded by LimitReader, so this cannot stall.
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		resp.Body.Close()
+		cancel()
 		return nil, fmt.Errorf("llm: unexpected status %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
 	}
 

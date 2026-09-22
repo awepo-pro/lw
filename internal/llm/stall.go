@@ -39,15 +39,18 @@ func stallError(d time.Duration, cause error) error {
 // (026 T2 F.S2). ResponseHeaderTimeout surfaces as a generic net timeout
 // with no sentinel of its own, so the match is on its documented message —
 // stable in net/http for over a decade — together with the Timeout
-// classification. Dial and TLS failures are timeouts too, but their text is
-// not this one, and a connect failure is not the provider going silent.
+// classification. The message carries a protocol prefix: "net/http: …" on
+// HTTP/1.1, "http2: …" when the TLS connection negotiated h2 — which is
+// what every https provider does — so the match is on the shared suffix,
+// never the prefix. Dial and TLS failures are timeouts too, but their text
+// is not this one, and a connect failure is not the provider going silent.
 func (c *Client) asStalled(err error) error {
 	if c.cfg.StallTimeout <= 0 || err == nil {
 		return err
 	}
 	var ne net.Error
 	if errors.As(err, &ne) && ne.Timeout() &&
-		strings.Contains(err.Error(), "net/http: timeout awaiting response headers") {
+		strings.Contains(err.Error(), "timeout awaiting response headers") {
 		return stallError(c.cfg.StallTimeout, err)
 	}
 	return err
@@ -148,7 +151,15 @@ func (b *stallBody) Read(p []byte) (int, error) {
 // Close stops the expiry machinery and closes the wrapped body. It is
 // consumeStreamTimed's deferred close, so it runs on every stream exit
 // path — no timer outlives the stream, and any callback already in flight
-// sees closed and does nothing.
+// sees closed and does nothing. It also cancels the stream request's
+// context, releasing the child context WithCancel created: without this a
+// normally-finished stream leaks that child, registered on the caller's
+// context until the caller's own context dies. Order matters here: the
+// wrapped body is closed FIRST, so net/http can drain the (already fully
+// read) response and return the connection to the idle pool, and only then
+// does the cancel fire — by which time the round trip is done and pooling
+// is unaffected (verified against Go 1.27). Cancelling first closes the
+// connection out from under that drain and every turn re-dials.
 func (b *stallBody) Close() error {
 	b.mu.Lock()
 	b.closed = true
@@ -158,7 +169,9 @@ func (b *stallBody) Close() error {
 	if t != nil {
 		t.Stop()
 	}
-	return b.rc.Close()
+	err := b.rc.Close()
+	b.cancel()
+	return err
 }
 
 // wrapStallBody is the single decision point for wrapping a stream body
