@@ -38,7 +38,8 @@ func TestPromptWebRules(t *testing.T) {
 				}
 				// The text on both sides of the removed block is unchanged
 				// and still separated by exactly one blank line: the
-				// outside-vault rule closes promptBase, the query-page
+				// outside-vault rule closes promptBase (027 added the
+				// no-narration line to that paragraph), the query-page
 				// filing rule opens promptTail.
 				label := strings.Index(prompt, outsideVaultRule)
 				if label < 0 {
@@ -48,7 +49,7 @@ func TestPromptWebRules(t *testing.T) {
 				if filing < 0 {
 					t.Fatal("without_search lost the query-page filing rule")
 				}
-				if filing != label+len(outsideVaultRule)+2 {
+				if filing != label+len(outsideVaultRule)+1+len(noNarrationLine)+2 {
 					t.Fatalf("base and tail are not joined by one blank line: outside-vault rule ends at %d, filing paragraph starts at %d", label+len(outsideVaultRule), filing)
 				}
 				return
