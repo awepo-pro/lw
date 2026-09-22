@@ -236,5 +236,6 @@ func (m *Model) OverlayHelp() (string, []ui.HelpEntry) {
 		{Key: "↑/↓", Desc: "select tool call"},
 		{Key: "ctrl+r", Desc: "open review"},
 		{Key: "ctrl+s", Desc: "save last answer into the wiki"},
+		{Key: "ctrl+p", Desc: "show/hide sources"}, // 027 T2
 	}
 }

@@ -140,12 +140,14 @@ func newConformanceApp(t *testing.T, v *uitest.Vault, ag agent.Agent) *ui.App {
 	t.Helper()
 
 	d := uitest.Deps(v, true, ag) // dark: the gate drives the polarity explicitly
+	askPane := ask.New(d).(*ask.Model)
+	askPane.SetShowProvenance(true) // A-027-2: the goldens pin the sources-shown state
 	return ui.NewApp(ui.Options{
 		Deps: d,
 		Panes: map[ui.Screen]ui.Pane{
 			ui.ScreenBrowse: browse.New(d),
 			ui.ScreenReview: review.New(d),
-			ui.ScreenAsk:    ask.New(d),
+			ui.ScreenAsk:    askPane,
 			ui.ScreenLint:   lintview.New(d),
 			ui.ScreenLog:    logview.New(d),
 		},
