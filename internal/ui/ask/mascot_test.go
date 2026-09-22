@@ -487,6 +487,21 @@ func TestMascotAnimContract(t *testing.T) {
 		if m.eyesShut {
 			t.Fatal("the eyes shut while the pane answers (F.A5)")
 		}
+		// The tool round is the other still phase F.A3(c) names: the round
+		// flags reset, so the thinking line is gone and both chains die at
+		// their next beat.
+		if cmd := m.applyEvent(agent.ToolCallEv{ID: "t1", Name: "wiki_search"}); cmd != nil {
+			t.Fatal("ToolCallEv produced a command")
+		}
+		if _, cmd := m.Update(scanTickMsg{}); cmd != nil {
+			t.Fatal("a scan tick re-armed during a tool round (F.A3 c)")
+		}
+		if _, cmd := m.Update(blinkTickMsg{}); cmd != nil {
+			t.Fatal("a blink tick re-armed during a tool round (F.A3 c)")
+		}
+		if m.eyesShut {
+			t.Fatal("the eyes shut during a tool round (F.A5)")
+		}
 		// The error state is frozen too (F.A5): no blink re-arm, and a hold
 		// caught mid-flight when the verdict landed opens into stillness.
 		me := New(newTestDeps(t)).(*Model)
@@ -498,6 +513,71 @@ func TestMascotAnimContract(t *testing.T) {
 		}
 		if got := ansi.Strip(me.renderMascotFull()[0]); got != mascotFull[frameIdle][0] {
 			t.Fatalf("error full-form top row = %q, want the static idle row %q", got, mascotFull[frameIdle][0])
+		}
+	})
+
+	t.Run("no_double_arm", func(t *testing.T) {
+		// animArm runs beside the event pump's own re-arm on EVERY agent
+		// event, so a guard-less arm would stack one more 200ms scan ticker
+		// per reasoning delta — the scan would spin at the stream's rate and
+		// the tickers would multiply for the length of the thinking (F.A3:
+		// each chain is single-file, held by its *Armed flag). The Cmds
+		// here are asserted and dropped, never invoked, so no test waits on
+		// a real timer.
+		m := New(newTestDeps(t)).(*Model)
+		m.anim = true
+		if m.animArm() == nil {
+			t.Fatal("a fresh idle pane armed no blink tick (the Init path)")
+		}
+		if m.animArm() != nil {
+			t.Fatal("animArm stacked a second blink tick on the armed one (F.A3)")
+		}
+		m.blinkArmed = false
+		m.eyesShut = true // the hold is in flight: nothing to arm meanwhile
+		if m.animArm() != nil {
+			t.Fatal("animArm armed while the eyes are shut mid-hold (F.A3)")
+		}
+		m.eyesShut = false
+		m.echoUser("q")
+		m.turnActive = true
+		if cmd := m.applyEvent(agent.ReasoningDelta{Text: "hmm"}); cmd != nil {
+			t.Fatal("ReasoningDelta produced a command")
+		}
+		if m.animArm() == nil {
+			t.Fatal("a thinking pane armed no scan tick")
+		}
+		if m.animArm() != nil {
+			t.Fatal("animArm stacked a second scan tick on the armed one (F.A3)")
+		}
+	})
+
+	t.Run("anim_off_is_inert", func(t *testing.T) {
+		// F.A6's zero-timer half, pinned directly: with the switch off —
+		// how every harness and every other test builds the pane — Init
+		// stays nil, an agent event through the real Update arms nothing,
+		// and even a hand-fed tick is inert. The handlers' !anim guards are
+		// the second half of the switch; the frozen pose is the proof the
+		// render never moved.
+		m := New(newTestDeps(t)).(*Model)
+		if cmd := m.Init(); cmd != nil {
+			t.Fatal("Init armed a timer with anim off (F.A6)")
+		}
+		m.echoUser("q")
+		m.turnActive = true
+		if _, cmd := m.Update(EventMsg{Ev: agent.ReasoningDelta{Text: "hmm"}}); cmd != nil {
+			t.Fatal("an agent event armed a timer with anim off (F.A6)")
+		}
+		if _, cmd := m.Update(scanTickMsg{}); cmd != nil {
+			t.Fatal("a scan tick re-armed with anim off (F.A6)")
+		}
+		if _, cmd := m.Update(blinkTickMsg{}); cmd != nil {
+			t.Fatal("a blink tick re-armed with anim off (F.A6)")
+		}
+		if m.eyesShut {
+			t.Fatal("a blink tick shut the eyes with anim off (F.A6)")
+		}
+		if got := ansi.Strip(m.renderMascotFull()[0]); got != mascotFull[frameThinking][0] {
+			t.Fatalf("full top row = %q with anim off, want the frozen thinking row %q", got, mascotFull[frameThinking][0])
 		}
 	})
 }
