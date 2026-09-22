@@ -58,6 +58,14 @@ type gobDoc struct {
 // (008 A-802), so the encoded bytes describe one whole map even if a
 // concurrent Update lands mid-encode.
 func (ix *Index) GobEncode() ([]byte, error) {
+	// Schema is loaded BEFORE the docs map. Every writer stores docs first
+	// and schema second (Rebuild, GobDecode), so a reader that has seen the
+	// current schema can only see docs that schema describes. Loading in the
+	// other order let an encode racing a legacy→current rebuild emit a file
+	// claiming the current schema over pre-stemming term frequencies — a
+	// file StaleAgainst would trust forever, because only the version could
+	// have said otherwise (schema_concurrency_test.go).
+	schema := int(ix.schema.Load())
 	var docs map[string]*docEntry
 	if p := ix.docs.Load(); p != nil {
 		docs = *p
@@ -68,7 +76,7 @@ func (ix *Index) GobEncode() ([]byte, error) {
 	}
 	sort.Strings(paths)
 
-	g := gobIndex{Schema: int(ix.schema.Load()), Docs: make([]gobDoc, 0, len(paths))}
+	g := gobIndex{Schema: schema, Docs: make([]gobDoc, 0, len(paths))}
 	for _, p := range paths {
 		d := docs[p]
 		g.Docs = append(g.Docs, gobDoc{
