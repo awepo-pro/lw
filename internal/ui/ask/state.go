@@ -398,6 +398,22 @@ func (m *Model) waitingVisible() bool {
 	return m.turnActive && !m.roundSawReasoning && !m.roundSawText && !m.roundToolInFlight
 }
 
+// formatSendingElapsed renders the counted sending row's elapsed seconds
+// (026 F.C1): plain seconds under the minute (`59s`), `Mm SS` from it up
+// (`1m05s`, `60m00s` — the minutes keep counting past the hour mark, the
+// window never being that long but the format not lying if it is). Zero
+// renders empty: the row stays the bare `· sending…` until the count
+// chain's first beat lands, never `· sending… (0s)`.
+func formatSendingElapsed(secs int) string {
+	if secs <= 0 {
+		return ""
+	}
+	if secs < 60 {
+		return strconv.Itoa(secs) + "s"
+	}
+	return fmt.Sprintf("%dm%02ds", secs/60, secs%60)
+}
+
 // thinkingStatusLine is the status line's exact text (022 T2):
 // `· thinking… (1.2k chars)` — the count as `%.1fk` from 1000 up, plain
 // below it.

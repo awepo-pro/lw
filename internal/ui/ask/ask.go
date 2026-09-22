@@ -150,7 +150,13 @@ type Model struct {
 	// chain single-file; the machinery is mascot_anim.go. waitArmed/
 	// waitShut (025 F.W3) are the wait blink's own pair — a separate chain
 	// from the idle blink's, so neither flag ever describes the other
-	// chain's beat.
+	// chain's beat. sendSecs/sendGen/waitPhaseLive (026 F.C2/F.C3) are the
+	// counted sending row's clock: the current window's elapsed seconds,
+	// the generation its beats are stamped with — bumped on every
+	// waitingVisible edge, so a beat in flight across a round boundary is
+	// stale on arrival — and that edge's tracker, scanPhaseLive's idiom.
+	// The chain lives in mascot_anim.go; it needs no *Armed flag, the
+	// generation being its own single-file rule.
 	anim          bool
 	scanStep      int
 	eyesShut      bool
@@ -159,6 +165,9 @@ type Model struct {
 	scanPhaseLive bool
 	waitArmed     bool
 	waitShut      bool
+	sendSecs      int
+	sendGen       int
+	waitPhaseLive bool
 }
 
 var _ ui.Pane = (*Model)(nil)
@@ -345,6 +354,13 @@ func (m *Model) Update(msg tea.Msg) (ui.Pane, tea.Cmd) {
 
 	case waitOpenMsg:
 		return m, m.handleWaitOpen()
+
+	case sendCountMsg:
+		// 026 F.C2: the count chain's beat — one sendCountEvery onto the
+		// sending row while the anim is on, the pane still waits and the
+		// beat belongs to the current window's generation; anything else
+		// stops the chain by not re-issuing (F.C3).
+		return m, m.handleSendCount(msg)
 
 	case sessionClosedMsg:
 		if msg.err != nil {

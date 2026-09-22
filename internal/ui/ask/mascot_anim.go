@@ -2,13 +2,14 @@
 // reverses 016 F.M5's fully-static rule through the logged amendment
 // path): the thinking eye-scan, the idle blink, and the tea.Tick chains
 // that drive them — plus 025 F.W2/F.W3's wait blink, the waiting pose's
-// idle↔blink alternation on its own beat and its own flags. This file is
-// the only place in the package a clock may live, and the anim runs on
-// Update's thread — the ticks only sleep and deliver, the handlers below
-// decide by the pane's own state whether to act and re-arm, and a chain
-// stops by not re-issuing. Nothing here re-derives pane state: the same
-// mascotState/round flags the art reads (mascot.go, state.go) decide
-// every beat.
+// idle↔blink alternation on its own beat and its own flags, and 026
+// F.C2's count chain, the counted sending row's one-second beat. This
+// file is the only place in the package a clock may live, and the anim
+// runs on Update's thread — the ticks only sleep and deliver, the
+// handlers below decide by the pane's own state whether to act and
+// re-arm, and a chain stops by not re-issuing. Nothing here re-derives
+// pane state: the same mascotState/round flags the art reads (mascot.go,
+// state.go) decide every beat.
 package ask
 
 import (
@@ -22,12 +23,15 @@ import (
 // 025 F.W3 adds the waiting pane's beat: waitBlinkEvery, quicker than the
 // idle blink — a pane whose provider has not answered is the one state
 // that must not sit frozen — with the SAME shut-hold as the idle blink
-// (blinkHold, reused, not duplicated).
+// (blinkHold, reused, not duplicated). 026 F.C2 adds the count chain's
+// beat: sendCountEvery, the counted sending row's one-second step (F.C1's
+// suffix on 025 F.W4's line).
 const (
 	scanEvery      = 200 * time.Millisecond
 	blinkEvery     = 4 * time.Second
 	blinkHold      = 120 * time.Millisecond
 	waitBlinkEvery = 1200 * time.Millisecond
+	sendCountEvery = 1 * time.Second // 026 F.C2
 )
 
 // mascotScanCycle is the thinking eye-scan's pose order (F.A2): up, left,
@@ -45,15 +49,20 @@ var mascotScanCycle = [4]mascotFrame{
 // two: the every-1.2s open→shut edge and its own 120ms hold — a separate
 // pair, not the blink's, so a hold in flight across the idle↔waiting
 // boundary can never be mistaken for the other chain's (each handler
-// clears only its own flag). Each is constructed only by the tea.Tick
-// command beside it, so a test can feed one to Update without sleeping
-// through a real beat (the reloadTickMsg shape, internal/ui/reload.go).
+// clears only its own flag). 026 F.C2 adds the count chain's beat: the
+// one sendCountMsg per second, stamped with the generation of the window
+// it was minted for. Each is constructed only by the tea.Tick command
+// beside it, so a test can feed one to Update without sleeping through a
+// real beat (the reloadTickMsg shape, internal/ui/reload.go).
 type (
 	scanTickMsg  struct{}
 	blinkTickMsg struct{}
 	blinkOpenMsg struct{}
 	waitTickMsg  struct{} // 025 F.W3
 	waitOpenMsg  struct{} // 025 F.W3
+	sendCountMsg struct { // 026 F.C2
+		gen int
+	}
 )
 
 func scanTickCmd() tea.Cmd {
@@ -77,6 +86,14 @@ func waitTickCmd() tea.Cmd {
 // the eyes.
 func waitHoldCmd() tea.Cmd {
 	return tea.Tick(blinkHold, func(time.Time) tea.Msg { return waitOpenMsg{} })
+}
+
+// sendCountCmd mints the count chain's beat (026 F.C2): one
+// sendCountEvery, carrying the generation of the window it was minted
+// for — a beat still in flight when that window closes (or the next one
+// opens) is stale by its stamp, and the handler drops it (F.C3).
+func sendCountCmd(gen int) tea.Cmd {
+	return tea.Tick(sendCountEvery, func(time.Time) tea.Msg { return sendCountMsg{gen} })
 }
 
 // blinkEligible reports whether an idle pane may blink (F.A5): answering
@@ -152,6 +169,24 @@ func (m *Model) handleWaitOpen() tea.Cmd {
 	return waitTickCmd()
 }
 
+// handleSendCount is Update's sendCountMsg case (026 F.C2): one beat, one
+// sendCountEvery onto the waiting window's counter, re-arming only while
+// the anim is on, the pane still waits AND the beat carries the current
+// window's generation. Anything else — the first reasoning byte, a tool
+// call, the turn's end, a cut stream, or a beat minted for a window that
+// has since closed — stops the chain by not re-issuing, without touching
+// the count. The generation is F.C3's by-construction closure of the 023
+// surviving-chain defect class: the edge that opens a window bumps
+// sendGen (animArm), so every beat minted before it is dead on arrival,
+// even mid-window where the visibility guards alone would still pass it.
+func (m *Model) handleSendCount(msg sendCountMsg) tea.Cmd {
+	if !m.anim || !m.waitingVisible() || msg.gen != m.sendGen {
+		return nil
+	}
+	m.sendSecs++
+	return sendCountCmd(m.sendGen)
+}
+
 // mascotPose selects the frame the pane draws for state s — the state
 // table's frame (mascotFrameFor) with 023's motion overlaid, and only when
 // the anim switch is on: with anim false every render is today's bytes,
@@ -187,12 +222,13 @@ func (m *Model) mascotPose(s mascotState, full bool) mascotFrame {
 // arm and turnStartedMsg's, covering the ctrl+s filing turn that begins
 // through beginTurn alone) and a turn's end (the blink) — and never
 // doubling one already in flight; it also tracks the thinking phase's
-// visible edge, the one place the scan cycle resets to its head. Init
-// arms the first blink for a freshly opened pane; Update calls this
-// beside its existing re-arm on every agent event and when a stream is
-// cut. A chain in flight needs no arming: its own handlers re-arm it
-// while the state holds and let it die when the state turns. nil with
-// anim off.
+// visible edge, the one place the scan cycle resets to its head, and —
+// 026 F.C3, the same idiom — the waiting window's, the one place the
+// count restarts under a fresh generation. Init arms the first blink for
+// a freshly opened pane; Update calls this beside its existing re-arm on
+// every agent event and when a stream is cut. A chain in flight needs no
+// arming: its own handlers re-arm it while the state holds and let it die
+// when the state turns. nil with anim off.
 func (m *Model) animArm() tea.Cmd {
 	// The scan cycle resets on the thinking phase's invisible→visible edge
 	// (F.A2: the cycle opens at UP; F.M4: entering msThinking renders the
@@ -215,34 +251,63 @@ func (m *Model) animArm() tea.Cmd {
 	}
 	m.scanPhaseLive = live
 
+	// 026 F.C3: the waiting window's own edge, the scan edge's idiom one
+	// state over — on waitingVisible's invisible→visible edge the count
+	// restarts from zero under a fresh generation, so every round's wait
+	// counts its own seconds (resetReasoningRound re-opens the window for
+	// each tool round) and a beat still in flight across the boundary is
+	// stale on arrival. The same messages flip this predicate as flip
+	// thinkingVisible — every EventMsg, StreamClosedMsg, turnStartedMsg
+	// and the key arms — so no edge is missed here either; the tracking
+	// sits before the anim guard like the scan's (unconditional and cheap
+	// either way).
+	waitLive := m.waitingVisible()
+	waitEdge := waitLive && !m.waitPhaseLive
+	if waitEdge {
+		m.sendSecs = 0 // the window's count opens at zero, every round (F.C3)
+		m.sendGen++    // beats minted for the old window are now stale (F.C3)
+	}
+	m.waitPhaseLive = waitLive
+
 	if !m.anim {
 		return nil
+	}
+	// 026 F.C3: the edge arms the count's first beat beside whatever
+	// motion chain the state calls for. A waiting edge can only coincide
+	// with the waiting case below — thinkingVisible and waitingVisible are
+	// mutually exclusive and blinkEligible needs the turn over — and Batch
+	// with a nil count is that case's own command, unchanged.
+	var count tea.Cmd
+	if waitEdge {
+		count = sendCountCmd(m.sendGen)
 	}
 	switch {
 	case m.thinkingVisible():
 		if m.scanArmed {
-			return nil
+			return count
 		}
 		// The phase opened with no chain in flight: start the scan. The
 		// cycle's reset lives on the edge above, not here — a surviving
 		// chain defers this arm and must still open its phase at UP.
 		m.scanArmed = true
-		return scanTickCmd()
+		return tea.Batch(count, scanTickCmd())
 	case m.waitingVisible():
 		// 025 F.W3/F.W5: the wait chain arms at the submit and re-arms only
 		// while the pane waits; a hold in flight (waitShut) defers to its
-		// own waitOpenMsg, like the blink's.
+		// own waitOpenMsg, like the blink's. The count chain needs no
+		// deferral beside it — its single-file rule is the generation
+		// itself, and its edge can only fire once per window.
 		if m.waitArmed || m.waitShut {
-			return nil
+			return count
 		}
 		m.waitArmed = true
-		return waitTickCmd()
+		return tea.Batch(count, waitTickCmd())
 	case m.blinkEligible():
 		if m.blinkArmed || m.eyesShut {
-			return nil
+			return count
 		}
 		m.blinkArmed = true
-		return blinkTickCmd()
+		return tea.Batch(count, blinkTickCmd())
 	}
-	return nil
+	return count
 }
