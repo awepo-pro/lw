@@ -27,7 +27,8 @@ const introSentence = "Ask the wiki a question. Answers cite the pages they come
 // `↑ N earlier` on the top border for the lines above the window (N = the
 // window's start, omitted at 0) and `↓ N newer` on the bottom border for
 // the lines hidden below it (N = back, omitted at 0) (s2-screens.md T08
-// "Scroll", W5 F2/C36).
+// "Scroll", W5 F2/C36). While the ctrl+t toggle is open (022 T2), the
+// dimmed reasoning-tail view takes the panel's place until it is closed.
 func (m *Model) transcriptPanel(w, th int) []string {
 	cw := w - 4
 	note := ""
@@ -35,7 +36,16 @@ func (m *Model) transcriptPanel(w, th int) []string {
 	cursor := -1
 
 	lines := m.emptyTranscriptLines(cw, th)
-	if len(m.entries) > 0 {
+	if m.showReasoning {
+		// 022 T2: ctrl+t overlays the reasoning tail on the transcript
+		// area; the conversation returns when it is pressed again. The
+		// block is already bounded, so a panel too short for it keeps the
+		// recent tail — no scroll state moves while the view is open.
+		lines = m.reasoningViewLines(cw)
+		if inner := th - 2; inner > 0 && len(lines) > inner {
+			lines = lines[len(lines)-inner:]
+		}
+	} else if len(m.entries) > 0 {
 		lines, cursor = m.conversationLines(min(cw, 100))
 		// inner > 0 keeps the degenerate sizes (th < 3) away from the
 		// scroll math; Panel clamps those, and View normalizes the result.
@@ -154,7 +164,40 @@ func (m *Model) conversationLines(w int) (lines []string, cursor int) {
 		}
 		prev = e.kind
 	}
+	// 022 T2: the thinking status line rides at the tail of the
+	// conversation while the current round is thinking — one clipped,
+	// dimmed line, never an entry of its own.
+	if m.thinkingVisible() {
+		lines = append(lines, ui.Clip(m.theme.Faint.Render(m.thinkingStatusLine()), w))
+	}
 	return lines, cursor
+}
+
+// reasoningViewLines draws the ctrl+t view: the current turn's reasoning
+// tail — wrapPlain-wrapped to the pane width, dimmed, at most the last
+// reasoningViewMaxLines lines — and, while the phase rule holds, the
+// thinking status line under it. A turn with no reasoning yet says so
+// rather than drawing an empty panel. Pane state only: nothing here reads
+// or writes m.entries.
+func (m *Model) reasoningViewLines(w int) []string {
+	if w < 1 {
+		w = 1
+	}
+	var lines []string
+	if m.reasonTail == "" {
+		lines = append(lines, m.theme.Faint.Render("no reasoning yet this turn"))
+	} else {
+		for _, l := range wrapPlain(m.reasonTail, w) {
+			lines = append(lines, m.theme.Faint.Render(l))
+		}
+		if len(lines) > reasoningViewMaxLines {
+			lines = lines[len(lines)-reasoningViewMaxLines:]
+		}
+	}
+	if m.thinkingVisible() {
+		lines = append(lines, ui.Clip(m.theme.Faint.Render(m.thinkingStatusLine()), w))
+	}
+	return lines
 }
 
 // assistantLines renders one assistant entry's buffer at w. A finished

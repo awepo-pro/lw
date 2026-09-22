@@ -33,6 +33,12 @@ type LLM struct {
 	APIKey      string  `toml:"api_key"` // "env:NAME" | "keyring:NAME" | literal
 	Temperature float64 `toml:"temperature"`
 	MaxTokens   int     `toml:"max_tokens"`
+	// Thinking is the GLM thinking-mode switch (022): "off" — lw's default —
+	// sends thinking:{"type":"disabled"} on every request, "on" sends
+	// thinking:{"type":"enabled"}, and "default" sends no thinking key so
+	// the provider's own default applies. The mapping lives in
+	// llm.buildRequestBody; this key only carries the user's word.
+	Thinking string `toml:"thinking"`
 }
 
 // Limits bounds the agent loop's resource usage.
@@ -81,6 +87,7 @@ type shadowLLM struct {
 	APIKey      string  `toml:"api_key"`
 	Temperature float64 `toml:"temperature"`
 	MaxTokens   int     `toml:"max_tokens"`
+	Thinking    string  `toml:"thinking"`
 	Limits      Limits  `toml:"limits"`
 }
 
@@ -104,6 +111,7 @@ func toShadow(c *Config) shadowConfig {
 			APIKey:      c.LLM.APIKey,
 			Temperature: c.LLM.Temperature,
 			MaxTokens:   c.LLM.MaxTokens,
+			Thinking:    c.LLM.Thinking,
 			Limits:      c.Limits,
 		},
 		Web:   c.Web,
@@ -121,6 +129,7 @@ func fromShadow(s shadowConfig) *Config {
 			APIKey:      s.LLM.APIKey,
 			Temperature: s.LLM.Temperature,
 			MaxTokens:   s.LLM.MaxTokens,
+			Thinking:    s.LLM.Thinking,
 		},
 		Limits: s.LLM.Limits,
 		Web:    s.Web,
@@ -185,6 +194,9 @@ func mergeOverDefault(def, file *Config, md toml.MetaData) *Config {
 	}
 	if md.IsDefined("llm", "max_tokens") {
 		def.LLM.MaxTokens = file.LLM.MaxTokens
+	}
+	if md.IsDefined("llm", "thinking") {
+		def.LLM.Thinking = file.LLM.Thinking
 	}
 	if md.IsDefined("llm", "limits", "max_tool_rounds") {
 		def.Limits.MaxToolRounds = file.Limits.MaxToolRounds
@@ -259,8 +271,11 @@ func (c *Config) ResolveAPIKey() (string, error) {
 
 // Default returns lw's out-of-the-box configuration: the DeepSeek endpoint
 // from /docs/design.md §11.2 (MASTER §9 D-CG), with its API key referenced from the
-// environment rather than stored. Web ships with the tavily provider named
-// but no key: web.search stays unoffered until the user configures one.
+// environment rather than stored. Thinking ships "off" (022): the explicit
+// thinking:disabled keeps a thinking-mode provider from spending the round's
+// budget reasoning instead of answering — "on" and "default" are the user's
+// word. Web ships with the tavily provider named but no key: web.search
+// stays unoffered until the user configures one.
 func Default() *Config {
 	return &Config{
 		LLM: LLM{
@@ -269,6 +284,7 @@ func Default() *Config {
 			APIKey:      "env:DEEPSEEK_API_KEY",
 			Temperature: 0.2,
 			MaxTokens:   32768,
+			Thinking:    "off",
 		},
 		Limits: Limits{
 			MaxToolRounds: 24,

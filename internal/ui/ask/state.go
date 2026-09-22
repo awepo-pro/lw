@@ -1,13 +1,16 @@
-// state.go is the ask screen's scrollback state machine: how the six
-// agent.Event kinds (backbone §9) fold into m.entries, and how the ↑/↓
-// selection and the enter toggle move over the tool-call entries. The
-// rendering of these entries is view.go; the pump that delivers the events
-// is stream.go.
+// state.go is the ask screen's scrollback state machine: how the agent
+// event kinds (backbone §9) fold into m.entries — including 022 T2's
+// ReasoningDelta, which accumulates pane-only thinking state instead of an
+// entry — and how the ↑/↓ selection and the enter toggle move over the
+// tool-call entries. The rendering of these entries is view.go; the pump
+// that delivers the events is stream.go.
 package ask
 
 import (
 	"errors"
 	"fmt"
+	"strconv"
+	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -61,10 +64,20 @@ func (m *Model) applyEvent(ev agent.Event) tea.Cmd {
 	m.mutateEntries(func() {
 		switch e := ev.(type) {
 		case agent.TextDelta:
+			m.roundSawText = true
 			m.appendAssistantText(e.Text)
+		case agent.ReasoningDelta:
+			// 022 T2: pane-only accumulation — a per-turn rune count and an
+			// 8-KiB rolling tail for the ctrl+t view. Nothing enters the
+			// scrollback here; the thinking shows as the status line below.
+			m.reasonChars += utf8.RuneCountInString(e.Text)
+			m.reasonTail = appendReasoningTail(m.reasonTail, e.Text)
+			m.roundSawReasoning = true
 		case agent.ToolCallEv:
+			m.resetReasoningRound() // a tool round starts: the thinking line hides until reasoning resumes
 			m.startToolCall(e)
 		case agent.ToolResEv:
+			m.resetReasoningRound()
 			m.resolveToolCall(e)
 		case agent.StageEv:
 			// Only the pane's own auto-reject streams an empty StageEv while
@@ -218,6 +231,7 @@ func (m *Model) endTurn(status string) {
 	m.entries = append(m.entries, entry{kind: kindStatus, text: status})
 	m.turnActive = false
 	m.selected = -1
+	m.resetReasoningRound() // the turn ended: its thinking line goes with it
 }
 
 // endTurnError is endTurn's ErrorEv twin (backbone §9's other terminal
@@ -229,6 +243,7 @@ func (m *Model) endTurnError(msg string) {
 	m.entries = append(m.entries, entry{kind: kindError, text: msg})
 	m.turnActive = false
 	m.selected = -1
+	m.resetReasoningRound() // the turn ended: its thinking line goes with it
 	// A turn that ends in error can never reach recordLastAnswer, so its
 	// filing marker must not outlive it (009 §3.4): without this, a filing
 	// turn that failed before its stream existed (turnStartedMsg's error —
@@ -320,4 +335,72 @@ func (m *Model) rearm() tea.Cmd {
 		return nil
 	}
 	return Listen(m.ch)
+}
+
+// reasoningTailCap is the byte cap of the rolling reasoning tail kept for
+// the ctrl+t view — the last 8 KiB of the current turn's thinking (022 T2).
+const reasoningTailCap = 8 * 1024
+
+// reasoningViewMaxLines bounds the ctrl+t view: at most the tail's last
+// twelve wrapped lines render, whatever the turn is still thinking.
+const reasoningViewMaxLines = 12
+
+// resetReasoningTurn clears the per-turn reasoning state — the char count
+// and the tail buffer — when a new turn starts (beginTurn). Round flags
+// clear with it; they are per-round state inside the turn.
+func (m *Model) resetReasoningTurn() {
+	m.reasonChars = 0
+	m.reasonTail = ""
+	m.resetReasoningRound()
+}
+
+// resetReasoningRound clears the two round flags behind the thinking status
+// line: a new tool round (ToolCallEv/ToolResEv), a turn's end, or a stream
+// cut off mid-round all start from "no reasoning, no text in this round".
+// The turn count and tail are deliberately left alone.
+func (m *Model) resetReasoningRound() {
+	m.roundSawReasoning = false
+	m.roundSawText = false
+}
+
+// thinkingVisible reports whether the `· thinking…` status line shows: the
+// turn is running, its CURRENT round has received at least one
+// ReasoningDelta and no TextDelta yet — the line hides the moment text
+// streams and stays hidden between tool rounds until reasoning resumes.
+func (m *Model) thinkingVisible() bool {
+	return m.turnActive && m.roundSawReasoning && !m.roundSawText
+}
+
+// thinkingStatusLine is the status line's exact text (022 T2):
+// `· thinking… (1.2k chars)` — the count as `%.1fk` from 1000 up, plain
+// below it.
+func (m *Model) thinkingStatusLine() string {
+	return "· thinking… (" + formatThinkingCount(m.reasonChars) + " chars)"
+}
+
+// formatThinkingCount renders a char count for the thinking line: `%.1fk`
+// at 1000 and above (1234 → `1.2k`), the plain integer below (950 → `950`).
+func formatThinkingCount(n int) string {
+	if n >= 1000 {
+		return fmt.Sprintf("%.1fk", float64(n)/1000)
+	}
+	return strconv.Itoa(n)
+}
+
+// appendReasoningTail appends text to a rolling tail buffer and trims it
+// back under the cap, whole runes from the front, so the ctrl+t view holds
+// the RECENT thinking no matter how long the turn thinks.
+func appendReasoningTail(tail, text string) string {
+	tail += text
+	if len(tail) <= reasoningTailCap {
+		return tail
+	}
+	drop := len(tail) - reasoningTailCap
+	i := 0
+	for drop > 0 && i < len(tail) {
+		_, sz := utf8.DecodeRuneInString(tail[i:])
+		i += sz
+		drop -= sz
+	}
+	return tail[i:]
 }

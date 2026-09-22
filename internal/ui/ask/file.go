@@ -194,6 +194,9 @@ func (m *Model) beginTurn(echo, msg string) tea.Cmd {
 	m.back = 0
 	m.echoUser(echo)
 	m.turnActive = true
+	// 022 T2: a new turn counts its thinking from zero — the previous
+	// turn's reasoning count and tail never bleed into this one's.
+	m.resetReasoningTurn()
 	// "" until runTurn resolves it and reports back via turnStartedMsg
 	// (C-124/D-DH) — a changeset already open above is known synchronously,
 	// same as before.

@@ -74,6 +74,16 @@ var configFields = []configField{
 	{key: "llm.max_tokens", get: func(c *config.Config) string { return strconv.Itoa(c.LLM.MaxTokens) },
 		set:     setInt(func(c *config.Config) *int { return &c.LLM.MaxTokens }, "llm.max_tokens"),
 		display: displayPlain},
+	{key: "llm.thinking", get: func(c *config.Config) string { return c.LLM.Thinking },
+		set: func(c *config.Config, v string) error {
+			switch v {
+			case "off", "on", "default":
+				c.LLM.Thinking = v
+				return nil
+			}
+			return fmt.Errorf("llm.thinking: want off|on|default, got %q — off sends thinking:{\"type\":\"disabled\"}; default omits the key", v)
+		},
+		display: displayPlain},
 	{key: "llm.limits.max_tool_rounds", get: func(c *config.Config) string { return strconv.Itoa(c.Limits.MaxToolRounds) },
 		set:     setInt(func(c *config.Config) *int { return &c.Limits.MaxToolRounds }, "llm.limits.max_tool_rounds"),
 		display: displayPlain},
@@ -287,11 +297,15 @@ func configUsage(w io.Writer) {
 keys:
   llm.base_url                llm.model
   llm.api_key                 llm.temperature
-  llm.max_tokens              llm.limits.max_tool_rounds
-  llm.limits.context_tokens   web.provider
-  web.api_key                 web.max_results
-  theme
+  llm.max_tokens              llm.thinking
+  llm.limits.max_tool_rounds  llm.limits.context_tokens
+  web.provider                web.api_key
+  web.max_results             theme
 
+llm.thinking is off|on|default: off sends thinking:{"type":"disabled"} so a
+thinking-mode provider spends its budget answering, on sends
+thinking:{"type":"enabled"}, and default omits the key so the provider
+decides.
 llm.api_key and web.api_key are stored as references, never values: export
 the key and set the variable's name, e.g. lw config set llm.api_key env:LW_API_KEY.
 A literal that looks like a key is refused.

@@ -81,7 +81,7 @@ func TestVaultOrientTruncatesIndex(t *testing.T) {
 
 // TestVaultOrientHandlesMissingOptionalFiles asserts orient still answers
 // (non-empty Content, no error) on a vault with no curator-memory.md and no
-// log.md yet — the mandatory-ritual tool must not fail on a fresh vault.
+// log.md yet — the on-demand orientation tool must not fail on a fresh vault.
 func TestVaultOrientHandlesMissingOptionalFiles(t *testing.T) {
 	dir := testutil.CopyFixture(t, "minimal")
 	if err := os.Remove(filepath.Join(dir, "curator-memory.md")); err != nil {

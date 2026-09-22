@@ -19,12 +19,33 @@ import (
 // must be a real agent.NewFileSessions store rooted at the vault — the ask
 // pane exercises the real file-backed session store through it, never a
 // stub.
+//
+// The script may carry any event kind, including agent.ReasoningDelta (022
+// T2) — ReasoningTurn is the shorthand for the thinking-then-answer shape a
+// thinking-mode provider streams.
 type FakeAgent struct {
 	Events []agent.Event
 	Store  agent.SessionStore
 }
 
 var _ agent.Agent = (*FakeAgent)(nil)
+
+// ReasoningTurn scripts the visible half of one thinking-mode round: every
+// string in reasoning streams as its own agent.ReasoningDelta, in order,
+// before text streams as one agent.TextDelta — the event order Loop.Send
+// produces for a round that thinks and then answers. The caller appends the
+// turn's terminal event (DoneEv or ErrorEv); the helper never ends the turn
+// on its own.
+func ReasoningTurn(reasoning []string, text string) []agent.Event {
+	events := make([]agent.Event, 0, len(reasoning)+1)
+	for _, r := range reasoning {
+		events = append(events, agent.ReasoningDelta{Text: r})
+	}
+	if text != "" {
+		events = append(events, agent.TextDelta{Text: text})
+	}
+	return events
+}
 
 // Send replays f.Events on out in order, then closes out. A caller that
 // stops reading cannot wedge the replay: every send selects on ctx.Done,
