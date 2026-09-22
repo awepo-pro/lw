@@ -8,6 +8,7 @@
 package ui
 
 import (
+	"log/slog"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -42,7 +43,12 @@ func reloadTickCmd(every time.Duration) tea.Cmd {
 // the first tick after every pane goes idle reloads.
 func (a *App) handleReloadTick() tea.Cmd {
 	if a.deps.Engine != nil && !a.anyPaneBusy() {
+		// 025 T3: the full re-read + index rebuild behind a foreign commit
+		// runs here, on Update's goroutine — the line below is the only
+		// trace it leaves when it fires.
+		start := time.Now()
 		if reloaded, err := a.deps.Engine.ReloadIfChanged(); err == nil && reloaded {
+			slog.Info("vault reloaded", "dur_ms", msSince(start))
 			return tea.Batch(
 				func() tea.Msg { return VaultReloadedMsg{} },
 				reloadTickCmd(a.reloadEvery),

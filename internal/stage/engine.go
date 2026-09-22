@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -276,6 +277,13 @@ func (e *Engine) llmwikiDir() string {
 	return filepath.Join(e.root, ".llmwiki")
 }
 
+// msSince returns milliseconds since t as a fractional float — the dur_ms
+// field every 025 T3 launch line carries (integer milliseconds would round
+// the fast paths, index load among them, down to 0).
+func msSince(t time.Time) float64 {
+	return float64(time.Since(t).Microseconds()) / 1000
+}
+
 // OpenEngine opens the vault rooted at vaultRoot, creating .llmwiki/ — the
 // full backbone §14 layout — if it is absent or only partially populated.
 //
@@ -302,10 +310,15 @@ func OpenEngine(vaultRoot string, opts ...Option) (*Engine, error) {
 		return nil, fmt.Errorf("stage: open engine: %w", err)
 	}
 
+	// 025 T3 launch timing: every measurement below is a log line and
+	// nothing else — the paths themselves are untouched.
+	start := time.Now()
 	v, err := vault.Open(root)
 	if err != nil {
 		return nil, fmt.Errorf("stage: open engine: %w", err)
 	}
+	slog.Info("vault open", "dur_ms", msSince(start),
+		"pages", len(v.Pages()), "raws", len(v.RawSources()))
 
 	e := &Engine{
 		root:  root,
@@ -364,12 +377,21 @@ func OpenEngine(vaultRoot string, opts ...Option) (*Engine, error) {
 	e.stampJournal()
 
 	indexPath := filepath.Join(dir, "index.gob")
+	start = time.Now()
 	ix, loadErr := index.Load(indexPath)
+	slog.Info("index load", "dur_ms", msSince(start), "loaded_ok", loadErr == nil)
 	if loadErr != nil || ix.StaleAgainst(v) {
+		// stale is only honest when a load succeeded: a failed load means
+		// the index was absent or unread, not out of date.
+		stale := loadErr == nil
+		start = time.Now()
 		ix = index.Build(v)
+		slog.Info("index build", "dur_ms", msSince(start), "docs", ix.Len(), "stale", stale)
+		start = time.Now()
 		if err := ix.Save(indexPath); err != nil {
 			return nil, fmt.Errorf("stage: open engine: save index: %w", err)
 		}
+		slog.Info("index save", "dur_ms", msSince(start))
 	}
 	e.index = ix
 

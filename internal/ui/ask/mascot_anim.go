@@ -1,12 +1,14 @@
 // mascot_anim.go holds 023's mascot motion (amendment A-023-1, which
 // reverses 016 F.M5's fully-static rule through the logged amendment
 // path): the thinking eye-scan, the idle blink, and the tea.Tick chains
-// that drive them. This file is the only place in the package a clock may
-// live, and the anim runs on Update's thread — the ticks only sleep and
-// deliver, the handlers below decide by the pane's own state whether to
-// act and re-arm, and a chain stops by not re-issuing. Nothing here
-// re-derives pane state: the same mascotState/round flags the art reads
-// (mascot.go, state.go) decide every beat.
+// that drive them — plus 025 F.W2/F.W3's wait blink, the waiting pose's
+// idle↔blink alternation on its own beat and its own flags. This file is
+// the only place in the package a clock may live, and the anim runs on
+// Update's thread — the ticks only sleep and deliver, the handlers below
+// decide by the pane's own state whether to act and re-arm, and a chain
+// stops by not re-issuing. Nothing here re-derives pane state: the same
+// mascotState/round flags the art reads (mascot.go, state.go) decide
+// every beat.
 package ask
 
 import (
@@ -17,10 +19,15 @@ import (
 
 // The anim's clock (F.A2): the eyes scan while the model thinks, and an
 // idle pane blinks every blinkEvery, holding the shut frame one blinkHold.
+// 025 F.W3 adds the waiting pane's beat: waitBlinkEvery, quicker than the
+// idle blink — a pane whose provider has not answered is the one state
+// that must not sit frozen — with the SAME shut-hold as the idle blink
+// (blinkHold, reused, not duplicated).
 const (
-	scanEvery  = 200 * time.Millisecond
-	blinkEvery = 4 * time.Second
-	blinkHold  = 120 * time.Millisecond
+	scanEvery      = 200 * time.Millisecond
+	blinkEvery     = 4 * time.Second
+	blinkHold      = 120 * time.Millisecond
+	waitBlinkEvery = 1200 * time.Millisecond
 )
 
 // mascotScanCycle is the thinking eye-scan's pose order (F.A2): up, left,
@@ -34,14 +41,19 @@ var mascotScanCycle = [4]mascotFrame{
 
 // scanTickMsg, blinkTickMsg and blinkOpenMsg are the anim's three beats:
 // the scan's 200ms step, the blink's every-4s open→shut edge, and the
-// 120ms hold that opens the eyes again. Each is constructed only by the
-// tea.Tick command beside it, so a test can feed one to Update without
-// sleeping through a real beat (the reloadTickMsg shape, internal/ui/
-// reload.go).
+// 120ms hold that opens the eyes again. 025 F.W3 adds the wait chain's
+// two: the every-1.2s open→shut edge and its own 120ms hold — a separate
+// pair, not the blink's, so a hold in flight across the idle↔waiting
+// boundary can never be mistaken for the other chain's (each handler
+// clears only its own flag). Each is constructed only by the tea.Tick
+// command beside it, so a test can feed one to Update without sleeping
+// through a real beat (the reloadTickMsg shape, internal/ui/reload.go).
 type (
 	scanTickMsg  struct{}
 	blinkTickMsg struct{}
 	blinkOpenMsg struct{}
+	waitTickMsg  struct{} // 025 F.W3
+	waitOpenMsg  struct{} // 025 F.W3
 )
 
 func scanTickCmd() tea.Cmd {
@@ -54,6 +66,17 @@ func blinkTickCmd() tea.Cmd {
 
 func blinkHoldCmd() tea.Cmd {
 	return tea.Tick(blinkHold, func(time.Time) tea.Msg { return blinkOpenMsg{} })
+}
+
+func waitTickCmd() tea.Cmd {
+	return tea.Tick(waitBlinkEvery, func(time.Time) tea.Msg { return waitTickMsg{} })
+}
+
+// waitHoldCmd is the wait blink's shut-hold: blinkHold's duration reused
+// (F.W3), delivering waitOpenMsg so the wait chain's own handler reopens
+// the eyes.
+func waitHoldCmd() tea.Cmd {
+	return tea.Tick(blinkHold, func(time.Time) tea.Msg { return waitOpenMsg{} })
 }
 
 // blinkEligible reports whether an idle pane may blink (F.A5): answering
@@ -103,6 +126,32 @@ func (m *Model) handleBlinkOpen() tea.Cmd {
 	return blinkTickCmd()
 }
 
+// handleWaitTick is Update's waitTickMsg case (025 F.W3/F.W5): while the
+// pane waits on the provider it shuts the wait pose's eyes for one
+// blinkHold and re-arms; anything else — the first reasoning delta, the
+// first answer token, a tool call, the turn's end, a cut stream — stops
+// the chain by not re-issuing.
+func (m *Model) handleWaitTick() tea.Cmd {
+	m.waitArmed = false
+	if !m.anim || !m.waitingVisible() {
+		return nil
+	}
+	m.waitShut = true
+	return waitHoldCmd()
+}
+
+// handleWaitOpen is Update's waitOpenMsg case (025 F.W3): the hold is
+// over, the wait pose's eyes open, and the every-1.2s tick re-arms while
+// the pane still waits.
+func (m *Model) handleWaitOpen() tea.Cmd {
+	m.waitShut = false
+	if !m.anim || !m.waitingVisible() {
+		return nil
+	}
+	m.waitArmed = true
+	return waitTickCmd()
+}
+
 // mascotPose selects the frame the pane draws for state s — the state
 // table's frame (mascotFrameFor) with 023's motion overlaid, and only when
 // the anim switch is on: with anim false every render is today's bytes,
@@ -110,7 +159,12 @@ func (m *Model) handleBlinkOpen() tea.Cmd {
 // bare thinking line (F.A4) — so the compact form keeps the frozen
 // thinking pose wherever it shows while thinking (the ctrl+t row,
 // byte-stable per F.A4). The blink moves both forms together at idle: the
-// welcome art and the footer morsel are one frame source (F.A5).
+// welcome art and the footer morsel are one frame source (F.A5). The wait
+// pose (025 F.W2) alternates the SAME two frames on its own flag — and on
+// the COMPACT form only, that being the form the sending row renders; the
+// idle chain's eyesShut never leaks into it, and msWaiting's full form
+// keeps the frozen idle rows outright (F.W2: waiting renders the compact
+// form only, the rise keeps meaning thinking).
 func (m *Model) mascotPose(s mascotState, full bool) mascotFrame {
 	f, _ := mascotFrameFor(s)
 	if !m.anim {
@@ -119,6 +173,8 @@ func (m *Model) mascotPose(s mascotState, full bool) mascotFrame {
 	switch {
 	case s == msThinking && full:
 		return mascotScanCycle[m.scanStep%len(mascotScanCycle)]
+	case s == msWaiting && !full && m.waitShut:
+		return frameBlink
 	case s == msIdle && m.blinkEligible() && m.eyesShut:
 		return frameBlink
 	}
@@ -127,13 +183,16 @@ func (m *Model) mascotPose(s mascotState, full bool) mascotFrame {
 
 // animArm returns the tick the pane's current state calls for, arming each
 // chain at the transition that starts it — a round's first reasoning (the
-// scan) and a turn's end (the blink) — and never doubling one already in
-// flight; it also tracks the thinking phase's visible edge, the one place
-// the scan cycle resets to its head. Init arms the first blink for a
-// freshly opened pane; Update calls this beside its existing re-arm on
-// every agent event and when a stream is cut. A chain in flight needs no
-// arming: its own handlers re-arm it while the state holds and let it die
-// when the state turns. nil with anim off.
+// scan), the turn's submit (the wait blink, 025 F.W3: handleKey's enter
+// arm and turnStartedMsg's, covering the ctrl+s filing turn that begins
+// through beginTurn alone) and a turn's end (the blink) — and never
+// doubling one already in flight; it also tracks the thinking phase's
+// visible edge, the one place the scan cycle resets to its head. Init
+// arms the first blink for a freshly opened pane; Update calls this
+// beside its existing re-arm on every agent event and when a stream is
+// cut. A chain in flight needs no arming: its own handlers re-arm it
+// while the state holds and let it die when the state turns. nil with
+// anim off.
 func (m *Model) animArm() tea.Cmd {
 	// The scan cycle resets on the thinking phase's invisible→visible edge
 	// (F.A2: the cycle opens at UP; F.M4: entering msThinking renders the
@@ -169,6 +228,15 @@ func (m *Model) animArm() tea.Cmd {
 		// chain defers this arm and must still open its phase at UP.
 		m.scanArmed = true
 		return scanTickCmd()
+	case m.waitingVisible():
+		// 025 F.W3/F.W5: the wait chain arms at the submit and re-arms only
+		// while the pane waits; a hold in flight (waitShut) defers to its
+		// own waitOpenMsg, like the blink's.
+		if m.waitArmed || m.waitShut {
+			return nil
+		}
+		m.waitArmed = true
+		return waitTickCmd()
 	case m.blinkEligible():
 		if m.blinkArmed || m.eyesShut {
 			return nil

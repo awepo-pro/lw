@@ -23,6 +23,15 @@ import (
 // pane the assertions read back.
 func newTickApp(t *testing.T, reloadEvery time.Duration) (*App, *recordingPane) {
 	t.Helper()
+	return newTickAppFrom(t, reloadEvery, time.Time{})
+}
+
+// newTickAppFrom is newTickApp with an explicit Options.ProcessStart, so a
+// test can pin the "tui first frame" span against a process clock that
+// began before NewApp (025 T3, F.W8). A zero procStart keeps the default:
+// NewApp anchors itself, which is what every other harness wants.
+func newTickAppFrom(t *testing.T, reloadEvery time.Duration, procStart time.Time) (*App, *recordingPane) {
+	t.Helper()
 	root := testutil.CopyFixture(t, "minimal")
 	engine, err := stage.OpenEngine(root)
 	if err != nil {
@@ -34,10 +43,11 @@ func newTickApp(t *testing.T, reloadEvery time.Duration) (*App, *recordingPane) 
 	deps.Engine = engine
 	rec := &recordingPane{name: "recording"}
 	a := NewApp(Options{
-		Deps:        deps,
-		Panes:       map[Screen]Pane{ScreenBrowse: rec},
-		Start:       ScreenBrowse,
-		ReloadEvery: reloadEvery,
+		Deps:         deps,
+		Panes:        map[Screen]Pane{ScreenBrowse: rec},
+		Start:        ScreenBrowse,
+		ReloadEvery:  reloadEvery,
+		ProcessStart: procStart,
 	})
 	return a, rec
 }

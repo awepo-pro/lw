@@ -9,6 +9,7 @@
 package ui
 
 import (
+	"log/slog"
 	"path/filepath"
 	"time"
 
@@ -64,6 +65,15 @@ type App struct {
 	// disables it — every test harness and conformance grid runs at zero.
 	reloadEvery time.Duration
 
+	// Launch timing (025 T3): frameStart anchors the once-only "tui first
+	// frame" line at the NewApp moment — internal/ui cannot read a cmd/lw
+	// var and Options carries no start time, so the pre-NewApp stretch
+	// (config, engine open, pane construction) stays outside it; engine
+	// open has its own launch line. firstFrameLogged keeps that line to
+	// one emission: Update re-enters on every resize.
+	frameStart       time.Time
+	firstFrameLogged bool
+
 	quitting bool
 }
 
@@ -85,6 +95,10 @@ func NewApp(o Options) *App {
 		height:      24,
 		reloadEvery: o.ReloadEvery,
 	}
+	a.frameStart = o.ProcessStart
+	if a.frameStart.IsZero() {
+		a.frameStart = time.Now()
+	}
 	if a.panes == nil {
 		a.panes = map[Screen]Pane{}
 	}
@@ -96,10 +110,45 @@ func NewApp(o Options) *App {
 	}
 	if o.Engine != nil {
 		a.vaultName = filepath.Base(o.Engine.Vault().Root())
+		// The launch refresh: the header counts (whose lint.Run is a real
+		// slice of cold start) and the changeset summary. 025 T3 logs its
+		// duration; the refresh itself is untouched.
+		start := time.Now()
 		a.refreshVaultCounts()
 		a.refreshStage()
+		slog.Info("tui shell ready", "dur_ms", msSince(start), "lint_errors", a.lintErrors)
 	}
 	return a
+}
+
+// logFirstFrame emits the launch's once-only "tui first frame" line. It
+// fires on the first tea.WindowSizeMsg — the moment the shell first knows
+// the geometry the real frame renders at; tea's renderer composes that
+// frame straight after. View itself re-enters for every frame, so the
+// once-only guard lives here on the App, not in the render path. The
+// duration runs from Options.ProcessStart — cmd/lw's package-init clock,
+// so it covers config loads, vault root discovery, OpenEngine, the launch
+// refresh, tea program construction, terminal setup and the wait for first
+// geometry (F.W8: "since process start"). A harness that leaves
+// ProcessStart zero measures from NewApp instead. The panes' first loads
+// are not in it — tea delivers the initial size before model.Init's
+// commands have landed.
+func (a *App) logFirstFrame() {
+	if a.firstFrameLogged {
+		return
+	}
+	a.firstFrameLogged = true
+	if a.frameStart.IsZero() {
+		return // never anchored (a zero-value App) — nothing honest to report
+	}
+	slog.Info("tui first frame", "dur_ms", msSince(a.frameStart))
+}
+
+// msSince returns milliseconds since t as a fractional float — the dur_ms
+// field every 025 T3 launch line carries (integer milliseconds would round
+// the fast paths down to 0).
+func msSince(t time.Time) float64 {
+	return float64(time.Since(t).Microseconds()) / 1000
 }
 
 // refreshVaultCounts recomputes the header's page, raw and lint-error
@@ -231,6 +280,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		a.width, a.height = msg.Width, msg.Height
+		a.logFirstFrame()
 		if a.tooSmall() {
 			// Close the `?` overlay rather than let it survive a shrink
 			// below D11's minimum: growing back would otherwise re-show it

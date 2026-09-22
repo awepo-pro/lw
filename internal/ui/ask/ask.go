@@ -122,13 +122,17 @@ type Model struct {
 	// entries, records or session.ndjson. reasonChars counts the current
 	// TURN's reasoning runes and reasonTail keeps its rolling last-8-KiB
 	// buffer for the ctrl+t view; both reset when a new turn starts. The
-	// two round flags drive the thinking status line: it shows while the
+	// round flags drive the thinking status line: it shows while the
 	// CURRENT round has seen reasoning and no text yet, so ToolCallEv/
 	// ToolResEv reset them (a new round) until reasoning resumes.
+	// roundToolInFlight (025 F.W1) marks the round's tool as executing —
+	// the third flag the waiting state excludes, so tool-round motion
+	// stays workflow 024's question.
 	reasonChars       int
 	reasonTail        string
 	roundSawReasoning bool
 	roundSawText      bool
+	roundToolInFlight bool
 
 	// showReasoning is the ctrl+t toggle: the transcript area swaps to the
 	// dimmed reasoning-tail view until it is pressed again.
@@ -143,13 +147,18 @@ type Model struct {
 	// eye-scan cycle's beat, eyesShut the idle blink's shut frame,
 	// scanPhaseLive marks the thinking phase live so the cycle resets on
 	// its invisible→visible edge, and the *Armed flags keep each tick
-	// chain single-file; the machinery is mascot_anim.go.
+	// chain single-file; the machinery is mascot_anim.go. waitArmed/
+	// waitShut (025 F.W3) are the wait blink's own pair — a separate chain
+	// from the idle blink's, so neither flag ever describes the other
+	// chain's beat.
 	anim          bool
 	scanStep      int
 	eyesShut      bool
 	scanArmed     bool
 	blinkArmed    bool
 	scanPhaseLive bool
+	waitArmed     bool
+	waitShut      bool
 }
 
 var _ ui.Pane = (*Model)(nil)
@@ -285,7 +294,11 @@ func (m *Model) Update(msg tea.Msg) (ui.Pane, tea.Cmd) {
 		m.dropKeptTitle()         // it replaces whatever the title kept
 		m.hintAfterTurn = ""      // a new turn owes nothing to the old one's hint
 		m.ch = msg.ch
-		return m, m.rearm()
+		// animArm (025 F.W3) arms the wait blink when the turn reports in
+		// still waiting — the ctrl+s filing turn enters waiting through
+		// beginTurn without passing handleKey's submit arm; nil with anim
+		// off, and a no-op when the submit already armed the chain.
+		return m, tea.Batch(m.rearm(), m.animArm())
 
 	case EventMsg:
 		extra := m.applyEvent(msg.Ev)
@@ -323,6 +336,15 @@ func (m *Model) Update(msg tea.Msg) (ui.Pane, tea.Cmd) {
 
 	case blinkOpenMsg:
 		return m, m.handleBlinkOpen()
+
+	case waitTickMsg:
+		// 025 F.W5: the wait blink's beat — the eyes shut for one blinkHold
+		// and the chain re-arms only while the pane is still waiting,
+		// stopping by not re-issuing the moment any delta lands.
+		return m, m.handleWaitTick()
+
+	case waitOpenMsg:
+		return m, m.handleWaitOpen()
 
 	case sessionClosedMsg:
 		if msg.err != nil {
@@ -386,7 +408,12 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (ui.Pane, tea.Cmd) {
 		return m, nil
 	case "enter":
 		if m.input != "" {
-			return m, m.submitInput()
+			// 025 F.W3: the wait chain arms on the same Update as the
+			// submit — no delay gate, the first beat is Enter + waitBlinkEvery.
+			// submitInput runs first (left operand), so animArm already sees
+			// the turn it just began; with anim off it is nil and Batch
+			// returns the submit command alone, unchanged.
+			return m, tea.Batch(m.submitInput(), m.animArm())
 		}
 		m.toggleSelectedExpand()
 		return m, nil

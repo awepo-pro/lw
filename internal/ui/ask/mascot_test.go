@@ -327,11 +327,17 @@ func TestMascotStateMachine(t *testing.T) {
 		{
 			name: "turn_lifecycle",
 			steps: []mascotStep{
-				{name: "a running turn with no events yet idles", active: true, want: msIdle},
+				// 025 F.W1: the pre-first-byte window IS the waiting state —
+				// this leg pinned the old table's msIdle for it, which is
+				// the pane the cold-start fix exists to change. See the
+				// waiting_state_test.go table for the waiting legs' new home.
+				{name: "a running turn with no events yet waits", active: true, want: msWaiting},
 				{name: "ReasoningDelta thinks", ev: agent.ReasoningDelta{Text: "hmm"}, want: msThinking},
 				{name: "TextDelta answers, deliberately still", ev: agent.TextDelta{Text: "so"}, want: msIdle},
-				{name: "ToolCallEv waits, round flags reset", ev: agent.ToolCallEv{ID: "t1", Name: "wiki_search"}, want: msIdle},
-				{name: "ToolResEv still waits", ev: agent.ToolResEv{ID: "t1", Name: "wiki_search", Content: "ok"}, want: msIdle},
+				{name: "ToolCallEv holds the tool, round flags reset", ev: agent.ToolCallEv{ID: "t1", Name: "wiki_search"}, want: msIdle},
+				// The resolved tool hands the round back to the pre-first-byte
+				// window: waiting again, recurring before every round (025).
+				{name: "ToolResEv hands back to the wait", ev: agent.ToolResEv{ID: "t1", Name: "wiki_search", Content: "ok"}, want: msWaiting},
 				{name: "DoneEv idles", ev: agent.DoneEv{Reason: "stop", Rounds: 1}, want: msIdle},
 			},
 		},
@@ -340,7 +346,10 @@ func TestMascotStateMachine(t *testing.T) {
 			steps: []mascotStep{
 				{name: "ErrorEv reverses", active: true, ev: agent.ErrorEv{Err: boom}, want: msError},
 				{name: "the error survives the scrollback tail", want: msError},
-				{name: "a new turn masks the stale verdict", active: true, want: msIdle},
+				// 025 F.W1: the fresh turn's no-events-yet window waits; the
+				// mask still holds — waitingVisible outranks turnErrored and
+				// requires the turnActive only a new turn sets.
+				{name: "a new turn masks the stale verdict, waiting", active: true, want: msWaiting},
 				{name: "and the turn's clean stop resets it", ev: agent.DoneEv{Reason: "stop", Rounds: 1}, want: msIdle},
 			},
 		},
@@ -580,6 +589,60 @@ func TestMascotAnimContract(t *testing.T) {
 			t.Fatalf("full top row = %q with anim off, want the frozen thinking row %q", got, mascotFull[frameThinking][0])
 		}
 	})
+
+	t.Run("wait_chain_stops_at_first_delta", func(t *testing.T) {
+		// 025 F.W3/F.W5: the wait blink is the cold-start window's motion —
+		// its own single-file chain (waitArmed, separate from the idle
+		// blink's), armed while the pane waits, re-armed only while it
+		// still waits, dead by not re-issuing the moment any delta lands.
+		if waitBlinkEvery != 1200*time.Millisecond {
+			t.Fatalf("waitBlinkEvery = %v, want 1200ms (F.W3)", waitBlinkEvery)
+		}
+		m := New(newTestDeps(t)).(*Model)
+		m.anim = true
+		m.echoUser("q")
+		m.turnActive = true // as beginTurn sets it
+		if m.animArm() == nil {
+			t.Fatal("a waiting pane armed no wait tick (F.W3)")
+		}
+		if m.animArm() != nil {
+			t.Fatal("animArm stacked a second wait tick on the armed one (F.A3)")
+		}
+		// One delivered beat shuts the wait pose for one blinkHold and arms
+		// the reopen; the reopen re-arms the every-1.2s beat.
+		if _, cmd := m.Update(waitTickMsg{}); cmd == nil {
+			t.Fatal("the wait tick armed no hold (F.W3)")
+		}
+		if !m.waitShut {
+			t.Fatal("the wait tick did not shut the wait pose (F.W3)")
+		}
+		if _, cmd := m.Update(waitOpenMsg{}); cmd == nil {
+			t.Fatal("the wait open re-armed nothing while still waiting (F.W3)")
+		}
+		if m.waitShut {
+			t.Fatal("the wait open left the pose shut (F.W3)")
+		}
+		// A reasoning delta ends the window — thinkingVisible outranks
+		// waitingVisible — and the wait chain's next beats die without
+		// re-arming: the frozen leg this run exists for (F.W5).
+		if cmd := m.applyEvent(agent.ReasoningDelta{Text: "hmm"}); cmd != nil {
+			t.Fatal("ReasoningDelta produced a command")
+		}
+		if _, cmd := m.Update(waitTickMsg{}); cmd != nil {
+			t.Fatal("a wait tick re-armed after a delta landed (F.W5)")
+		}
+		if _, cmd := m.Update(waitOpenMsg{}); cmd != nil {
+			t.Fatal("a wait open re-armed after a delta landed (F.W5)")
+		}
+		if m.waitShut {
+			t.Fatal("the wait pose shut after the delta ended the window (F.W5)")
+		}
+		// The chain's death leaves the frozen idle frame: waiting
+		// alternates idle↔blink through its own chain only (F.W2).
+		if got := m.mascotPose(msWaiting, false); got != frameIdle {
+			t.Fatalf("waiting pose after the chain died = %d, want the idle frame (F.W2)", got)
+		}
+	})
 }
 
 // TestMascotBlink is F.A5's table: an idle pane blinks — the welcome full
@@ -648,15 +711,52 @@ func TestMascotBlink(t *testing.T) {
 	t.Run("answering_is_still", func(t *testing.T) {
 		// turnActive suppresses the blink at the render too: a hold caught
 		// mid-flight when the turn started opens into stillness (F.A5).
+		//
+		// 025: roundSawText is what makes this leg ANSWERING. Before F.W1
+		// the setup was turnActive alone, which the old table read as
+		// msIdle — but that is the pre-first-byte window, now msWaiting, so
+		// the leg was never exercising the state its name claims. The
+		// missing delta is the setup's own blind spot (the 023 Tier-2
+		// lesson), not a weakening: with it the assertion is the same one,
+		// now actually about answering.
 		m := New(newTestDeps(t)).(*Model)
 		m.anim = true
 		m.turnActive = true
+		m.roundSawText = true // a TextDelta landed: the pane is answering
 		m.eyesShut = true
 		if got := ansi.Strip(m.renderMascotFull()[0]); got != mascotFull[frameIdle][0] {
 			t.Fatalf("answering top row = %q, want the still idle row %q", got, mascotFull[frameIdle][0])
 		}
 		if text, _ := m.FooterPrefix(); text != mascotCompact[frameIdle] {
 			t.Fatalf("answering morsel = %q, want the still idle morsel %q", text, mascotCompact[frameIdle])
+		}
+	})
+
+	// A-025-3 (user, 2026-09-22, settled on the acceptance capture): one
+	// head per busy state. The compact form shows in exactly ONE of the two
+	// slots at a time, so whenever it has moved into the transcript — the
+	// thinking status row or the waiting sending row — the footer withdraws
+	// its morsel. The acceptance capture showed waiting rendering two.
+	t.Run("waiting_withdraws_the_footer_morsel", func(t *testing.T) {
+		m := New(newTestDeps(t)).(*Model)
+		m.anim = true
+		m.turnActive = true // no deltas yet: the pre-first-byte window
+
+		if !m.waitingVisible() {
+			t.Fatal("setup did not reach the waiting window")
+		}
+		if text, _ := m.FooterPrefix(); text != "" {
+			t.Fatalf("waiting morsel = %q, want \"\" — the compact form is on the sending row (A-025-3)", text)
+		}
+		// Thinking already withdrew it; the two busy states now agree.
+		m.roundSawReasoning = true
+		if text, _ := m.FooterPrefix(); text != "" {
+			t.Fatalf("thinking morsel = %q, want \"\" (F.M3)", text)
+		}
+		// A finished turn hands the morsel back.
+		m.turnActive, m.roundSawReasoning = false, false
+		if text, _ := m.FooterPrefix(); text != mascotCompact[frameIdle] {
+			t.Fatalf("idle morsel = %q, want the idle morsel back %q", text, mascotCompact[frameIdle])
 		}
 	})
 }
@@ -802,17 +902,25 @@ func TestMascotThinkingRise(t *testing.T) {
 			t.Fatal("scanArmed false with a tick still in flight")
 		}
 		// The whole round boundary inside one scanEvery: no tick fires
-		// between the last phase-1 beat and the next round's reasoning, so
-		// nothing arms in the silent window and the chain survives into
-		// phase 2.
+		// between the last phase-1 beat and the next round's reasoning. The
+		// scan chain survives into phase 2 untouched — 025 F.W3 adds the
+		// one legitimate arm in this window: the ToolResEv hands the round
+		// back to the waiting state, whose wait chain arms there (a
+		// different chain, single-file on its own waitArmed — the F.A3
+		// point, no second SCAN tick, still holds).
 		for _, ev := range []agent.Event{
 			agent.TextDelta{Text: "so,"},
 			agent.ToolCallEv{ID: "t1", Name: "wiki.search", Args: `{}`},
-			agent.ToolResEv{ID: "t1", Name: "wiki.search", Content: "[]"},
 		} {
 			if _, cmd := m.Update(EventMsg{Ev: ev}); cmd != nil {
 				t.Fatalf("%T armed a timer inside the silent window (F.A3)", ev)
 			}
+		}
+		if _, cmd := m.Update(EventMsg{Ev: agent.ToolResEv{ID: "t1", Name: "wiki.search", Content: "[]"}}); cmd == nil {
+			t.Fatal("the waiting window after ToolResEv armed no wait tick (F.W3)")
+		}
+		if !m.scanArmed {
+			t.Fatal("the wait chain's arm disturbed the surviving scan chain (F.A3)")
 		}
 		// Phase 2's first reasoning re-enters thinking through the real
 		// path with the old chain still armed — the arm must defer (single
