@@ -158,10 +158,12 @@ func (m *Model) wheel(msg ui.WheelMsg) {
 // 025: the accounting splits the conversation's tail mounts (022's
 // thinking rise+line, 025's sending row — mountedTailLines) out of the
 // content delta. They are chrome pinned to the list's very end, always at
-// or below the window start, so their delta always absorbs into back;
-// mixed into one content number they made the above-window branch ride a
-// +1 tail line the content shift never carried, moving every visible row
-// (exactly the W5d/T34 shape, first exposed by the sending row).
+// or below the window start, so their delta always absorbs into back.
+// Mixed into one content number they defeated both branches: an
+// above-window content change skips the absorb (firstChangedLine decides
+// from the first differing line, above the window), and the unabsorbed
+// mount delta then moved every row the end-named window draws — exactly
+// the W5d/T34 shape, first exposed by the sending row.
 func (m *Model) mutateEntries(mut func()) {
 	if m.back <= 0 {
 		mut()

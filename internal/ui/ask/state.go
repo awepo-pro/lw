@@ -387,11 +387,13 @@ const sendingStatusLine = "· sending…"
 // the turn is running and this round has seen nothing yet — no reasoning,
 // no text, no tool executing. That is the stretch between Enter and the
 // provider's first response byte (measured median 5.80s, recurring before
-// every round), where the pane used to render idle. It is exactly
-// thinkingVisible's complement inside the no-text round: the two are
-// mutually exclusive and the first ReasoningDelta replaces the waiting
-// row with the thinking one. Tool execution is deliberately excluded —
-// tool-round motion is workflow 024's question, not this one.
+// every round), where the pane used to render idle. Inside a no-text
+// round exactly one of three things holds — reasoning seen (the thinking
+// line), nothing seen (this window), a tool in flight (deliberately
+// still) — so waitingVisible and thinkingVisible are mutually exclusive
+// and the first ReasoningDelta replaces the waiting row with the thinking
+// one. The tool leg is deliberately excluded — tool-round motion is
+// workflow 024's question, not this one.
 func (m *Model) waitingVisible() bool {
 	return m.turnActive && !m.roundSawReasoning && !m.roundSawText && !m.roundToolInFlight
 }
