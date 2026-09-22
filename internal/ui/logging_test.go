@@ -11,6 +11,8 @@ package ui
 import (
 	"log/slog"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -95,6 +97,46 @@ func TestUILogsLaunchTimings(t *testing.T) {
 			t.Errorf("tui first frame lines = %d, want exactly 1:\n%s", got, log)
 		}
 		requireLine(t, log, `msg="tui first frame"`)
+	})
+
+	// F.W8 freezes "tui first frame" as dur_ms SINCE PROCESS START, not since
+	// NewApp. The distinction is not cosmetic: OpenEngine (vault parse + index
+	// load) runs before NewApp exists, and anchoring inside NewApp excluded it
+	// — the launch's whole heavy half. The defect announced itself as
+	// arithmetic, a first frame reported at 5.887ms while "tui engine open"
+	// alone measured 6.219ms, so this pin asserts the span actually reaches
+	// back past NewApp.
+	t.Run("first_frame_measures_from_process_start", func(t *testing.T) {
+		dir := installFileLog(t)
+
+		start := time.Now().Add(-750 * time.Millisecond) // a "process" that began earlier
+		a, _ := newTickAppFrom(t, 0, start)
+		a.Update(tea.WindowSizeMsg{Width: 120, Height: 24})
+
+		log := readLog(t, dir)
+		var line string
+		for _, l := range strings.Split(log, "\n") {
+			if strings.Contains(l, `msg="tui first frame"`) {
+				line = l
+			}
+		}
+		if line == "" {
+			t.Fatalf("no first frame line:\n%s", log)
+		}
+		m := regexp.MustCompile(`dur_ms=([0-9.]+)`).FindStringSubmatch(line)
+		if m == nil {
+			t.Fatalf("first frame line carries no dur_ms: %q", line)
+		}
+		got, err := strconv.ParseFloat(m[1], 64)
+		if err != nil {
+			t.Fatalf("dur_ms %q: %v", m[1], err)
+		}
+		// Anchored at ProcessStart the span is >= the 750ms head start.
+		// Anchored at NewApp it would be a fraction of a millisecond.
+		if got < 700 {
+			t.Errorf("dur_ms = %v, want >= 700 — the span must reach back to "+
+				"Options.ProcessStart, not start at NewApp", got)
+		}
 	})
 
 	t.Run("reloaded_line_on_a_foreign_commit_only", func(t *testing.T) {

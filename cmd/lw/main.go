@@ -8,7 +8,15 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 )
+
+// processStart is the process's own clock, set at package init — as close
+// to exec as Go lets us get without touching main(). 025 T3's
+// "tui first frame" line measures from here (F.W8: "since process start"),
+// so the span includes config loads, vault root discovery and OpenEngine,
+// all of which run before ui.NewApp exists to time anything.
+var processStart = time.Now()
 
 // verb pairs one CLI verb with its handler, in the order shown by usage.
 type verb struct {

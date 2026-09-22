@@ -67,9 +67,10 @@ type App struct {
 
 	// Launch timing (025 T3): frameStart anchors the once-only "tui first
 	// frame" line at the NewApp moment — internal/ui cannot read a cmd/lw
-	// var and Options carries no start time, and everything before NewApp
-	// (config, engine open) has its own launch lines. firstFrameLogged
-	// keeps that line to one emission: Update re-enters on every resize.
+	// var and Options carries no start time, so the pre-NewApp stretch
+	// (config, engine open, pane construction) stays outside it; engine
+	// open has its own launch line. firstFrameLogged keeps that line to
+	// one emission: Update re-enters on every resize.
 	frameStart       time.Time
 	firstFrameLogged bool
 
@@ -94,7 +95,10 @@ func NewApp(o Options) *App {
 		height:      24,
 		reloadEvery: o.ReloadEvery,
 	}
-	a.frameStart = time.Now()
+	a.frameStart = o.ProcessStart
+	if a.frameStart.IsZero() {
+		a.frameStart = time.Now()
+	}
 	if a.panes == nil {
 		a.panes = map[Screen]Pane{}
 	}
@@ -122,8 +126,13 @@ func NewApp(o Options) *App {
 // the geometry the real frame renders at; tea's renderer composes that
 // frame straight after. View itself re-enters for every frame, so the
 // once-only guard lives here on the App, not in the render path. The
-// duration runs from frameStart (NewApp), so it covers program start,
-// terminal setup and every pane's first load.
+// duration runs from Options.ProcessStart — cmd/lw's package-init clock,
+// so it covers config loads, vault root discovery, OpenEngine, the launch
+// refresh, tea program construction, terminal setup and the wait for first
+// geometry (F.W8: "since process start"). A harness that leaves
+// ProcessStart zero measures from NewApp instead. The panes' first loads
+// are not in it — tea delivers the initial size before model.Init's
+// commands have landed.
 func (a *App) logFirstFrame() {
 	if a.firstFrameLogged {
 		return

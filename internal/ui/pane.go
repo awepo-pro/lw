@@ -78,6 +78,14 @@ type Options struct {
 	// tea.Tick of this period and broadcast VaultReloadedMsg when it reloads.
 	// Zero (the default, and every test harness) disables the tick.
 	ReloadEvery time.Duration
+
+	// ProcessStart anchors the "tui first frame" launch line (025 T3, F.W8:
+	// "dur_ms since process start"). cmd/lw passes its package-init
+	// timestamp, so the span covers config loads, vault root discovery and
+	// OpenEngine — the blocking work that happens before NewApp is reached.
+	// Zero (every test harness) falls back to NewApp's own clock, which
+	// keeps headless construction self-contained.
+	ProcessStart time.Time
 }
 
 // EngineUser is implemented by a pane that may use Deps.Engine from a

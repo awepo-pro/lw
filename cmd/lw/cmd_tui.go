@@ -113,9 +113,6 @@ func cmdTUI(args []string) error {
 	return nil
 }
 
-// webConfigured reports whether a web search provider resolved for cfg —
-// the same signal agentToolDeps uses to register web.search. The ask pane's
-// hint keys off it, so the UI can only claim web lookup is missing when the
 // msSince returns milliseconds since t as a fractional float — the dur_ms
 // field the 025 T3 launch line carries (integer milliseconds would round a
 // fast engine open down to 0).
@@ -233,6 +230,7 @@ func buildTUIOptions(d ui.Deps) ui.Options {
 		// ReloadEvery makes the shell notice a commit another process made
 		// while the TUI sits open (008 contract §6): Engine.ReloadIfChanged
 		// on a 2s tick, broadcasting ui.VaultReloadedMsg when it fires.
-		ReloadEvery: 2 * time.Second,
+		ReloadEvery:  2 * time.Second,
+		ProcessStart: processStart,
 	}
 }
