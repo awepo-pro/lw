@@ -24,9 +24,13 @@ const orientLogMaxLines = 30
 func vaultOrientTool(d Deps) Tool {
 	return Tool{
 		Name: "vault.orient",
-		Description: "Read the vault's schema, index, curator memory and " +
-			"recent log in a single call. Call this once at the start of a " +
-			"session, before searching or proposing anything.",
+		Description: "Read the vault's SCHEMA.md, index.md, curator-memory.md " +
+			"and the tail of log.md in a single call — a deliberate, " +
+			"on-demand re-orientation. The engine already injects an " +
+			"orientation digest into every turn's context, so this tool is " +
+			"not part of routine work; choose it when you need a fresh view " +
+			"of the vault, such as after stage edits changed the structure " +
+			"or when the injected digest seems out of date.",
 		Schema:   json.RawMessage(vaultOrientSchema),
 		ReadOnly: true,
 		Handler: func(ctx context.Context, args json.RawMessage) (Result, error) {
