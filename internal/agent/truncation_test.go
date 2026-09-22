@@ -365,7 +365,7 @@ func TestSystemPromptOutsideVaultRule(t *testing.T) {
 	// The out-of-vault rule closes the prompt's unconditional base since
 	// 012 (D-12B), so the pin holds on every vault.
 	prompt := systemPromptFor(false)
-	const want = "If neither the wiki nor the raw sources answer a question, say so in one sentence, then answer from your own knowledge under a first line that reads exactly \"Not from your vault:\"; carry no provenance marker on those claims, and say plainly when the topic may be newer than your training data."
+	const want = "If neither the wiki nor the raw sources answer a question, answer from your own knowledge under a first line that reads exactly \"Not from your vault:\"; carry no provenance marker on those claims, and say plainly when the topic may be newer than your training data."
 	if !strings.Contains(prompt, want) {
 		t.Fatalf("systemPromptFor(false) does not contain A-806's out-of-vault rule byte for byte:\n%s", prompt)
 	}

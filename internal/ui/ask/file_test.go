@@ -67,6 +67,11 @@ func TestOverlayHelpFileEntry(t *testing.T) {
 		{Key: "↑/↓", Desc: "select tool call"},
 		{Key: "ctrl+r", Desc: "open review"},
 		{Key: "ctrl+s", Desc: "save last answer into the wiki"},
+		// 027 T2, after the ctrl+s entry as the contract fixes it. This pin
+		// held the four pre-027 entries byte for byte; the fifth entry is
+		// the contract's own addition, so the pin grows with it — position
+		// and wording included.
+		{Key: "ctrl+p", Desc: "show/hide sources"},
 	}
 	if len(entries) != len(want) {
 		t.Fatalf("OverlayHelp has %d entries, want %d:\n%+v", len(entries), len(want), entries)

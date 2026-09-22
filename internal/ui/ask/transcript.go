@@ -278,10 +278,15 @@ func (m *Model) reasoningViewLines(w int) []string {
 // split never shows a half-open fence, and the blank keeps the live shape
 // byte-for-byte the shape the finished render settles into.
 func (m *Model) assistantLines(e entry, w int, live bool) []string {
+	// 027 T2: the pane renders the displayed text — provenance markers and
+	// the vault label hidden unless ctrl+p revealed them — while the entry
+	// itself keeps the raw record (file.go). Both the settled renderer and
+	// the inline tail see the displayed bytes.
+	text := displayAnswer(e.text, m.showProvenance, live)
 	if !live {
-		return m.fragmentLines(e.text, w)
+		return m.fragmentLines(text, w)
 	}
-	settled, tail := markdown.SettledPrefix(e.text)
+	settled, tail := markdown.SettledPrefix(text)
 	lines := m.fragmentLines(settled, w)
 	if len(lines) > 0 && tail != "" {
 		lines = append(lines, "")

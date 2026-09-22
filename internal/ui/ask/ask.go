@@ -138,6 +138,13 @@ type Model struct {
 	// dimmed reasoning-tail view until it is pressed again.
 	showReasoning bool
 
+	// showProvenance is the ctrl+p toggle (027 T2): false — the default —
+	// renders answers with their provenance markers and the vault label
+	// hidden (display.go); true renders the raw record byte for byte, the
+	// pre-027 display. Pane state only, like showReasoning: never
+	// persisted, and never written into an entry or the recorded answer.
+	showProvenance bool
+
 	// anim (023 F.A6) is the mascot-motion switch: false at construction —
 	// every harness and test runs motionless, zero timers — and turned on
 	// only by cmd/lw's TUI (EnableAnim). With the flag off every render is
@@ -408,9 +415,10 @@ func (m *Model) Update(msg tea.Msg) (ui.Pane, tea.Cmd) {
 
 // handleKey dispatches one tea.KeyPressMsg: Ctrl-R switches to Review
 // (s4-tui.md S4-T6 pinned item 3), ctrl+t flips the reasoning-tail view
-// (022 T2), enter sends the typed message or expands the selected tool
-// call, the shell's scroll bindings move the transcript (scroll.go, W5
-// F2/C36), and everything else edits the input box.
+// (022 T2), ctrl+p flips provenance visibility (027 T2), enter sends the
+// typed message or expands the selected tool call, the shell's scroll
+// bindings move the transcript (scroll.go, W5 F2/C36), and everything else
+// edits the input box.
 func (m *Model) handleKey(msg tea.KeyPressMsg) (ui.Pane, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+r":
@@ -419,6 +427,11 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (ui.Pane, tea.Cmd) {
 		// 022 T2: flip the reasoning view over the transcript area. Pane
 		// state only — nothing here touches entries or the input box.
 		m.showReasoning = !m.showReasoning
+		return m, nil
+	case "ctrl+p":
+		// 027 T2: flip provenance visibility over the answers. Pane state
+		// only — nothing here touches entries or the input box.
+		m.showProvenance = !m.showProvenance
 		return m, nil
 	case "ctrl+s":
 		// 009 contract §3.3: file the last answer as a query page — before

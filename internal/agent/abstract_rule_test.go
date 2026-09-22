@@ -50,8 +50,9 @@ func TestPromptAbstractRule(t *testing.T) {
 	}
 
 	// The insertion did not disturb the neighbours: the filing paragraph
-	// still opens the tail right after the outside-vault rule, joined by
-	// exactly one blank line (the shape TestPromptWebRules pins), and the
+	// still opens the tail right after the outside-vault rule (027's
+	// no-narration line sits in that rule's paragraph), joined by exactly
+	// one blank line (the shape TestPromptWebRules pins), and the
 	// name hint still runs into the lint paragraph.
 	prompt := systemPromptFor(false)
 	label := strings.Index(prompt, outsideVaultRule)
@@ -62,7 +63,7 @@ func TestPromptAbstractRule(t *testing.T) {
 	if filing < 0 {
 		t.Fatal("precondition: the query-page filing paragraph is missing from systemPromptFor(false)")
 	}
-	if filing != label+len(outsideVaultRule)+2 {
+	if filing != label+len(outsideVaultRule)+1+len(noNarrationLine)+2 {
 		t.Errorf("the filing paragraph no longer follows the outside-vault rule by one blank line (outside-vault ends at %d, filing starts at %d)", label+len(outsideVaultRule), filing)
 	}
 	hint := strings.Index(prompt, nameHintParagraph)

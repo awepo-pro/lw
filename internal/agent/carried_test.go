@@ -24,7 +24,7 @@ const (
 
 	// outsideVaultRule is prompt.go's existing A-806 rule, the sentence both
 	// new paragraphs must come after.
-	outsideVaultRule = `If neither the wiki nor the raw sources answer a question, say so in one sentence, then answer from your own knowledge under a first line that reads exactly "Not from your vault:"; carry no provenance marker on those claims, and say plainly when the topic may be newer than your training data.`
+	outsideVaultRule = `If neither the wiki nor the raw sources answer a question, answer from your own knowledge under a first line that reads exactly "Not from your vault:"; carry no provenance marker on those claims, and say plainly when the topic may be newer than your training data.`
 )
 
 func TestCarriedRecord(t *testing.T) {

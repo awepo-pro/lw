@@ -285,6 +285,7 @@ func TestAssistantRendersMarkdown(t *testing.T) {
 	// inline.go's only provenance call site — renders in Muted, not Faint.
 	t.Run("provenance_is_muted", func(t *testing.T) {
 		m := newRenderModel(t)
+		m.SetShowProvenance(true) // A-027-2: pins the sources-shown styling, setup only
 		m.applyEvent(agent.TextDelta{Text: "read ^[wiki/some/page.md] next"})
 		lines, _ := m.conversationLines(76)
 		prov := lineWithStripped(t, lines, "read [page.md] next")
