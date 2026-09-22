@@ -251,8 +251,10 @@ func buildSnippet(abstract, body string, orderedTerms []string) string {
 }
 
 // buildSnippetStemmed is Search's 028 snippet rule. The query's SURFACE
-// tokens (ordered by the rarity of their stems) are looked for literally —
-// byte-for-byte today's rule, preferred wherever it hits, because a stem
+// tokens (ordered by the rarity of their stems — the one change from
+// pre-028, whose order came from the surface tokens' own document
+// frequencies) are looked for literally — the pre-028 literal-match rule
+// itself, preferred wherever it hits, because a stem
 // substring usually stops mid-word and the text's own spelling is what a
 // reader should see. Only when no surface token occurs anywhere does the
 // stem pass run: the stems, in the same rarity order, are tried literally

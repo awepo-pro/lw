@@ -16,9 +16,15 @@ import (
 // its internals unexported per backbone §3 ("type Index struct { /*
 // unexported */ }"), so Index implements gob.GobEncoder/GobDecoder by hand
 // and marshals through this shadow struct instead of letting gob reflect
-// over Index directly. Docs are stored as a Path-sorted slice, never a map,
-// so the encoded bytes — and therefore Save's output — are the same every
-// time for the same index content.
+// over Index directly. Docs are stored as a Path-sorted slice, never a
+// map, so document order is the same every time for the same index
+// content. The file's BYTES are not reproducible: the per-doc
+// term-frequency fields are gob maps, and gob walks a map in Go's
+// randomized order, so two saves of the same index differ in map-entry
+// order (measured, pre-028 behaviour). That is accepted for a disposable
+// cache nothing byte-compares; making the bytes reproducible would take a
+// wire change and a schema bump, because every format older than this one
+// carries map-typed fields that must keep decoding (F.S4).
 type gobIndex struct {
 	// Schema is the layout version the docs were built with (indexSchema).
 	// It is what makes a tokenizer change visible to StaleAgainst: pre-028
@@ -53,11 +59,13 @@ type gobDoc struct {
 	AbstractLen      int
 
 	// Surface is docEntry.SurfaceSet's wire form (A-028-2): the set's tokens
-	// as one sorted slice, not a map, so Save's bytes stay deterministic —
-	// gob walks a map in Go's randomized order, and every other encoded
-	// shape here is ordered for the same reason. A schema-2 file has no
-	// Surface field at all; it decodes as nil and the schema check rebuilds
-	// the index before any query can score against the missing sets.
+	// as one sorted slice, not a map — a set has no order to preserve, so a
+	// sorted slice is its canonical wire form and the same vocabulary always
+	// encodes to the same bytes. This field alone does not make the file
+	// byte-reproducible; the term-frequency fields above are gob maps (see
+	// gobIndex's comment). A schema-2 file has no Surface field at all; it
+	// decodes as nil and the schema check rebuilds the index before any
+	// query can score against the missing sets.
 	Surface []string
 }
 
