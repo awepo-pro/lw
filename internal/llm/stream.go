@@ -25,25 +25,57 @@ import (
 // exists to avoid. The returned channel is always closed, on every exit
 // path, and ctx cancellation stops delivery promptly and still closes it.
 func (c *Client) Stream(ctx context.Context, req Request) (<-chan Chunk, error) {
-	httpReq, err := c.newHTTPRequest(ctx, req)
+	// The stall expiry (026 T2) needs a cancel of its own: firing it closes
+	// the connection, which is what unblocks a body Read parked in the
+	// provider's silence (stall.go). It is a child of ctx — the caller's
+	// cancel still aborts everything — and consumeStreamTimed deliberately
+	// keeps the parent ctx: a stall must not make emit's select see a Done
+	// and race away the very Chunk{Err} that reports the stall.
+	streamCtx := ctx
+	cancel := context.CancelFunc(func() {})
+	if c.cfg.StallTimeout > 0 {
+		streamCtx, cancel = context.WithCancel(ctx)
+	}
+
+	httpReq, err := c.newHTTPRequest(streamCtx, req)
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 
 	resp, headersAt, err := c.do(httpReq)
 	if err != nil {
+		cancel()
 		slog.Warn("llm error", "err", err)
 		return nil, fmt.Errorf("llm: request: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		defer resp.Body.Close()
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		// The error body carries the provider's actual complaint (a 429's
+		// rate-limit text, a 400's validation message), so it is read BEFORE
+		// the request cancel fires — firing it first lets the connection
+		// close race this read and surface an empty error text. The read is
+		// byte-bounded by LimitReader and silence-bounded by the same stall
+		// wrapper the 200 path uses: LimitReader bounds bytes, never time,
+		// so without the wrapper an error-status response that goes quiet
+		// mid-body would park the turn here forever (F.S1).
+		body := wrapStallBody(resp.Body, c.cfg.StallTimeout, cancel)
+		b, rerr := io.ReadAll(io.LimitReader(body, 4096))
+		body.Close()
+		cancel()
+		// A stall with no body bytes at all is the turn's real cause — the
+		// status alone says nothing a curator can act on, so the stall
+		// error travels. Bytes that did arrive make the status the real
+		// information; the partial text travels with it.
+		if rerr != nil && errors.Is(rerr, ErrStalled) && len(b) == 0 {
+			return nil, rerr
+		}
 		return nil, fmt.Errorf("llm: unexpected status %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
 	}
 
 	out := make(chan Chunk)
-	go consumeStreamTimed(ctx, resp.Body, out, headersAt)
+	body := wrapStallBody(resp.Body, c.cfg.StallTimeout, cancel)
+	go consumeStreamTimed(ctx, body, out, headersAt)
 	return out, nil
 }
 

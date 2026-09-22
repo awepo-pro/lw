@@ -51,6 +51,18 @@ func New(cfg Config) *Client {
 	// a returned connection is never dropped for lack of a pool slot, and
 	// the next ask reuses it warm.
 	tr.MaxIdleConnsPerHost = 4
+	// StallTimeout (026 T2) bounds the provider's SILENCE, not the turn.
+	// Before the headers arrive that rides the transport's own
+	// ResponseHeaderTimeout: a header wait that outlives it is the same
+	// no-response transport failure do's single retry already tolerates, so
+	// the worst case is two windows, and asStalled (stall.go) re-labels the
+	// generic net timeout as ErrStalled. Between body reads the same bound
+	// is enforced in Stream, by the stallBody wrapper. Config.Timeout is
+	// deliberately not reused — it bounds the whole streaming read and
+	// would cut a long answer.
+	if cfg.StallTimeout > 0 {
+		tr.ResponseHeaderTimeout = cfg.StallTimeout
+	}
 	hc := &http.Client{Transport: tr}
 	if cfg.Timeout > 0 {
 		hc.Timeout = cfg.Timeout
@@ -186,16 +198,16 @@ func (c *Client) do(httpReq *http.Request) (*http.Response, time.Time, error) {
 		return resp, headersAt, nil
 	}
 	if httpReq.Context().Err() != nil || httpReq.GetBody == nil {
-		return nil, time.Time{}, err
+		return nil, time.Time{}, c.asStalled(err)
 	}
 	body, gbErr := httpReq.GetBody()
 	if gbErr != nil {
-		return nil, time.Time{}, err
+		return nil, time.Time{}, c.asStalled(err)
 	}
 	httpReq.Body = body
 	resp, err = c.httpClient.Do(httpReq)
 	if err != nil {
-		return nil, time.Time{}, err
+		return nil, time.Time{}, c.asStalled(err)
 	}
 	headersAt := time.Now()
 	slog.Info("llm response", "status", resp.StatusCode)

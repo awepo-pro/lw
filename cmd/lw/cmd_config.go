@@ -84,6 +84,9 @@ var configFields = []configField{
 			return fmt.Errorf("llm.thinking: want off|on|default, got %q — off sends thinking:{\"type\":\"disabled\"}; default omits the key", v)
 		},
 		display: displayPlain},
+	{key: "llm.stall_timeout", get: func(c *config.Config) string { return c.LLM.StallTimeout },
+		set:     setStallTimeout,
+		display: displayStallTimeout},
 	{key: "llm.limits.max_tool_rounds", get: func(c *config.Config) string { return strconv.Itoa(c.Limits.MaxToolRounds) },
 		set:     setInt(func(c *config.Config) *int { return &c.Limits.MaxToolRounds }, "llm.limits.max_tool_rounds"),
 		display: displayPlain},
@@ -118,6 +121,31 @@ func configFieldByKey(key string) (configField, bool) {
 		}
 	}
 	return configField{}, false
+}
+
+// setStallTimeout validates llm.stall_timeout before anything is written,
+// applying the single source of truth, config.ValidateStallTimeout (026 T3
+// F.K2 — the same rule Load enforces when the saved file is read back): a Go
+// duration, or "0"/"0s" to switch the bound off. "" stores the key absent,
+// which Load reads as config.DefaultStallTimeout. A negative bound would fail
+// every turn and is refused, not clamped.
+func setStallTimeout(c *config.Config, v string) error {
+	if err := config.ValidateStallTimeout(v); err != nil {
+		return err
+	}
+	c.LLM.StallTimeout = v
+	return nil
+}
+
+// displayStallTimeout renders the stored string. An empty value means the
+// key is absent and Load applies config.DefaultStallTimeout, so the table
+// says that instead of printing a blank a reader could mistake for "no
+// bound".
+func displayStallTimeout(raw string) string {
+	if raw == "" {
+		return fmt.Sprintf("(default %s)", config.DefaultStallTimeout)
+	}
+	return raw
 }
 
 // setInt returns a setter for an integer field, so the three integer keys
@@ -298,14 +326,18 @@ keys:
   llm.base_url                llm.model
   llm.api_key                 llm.temperature
   llm.max_tokens              llm.thinking
-  llm.limits.max_tool_rounds  llm.limits.context_tokens
-  web.provider                web.api_key
-  web.max_results             theme
+  llm.stall_timeout           llm.limits.max_tool_rounds
+  llm.limits.context_tokens   web.provider
+  web.api_key                 web.max_results
+  theme
 
 llm.thinking is off|on|default: off sends thinking:{"type":"disabled"} so a
 thinking-mode provider spends its budget answering, on sends
 thinking:{"type":"enabled"}, and default omits the key so the provider
 decides.
+llm.stall_timeout is a Go duration ("90s", "2m"): the longest a turn waits
+with no bytes from the provider before failing (default 120s). "0" disables
+the bound; omitting the key keeps the default.
 llm.api_key and web.api_key are stored as references, never values: export
 the key and set the variable's name, e.g. lw config set llm.api_key env:LW_API_KEY.
 A literal that looks like a key is refused.

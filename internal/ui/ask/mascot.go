@@ -133,13 +133,19 @@ func (m *Model) renderMascotCompact() string {
 
 // mascotStatusRow is the status line with the compact form at its left
 // (F.M3) — 022's thinking line while the round thinks, 025's `· sending…`
-// while the pane waits (F.W4: the same composition, never a new one). The
-// 022 substring `· thinking… (` stays byte-intact — the mascot renders
-// beside it, never instead of it (plan 016 §8).
+// while the pane waits (F.W4: the same composition, never a new one),
+// extended by 026 F.C1's counted suffix — `· sending… (3s)` — once the
+// count chain (mascot_anim.go's fourth tick chain, F.C2) has delivered a
+// beat; at zero the row stays byte-identical to 025's, and the 022
+// substring `· thinking… (` is untouched throughout. The mascot renders
+// beside the line, never instead of it (plan 016 §8).
 func (m *Model) mascotStatusRow() string {
 	line := m.thinkingStatusLine()
 	if m.waitingVisible() {
 		line = sendingStatusLine
+		if secs := formatSendingElapsed(m.sendSecs); secs != "" {
+			line += " (" + secs + ")"
+		}
 	}
 	return m.renderMascotCompact() + m.theme.Faint.Render(line)
 }

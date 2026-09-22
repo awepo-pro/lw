@@ -418,6 +418,7 @@ api_key     = "env:DEEPSEEK_API_KEY"      # env: | keyring: | literal (discourag
 temperature = 0.2
 max_tokens  = 32768
 thinking    = "off"                        # off | on | default (sends no thinking key)
+stall_timeout = "120s"   # no bytes from the provider this long → the turn errors; "0" = off
 
 [llm.limits]
 max_tool_rounds = 24       # hard stop; a runaway agent costs review time, not money

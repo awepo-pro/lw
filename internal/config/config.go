@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -26,6 +27,11 @@ const configFileName = "config.toml"
 // a live GLM ingest measured 5,247 reasoning tokens in one round (008 W0).
 const MinRecommendedMaxTokens = 16000
 
+// DefaultStallTimeout is the llm.stall_timeout bound a config that omits the
+// key gets (026 T3): the longest llm waits with no bytes from the provider
+// before failing the turn with llm.ErrStalled.
+const DefaultStallTimeout = 120 * time.Second
+
 // LLM is the language-model endpoint lw talks to.
 type LLM struct {
 	BaseURL     string  `toml:"base_url"`
@@ -39,6 +45,25 @@ type LLM struct {
 	// the provider's own default applies. The mapping lives in
 	// llm.buildRequestBody; this key only carries the user's word.
 	Thinking string `toml:"thinking"`
+	// StallTimeout is the provider-silence bound (026 T3): a Go duration
+	// string ("90s", "2m"); "0" or "0s" disables the bound. The mapping to
+	// the duration llm.Config consumes lives in StallTimeoutDuration below;
+	// this key only carries the user's word, like Thinking.
+	StallTimeout string `toml:"stall_timeout"`
+}
+
+// StallTimeoutDuration maps the raw llm.stall_timeout string onto the
+// time.Duration llm.Config consumes (026 T3). "" — the key absent, which is
+// how Default ships — is DefaultStallTimeout; "0" and "0s" parse to 0, which
+// llm reads as no bound. Load rejects an unparsable or negative value
+// (validateStallTimeout), so by the time a loaded config reaches this method
+// the string always parses.
+func (l LLM) StallTimeoutDuration() time.Duration {
+	if l.StallTimeout == "" {
+		return DefaultStallTimeout
+	}
+	d, _ := time.ParseDuration(l.StallTimeout)
+	return d
 }
 
 // Limits bounds the agent loop's resource usage.
@@ -88,7 +113,11 @@ type shadowLLM struct {
 	Temperature float64 `toml:"temperature"`
 	MaxTokens   int     `toml:"max_tokens"`
 	Thinking    string  `toml:"thinking"`
-	Limits      Limits  `toml:"limits"`
+	// omitempty keeps a keyless config keyless on Save (026 T3, F.K3): the
+	// 120s default lives in DefaultStallTimeout, not on disk, so a file
+	// that never named the key round-trips byte-identically.
+	StallTimeout string `toml:"stall_timeout,omitempty"`
+	Limits       Limits `toml:"limits"`
 }
 
 // shadowConfig is the on-disk shape of Config: the same fields, with Limits
@@ -106,13 +135,14 @@ type shadowConfig struct {
 func toShadow(c *Config) shadowConfig {
 	return shadowConfig{
 		LLM: shadowLLM{
-			BaseURL:     c.LLM.BaseURL,
-			Model:       c.LLM.Model,
-			APIKey:      c.LLM.APIKey,
-			Temperature: c.LLM.Temperature,
-			MaxTokens:   c.LLM.MaxTokens,
-			Thinking:    c.LLM.Thinking,
-			Limits:      c.Limits,
+			BaseURL:      c.LLM.BaseURL,
+			Model:        c.LLM.Model,
+			APIKey:       c.LLM.APIKey,
+			Temperature:  c.LLM.Temperature,
+			MaxTokens:    c.LLM.MaxTokens,
+			Thinking:     c.LLM.Thinking,
+			StallTimeout: c.LLM.StallTimeout,
+			Limits:       c.Limits,
 		},
 		Web:   c.Web,
 		Theme: c.Theme,
@@ -124,12 +154,13 @@ func toShadow(c *Config) shadowConfig {
 func fromShadow(s shadowConfig) *Config {
 	return &Config{
 		LLM: LLM{
-			BaseURL:     s.LLM.BaseURL,
-			Model:       s.LLM.Model,
-			APIKey:      s.LLM.APIKey,
-			Temperature: s.LLM.Temperature,
-			MaxTokens:   s.LLM.MaxTokens,
-			Thinking:    s.LLM.Thinking,
+			BaseURL:      s.LLM.BaseURL,
+			Model:        s.LLM.Model,
+			APIKey:       s.LLM.APIKey,
+			Temperature:  s.LLM.Temperature,
+			MaxTokens:    s.LLM.MaxTokens,
+			Thinking:     s.LLM.Thinking,
+			StallTimeout: s.LLM.StallTimeout,
 		},
 		Limits: s.LLM.Limits,
 		Web:    s.Web,
@@ -171,7 +202,30 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("config: parse %s: %w", path, err)
 	}
-	return mergeOverDefault(Default(), fromShadow(s), md), nil
+	cfg := mergeOverDefault(Default(), fromShadow(s), md)
+	if err := ValidateStallTimeout(cfg.LLM.StallTimeout); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+// ValidateStallTimeout rejects an llm.stall_timeout value Load cannot honour
+// (026 T3, F.K2): not a Go duration string, or negative — a negative bound
+// would fail every turn, which is not what "0 = off" means. "" is the key
+// absent and always valid; StallTimeoutDuration owns the default. Exported so
+// writers of the key (lw config set) apply the same rule before saving.
+func ValidateStallTimeout(v string) error {
+	if v == "" {
+		return nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return fmt.Errorf("config: llm.stall_timeout: %q is not a duration (e.g. \"90s\", \"2m\"; \"0\" disables the bound)", v)
+	}
+	if d < 0 {
+		return fmt.Errorf("config: llm.stall_timeout: %q is negative; use \"0\" to disable the bound", v)
+	}
+	return nil
 }
 
 // mergeOverDefault copies onto def every field md reports as present in the
@@ -197,6 +251,9 @@ func mergeOverDefault(def, file *Config, md toml.MetaData) *Config {
 	}
 	if md.IsDefined("llm", "thinking") {
 		def.LLM.Thinking = file.LLM.Thinking
+	}
+	if md.IsDefined("llm", "stall_timeout") {
+		def.LLM.StallTimeout = file.LLM.StallTimeout
 	}
 	if md.IsDefined("llm", "limits", "max_tool_rounds") {
 		def.Limits.MaxToolRounds = file.Limits.MaxToolRounds
