@@ -23,6 +23,20 @@ func displayPlain(lines []string) string {
 	return ansi.Strip(strings.Join(lines, "\n"))
 }
 
+// flatten normalizes a rendered block for comparison across the live and
+// finished paths: ANSI-stripped lines, whitespace runs collapsed, blanks
+// dropped — the visible words and their order, nothing else.
+func flatten(lines []string) string {
+	var parts []string
+	for _, l := range lines {
+		l = strings.Join(strings.Fields(ansi.Strip(l)), " ")
+		if l != "" {
+			parts = append(parts, l)
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
 func TestAnswerDisplay(t *testing.T) {
 	// transform_table pins displayAnswer itself, rule by rule: marker
 	// removal with its one preceding space, the never-inside-code rule
@@ -71,6 +85,51 @@ func TestAnswerDisplay(t *testing.T) {
 			{"live_hides_arriving_label_prefix", "Not from yo", false, true, ""},
 			{"live_hides_label_without_colon", "Not from your vault", false, true, ""},
 			{"live_label_then_body", "Not from your vault:\n\nParis", false, true, "Paris"},
+
+			// ---- 027 T2 fresh-context review pins (decisions, RED first) ----
+			// The label rule is a whole-line rule on PROSE lines only: the
+			// same words inside a fenced code block are the answer's own
+			// code and stay, backtick or tilde fence alike.
+			{"label_inside_backtick_fence_stays",
+				"Answer.\n\n```\nNot from your vault:\necho hi\n```\n",
+				false, false,
+				"Answer.\n\n```\nNot from your vault:\necho hi\n```\n"},
+			{"label_inside_tilde_fence_stays",
+				"~~~\nNot from your vault:\n~~~",
+				false, false,
+				"~~~\nNot from your vault:\n~~~"},
+			{"label_in_inline_code_stays", "saying `Not from your vault:` out loud", false, false,
+				"saying `Not from your vault:` out loud"},
+			{"label_with_trailing_spaces_removed", "Not from your vault:  \n\nbody", false, false,
+				"body"},
+			// The arriving label can sit mid-answer — after a vault-backed
+			// part — so the live prefix rule guards the LAST line too, never
+			// inside an open fence, and never an empty last line.
+			{"live_hides_arriving_mid_text_label", "Intro.\n\nNot from yo", false, true,
+				"Intro.\n"},
+			{"live_hides_mid_text_label_without_colon", "Intro.\n\nNot from your vault", false, true,
+				"Intro.\n"},
+			{"live_keeps_fenced_label_prefix", "Intro.\n\n```\nNot from yo", false, true,
+				"Intro.\n\n```\nNot from yo"},
+			{"live_keeps_text_after_newline_caret", "Answer.\n", false, true, "Answer.\n"},
+			// A bare trailing ^ is a marker one byte before its `[`: hidden
+			// live like any other arriving marker, kept once final — the
+			// final bytes are the record, and ctrl+p shows them regardless.
+			{"live_hides_trailing_lone_caret", "claim ^", false, true, "claim"},
+			{"live_keeps_mid_line_caret", "x^2 = 4", false, true, "x^2 = 4"},
+			{"live_keeps_trailing_caret_in_inline_code", "run `x^", false, true, "run `x^"},
+			{"live_keeps_trailing_caret_in_fence", "```\nx^", false, true, "```\nx^"},
+			{"finished_trailing_caret_stays", "claim ^", false, false, "claim ^"},
+			// A list item whose only content was a citation leaves no empty
+			// bullet behind; an item that was already bare stays as it was.
+			{"marker_only_list_item_dropped", "Intro.\n\n- ^[raw/a.md]\n- real item", false, false,
+				"Intro.\n\n- real item"},
+			{"marker_only_ordered_item_dropped", "Intro.\n\n1. ^[raw/a.md]\n2. real item", false, false,
+				"Intro.\n\n2. real item"},
+			{"pre_existing_empty_item_stays", "Intro.\n\n-\n- real item", false, false,
+				"Intro.\n\n-\n- real item"},
+			{"marker_only_item_dropped_live_tail", "Intro.\n\n- ^[raw/a.md]", false, true,
+				"Intro.\n"},
 		}
 		for _, tc := range cases {
 			if got := displayAnswer(tc.in, tc.showProv, tc.live); got != tc.want {
@@ -181,6 +240,221 @@ func TestAnswerDisplay(t *testing.T) {
 		}
 		if !strings.Contains(got, "Drafts tokens") {
 			t.Fatalf("the live tail lost its plain text:\n%s", got)
+		}
+	})
+
+	// fenced_label_kept_real_label_hidden: through conversationLines, the
+	// agent's label line vanishes while the same words inside a fenced
+	// block — the answer's own code — render.
+	t.Run("fenced_label_kept_real_label_hidden", func(t *testing.T) {
+		m := newRenderModel(t)
+		m.applyEvent(agent.TextDelta{Text: "Not from your vault:\n\nAnswer body.\n\n```\nNot from your vault:\necho hi\n```\n"})
+		m.applyEvent(agent.DoneEv{Reason: "stop", Rounds: 1})
+		lines, _ := m.conversationLines(76)
+		got := displayPlain(lines)
+		if n := strings.Count(got, "Not from your vault"); n != 1 {
+			t.Fatalf("want exactly the fenced label kept, found %d:\n%s", n, got)
+		}
+		if !strings.Contains(got, "Answer body.") {
+			t.Fatalf("the answer body was lost:\n%s", got)
+		}
+	})
+
+	// live_mid_answer_label_no_flash: frame by frame through the real
+	// render path, an arriving mid-answer label never shows — not even the
+	// frame its prefix sits on a line below the first.
+	t.Run("live_mid_answer_label_no_flash", func(t *testing.T) {
+		m := newRenderModel(t)
+		deltas := []string{"Vault claim. ^[raw/a.md]\n\n", "Not from yo", "ur vault:\n\n", "Outside knowledge."}
+		for i, d := range deltas {
+			m.applyEvent(agent.TextDelta{Text: d})
+			lines, _ := m.conversationLines(76)
+			if got := displayPlain(lines); strings.Contains(got, "Not from") {
+				t.Fatalf("frame %d flashes the arriving label:\n%s", i, got)
+			}
+		}
+		lines, _ := m.conversationLines(76)
+		if got := displayPlain(lines); !strings.Contains(got, "Outside knowledge.") {
+			t.Fatalf("the completed outside part was lost:\n%s", got)
+		}
+	})
+
+	// live_caret_split_no_flash: with the delta boundary exactly between
+	// the marker's ^ and its [, no frame shows a caret.
+	t.Run("live_caret_split_no_flash", func(t *testing.T) {
+		m := newRenderModel(t)
+		for i, d := range []string{"claim ", "^", "[raw/x.md] more"} {
+			m.applyEvent(agent.TextDelta{Text: d})
+			lines, _ := m.conversationLines(76)
+			if got := displayPlain(lines); strings.Contains(got, "^") {
+				t.Fatalf("frame %d shows a caret:\n%s", i, got)
+			}
+		}
+	})
+
+	// first_line_not_lookalike_shows: the first-line prefix hide is a
+	// transient rule — a real answer opening with "Not" appears the moment
+	// its line diverges from the label, and when finished.
+	t.Run("first_line_not_lookalike_shows", func(t *testing.T) {
+		m := newRenderModel(t)
+		m.applyEvent(agent.TextDelta{Text: "Not"})
+		lines, _ := m.conversationLines(76)
+		if got := displayPlain(lines); strings.Contains(got, "Not") {
+			t.Fatalf("the arriving label's own prefix flashed:\n%s", got)
+		}
+		m.applyEvent(agent.TextDelta{Text: " many people know this."})
+		lines, _ = m.conversationLines(76)
+		if got := displayPlain(lines); !strings.Contains(got, "Not many people know this.") {
+			t.Fatalf("the diverging first line did not appear:\n%s", got)
+		}
+		m.applyEvent(agent.DoneEv{Reason: "stop", Rounds: 1})
+		lines, _ = m.conversationLines(76)
+		if got := displayPlain(lines); !strings.Contains(got, "Not many people know this.") {
+			t.Fatalf("the finished first line was lost:\n%s", got)
+		}
+	})
+
+	// marker_only_list_item_no_stray_bullet: the citation-only item's
+	// bullet never renders; the list's other items do.
+	t.Run("marker_only_list_item_no_stray_bullet", func(t *testing.T) {
+		m := newRenderModel(t)
+		m.applyEvent(agent.TextDelta{Text: "- ^[raw/a.md]\n- real item"})
+		m.applyEvent(agent.DoneEv{Reason: "stop", Rounds: 1})
+		lines, _ := m.conversationLines(76)
+		got := displayPlain(lines)
+		for _, l := range strings.Split(got, "\n") {
+			if s := strings.TrimSpace(l); s == "•" || s == "-" {
+				t.Fatalf("a stray empty list bullet rendered (%q):\n%s", l, got)
+			}
+		}
+		if !strings.Contains(got, "real item") {
+			t.Fatalf("the list's real item was lost:\n%s", got)
+		}
+	})
+
+	// double_space_between_markers_invisible: stripping two markers two
+	// spaces apart leaves two spaces in the transformed bytes, but neither
+	// renderer lets them show — the live tail's wrapper and the markdown
+	// renderer both collapse word gaps. Pinned so a renderer change that
+	// exposes the double space fails here.
+	t.Run("double_space_between_markers_invisible", func(t *testing.T) {
+		m := newRenderModel(t)
+		m.applyEvent(agent.TextDelta{Text: "one ^[a]  ^[b]."})
+		lines, _ := m.conversationLines(76)
+		if got := displayPlain(lines); strings.Contains(got, "one  ") {
+			t.Fatalf("the live tail renders a double space:\n%s", got)
+		}
+		m.applyEvent(agent.DoneEv{Reason: "stop", Rounds: 1})
+		lines, _ = m.conversationLines(76)
+		if got := displayPlain(lines); strings.Contains(got, "one  ") {
+			t.Fatalf("the settled render shows a double space:\n%s", got)
+		}
+	})
+
+	// marker_own_line_live_matches_finished: a marker alone on a line
+	// strips to a blank, which is a block boundary for the live
+	// settled/tail split too — the finished render and the last live frame
+	// agree on the visible text (whitespace runs normalized).
+	t.Run("marker_own_line_live_matches_finished", func(t *testing.T) {
+		m := newRenderModel(t)
+		m.applyEvent(agent.TextDelta{Text: "para one.\n^[raw/x.md]\npara two."})
+		live, _ := m.conversationLines(76)
+		m.applyEvent(agent.DoneEv{Reason: "stop", Rounds: 1})
+		done, _ := m.conversationLines(76)
+		// the finished conversation carries the turn status and the file
+		// hint after the answer; the live frame does not. Cut them.
+		for n := len(done); n > 0; n-- {
+			s := strings.TrimSpace(ansi.Strip(done[n-1]))
+			if s == "" || strings.HasPrefix(s, "done ·") || strings.HasPrefix(s, "ctrl+s") {
+				done = done[:n-1]
+				continue
+			}
+			break
+		}
+		if flatten(live) != flatten(done) {
+			t.Fatalf("the live frame did not settle into the finished render:\nLIVE:\n%s\nDONE:\n%s",
+				displayPlain(live), displayPlain(done))
+		}
+	})
+
+	// ctrl_p_midstream: toggling mid-stream reveals the raw arriving
+	// bytes and hides them again — pane state only.
+	t.Run("ctrl_p_midstream", func(t *testing.T) {
+		m := newRenderModel(t)
+		m.applyEvent(agent.TextDelta{Text: "claim ^[raw/pa"})
+		lines, _ := m.conversationLines(76)
+		if got := displayPlain(lines); strings.Contains(got, "^[") {
+			t.Fatalf("the arriving marker showed before ctrl+p:\n%s", got)
+		}
+		pane, _ := m.Update(specialKey('p', tea.ModCtrl))
+		m = pane.(*Model)
+		lines, _ = m.conversationLines(76)
+		if got := displayPlain(lines); !strings.Contains(got, "^[raw/pa") {
+			t.Fatalf("ctrl+p did not reveal the arriving bytes:\n%s", got)
+		}
+		pane, _ = m.Update(specialKey('p', tea.ModCtrl))
+		m = pane.(*Model)
+		lines, _ = m.conversationLines(76)
+		if got := displayPlain(lines); strings.Contains(got, "^[") {
+			t.Fatalf("the second ctrl+p left the arriving marker visible:\n%s", got)
+		}
+	})
+
+	// ctrl_p_then_file_keeps_raw: with provenance shown, ctrl+s still
+	// files the raw marked answer — the filing turn's message embeds the
+	// record, never the displayed text.
+	t.Run("ctrl_p_then_file_keeps_raw", func(t *testing.T) {
+		m := hintTurn(t,
+			agent.TextDelta{Text: "It is the attention cache.^[raw/articles/kv-cache-explained.md]"},
+			agent.DoneEv{Reason: "stop", Rounds: 1},
+		)
+		fa, ok := m.deps.Agent.(*fakeTurnAgent)
+		if !ok {
+			t.Fatalf("agent is %T, want *fakeTurnAgent", m.deps.Agent)
+		}
+		pane, _ := m.Update(specialKey('p', tea.ModCtrl))
+		m = pane.(*Model)
+		fa.script = []agent.Event{
+			agent.TextDelta{Text: "Filed. See ^[wiki/queries/kv-cache.md]"},
+			agent.DoneEv{Reason: "stop", Rounds: 1},
+		}
+		pane, cmd := m.Update(specialKey('s', tea.ModCtrl))
+		m = pane.(*Model)
+		if cmd == nil {
+			t.Fatal("ctrl+s produced no command")
+		}
+		var seen []tea.Msg
+		m = runCmd(t, m, cmd, &seen).(*Model)
+		msgs := fa.sentMsgs()
+		if len(msgs) < 2 {
+			t.Fatalf("the filing turn sent %d messages, want the question + the filing message", len(msgs))
+		}
+		if last := msgs[len(msgs)-1]; !strings.Contains(last, "^[raw/articles/kv-cache-explained.md]") {
+			t.Fatalf("the filing message lost the raw marked answer:\n%s", last)
+		}
+	})
+
+	// ctrl_t_chrome_ignores_provenance: the reasoning view reads no answer
+	// text — byte-identical with provenance hidden and shown, on a turn
+	// carrying both reasoning and a marked, labelled live answer; and the
+	// busy tail mount never moves with the toggle.
+	t.Run("ctrl_t_chrome_ignores_provenance", func(t *testing.T) {
+		build := func(show bool) *Model {
+			m := newRenderModel(t)
+			m.SetShowProvenance(show)
+			m.applyEvent(agent.ReasoningDelta{Text: "weighing ^[raw/never.md] against the label"})
+			m.applyEvent(agent.TextDelta{Text: "Not from your vault:\n\nclaim ^[raw/x.md]"})
+			return m
+		}
+		hidden, shown := build(false), build(true)
+		h := strings.Join(hidden.reasoningViewLines(76), "\x00")
+		s := strings.Join(shown.reasoningViewLines(76), "\x00")
+		if h != s {
+			t.Fatalf("the ctrl+t view differs between hidden and shown:\n%q\n%q", h, s)
+		}
+		if hidden.mountedTailLines() != shown.mountedTailLines() {
+			t.Fatalf("the busy tail mount moved: %d vs %d",
+				hidden.mountedTailLines(), shown.mountedTailLines())
 		}
 	})
 

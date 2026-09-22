@@ -35,35 +35,63 @@ func (m *Model) SetShowProvenance(on bool) { m.showProvenance = on }
 // stripMarkers removes every ^[…] provenance marker outside code, together
 // with one immediately preceding space or tab. Markers inside a fenced code
 // block or an inline code span are the answer's own text, not a citation,
-// and stay. With live, a trailing unterminated `^[` on the last line — a
-// marker still arriving — is hidden from the `^[` on, spaces and all.
+// and stay. A line left as nothing but a list bullet — an item whose only
+// content was a citation — goes with the marker, so no empty bullet is left
+// behind; a line that was bare before the strip stays as it was. With live,
+// a trailing unterminated `^[` on the last line — or the lone `^` one byte
+// before its `[` — is a marker still arriving, hidden from the `^` on,
+// spaces and all.
 func stripMarkers(text string, live bool) string {
 	lines := strings.Split(text, "\n")
 	inFence := false
 	var fenceCh byte
 	var fenceLen int
+	kept := make([]string, 0, len(lines))
 	for i, line := range lines {
 		if inFence {
 			if closesFence(line, fenceCh, fenceLen) {
 				inFence = false
 			}
-			continue // fence content is code, never a citation
+			kept = append(kept, line) // fence content is code, never a citation
+			continue
 		}
 		if ch, n, ok := opensFence(line); ok {
 			inFence, fenceCh, fenceLen = true, ch, n
-			continue // the fence line itself carries no citation either
+			kept = append(kept, line) // the fence line itself carries no citation either
+			continue
 		}
-		lines[i] = stripLineMarkers(line, live && i == len(lines)-1)
+		stripped := stripLineMarkers(line, live && i == len(lines)-1)
+		if stripped != line && bareListItem(stripped) {
+			continue // the line was nothing but a citation: no empty item behind
+		}
+		kept = append(kept, stripped)
 	}
-	return strings.Join(lines, "\n")
+	return strings.Join(kept, "\n")
+}
+
+// bareListItem reports whether s is nothing but a list bullet — `-`, `*`,
+// `+`, or digits and a `.`/`)`: the leftover of a list item whose only
+// content was a citation. A line the strip never touched is never tested
+// against this (stripMarkers guards on the line having changed), so an
+// item the answer itself left bare renders as it always did.
+func bareListItem(s string) bool {
+	t := strings.TrimSpace(s)
+	if t == "-" || t == "*" || t == "+" {
+		return true
+	}
+	i := 0
+	for i < len(t) && t[i] >= '0' && t[i] <= '9' {
+		i++
+	}
+	return i > 0 && i < len(t) && (t[i] == '.' || t[i] == ')') && i == len(t)-1
 }
 
 // stripLineMarkers rewrites one line outside any fence: every `^[…]` whose
 // closing `]` sits on this line goes, with one immediately preceding space
 // or tab; backtick runs toggle the inline code span the marker rule must
 // not reach. With last (the live turn's final line), a `^[` with no `]`
-// after it is a marker still arriving: it and everything after it are
-// hidden.
+// after it — or a bare `^` with nothing after it at all — is a marker
+// still arriving: it and everything after it are hidden.
 func stripLineMarkers(line string, last bool) string {
 	out := make([]byte, 0, len(line))
 	inCode := false
@@ -78,12 +106,12 @@ func stripLineMarkers(line string, last bool) string {
 			i = j
 			continue
 		}
-		if !inCode && line[i] == '^' && i+1 < len(line) && line[i+1] == '[' {
-			end := strings.IndexByte(line[i+1:], ']')
-			if end < 0 {
+		if !inCode && line[i] == '^' {
+			if i+1 >= len(line) {
 				if last {
-					// still streaming: hide the arriving marker whole —
-					// its one preceding space or tab with it
+					// still streaming: the marker is one byte short of its
+					// `[` — hide what is there, its one preceding space or
+					// tab with it
 					if n := len(out); n > 0 && (out[n-1] == ' ' || out[n-1] == '\t') {
 						out = out[:n-1]
 					}
@@ -93,11 +121,27 @@ func stripLineMarkers(line string, last bool) string {
 				i++
 				continue
 			}
-			if n := len(out); n > 0 && (out[n-1] == ' ' || out[n-1] == '\t') {
-				out = out[:n-1]
+			if line[i+1] == '[' {
+				end := strings.IndexByte(line[i+1:], ']')
+				if end < 0 {
+					if last {
+						// still streaming: hide the arriving marker whole —
+						// its one preceding space or tab with it
+						if n := len(out); n > 0 && (out[n-1] == ' ' || out[n-1] == '\t') {
+							out = out[:n-1]
+						}
+						return string(out)
+					}
+					out = append(out, line[i])
+					i++
+					continue
+				}
+				if n := len(out); n > 0 && (out[n-1] == ' ' || out[n-1] == '\t') {
+					out = out[:n-1]
+				}
+				i += end + 2 // ^[ … ]
+				continue
 			}
-			i += end + 2 // ^[ … ]
-			continue
 		}
 		out = append(out, line[i])
 		i++
@@ -142,14 +186,35 @@ func closesFence(line string, ch byte, n int) bool {
 }
 
 // stripVaultLabel removes the `Not from your vault:` line — and, when that
-// removal leaves the text starting with blank lines, those too. With live,
-// a first line that is a non-empty prefix of the label is still arriving
-// and is hidden as well, so the label never flashes half-written.
+// removal leaves the text starting with blank lines, those too. The rule is
+// a whole-line rule on PROSE: the same words inside a fenced code block are
+// the answer's own code and stay, so the fence state walks the lines exactly
+// as stripMarkers walked them (the markers pass never rewrites a fence
+// line, so both passes see the same fences). With live, a line that is a
+// non-empty prefix of the label is still arriving and is hidden — the FIRST
+// line, and also the LAST while no fence is open, because the label can sit
+// mid-answer after a vault-backed part; so the label never flashes
+// half-written on any line it may land on.
 func stripVaultLabel(text string, live bool) string {
 	lines := strings.Split(text, "\n")
 	kept := make([]string, 0, len(lines))
+	inFence := false
+	var fenceCh byte
+	var fenceLen int
 	removed := false
 	for _, l := range lines {
+		if inFence {
+			kept = append(kept, l) // fence content is code, never the label
+			if closesFence(l, fenceCh, fenceLen) {
+				inFence = false
+			}
+			continue
+		}
+		if ch, n, ok := opensFence(l); ok {
+			inFence, fenceCh, fenceLen = true, ch, n
+			kept = append(kept, l)
+			continue
+		}
 		if strings.TrimSpace(l) == vaultLabel {
 			removed = true
 			continue
@@ -172,6 +237,20 @@ func stripVaultLabel(text string, live bool) string {
 				out = out[i+1:]
 			} else {
 				out = ""
+			}
+		}
+		if !inFence && out != "" {
+			last := out
+			cut := -1
+			if i := strings.LastIndexByte(out, '\n'); i >= 0 {
+				last, cut = out[i+1:], i
+			}
+			if last != "" && strings.HasPrefix(vaultLabel, last) {
+				if cut >= 0 {
+					out = out[:cut]
+				} else {
+					out = ""
+				}
 			}
 		}
 	}
