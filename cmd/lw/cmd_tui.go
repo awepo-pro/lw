@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 	"time"
 
@@ -43,10 +44,15 @@ func cmdTUI(args []string) error {
 	}
 	initLoggingAt(root)
 
+	// 025 T3: initLoggingAt above installed the file logger, so this line
+	// lands in <vault>/.llmwiki/logs/lw.log beside the engine's own launch
+	// lines. Measurement only — OpenEngine itself is untouched.
+	start := time.Now()
 	engine, err := stage.OpenEngine(root)
 	if err != nil {
 		return fmt.Errorf("open vault %s: %w", root, err)
 	}
+	slog.Info("tui engine open", "dur_ms", msSince(start))
 	defer engine.Close()
 
 	theme, keys, err := tuiTheme()
@@ -105,6 +111,16 @@ func cmdTUI(args []string) error {
 		return err
 	}
 	return nil
+}
+
+// webConfigured reports whether a web search provider resolved for cfg —
+// the same signal agentToolDeps uses to register web.search. The ask pane's
+// hint keys off it, so the UI can only claim web lookup is missing when the
+// msSince returns milliseconds since t as a fractional float — the dur_ms
+// field the 025 T3 launch line carries (integer milliseconds would round a
+// fast engine open down to 0).
+func msSince(t time.Time) float64 {
+	return float64(time.Since(t).Microseconds()) / 1000
 }
 
 // webConfigured reports whether a web search provider resolved for cfg —
