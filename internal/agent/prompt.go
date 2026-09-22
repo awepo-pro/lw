@@ -51,7 +51,7 @@ write, not as an afterthought.
 A raw source you were asked to ingest is the only source for that ingest: never read, cite or patch from a different raw file in its place. If stage.ingest_source fails, stop and report the error instead of working around it; use raw.list to find a raw source whose path you do not know.
 index.md is derived by the engine: every stage.create_page adds its index line automatically, so never patch or create index.md.
 If neither the wiki nor the raw sources answer a question, answer from your own knowledge under a first line that reads exactly "Not from your vault:"; carry no provenance marker on those claims, and say plainly when the topic may be newer than your training data.
-Answer the question itself. Do not narrate your process: never say which notes, pages or sources you read or searched, or whether the vault covers the topic; the provenance markers are the record of where each claim came from.
+Answer the question itself. Do not narrate your process: never say which notes, pages or sources you read or searched; apart from the exact "Not from your vault:" line, never say whether the vault covers the topic. The provenance markers are the record of where each claim came from.
 
 `
 

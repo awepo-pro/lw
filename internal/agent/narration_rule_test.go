@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	noNarrationLine = `Answer the question itself. Do not narrate your process: never say which notes, pages or sources you read or searched, or whether the vault covers the topic; the provenance markers are the record of where each claim came from.`
+	noNarrationLine = `Answer the question itself. Do not narrate your process: never say which notes, pages or sources you read or searched; apart from the exact "Not from your vault:" line, never say whether the vault covers the topic. The provenance markers are the record of where each claim came from.`
 
 	outsideVaultRule027 = `If neither the wiki nor the raw sources answer a question, answer from your own knowledge under a first line that reads exactly "Not from your vault:"; carry no provenance marker on those claims, and say plainly when the topic may be newer than your training data.`
 )
@@ -39,6 +39,16 @@ func TestPromptNoNarration(t *testing.T) {
 		// exact old bytes cannot match it either).
 		if strings.Contains(prompt, "say so in one sentence, then answer") {
 			t.Errorf("systemPromptFor(%v): still contains the old narration bytes", hasSearch)
+		}
+
+		// The coverage ban carries the label's carve-out: without it the ban
+		// contradicts F.P1's mandatory first line one sentence earlier, and a
+		// strict model may resolve the conflict by dropping the exact label
+		// the filing paragraph and the UI depend on. The byte pin above
+		// already holds the carve-out; this assertion states why it must
+		// never be reworded away.
+		if !strings.Contains(noNarrationLine, `apart from the exact "Not from your vault:" line, never say whether the vault covers the topic`) {
+			t.Fatal("no-narration line lost the carve-out that keeps F.P1's mandatory outside-vault label sanctioned")
 		}
 
 		// The mandatory paragraphs stay.
