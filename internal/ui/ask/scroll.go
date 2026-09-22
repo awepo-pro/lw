@@ -154,17 +154,34 @@ func (m *Model) wheel(msg ui.WheelMsg) {
 // change no matter the anchor, and the render-side clamp
 // (transcript.go) stays the backstop that keeps back in bounds. Following
 // the tail (back == 0) skips the counting entirely.
+//
+// 025: the accounting splits the conversation's tail mounts (022's
+// thinking rise+line, 025's sending row — mountedTailLines) out of the
+// content delta. They are chrome pinned to the list's very end, always at
+// or below the window start, so their delta always absorbs into back;
+// mixed into one content number they made the above-window branch ride a
+// +1 tail line the content shift never carried, moving every visible row
+// (exactly the W5d/T34 shape, first exposed by the sending row).
 func (m *Model) mutateEntries(mut func()) {
 	if m.back <= 0 {
 		mut()
 		return
 	}
 	before := m.transcriptLines()
+	mountBefore := m.mountedTailLines()
 	start := len(before) - m.transcriptInner() - m.back
 	mut()
 	after := m.transcriptLines()
-	if added := len(after) - len(before); added != 0 && firstChangedLine(before, after) >= start {
+	mountAfter := m.mountedTailLines()
+
+	contentBefore := before[:len(before)-mountBefore]
+	contentAfter := after[:len(after)-mountAfter]
+	if added := len(contentAfter) - len(contentBefore); added != 0 &&
+		firstChangedLine(contentBefore, contentAfter) >= start {
 		m.back = max(0, m.back+added)
+	}
+	if mount := mountAfter - mountBefore; mount != 0 {
+		m.back = max(0, m.back+mount)
 	}
 }
 

@@ -57,19 +57,23 @@ type mascotState int
 const (
 	msIdle     mascotState = iota // pane open, turn done, or between rounds
 	msThinking                    // the current round is thinking (022's line shows)
+	msWaiting                     // 025 F.W1: the turn runs and the provider has not answered yet
 	msError                       // the last finished turn errored
 )
 
-// mascotState reads the pane's existing state — 022's thinking rule and
-// the turn flags — and never re-derives any of it. Answering and a tool
-// round are deliberately still (the streamed text is the performance, plan
-// 016 §7), so they fall out as the idle art without states of their own;
-// a new turn's reset likewise needs no code here, because turnActive masks
-// a stale turnErrored for the whole turn it belongs to.
+// mascotState reads the pane's existing state — 022's thinking rule,
+// 025's waiting rule and the turn flags — and never re-derives any of it.
+// Answering and a tool round are deliberately still (the streamed text is
+// the performance, plan 016 §7), so they fall out as the idle art without
+// states of their own; a new turn's reset likewise needs no code here,
+// because turnActive masks a stale turnErrored for the whole turn it
+// belongs to.
 func (m *Model) mascotState() mascotState {
 	switch {
 	case m.thinkingVisible():
 		return msThinking
+	case m.waitingVisible(): // 025 F.W1: the cold-start window, before any delta
+		return msWaiting
 	case m.turnActive: // answering, or waiting on a tool round
 		return msIdle
 	case m.turnErrored:
@@ -80,7 +84,9 @@ func (m *Model) mascotState() mascotState {
 
 // mascotFrameFor maps a state to its art: the frame to draw and whether it
 // renders reversed. Only the error state reverses, and it reuses the idle
-// frame to do it.
+// frame to do it. msWaiting lands on the default too (025 F.W2: waiting
+// reuses the idle art, zero new frames) — its idle↔blink alternation is
+// the pose layer's, in mascot_anim.go.
 func mascotFrameFor(s mascotState) (f mascotFrame, reversed bool) {
 	switch s {
 	case msThinking:
@@ -125,11 +131,17 @@ func (m *Model) renderMascotCompact() string {
 	return m.mascotStyle(rev).Render(mascotCompact[m.mascotPose(s, false)])
 }
 
-// mascotStatusRow is the thinking status line with the compact form at its
-// left (F.M3). The 022 substring `· thinking… (` stays byte-intact — the
-// mascot renders beside it, never instead of it (plan 016 §8).
+// mascotStatusRow is the status line with the compact form at its left
+// (F.M3) — 022's thinking line while the round thinks, 025's `· sending…`
+// while the pane waits (F.W4: the same composition, never a new one). The
+// 022 substring `· thinking… (` stays byte-intact — the mascot renders
+// beside it, never instead of it (plan 016 §8).
 func (m *Model) mascotStatusRow() string {
-	return m.renderMascotCompact() + m.theme.Faint.Render(m.thinkingStatusLine())
+	line := m.thinkingStatusLine()
+	if m.waitingVisible() {
+		line = sendingStatusLine
+	}
+	return m.renderMascotCompact() + m.theme.Faint.Render(line)
 }
 
 // FooterPrefix implements ui.FooterPrefix (F.M3): the compact form at the
@@ -138,8 +150,11 @@ func (m *Model) mascotStatusRow() string {
 // While the round is thinking the compact form has moved to the status
 // line's own row inside the transcript (mascotStatusRow), so the footer
 // keeps its exact shape: the compact form shows in exactly one of the two
-// slots at a time. (The empty pane's full-form greeting is plan 016 §5
-// candidate A's separate mount, above the intro.)
+// slots at a time. While the pane waits (025 F.W4) the compact form also
+// sits on the sending row — the footer keeps its morsel there, the
+// one-slot rule staying a rule about the thinking mount, which is the
+// mount that replaced the footer's. (The empty pane's full-form greeting
+// is plan 016 §5 candidate A's separate mount, above the intro.)
 func (m *Model) FooterPrefix() (string, lipgloss.Style) {
 	if m.thinkingVisible() {
 		return "", lipgloss.Style{}

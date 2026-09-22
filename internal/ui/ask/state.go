@@ -75,9 +75,11 @@ func (m *Model) applyEvent(ev agent.Event) tea.Cmd {
 			m.roundSawReasoning = true
 		case agent.ToolCallEv:
 			m.resetReasoningRound() // a tool round starts: the thinking line hides until reasoning resumes
+			m.roundToolInFlight = true
 			m.startToolCall(e)
 		case agent.ToolResEv:
 			m.resetReasoningRound()
+			m.roundToolInFlight = false
 			m.resolveToolCall(e)
 		case agent.StageEv:
 			// Only the pane's own auto-reject streams an empty StageEv while
@@ -356,13 +358,15 @@ func (m *Model) resetReasoningTurn() {
 	m.resetReasoningRound()
 }
 
-// resetReasoningRound clears the two round flags behind the thinking status
+// resetReasoningRound clears the round flags behind the thinking status
 // line: a new tool round (ToolCallEv/ToolResEv), a turn's end, or a stream
-// cut off mid-round all start from "no reasoning, no text in this round".
-// The turn count and tail are deliberately left alone.
+// cut off mid-round all start from "no reasoning, no text in this round",
+// and no tool of the previous round is in flight any more. The turn count
+// and tail are deliberately left alone.
 func (m *Model) resetReasoningRound() {
 	m.roundSawReasoning = false
 	m.roundSawText = false
+	m.roundToolInFlight = false
 }
 
 // thinkingVisible reports whether the `· thinking…` status line shows: the
@@ -371,6 +375,25 @@ func (m *Model) resetReasoningRound() {
 // streams and stays hidden between tool rounds until reasoning resumes.
 func (m *Model) thinkingVisible() bool {
 	return m.turnActive && m.roundSawReasoning && !m.roundSawText
+}
+
+// sendingStatusLine is the waiting status line's exact text (025 F.W4):
+// U+00B7, space, "sending", U+2026. It holds the window the thinking line
+// cannot — everything between Enter and the provider's first response
+// byte, before any ReasoningDelta has ever arrived this round.
+const sendingStatusLine = "· sending…"
+
+// waitingVisible reports whether the pane is in 025's cold-start window:
+// the turn is running and this round has seen nothing yet — no reasoning,
+// no text, no tool executing. That is the stretch between Enter and the
+// provider's first response byte (measured median 5.80s, recurring before
+// every round), where the pane used to render idle. It is exactly
+// thinkingVisible's complement inside the no-text round: the two are
+// mutually exclusive and the first ReasoningDelta replaces the waiting
+// row with the thinking one. Tool execution is deliberately excluded —
+// tool-round motion is workflow 024's question, not this one.
+func (m *Model) waitingVisible() bool {
+	return m.turnActive && !m.roundSawReasoning && !m.roundSawText && !m.roundToolInFlight
 }
 
 // thinkingStatusLine is the status line's exact text (022 T2):

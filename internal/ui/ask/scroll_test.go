@@ -264,7 +264,12 @@ func TestAskTranscriptScroll(t *testing.T) {
 		before := len(m.transcriptLines())
 		pane, _ := m.Update(ui.EventMsg{Ev: agent.ToolResEv{ID: "t1", Name: "wiki.search", Content: "r1\nr2\nr3"}})
 		m = pane.(*Model)
-		added := len(m.transcriptLines()) - before
+		// 025 F.W4: the ToolResEv hands the round back to the waiting
+		// window, whose sending row mounts one line at the conversation
+		// tail — chrome below the window, not part of the growth above it.
+		// It is subtracted here so `added` stays the result's own growth,
+		// the quantity the `↑ N earlier` assertion below is written against.
+		added := len(m.transcriptLines()) - before - 1
 		if added <= 0 {
 			t.Fatal("the delivered ToolResEv added no lines; the test is not exercising the growth")
 		}
@@ -276,8 +281,11 @@ func TestAskTranscriptScroll(t *testing.T) {
 					i+1, styledBefore[1+i], styledAfter[1+i])
 			}
 		}
-		if n1, ok := footnote(t, styledAfter); !ok || n1 != n0 {
-			t.Fatalf("`↓ N newer` = %d (ok=%v) after the result, want the unchanged %d", n1, ok, n0)
+		// The mounted sending row is a hidden line below the window, so
+		// `↓ N newer` honestly grows by exactly one (025 F.W4) — the rows
+		// on screen itself stay pinned, which is the invariant above.
+		if n1, ok := footnote(t, styledAfter); !ok || n1 != n0+1 {
+			t.Fatalf("`↓ N newer` = %d (ok=%v) after the result, want %d (%d + the mounted sending row)", n1, ok, n0+1, n0)
 		}
 		if top1, ok := noteNumber(t, 0, styledAfter[0], "↑ "); !ok || top1 != top0+added {
 			t.Fatalf("`↑ N earlier` = %d (ok=%v) after the result, want %d (%d +%d added above the window)",
