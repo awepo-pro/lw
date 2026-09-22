@@ -1,10 +1,14 @@
 // mascot_test.go pins workflow 016's frozen expectations: byte-exact
 // single-width frames and the state→frame table (F.M1), the welcome mount
-// (F.M2), the status-row and footer mounts (F.M3), the pane-state machine
-// (F.M4), and the mascot path's total lack of a clock (F.M5). The
-// monochrome legibility check runs the styled frames through an Ascii
-// colour profile — the mechanism this lipgloss stack actually exposes
-// (v2 styles always emit SGR; the output profile is what strips it).
+// (F.M2), the status-row and footer mounts (F.M3), and the pane-state
+// machine (F.M4) — plus workflow 023's motion, logged through the
+// amendment path, never silently: A-023-1 replaces 016 F.M5's
+// TestMascotNoTimers with TestMascotAnimContract (the tick contract), and
+// A-023-2 amends the thinking mount's main-view pin to F.A4's rise (the
+// ctrl+t pin is byte-unchanged). The monochrome legibility check runs the
+// styled frames through an Ascii colour profile — the mechanism this
+// lipgloss stack actually exposes (v2 styles always emit SGR; the output
+// profile is what strips it).
 package ask
 
 import (
@@ -14,6 +18,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/colorprofile"
@@ -25,17 +30,25 @@ import (
 )
 
 // TestMascotFramesPure pins the frozen art byte for byte (plan 016 §2/§3)
-// and proves every rune single-width: the frame vocabulary is exactly
-// {'█','▀','▄',' '}, so a rune-set membership assertion is the sanctioned
-// equivalent of runewidth==1 (go-runewidth is indirect; no new deps).
+// and 023's additions to it (F.A1: the two scan darts and the blink, same
+// 9-cell rows, same body rows), and proves every rune single-width: the
+// frame vocabulary is exactly {'█','▀','▄',' '}, so a rune-set membership
+// assertion is the sanctioned equivalent of runewidth==1 (go-runewidth is
+// indirect; no new deps).
 func TestMascotFramesPure(t *testing.T) {
-	wantFull := [2][3]string{
-		frameIdle:     {" ██▀██▀█ ", "▀███████▀", " ▀██▀▀██ "},
-		frameThinking: {" ██▄██▄█ ", "▀███████▀", " ▀██▀▀██ "},
+	wantFull := [5][3]string{
+		frameIdle:      {" ██▀██▀█ ", "▀███████▀", " ▀██▀▀██ "},
+		frameThinking:  {" ██▄██▄█ ", "▀███████▀", " ▀██▀▀██ "},
+		frameScanLeft:  {" █▀██▀██ ", "▀███████▀", " ▀██▀▀██ "},
+		frameScanRight: {" ███▀██▀ ", "▀███████▀", " ▀██▀▀██ "},
+		frameBlink:     {" ███████ ", "▀███████▀", " ▀██▀▀██ "},
 	}
-	wantCompact := [2]string{
-		frameIdle:     "██▀██▀█ ",
-		frameThinking: "██▄██▄█ ",
+	wantCompact := [5]string{
+		frameIdle:      "██▀██▀█ ",
+		frameThinking:  "██▄██▄█ ",
+		frameScanLeft:  "█▀██▀██ ",
+		frameScanRight: "███▀██▀ ",
+		frameBlink:     "███████ ",
 	}
 	if mascotFull != wantFull {
 		t.Fatalf("mascotFull drifted from the frozen frames:\n got %#v\nwant %#v", mascotFull, wantFull)
@@ -202,9 +215,14 @@ func TestMascotStatusRow(t *testing.T) {
 			t.Fatal("ReasoningDelta produced a command")
 		}
 
+		// A-023-2: the main view's status row is BARE — the full form rose
+		// directly above it (F.A4), so no compact art sits at the line's
+		// left any more and no double head shows. The 022 substring stays
+		// byte-intact.
 		_, plain := uitest.PaneScreen(m, 80, 22)
+		lines := strings.Split(plain, "\n")
 		row := -1
-		for i, l := range strings.Split(plain, "\n") {
+		for i, l := range lines {
 			if strings.Contains(l, "· thinking… (") {
 				row = i
 				break
@@ -213,24 +231,32 @@ func TestMascotStatusRow(t *testing.T) {
 		if row < 0 {
 			t.Fatal("the thinking status line vanished from the view")
 		}
-		lines := strings.Split(plain, "\n")
-		art, line := strings.Index(lines[row], "██▄██▄█"), lines[row]
-		if art < 0 || art > strings.Index(line, "· thinking… (") {
-			t.Fatalf("status row = %q, want the compact form left of the status text", line)
+		line := lines[row]
+		if strings.ContainsAny(line, "█▀▄") {
+			t.Fatalf("status row = %q, want it bare — the rise replaced the compact art (A-023-2)", line)
 		}
 		if !strings.Contains(line, "· thinking… (600 chars)") {
 			t.Fatalf("status row = %q, want the 022 line byte-intact", line)
 		}
+		// The rise: the full form's three rows — the static thinking pose
+		// with anim off — stand directly above the bare line.
+		for i, art := range []string{" ██▄██▄█ ", "▀███████▀", " ▀██▀▀██ "} {
+			if row-3+i < 0 || !strings.Contains(lines[row-3+i], art) {
+				t.Fatalf("rise row %d (%q) is not directly above the bare status row:\n%s",
+					i, art, strings.Join(lines, "\n"))
+			}
+		}
 
-		// While thinking the mascot has moved to the status row, so the
-		// footer prefix withdraws and the footer keeps its exact shape.
+		// While thinking the footer prefix is still withdrawn — the rise
+		// lives inside the transcript and the footer keeps its exact shape.
 		if text, _ := m.FooterPrefix(); text != "" {
 			t.Fatalf("FooterPrefix = %q while thinking, want it withdrawn", text)
 		}
 
 		// The ctrl+t view replaces the transcript area wholesale while the
 		// round is still thinking: its reasoning tail carries the same
-		// status row, mascot at its left (022 T2's second mount).
+		// status row, compact form at its left (022 T2's second mount) —
+		// byte-unchanged by 023 (F.A4).
 		m.showReasoning = true
 		_, plain = uitest.PaneScreen(m, 80, 22)
 		var seen string
@@ -240,8 +266,8 @@ func TestMascotStatusRow(t *testing.T) {
 				break
 			}
 		}
-		if art < 0 || !strings.Contains(seen, "██▄██▄█") ||
-			strings.Index(seen, "██▄██▄█") > strings.Index(seen, "· thinking… (") {
+		art := strings.Index(seen, "██▄██▄█")
+		if art < 0 || art > strings.Index(seen, "· thinking… (") {
 			t.Fatalf("ctrl+t status row = %q, want the compact form left of the status text", seen)
 		}
 		if !strings.Contains(seen, "· thinking… (600 chars)") {
@@ -349,25 +375,272 @@ func TestMascotStateMachine(t *testing.T) {
 	}
 }
 
-// TestMascotNoTimers reads mascot.go's source and asserts the mascot path
-// carries no clock of any kind (F.M5). The banned forms are built by
-// concatenation so this file's own source never carries one whole — the
-// orchestrator greps the mascot path too.
-func TestMascotNoTimers(t *testing.T) {
-	src, err := os.ReadFile("mascot.go")
-	if err != nil {
-		t.Fatalf("read mascot.go: %v", err)
-	}
-	banned := []string{
-		"time." + "After",
-		"time." + "NewTicker",
-		"time." + "Ticker",
-		"tea." + "Tick",
-		"Ti" + "ck",
-	}
-	for _, b := range banned {
-		if strings.Contains(string(src), b) {
-			t.Fatalf("mascot.go contains %q: the mascot must stay fully static (F.M5)", b)
+// TestMascotAnimContract is 023's tick contract (F.A3), substituted for
+// 016 F.M5's TestMascotNoTimers through the pre-authorized amendment
+// A-023-1 — logged here and in the workflow MASTER, never silent. It
+// restates the old file-level ban at the package level: the anim's motion
+// lives in mascot_anim.go on Update's thread, tea.Tick is the only clock
+// in the package's non-test source, no goroutines drive the motion, tick
+// chains re-arm conditionally and stop by not re-issuing, and the scan
+// cycle runs UP → LEFT → UP → RIGHT deterministically — the tests inject
+// the tick MSG, never sleep.
+func TestMascotAnimContract(t *testing.T) {
+	t.Run("source", func(t *testing.T) {
+		entries, err := os.ReadDir(".")
+		if err != nil {
+			t.Fatalf("read the package dir: %v", err)
 		}
+		for _, e := range entries {
+			name := e.Name()
+			if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+				continue
+			}
+			src, err := os.ReadFile(name)
+			if err != nil {
+				t.Fatalf("read %s: %v", name, err)
+			}
+			// Every clock but tea.Tick is banned package-wide; tea.Tick
+			// itself may appear in mascot_anim.go alone.
+			for _, b := range []string{"time." + "After", "time." + "NewTicker", "time." + "Tick"} {
+				if strings.Contains(string(src), b) {
+					t.Fatalf("%s contains %q: tea.Tick is the only clock in the package (F.A3)", name, b)
+				}
+			}
+			if name != "mascot_anim.go" && strings.Contains(string(src), "tea."+"Tick") {
+				t.Fatalf("%s carries a tea tick: the anim's clock lives in mascot_anim.go alone (F.A3)", name)
+			}
+			// The motion code runs on Update's thread — no goroutines of
+			// its own (stream.go's pump predates 023 and drives no anim).
+			if (name == "mascot.go" || name == "mascot_anim.go") && strings.Contains(string(src), "go "+"func") {
+				t.Fatalf("%s spawns a goroutine: the anim has none (F.A3)", name)
+			}
+			// mascot.go keeps 016's own purity — art and the state table,
+			// never a tick of any kind (A-023-1's restated file-level ban).
+			if name == "mascot.go" && strings.Contains(string(src), "Ti"+"ck") {
+				t.Fatalf("mascot.go mentions a tick: motion lives in mascot_anim.go (A-023-1)")
+			}
+		}
+	})
+
+	t.Run("constants", func(t *testing.T) {
+		if scanEvery != 200*time.Millisecond {
+			t.Fatalf("scanEvery = %v, want 200ms (F.A2)", scanEvery)
+		}
+		if blinkEvery != 4*time.Second {
+			t.Fatalf("blinkEvery = %v, want 4s (F.A2)", blinkEvery)
+		}
+		if blinkHold != 120*time.Millisecond {
+			t.Fatalf("blinkHold = %v, want 120ms (F.A2)", blinkHold)
+		}
+	})
+
+	t.Run("scan_cycle", func(t *testing.T) {
+		m := New(newTestDeps(t)).(*Model)
+		m.anim = true // F.A6: tests that need motion set the flag directly
+		m.echoUser("what are you thinking")
+		m.turnActive = true // as beginTurn sets it
+		if cmd := m.applyEvent(agent.ReasoningDelta{Text: "hmm"}); cmd != nil {
+			t.Fatal("ReasoningDelta produced a command")
+		}
+		// UP → LEFT → UP → RIGHT → repeat (F.A2): pose 0 is the frozen
+		// thinking frame, and every injected tick advances one step and
+		// re-arms while the round is still thinking.
+		for i, want := range []mascotFrame{
+			frameThinking, frameScanLeft, frameThinking, frameScanRight, frameThinking,
+		} {
+			if got := m.mascotPose(msThinking, true); got != want {
+				t.Fatalf("pose %d = %d, want %d", i, got, want)
+			}
+			if _, cmd := m.Update(scanTickMsg{}); cmd == nil {
+				t.Fatalf("scan tick %d re-armed nothing while thinking (F.A3)", i)
+			}
+		}
+		// The compact form never scans: wherever it shows while thinking
+		// (the ctrl+t row) the frozen thinking pose holds (F.A4).
+		for i := 0; i < 4; i++ {
+			if got := m.mascotPose(msThinking, false); got != frameThinking {
+				t.Fatalf("compact pose = %d mid-scan, want the frozen thinking frame (F.A4)", got)
+			}
+			m.Update(scanTickMsg{})
+		}
+	})
+
+	t.Run("no_rearm_when_still", func(t *testing.T) {
+		// (c): a tick handled while the turn answers or waits on a tool
+		// round re-arms nothing — the chain dies at the first silent beat.
+		m := New(newTestDeps(t)).(*Model)
+		m.anim = true
+		m.echoUser("q")
+		m.turnActive = true
+		if cmd := m.applyEvent(agent.ReasoningDelta{Text: "hmm"}); cmd != nil {
+			t.Fatal("ReasoningDelta produced a command")
+		}
+		if cmd := m.applyEvent(agent.TextDelta{Text: "so"}); cmd != nil {
+			t.Fatal("TextDelta produced a command")
+		}
+		if _, cmd := m.Update(scanTickMsg{}); cmd != nil {
+			t.Fatal("a scan tick re-armed while answering (F.A3 c)")
+		}
+		if _, cmd := m.Update(blinkTickMsg{}); cmd != nil {
+			t.Fatal("a blink tick re-armed while answering (F.A3 c)")
+		}
+		if m.eyesShut {
+			t.Fatal("the eyes shut while the pane answers (F.A5)")
+		}
+		// The error state is frozen too (F.A5): no blink re-arm, and a hold
+		// caught mid-flight when the verdict landed opens into stillness.
+		me := New(newTestDeps(t)).(*Model)
+		me.anim = true
+		me.turnErrored = true
+		me.eyesShut = true
+		if _, cmd := me.Update(blinkTickMsg{}); cmd != nil {
+			t.Fatal("a blink tick re-armed in the error state (F.A5)")
+		}
+		if got := ansi.Strip(me.renderMascotFull()[0]); got != mascotFull[frameIdle][0] {
+			t.Fatalf("error full-form top row = %q, want the static idle row %q", got, mascotFull[frameIdle][0])
+		}
+	})
+}
+
+// TestMascotBlink is F.A5's table: an idle pane blinks — the welcome full
+// form and the footer morsel from one frame source, body rows constant —
+// and the blink is suppressed wherever stillness is the point. Frame index
+// 0 (every pre-023 byte pin) runs unchanged in all the other tests: anim
+// is false there, so no pose ever moves.
+func TestMascotBlink(t *testing.T) {
+	// The swap is same-width by construction — the footer's width math
+	// never notices it; assert it, don't assume it.
+	if got, want := len([]rune(mascotCompact[frameBlink])), len([]rune(mascotCompact[frameIdle])); got != want {
+		t.Fatalf("blink compact is %d cells, want the idle compact's %d", got, want)
 	}
+	if got, want := len([]rune(mascotFull[frameBlink][0])), len([]rune(mascotFull[frameIdle][0])); got != want {
+		t.Fatalf("blink top row is %d cells, want the idle top row's %d", got, want)
+	}
+
+	t.Run("welcome_and_morsel_in_sync", func(t *testing.T) {
+		m := New(newTestDeps(t)).(*Model)
+		m.anim = true
+		// One blinkTickMsg shuts the eyes and holds them for one blinkHold
+		// — the blinkOpen tick it arms through Update, the real path.
+		if _, cmd := m.Update(blinkTickMsg{}); cmd == nil {
+			t.Fatal("the blink tick armed no hold (F.A2)")
+		}
+		if got := ansi.Strip(m.renderMascotFull()[0]); got != mascotFull[frameBlink][0] {
+			t.Fatalf("welcome top row = %q, want the shut frame %q", got, mascotFull[frameBlink][0])
+		}
+		// Body rows constant through the blink.
+		for i, row := range m.renderMascotFull()[1:] {
+			if got := ansi.Strip(row); got != mascotFull[frameIdle][i+1] {
+				t.Fatalf("body row %d moved in the blink: %q", i+1, got)
+			}
+		}
+		if text, _ := m.FooterPrefix(); text != mascotCompact[frameBlink] {
+			t.Fatalf("footer morsel = %q, want the same frame source's %q", text, mascotCompact[frameBlink])
+		}
+		// The reopen: eyes open, and the every-4s tick re-arms.
+		if _, cmd := m.Update(blinkOpenMsg{}); cmd == nil {
+			t.Fatal("the blink open re-armed nothing (F.A3)")
+		}
+		if got := ansi.Strip(m.renderMascotFull()[0]); got != mascotFull[frameIdle][0] {
+			t.Fatalf("welcome top row = %q, want the open frame %q", got, mascotFull[frameIdle][0])
+		}
+		if text, _ := m.FooterPrefix(); text != mascotCompact[frameIdle] {
+			t.Fatalf("footer morsel = %q, want the open frame's %q", text, mascotCompact[frameIdle])
+		}
+	})
+
+	t.Run("morsel_alone_with_content", func(t *testing.T) {
+		m := New(newTestDeps(t)).(*Model)
+		m.anim = true
+		m.echoUser("still there?")
+		if _, cmd := m.Update(blinkTickMsg{}); cmd == nil {
+			t.Fatal("the blink tick armed no hold (F.A2)")
+		}
+		if text, _ := m.FooterPrefix(); text != mascotCompact[frameBlink] {
+			t.Fatalf("footer morsel = %q, want the shut frame %q", text, mascotCompact[frameBlink])
+		}
+		_, plain := uitest.PaneScreen(m, 80, 22)
+		if strings.Contains(plain, "▀███████▀") {
+			t.Fatalf("a full form rendered over the conversation:\n%s", plain)
+		}
+	})
+
+	t.Run("answering_is_still", func(t *testing.T) {
+		// turnActive suppresses the blink at the render too: a hold caught
+		// mid-flight when the turn started opens into stillness (F.A5).
+		m := New(newTestDeps(t)).(*Model)
+		m.anim = true
+		m.turnActive = true
+		m.eyesShut = true
+		if got := ansi.Strip(m.renderMascotFull()[0]); got != mascotFull[frameIdle][0] {
+			t.Fatalf("answering top row = %q, want the still idle row %q", got, mascotFull[frameIdle][0])
+		}
+		if text, _ := m.FooterPrefix(); text != mascotCompact[frameIdle] {
+			t.Fatalf("answering morsel = %q, want the still idle morsel %q", text, mascotCompact[frameIdle])
+		}
+	})
+}
+
+// TestMascotThinkingRise pins F.A4's edges beyond the mount itself (the
+// mount's shape lives in TestMascotStatusRow/thinking_status_row, amended
+// by A-023-2): the first answer token drops rise and bare line together,
+// the scan moves the risen rows while anim is on, and the welcome and rise
+// mounts never coexist — beginTurn's echo precedes every turn, so the rise
+// is only ever mounted inside conversationLines.
+func TestMascotThinkingRise(t *testing.T) {
+	t.Run("first_text_delta_drops_it", func(t *testing.T) {
+		m := New(newTestDeps(t)).(*Model)
+		m.echoUser("q")
+		m.turnActive = true
+		if cmd := m.applyEvent(agent.ReasoningDelta{Text: "hmm"}); cmd != nil {
+			t.Fatal("ReasoningDelta produced a command")
+		}
+		if cmd := m.applyEvent(agent.TextDelta{Text: "so,"}); cmd != nil {
+			t.Fatal("TextDelta produced a command")
+		}
+		_, plain := uitest.PaneScreen(m, 80, 22)
+		if strings.Contains(plain, "██") || strings.Contains(plain, "· thinking… (") {
+			t.Fatalf("the rise outlived the first TextDelta:\n%s", plain)
+		}
+	})
+
+	t.Run("scan_moves_the_risen_rows", func(t *testing.T) {
+		m := New(newTestDeps(t)).(*Model)
+		m.anim = true
+		m.echoUser("q")
+		m.turnActive = true
+		if cmd := m.applyEvent(agent.ReasoningDelta{Text: "hmm"}); cmd != nil {
+			t.Fatal("ReasoningDelta produced a command")
+		}
+		_, plain := uitest.PaneScreen(m, 80, 22)
+		if !strings.Contains(plain, " ██▄██▄█ ") {
+			t.Fatalf("the rise does not open on the frozen thinking pose:\n%s", plain)
+		}
+		if _, cmd := m.Update(scanTickMsg{}); cmd == nil {
+			t.Fatal("the scan tick re-armed nothing while thinking (F.A3)")
+		}
+		_, plain = uitest.PaneScreen(m, 80, 22)
+		if !strings.Contains(plain, " █▀██▀██ ") {
+			t.Fatalf("the risen rows did not scan to LEFT:\n%s", plain)
+		}
+	})
+
+	t.Run("welcome_and_rise_never_coexist", func(t *testing.T) {
+		// A forced thinking state on an EMPTY transcript — unreachable in
+		// production, where beginTurn's echo always precedes the first
+		// event — still renders the welcome mount and no thinking line:
+		// the rise exists only inside conversationLines.
+		m := New(newTestDeps(t)).(*Model)
+		m.turnActive = true
+		if cmd := m.applyEvent(agent.ReasoningDelta{Text: "hmm"}); cmd != nil {
+			t.Fatal("ReasoningDelta produced a command")
+		}
+		_, plain := uitest.PaneScreen(m, 80, 22)
+		if !strings.Contains(plain, "Ask the wiki a question.") {
+			t.Fatalf("the welcome mount is gone in the forced state:\n%s", plain)
+		}
+		if strings.Contains(plain, "· thinking… (") {
+			t.Fatalf("the rise mounted beside the welcome art:\n%s", plain)
+		}
+	})
 }

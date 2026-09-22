@@ -133,6 +133,18 @@ type Model struct {
 	// showReasoning is the ctrl+t toggle: the transcript area swaps to the
 	// dimmed reasoning-tail view until it is pressed again.
 	showReasoning bool
+
+	// anim (023 F.A6) is the mascot-motion switch: false at construction —
+	// every harness and test runs motionless, zero timers, every render
+	// today's bytes — and turned on only by cmd/lw's TUI (EnableAnim).
+	// scanStep is the eye-scan cycle's beat, eyesShut the idle blink's
+	// shut frame, and the *Armed flags keep each tick chain single-file;
+	// the machinery is mascot_anim.go.
+	anim       bool
+	scanStep   int
+	eyesShut   bool
+	scanArmed  bool
+	blinkArmed bool
 }
 
 var _ ui.Pane = (*Model)(nil)
@@ -194,10 +206,17 @@ const noAgentStatus = "no agent is configured (config did not load) — ask is o
 // question instead of quitting the program or opening the keys overlay.
 func (m *Model) CapturesText() bool { return true }
 
+// EnableAnim turns the mascot's motion on (023 F.A6). The flag is off at
+// construction — every harness runs motionless — and the shipped shell is
+// the only caller.
+func (m *Model) EnableAnim() { m.anim = true }
+
 // Init has nothing to load: the theme is already a copy of d.Theme and the
 // prompts were read at New; there is no channel to Listen on until a turn
-// starts (s4-tui.md S4-T6).
-func (m *Model) Init() tea.Cmd { return nil }
+// starts (s4-tui.md S4-T6). 023 F.A6: with the anim switch on it arms the
+// mascot's first blink tick — animArm is nil with the flag off, so a
+// motionless pane still inits to nil.
+func (m *Model) Init() tea.Cmd { return m.animArm() }
 
 // Update handles the shell's background-colour and colour-profile
 // broadcasts, the wheel, this screen's keymap, the event pump's own
@@ -265,7 +284,9 @@ func (m *Model) Update(msg tea.Msg) (ui.Pane, tea.Cmd) {
 
 	case EventMsg:
 		extra := m.applyEvent(msg.Ev)
-		return m, tea.Batch(m.rearm(), extra)
+		// animArm (023 F.A3) arms the scan when a round starts thinking
+		// and the blink when a turn ends; nil with anim off.
+		return m, tea.Batch(m.rearm(), extra, m.animArm())
 
 	case StreamClosedMsg:
 		m.ch = nil
@@ -283,7 +304,20 @@ func (m *Model) Update(msg tea.Msg) (ui.Pane, tea.Cmd) {
 			m.cancel()
 			m.cancel = nil
 		}
-		return m, nil
+		// The turn is over, idle again: animArm (023 F.A3) re-arms the
+		// blink the turn's ticks let die; nil with anim off.
+		return m, m.animArm()
+
+	case scanTickMsg:
+		// 023 F.A3: the eye-scan's beat — advance and re-arm while the
+		// round is thinking, stop by not re-issuing otherwise.
+		return m, m.handleScanTick()
+
+	case blinkTickMsg:
+		return m, m.handleBlinkTick()
+
+	case blinkOpenMsg:
+		return m, m.handleBlinkOpen()
 
 	case sessionClosedMsg:
 		if msg.err != nil {

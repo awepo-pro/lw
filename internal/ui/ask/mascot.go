@@ -1,39 +1,53 @@
 // mascot.go is the ask pane's mascot (workflow 016): a clawd-style pixel
-// creature drawn from terminal half-block cells, one theme accent, fully
-// static — a state change swaps the frame and nothing here owns a clock
-// (F.M5). It expresses the pane's state but is never a second source of
-// it: every state reads fields the turn state machine and 022's thinking
-// line already maintain (state.go), and the frames are frozen art (plan
-// 016 §2/§3) — byte-exact, single-width cells only.
+// creature drawn from terminal half-block cells, one theme accent. 023
+// (amendment A-023-1) put its motion behind the anim flag in
+// mascot_anim.go; this file stays what it always was — the frozen art
+// (plan 016 §2/§3, 023 F.A1's additions included), the state table, and
+// the frame selection, with never a clock nor a tick of its own. It
+// expresses the pane's state but is never a second source of it: every
+// state reads fields the turn state machine and 022's thinking line
+// already maintain (state.go), and the frames are byte-exact,
+// single-width cells only.
 package ask
 
 import (
 	lipgloss "charm.land/lipgloss/v2"
 )
 
-// mascotFrame selects one pose of the art: facing the curator, or looking
-// up while the model thinks. Error is not a pose — it is the idle art
-// rendered reversed (plan 016 §2: "no new art").
+// mascotFrame selects one pose of the art: facing the curator, looking up
+// while the model thinks, the 023 eye-scan darts, or mid-blink. Error is
+// not a pose — it is the idle art rendered reversed (plan 016 §2: "no new
+// art").
 type mascotFrame int
 
 const (
-	frameIdle     mascotFrame = iota
-	frameThinking             // the top row's ▀ eyes become ▄
+	frameIdle      mascotFrame = iota
+	frameThinking              // the top row's ▀ eyes become ▄
+	frameScanLeft              // 023 F.A1: the eyes dart left
+	frameScanRight             // 023 F.A1: the eyes dart right
+	frameBlink                 // 023 F.A1: the eyes shut
 )
 
 // mascotFull is the full three-row form (9 cells per row) that greets an
-// empty transcript; mascotCompact is the one-row form beside the thinking
-// status line and at the footer's left edge. Both are indexed by
-// mascotFrame, and the compact form is the full form's top row — the eyes
-// are the whole vocabulary, so the two sizes cannot drift apart.
+// empty transcript and rises above the thinking line (023 F.A4);
+// mascotCompact is the one-row form beside the thinking status line and at
+// the footer's left edge. Both are indexed by mascotFrame, and the compact
+// form is the full form's top row — the eyes are the whole vocabulary, so
+// the two sizes cannot drift apart.
 var (
-	mascotFull = [2][3]string{
-		frameIdle:     {" ██▀██▀█ ", "▀███████▀", " ▀██▀▀██ "},
-		frameThinking: {" ██▄██▄█ ", "▀███████▀", " ▀██▀▀██ "},
+	mascotFull = [5][3]string{
+		frameIdle:      {" ██▀██▀█ ", "▀███████▀", " ▀██▀▀██ "},
+		frameThinking:  {" ██▄██▄█ ", "▀███████▀", " ▀██▀▀██ "},
+		frameScanLeft:  {" █▀██▀██ ", "▀███████▀", " ▀██▀▀██ "},
+		frameScanRight: {" ███▀██▀ ", "▀███████▀", " ▀██▀▀██ "},
+		frameBlink:     {" ███████ ", "▀███████▀", " ▀██▀▀██ "},
 	}
-	mascotCompact = [2]string{
-		frameIdle:     "██▀██▀█ ",
-		frameThinking: "██▄██▄█ ",
+	mascotCompact = [5]string{
+		frameIdle:      "██▀██▀█ ",
+		frameThinking:  "██▄██▄█ ",
+		frameScanLeft:  "█▀██▀██ ",
+		frameScanRight: "███▀██▀ ",
+		frameBlink:     "███████ ",
 	}
 )
 
@@ -93,9 +107,10 @@ func (m *Model) mascotStyle(reversed bool) lipgloss.Style {
 // width above that at every size the shell can run at; whatever a too-short
 // or too-narrow panel cannot hold, Panel's own Pad clamps.
 func (m *Model) renderMascotFull() []string {
-	f, rev := mascotFrameFor(m.mascotState())
+	s := m.mascotState()
+	_, rev := mascotFrameFor(s)
 	style := m.mascotStyle(rev)
-	rows := mascotFull[f]
+	rows := mascotFull[m.mascotPose(s, true)]
 	out := make([]string, len(rows))
 	for i, r := range rows {
 		out[i] = style.Render(r)
@@ -105,8 +120,9 @@ func (m *Model) renderMascotFull() []string {
 
 // renderMascotCompact renders the current state's one-row form.
 func (m *Model) renderMascotCompact() string {
-	f, rev := mascotFrameFor(m.mascotState())
-	return m.mascotStyle(rev).Render(mascotCompact[f])
+	s := m.mascotState()
+	_, rev := mascotFrameFor(s)
+	return m.mascotStyle(rev).Render(mascotCompact[m.mascotPose(s, false)])
 }
 
 // mascotStatusRow is the thinking status line with the compact form at its
@@ -128,6 +144,7 @@ func (m *Model) FooterPrefix() (string, lipgloss.Style) {
 	if m.thinkingVisible() {
 		return "", lipgloss.Style{}
 	}
-	f, rev := mascotFrameFor(m.mascotState())
-	return mascotCompact[f], m.mascotStyle(rev)
+	s := m.mascotState()
+	_, rev := mascotFrameFor(s)
+	return mascotCompact[m.mascotPose(s, false)], m.mascotStyle(rev)
 }
