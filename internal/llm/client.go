@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // Client is an OpenAI-compatible chat-completions client bound to one
@@ -24,7 +25,33 @@ type Client struct {
 // *http.Client unbounded and relies entirely on the caller's ctx for
 // cancellation.
 func New(cfg Config) *Client {
-	hc := &http.Client{}
+	// 025 T4 (ask cold-start): the agent talks to ONE endpoint for the
+	// whole life of a TUI session, so the transport is tuned for connection
+	// reuse instead of http.DefaultTransport's browser-era defaults. It
+	// starts as a clone — TLS handshake timeout, HTTP/2, proxy handling all
+	// stay stock — and only the two idle-pool knobs below move.
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	// IdleConnTimeout 4min (DefaultTransport: 90s). The 025 debug log shows
+	// the first request after a >10min idle gap paying ~0.9s median extra
+	// TTFB (6.66s vs 5.75s warm, outliers to 15.45s): 90s reaped the pooled
+	// connection long before, so the ask re-dials and pays a full TCP+TLS
+	// handshake. An interactive session's dominant between-turn gap — read
+	// the answer, think, ask the next thing — is seconds to a few minutes,
+	// and the pool should hold the connection across it. If the provider
+	// closes its side earlier than 4min, net/http detects the dead socket
+	// and replays the request on a fresh one via GetBody (populated for
+	// every request in newHTTPRequest) — the same one-replay the retry
+	// path below already tolerates — so the worst case is one round trip,
+	// not an error.
+	tr.IdleConnTimeout = 4 * time.Minute
+	// MaxIdleConnsPerHost 4 (DefaultTransport: 2). A session has exactly
+	// one host, and its peak concurrency is one streaming turn plus an
+	// occasional Probe — which shares this same transport (probe.go) — so
+	// 4 slots pool every connection the session can create with headroom:
+	// a returned connection is never dropped for lack of a pool slot, and
+	// the next ask reuses it warm.
+	tr.MaxIdleConnsPerHost = 4
+	hc := &http.Client{Transport: tr}
 	if cfg.Timeout > 0 {
 		hc.Timeout = cfg.Timeout
 	}
@@ -144,29 +171,33 @@ func (c *Client) newHTTPRequest(ctx context.Context, req Request) (*http.Request
 // the caller to decide (backbone §8: "no retries beyond a single
 // transport-level retry"). A retry after ctx is already done, or when the
 // body cannot be replayed, is skipped in favor of returning the original
-// error.
-func (c *Client) do(httpReq *http.Request) (*http.Response, error) {
+// error. It returns the response together with headersAt, the instant that
+// response's headers were parsed — the anchor the stream's first_delta_ms
+// timing (025 T4) measures from.
+func (c *Client) do(httpReq *http.Request) (*http.Response, time.Time, error) {
 	// The file log's request line (010 contract §0): model, endpoint and
 	// the body's byte count — never the body, which carries the prompt and
 	// the API key's Authorization header stays out of it entirely.
 	slog.Info("llm request", "model", c.cfg.Model, "url", httpReq.URL.String(), "prompt_bytes", httpReq.ContentLength)
 	resp, err := c.httpClient.Do(httpReq)
 	if err == nil {
+		headersAt := time.Now()
 		slog.Info("llm response", "status", resp.StatusCode)
-		return resp, nil
+		return resp, headersAt, nil
 	}
 	if httpReq.Context().Err() != nil || httpReq.GetBody == nil {
-		return nil, err
+		return nil, time.Time{}, err
 	}
 	body, gbErr := httpReq.GetBody()
 	if gbErr != nil {
-		return nil, err
+		return nil, time.Time{}, err
 	}
 	httpReq.Body = body
 	resp, err = c.httpClient.Do(httpReq)
 	if err != nil {
-		return nil, err
+		return nil, time.Time{}, err
 	}
+	headersAt := time.Now()
 	slog.Info("llm response", "status", resp.StatusCode)
-	return resp, nil
+	return resp, headersAt, nil
 }
