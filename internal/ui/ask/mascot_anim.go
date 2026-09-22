@@ -142,6 +142,17 @@ func (m *Model) animArm() tea.Cmd {
 		if m.scanArmed {
 			return nil
 		}
+		// The phase-start transition: scanArmed false + thinkingVisible
+		// true is unreachable mid-phase — a chain only dies when
+		// !thinkingVisible — so arming here is where the cycle resets to
+		// its head (F.A2: UP). Without this, a chain that died mid-cycle
+		// leaves the next phase's rise on a mid-cycle pose for up to one
+		// scanEvery before the first tick advances it (F.M4: entering
+		// msThinking renders the thinking frame). Never reset in the tick
+		// handlers — that would hold the cycle at UP — and no turn-end
+		// reset either: a tool round's next phase re-enters through this
+		// same transition and opens at UP too.
+		m.scanStep = 0
 		m.scanArmed = true
 		return scanTickCmd()
 	case m.blinkEligible():

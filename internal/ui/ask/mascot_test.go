@@ -705,6 +705,66 @@ func TestMascotThinkingRise(t *testing.T) {
 		}
 	})
 
+	t.Run("second_phase_opens_at_up", func(t *testing.T) {
+		// The scan cycle resets at each thinking-phase start: a chain that
+		// died mid-cycle leaves scanStep where it stopped, and an un-reset
+		// step makes the NEXT phase's rise render its first beat on a
+		// mid-cycle pose — mascotScanCycle[3], scan RIGHT — for up to one
+		// scanEvery before the first tick advances it. That breaks F.A2
+		// (UP is the cycle's head) and F.M4 (entering msThinking renders
+		// the thinking frame). The reset lives at the re-arm: scanArmed
+		// false + thinkingVisible true IS the phase-start transition, a
+		// state unreachable mid-phase since a chain only dies when
+		// !thinkingVisible.
+		m := New(newTestDeps(t)).(*Model)
+		m.anim = true
+		m.echoUser("q")
+		m.turnActive = true
+		if cmd := m.applyEvent(agent.ReasoningDelta{Text: "hmm"}); cmd != nil {
+			t.Fatal("ReasoningDelta produced a command")
+		}
+		for i := 0; i < 3; i++ {
+			if _, cmd := m.Update(scanTickMsg{}); cmd == nil {
+				t.Fatal("scan tick re-armed nothing while thinking (F.A3)")
+			}
+		}
+		if m.scanStep != 3 {
+			t.Fatalf("scanStep = %d after three ticks, want 3", m.scanStep)
+		}
+		// The first answer token stills the round; the in-flight tick then
+		// dies without re-arming (F.A3 c) — scanStep stays where it was.
+		if cmd := m.applyEvent(agent.TextDelta{Text: "so,"}); cmd != nil {
+			t.Fatal("TextDelta produced a command")
+		}
+		if _, cmd := m.Update(scanTickMsg{}); cmd != nil {
+			t.Fatal("the dying scan tick re-armed while answering (F.A3 c)")
+		}
+		if cmd := m.applyEvent(agent.DoneEv{Reason: "stop", Rounds: 1}); cmd != nil {
+			t.Fatal("DoneEv produced a command")
+		}
+		// Phase 2 (a tool round inside the turn is the same transition): a
+		// new turn's first reasoning re-arms the scan through the real
+		// path (Update's animArm, ask.go) — and no tick has fired yet, so
+		// the risen rows must ALREADY be the frozen thinking frame,
+		// byte-exact.
+		m.turnActive = true
+		if cmd := m.applyEvent(agent.ReasoningDelta{Text: "again"}); cmd != nil {
+			t.Fatal("ReasoningDelta produced a command")
+		}
+		if cmd := m.animArm(); cmd == nil {
+			t.Fatal("the second phase's re-arm produced no scan tick")
+		}
+		if m.scanStep != 0 {
+			t.Fatalf("scanStep = %d at the second phase's start, want 0 (the cycle opens at UP, F.A2)", m.scanStep)
+		}
+		rows := m.renderMascotFull()
+		for i, want := range mascotFull[frameThinking] {
+			if got := ansi.Strip(rows[i]); got != want {
+				t.Fatalf("risen row %d = %q, want the frozen thinking row %q", i, got, want)
+			}
+		}
+	})
+
 	t.Run("welcome_and_rise_never_coexist", func(t *testing.T) {
 		// A forced thinking state on an EMPTY transcript — unreachable in
 		// production, where beginTurn's echo always precedes the first
