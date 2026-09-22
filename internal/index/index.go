@@ -13,6 +13,27 @@ import (
 // defaultLimit is what Options.Limit == 0 means.
 const defaultLimit = 20
 
+// indexSchema is the current index schema version. 028 (schema 2) stems
+// every BM25 field's tokens (stem.go), which silently changes what the
+// saved term frequencies mean — a pre-028 file's surface-token index must
+// not be reused against a stemmed query side. 028 A-028-2 (schema 3) adds
+// each doc's surface-token set (docEntry.SurfaceSet), which a schema-2 file
+// simply does not carry — scoring an exact-surface boost over a file without
+// the sets would read every doc as a pure morphological match. Version 1 is
+// intentionally unused headroom between the unversioned files and 028's
+// stemming schema. gobIndex carries the version on disk; pre-028 files have
+// no Schema field at all and therefore decode as 0, which never equals
+// indexSchema, so StaleAgainst reports them stale and the engine's existing
+// open path rebuilds and re-saves them (correction log #4/#5 — no new error
+// path).
+const indexSchema = 3
+
+// SchemaVersion is indexSchema, exported for the one caller outside this
+// package that must word a version mismatch honestly (lw doctor's index
+// check reports "written by an older lw (index format N, want M)" rather
+// than folding it into a generic "stale against the vault").
+const SchemaVersion = indexSchema
+
 // snippetMaxRunes is Hit.Snippet's maximum length, in runes, including any
 // elision marks.
 const snippetMaxRunes = 200
@@ -61,6 +82,14 @@ type docEntry struct {
 	TitleLen         int
 	TagLen           int
 	AbstractLen      int
+
+	// SurfaceSet is the doc's surface vocabulary (A-028-2): every token the
+	// pre-stem Tokenize produced over title, tags, abstract and body. A set,
+	// not a frequency map — the surface boost asks "does the doc spell the
+	// query this way at all", never "how often". Kept separate from the
+	// stemmed freq maps above on purpose: same tokens, different derivation
+	// (pre-stem) and different shape (membership, not counts).
+	SurfaceSet map[string]struct{}
 }
 
 // Index is the in-memory inverted word index over a vault's pages.
@@ -73,6 +102,10 @@ type docEntry struct {
 // makes sharing unchanged entries between the old and new maps safe.
 type Index struct {
 	docs atomic.Pointer[map[string]*docEntry] // keyed by Path
+	// schema is the layout version this in-memory index was built or
+	// decoded with (indexSchema). Atomic for the same reason docs is: a
+	// concurrent StaleAgainst must never catch Rebuild mid-update.
+	schema atomic.Int32
 }
 
 // Build constructs a fresh Index over every page in v.
@@ -83,6 +116,7 @@ func Build(v *vault.Vault) *Index {
 	}
 	ix := &Index{}
 	ix.docs.Store(&docs)
+	ix.schema.Store(indexSchema)
 	return ix
 }
 
@@ -90,10 +124,20 @@ func Build(v *vault.Vault) *Index {
 // result is identical regardless of whether it is produced by Build or by
 // Update.
 func buildDocEntry(p *vault.Page) *docEntry {
-	body := bodyTokens(p)
-	title := Tokenize(p.FM.Title)
-	tags := tagTokens(p.FM.Tags)
-	absTokens, absText := abstractTokens(p)
+	// 028: every BM25 field is stemmed after tokenizing (analyze/stemmed),
+	// so the query side — stemmed through the same step — meets an
+	// identically-stemmed index. The assembler helpers stay surface
+	// (backbone §3): bodyTokens applies the wikilink extra-segment rule
+	// BEFORE stemming, and the assembled lists pass through stemmed() here.
+	// The unstemmed lists are kept alongside: A-028-2's SurfaceSet is their
+	// union, the doc's own spelling of every word the stemmed fields carry.
+	bodyRaw := bodyTokens(p)
+	body := stemmed(bodyRaw)
+	title := analyze(p.FM.Title)
+	tagsRaw := tagTokens(p.FM.Tags)
+	tags := stemmed(tagsRaw)
+	absRaw, absText := abstractTokens(p)
+	absTokens := stemmed(absRaw)
 
 	return &docEntry{
 		Path:    p.Path,
@@ -114,8 +158,28 @@ func buildDocEntry(p *vault.Page) *docEntry {
 		TagLen:           len(tags),
 		AbstractLen:      len(absTokens),
 
+		SurfaceSet: surfaceSet(bodyRaw, Tokenize(p.FM.Title), tagsRaw, absRaw),
+
 		Abstract: absText,
 	}
+}
+
+// surfaceSet unions every field's surface token list into one set — the
+// docEntry.SurfaceSet A-028-2 scores against. Duplicate tokens across fields
+// (an abstract word is also a body word) collapse: membership is the only
+// question the boost asks.
+func surfaceSet(fieldTokens ...[]string) map[string]struct{} {
+	n := 0
+	for _, toks := range fieldTokens {
+		n += len(toks)
+	}
+	set := make(map[string]struct{}, n)
+	for _, toks := range fieldTokens {
+		for _, t := range toks {
+			set[t] = struct{}{}
+		}
+	}
+	return set
 }
 
 // abstractTokens returns p's "## Abstract" section text — the first Section
@@ -182,11 +246,15 @@ func freqMap(tokens []string) map[string]int {
 func (ix *Index) Rebuild(v *vault.Vault) {
 	fresh := Build(v)
 	ix.docs.Store(fresh.docs.Load())
+	ix.schema.Store(indexSchema)
 }
 
 // Update re-indexes the pages named by paths: a path still present in v is
 // (re-)built from the vault's current content, a path no longer present in
-// v is dropped from the index entirely.
+// v is dropped from the index entirely. It deliberately leaves ix's schema
+// alone: the unchanged entries it carries over keep whatever layout they
+// were built with, so a schema-old index stays stale (and will be rebuilt
+// on the next open) rather than masquerading as current.
 //
 // Copy-on-write (008 A-802): the unchanged entries are carried over by
 // pointer into a fresh map, which is then stored in one step — a concurrent
@@ -218,9 +286,26 @@ func (ix *Index) Len() int {
 	return 0
 }
 
-// StaleAgainst reports whether ix no longer matches v: a different set of
-// pages, or a page whose SHA256 has changed since it was indexed.
+// Schema returns the layout version this index was built or decoded with
+// (indexSchema for anything this binary wrote; an older number for a file
+// an older lw saved). lw doctor reads it to tell "written by an older lw
+// (index format N, want M)" — a version problem every rebuild fixes — apart
+// from "stale against the vault", whose rebuild re-indexes the pages as
+// they are now. Atomic like every schema reader: writers store docs first
+// and schema second, so a current-schema answer never describes docs the
+// schema does not (schema_concurrency_test.go).
+func (ix *Index) Schema() int {
+	return int(ix.schema.Load())
+}
+
+// StaleAgainst reports whether ix no longer matches v: a schema version
+// other than the current one (028: a pre-028 file decodes as 0 and can
+// never be current), a different set of pages, or a page whose SHA256 has
+// changed since it was indexed.
 func (ix *Index) StaleAgainst(v *vault.Vault) bool {
+	if ix.schema.Load() != indexSchema {
+		return true
+	}
 	pages := v.Pages()
 	var docs map[string]*docEntry
 	if p := ix.docs.Load(); p != nil {
