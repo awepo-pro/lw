@@ -203,17 +203,18 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("config: parse %s: %w", path, err)
 	}
 	cfg := mergeOverDefault(Default(), fromShadow(s), md)
-	if err := validateStallTimeout(cfg.LLM.StallTimeout); err != nil {
+	if err := ValidateStallTimeout(cfg.LLM.StallTimeout); err != nil {
 		return nil, err
 	}
 	return cfg, nil
 }
 
-// validateStallTimeout rejects an llm.stall_timeout value Load cannot honour
+// ValidateStallTimeout rejects an llm.stall_timeout value Load cannot honour
 // (026 T3, F.K2): not a Go duration string, or negative — a negative bound
 // would fail every turn, which is not what "0 = off" means. "" is the key
-// absent and always valid; StallTimeoutDuration owns the default.
-func validateStallTimeout(v string) error {
+// absent and always valid; StallTimeoutDuration owns the default. Exported so
+// writers of the key (lw config set) apply the same rule before saving.
+func ValidateStallTimeout(v string) error {
 	if v == "" {
 		return nil
 	}
