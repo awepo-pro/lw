@@ -150,6 +150,11 @@ func footerContent(t Theme, keys KeyMap, p Pane, w int) string {
 		}
 		bindings = combined
 	}
+	if fp, ok := p.(FooterPrefix); ok {
+		if text, style := fp.FooterPrefix(); text != "" {
+			return prefixedFooterLine(t, w, text, style, bindings)
+		}
+	}
 	return footerLine(t, w, bindings)
 }
 
@@ -271,14 +276,35 @@ func footerEntriesWidth(bs []footerEntry) int {
 // by two spaces, always ending with "? help". Whole bindings are dropped
 // from the end — never mid-word — until the row fits within w-1.
 func footerLine(t Theme, w int, bindings []key.Binding) string {
+	return prefixedFooterLine(t, w, "", lipgloss.Style{}, bindings)
+}
+
+// prefixedFooterLine is footerLine with a pane-supplied morsel at column 1
+// (016 F.M3: the ask mascot's compact form) and the binding block shifted
+// right behind the same two-space gap the pairs use. The morsel is chrome:
+// it renders only where the pane's WHOLE binding list keeps its place
+// beside it, so it never costs a binding and never clips; at narrower
+// widths — and for every pane without one — the row is byte-identical to
+// what footerLine has always drawn.
+func prefixedFooterLine(t Theme, w int, prefix string, prefixStyle lipgloss.Style, bindings []key.Binding) string {
 	last := footerEntry{key: "?", desc: "help"}
 	bs := footerBindingEntries(bindings)
+	if prefix != "" {
+		block := append(append([]footerEntry{}, bs...), last)
+		if footerEntriesWidth(block)+utf8.RuneCountInString(prefix)+2 > w-1 {
+			prefix = "" // the morsel yields whole before any binding moves
+		}
+	}
 	for len(bs) > 0 && footerEntriesWidth(append(append([]footerEntry{}, bs...), last)) > w-1 {
 		bs = bs[:len(bs)-1]
 	}
 
 	r := newRow(w)
 	x := 1
+	if prefix != "" {
+		// An empty style writes the pre-styled morsel through untouched.
+		x = r.put(x, prefix, prefixStyle) + 2
+	}
 	for _, e := range append(bs, last) {
 		x = r.put(x, e.key, t.Bold) + 1
 		x = r.put(x, e.desc, t.Muted) + 2

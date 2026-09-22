@@ -75,12 +75,13 @@ func TestAskCapturesText(t *testing.T) {
 
 	// The input row is the Message panel's one content row (view.go's
 	// messagePanel): accent `›`, the typed text from column 2, the accent
-	// `█` cursor right after it — the only `█` on the frame. Strip the
-	// panel borders and it must be exactly `› ` + question + `█` — nothing
-	// eaten (q, ?), nothing swallowed by an overlay.
+	// `█` cursor right after it. Strip the panel borders and it must be
+	// exactly `› ` + question + `█` — nothing eaten (q, ?), nothing
+	// swallowed by an overlay. Scoped to the Message row by its `›` since
+	// 016: the mascot's frozen block art carries `█` on the footer too.
 	var input string
 	for _, line := range strings.Split(plain, "\n") {
-		if trimmed := strings.TrimRight(line, " "); strings.Contains(trimmed, "█") {
+		if trimmed := strings.TrimRight(line, " "); strings.Contains(trimmed, "█") && strings.Contains(trimmed, "›") {
 			input = trimmed
 		}
 	}

@@ -66,6 +66,12 @@ func (m *Model) transcriptPanel(w, th int) []string {
 			lines = lines[start : len(lines)-m.back]
 			cursor -= start
 		}
+	} else {
+		// 016 F.M2: the mascot's full form is the empty pane's greeting,
+		// above the intro, gone the moment the scrollback has anything in
+		// it. Mounted here rather than inside emptyTranscriptLines, whose
+		// mockgen.ask_empty shape the webhint test pins byte for byte.
+		lines = m.welcomeLines(lines)
 	}
 	if cursor < 0 || cursor >= len(lines) {
 		cursor = -1
@@ -83,6 +89,23 @@ func (m *Model) transcriptPanel(w, th int) []string {
 		// `↓ N more`.
 		Overflow: len(m.entries) == 0,
 	}, w, th)
+}
+
+// welcomeLines prepends the mascot's full form and one blank row to the
+// empty state's lines, dropping as many of its lead-in blanks as the art
+// displaces (plan 016 §5): the intro, hint and Try block keep their exact
+// shape and order, the art takes the flexible space at the top, and Panel
+// clamps whatever a too-short panel cannot hold.
+func (m *Model) welcomeLines(lines []string) []string {
+	art := m.renderMascotFull()
+	drop := 0
+	for drop < len(lines) && drop < len(art)+1 && lines[drop] == "" {
+		drop++
+	}
+	out := make([]string, 0, len(art)+1+len(lines)-drop)
+	out = append(out, art...)
+	out = append(out, "")
+	return append(out, lines[drop:]...)
 }
 
 // emptyTranscriptLines is mockgen.ask_empty: blank lead-in space, the
@@ -166,9 +189,10 @@ func (m *Model) conversationLines(w int) (lines []string, cursor int) {
 	}
 	// 022 T2: the thinking status line rides at the tail of the
 	// conversation while the current round is thinking — one clipped,
-	// dimmed line, never an entry of its own.
+	// dimmed line, never an entry of its own. 016 F.M3: the mascot's
+	// compact form sits at its left while it shows.
 	if m.thinkingVisible() {
-		lines = append(lines, ui.Clip(m.theme.Faint.Render(m.thinkingStatusLine()), w))
+		lines = append(lines, ui.Clip(m.mascotStatusRow(), w))
 	}
 	return lines, cursor
 }
@@ -195,7 +219,7 @@ func (m *Model) reasoningViewLines(w int) []string {
 		}
 	}
 	if m.thinkingVisible() {
-		lines = append(lines, ui.Clip(m.theme.Faint.Render(m.thinkingStatusLine()), w))
+		lines = append(lines, ui.Clip(m.mascotStatusRow(), w))
 	}
 	return lines
 }
