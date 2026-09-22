@@ -712,10 +712,11 @@ func TestMascotThinkingRise(t *testing.T) {
 		// mid-cycle pose — mascotScanCycle[3], scan RIGHT — for up to one
 		// scanEvery before the first tick advances it. That breaks F.A2
 		// (UP is the cycle's head) and F.M4 (entering msThinking renders
-		// the thinking frame). The reset lives at the re-arm: scanArmed
-		// false + thinkingVisible true IS the phase-start transition, a
-		// state unreachable mid-phase since a chain only dies when
-		// !thinkingVisible.
+		// the thinking frame). The reset rides the thinking phase's
+		// invisible→visible edge (animArm's scanPhaseLive tracking, not
+		// the re-arm): this leg is the dead-chain shape — the tick dies in
+		// the silent window, so the phase-2 reasoning also re-arms; its
+		// surviving-chain sibling below covers the arm that defers.
 		m := New(newTestDeps(t)).(*Model)
 		m.anim = true
 		m.echoUser("q")
@@ -753,6 +754,72 @@ func TestMascotThinkingRise(t *testing.T) {
 		}
 		if cmd := m.animArm(); cmd == nil {
 			t.Fatal("the second phase's re-arm produced no scan tick")
+		}
+		if m.scanStep != 0 {
+			t.Fatalf("scanStep = %d at the second phase's start, want 0 (the cycle opens at UP, F.A2)", m.scanStep)
+		}
+		rows := m.renderMascotFull()
+		for i, want := range mascotFull[frameThinking] {
+			if got := ansi.Strip(rows[i]); got != want {
+				t.Fatalf("risen row %d = %q, want the frozen thinking row %q", i, got, want)
+			}
+		}
+	})
+
+	t.Run("second_phase_opens_at_up_surviving_chain", func(t *testing.T) {
+		// The surviving-chain sibling of the leg above: when a scan tick is
+		// still in flight across a fast round boundary — TextDelta →
+		// ToolCallEv → ToolResEv → the next round's ReasoningDelta all
+		// inside one scanEvery — the chain never dies, scanArmed stays
+		// true, and the re-arm defers. The reset must therefore ride the
+		// thinking phase's invisible→visible edge, not the re-arm: the leg
+		// above kills the chain before phase 2 by construction, so it
+		// cannot see this path, where an un-reset cycle opens phase 2 on
+		// phase 1's last pose (mascotScanCycle[3], scan RIGHT) for up to
+		// one scanEvery.
+		m := New(newTestDeps(t)).(*Model)
+		m.anim = true
+		m.echoUser("q")
+		m.turnActive = true
+		// Phase 1 driven through the real Update path — EventMsg is where
+		// animArm runs beside applyEvent (ask.go).
+		if _, cmd := m.Update(EventMsg{Ev: agent.ReasoningDelta{Text: "hmm"}}); cmd == nil {
+			t.Fatal("ReasoningDelta armed no scan tick (F.A3)")
+		}
+		// Three delivered beats park the cycle on its last pose —
+		// mascotScanCycle[3] — and the third beat's re-arm hands the fourth
+		// tick back undelivered: this is the state the boundary must
+		// survive, scanArmed true with a tick in flight.
+		for i := 0; i < 3; i++ {
+			if _, cmd := m.Update(scanTickMsg{}); cmd == nil {
+				t.Fatal("scan tick re-armed nothing while thinking (F.A3)")
+			}
+		}
+		if m.scanStep != 3 {
+			t.Fatalf("scanStep = %d after three ticks, want 3", m.scanStep)
+		}
+		if !m.scanArmed {
+			t.Fatal("scanArmed false with a tick still in flight")
+		}
+		// The whole round boundary inside one scanEvery: no tick fires
+		// between the last phase-1 beat and the next round's reasoning, so
+		// nothing arms in the silent window and the chain survives into
+		// phase 2.
+		for _, ev := range []agent.Event{
+			agent.TextDelta{Text: "so,"},
+			agent.ToolCallEv{ID: "t1", Name: "wiki.search", Args: `{}`},
+			agent.ToolResEv{ID: "t1", Name: "wiki.search", Content: "[]"},
+		} {
+			if _, cmd := m.Update(EventMsg{Ev: ev}); cmd != nil {
+				t.Fatalf("%T armed a timer inside the silent window (F.A3)", ev)
+			}
+		}
+		// Phase 2's first reasoning re-enters thinking through the real
+		// path with the old chain still armed — the arm must defer (single
+		// file, F.A3) and the cycle must STILL open at UP, before any tick
+		// has fired.
+		if _, cmd := m.Update(EventMsg{Ev: agent.ReasoningDelta{Text: "again"}}); cmd != nil {
+			t.Fatal("the surviving chain's re-entry stacked a second scan tick (F.A3)")
 		}
 		if m.scanStep != 0 {
 			t.Fatalf("scanStep = %d at the second phase's start, want 0 (the cycle opens at UP, F.A2)", m.scanStep)

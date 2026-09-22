@@ -135,16 +135,21 @@ type Model struct {
 	showReasoning bool
 
 	// anim (023 F.A6) is the mascot-motion switch: false at construction —
-	// every harness and test runs motionless, zero timers, every render
-	// today's bytes — and turned on only by cmd/lw's TUI (EnableAnim).
-	// scanStep is the eye-scan cycle's beat, eyesShut the idle blink's
-	// shut frame, and the *Armed flags keep each tick chain single-file;
-	// the machinery is mascot_anim.go.
-	anim       bool
-	scanStep   int
-	eyesShut   bool
-	scanArmed  bool
-	blinkArmed bool
+	// every harness and test runs motionless, zero timers — and turned on
+	// only by cmd/lw's TUI (EnableAnim). With the flag off every render is
+	// today's bytes except one by design: the A-023-2 thinking rise mounts
+	// with or without anim (the rise is the layout fix; anim gates only
+	// the motion) and holds the frozen thinking pose. scanStep is the
+	// eye-scan cycle's beat, eyesShut the idle blink's shut frame,
+	// scanPhaseLive marks the thinking phase live so the cycle resets on
+	// its invisible→visible edge, and the *Armed flags keep each tick
+	// chain single-file; the machinery is mascot_anim.go.
+	anim          bool
+	scanStep      int
+	eyesShut      bool
+	scanArmed     bool
+	blinkArmed    bool
+	scanPhaseLive bool
 }
 
 var _ ui.Pane = (*Model)(nil)

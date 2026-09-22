@@ -128,12 +128,34 @@ func (m *Model) mascotPose(s mascotState, full bool) mascotFrame {
 // animArm returns the tick the pane's current state calls for, arming each
 // chain at the transition that starts it — a round's first reasoning (the
 // scan) and a turn's end (the blink) — and never doubling one already in
-// flight. Init arms the first blink for a freshly opened pane; Update
-// calls this beside its existing re-arm on every agent event and when a
-// stream is cut. A chain in flight needs no arming: its own handlers
-// re-arm it while the state holds and let it die when the state turns. nil
-// with anim off.
+// flight; it also tracks the thinking phase's visible edge, the one place
+// the scan cycle resets to its head. Init arms the first blink for a
+// freshly opened pane; Update calls this beside its existing re-arm on
+// every agent event and when a stream is cut. A chain in flight needs no
+// arming: its own handlers re-arm it while the state holds and let it die
+// when the state turns. nil with anim off.
 func (m *Model) animArm() tea.Cmd {
+	// The scan cycle resets on the thinking phase's invisible→visible edge
+	// (F.A2: the cycle opens at UP; F.M4: entering msThinking renders the
+	// thinking frame) — not at the re-arm below. animArm runs on every
+	// EventMsg and on StreamClosedMsg, the only messages that can flip
+	// thinkingVisible (round flags change in applyEvent, the turn ends in
+	// endTurn/endTurnError, cuts reset in StreamClosedMsg), so no edge is
+	// missed; beats while the phase stays live never reset, which is what
+	// keeps the cycle advancing instead of pinned at UP. The edge is also
+	// what covers the surviving chain: a scan tick still in flight across
+	// a fast round boundary leaves scanArmed true and the arm below
+	// defers, and only this edge still puts the next phase at UP.
+	// turnStartedMsg cannot produce it — thinkingVisible is false on both
+	// sides of it. The tracking sits before the anim guard (EnableAnim
+	// precedes Init, so anim off never sees an edge; unconditional and
+	// cheap either way).
+	live := m.thinkingVisible()
+	if live && !m.scanPhaseLive {
+		m.scanStep = 0 // invisible→visible edge: the phase opens at the cycle head (F.A2, F.M4)
+	}
+	m.scanPhaseLive = live
+
 	if !m.anim {
 		return nil
 	}
@@ -142,17 +164,9 @@ func (m *Model) animArm() tea.Cmd {
 		if m.scanArmed {
 			return nil
 		}
-		// The phase-start transition: scanArmed false + thinkingVisible
-		// true is unreachable mid-phase — a chain only dies when
-		// !thinkingVisible — so arming here is where the cycle resets to
-		// its head (F.A2: UP). Without this, a chain that died mid-cycle
-		// leaves the next phase's rise on a mid-cycle pose for up to one
-		// scanEvery before the first tick advances it (F.M4: entering
-		// msThinking renders the thinking frame). Never reset in the tick
-		// handlers — that would hold the cycle at UP — and no turn-end
-		// reset either: a tool round's next phase re-enters through this
-		// same transition and opens at UP too.
-		m.scanStep = 0
+		// The phase opened with no chain in flight: start the scan. The
+		// cycle's reset lives on the edge above, not here — a surviving
+		// chain defers this arm and must still open its phase at UP.
 		m.scanArmed = true
 		return scanTickCmd()
 	case m.blinkEligible():
