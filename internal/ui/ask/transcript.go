@@ -235,10 +235,17 @@ func (m *Model) mountedTailLines() int {
 
 // reasoningViewLines draws the ctrl+t view: the current turn's reasoning
 // tail — wrapPlain-wrapped to the pane width, dimmed, at most the last
-// reasoningViewMaxLines lines — and, while the phase rule holds, the
-// thinking status line under it. A turn with no reasoning yet says so
-// rather than drawing an empty panel. Pane state only: nothing here reads
-// or writes m.entries.
+// reasoningViewMaxLines lines — and, while a busy status row applies, that
+// row under it: 022's `· thinking… (N chars)` while the round thinks,
+// 025 F.W4's `· sending…` while the pane waits (both via
+// mascotStatusRow's one composition — the view keeps the old
+// compact+status row byte for byte, 023 F.A4). Without the waiting leg
+// here the view would show no busy sign at all during the cold-start
+// window: the transcript's sending row lives in conversationLines, which
+// the toggle replaces, and A-025-3 withdraws the footer morsel for exactly
+// that window — one head per busy state means the head must ride the view.
+// A turn with no reasoning yet says so rather than drawing an empty panel.
+// Pane state only: nothing here reads or writes m.entries.
 func (m *Model) reasoningViewLines(w int) []string {
 	if w < 1 {
 		w = 1
@@ -254,7 +261,7 @@ func (m *Model) reasoningViewLines(w int) []string {
 			lines = lines[len(lines)-reasoningViewMaxLines:]
 		}
 	}
-	if m.thinkingVisible() {
+	if m.thinkingVisible() || m.waitingVisible() {
 		lines = append(lines, ui.Clip(m.mascotStatusRow(), w))
 	}
 	return lines
