@@ -434,6 +434,86 @@ func TestAnswerDisplay(t *testing.T) {
 		}
 	})
 
+	// hidden_render_then_file_keeps_raw: the mainline ordering — a finished
+	// turn renders hidden (the default), THEN ctrl+s files it. The filing
+	// message embeds the raw record: every marker and the vault label too
+	// (the filing agent needs both — the markers make the query page
+	// attributable, the label tells it part of the answer was outside
+	// knowledge). Tier-2 027: this ordering had no pin — only the ctrl+p
+	// (shown) → ctrl+s one did.
+	t.Run("hidden_render_then_file_keeps_raw", func(t *testing.T) {
+		m := hintTurn(t,
+			agent.TextDelta{Text: "Not from your vault:\n\nParis is the capital. But attention is the cache.^[raw/articles/kv-cache-explained.md]"},
+			agent.DoneEv{Reason: "stop", Rounds: 1},
+		)
+		if lines, _ := m.conversationLines(76); strings.Contains(displayPlain(lines), "Not from your vault") ||
+			strings.Contains(displayPlain(lines), "^[") {
+			t.Fatalf("precondition: the pane did not render hidden:\n%s", displayPlain(lines))
+		}
+		if !strings.Contains(m.last.answer, "Not from your vault:") {
+			t.Fatalf("the recorded answer lost the label: %q", m.last.answer)
+		}
+		if !m.lastAnswerFileable() {
+			t.Fatalf("precondition: the labelled, marked answer is not fileable: %q", m.last.answer)
+		}
+		fa, ok := m.deps.Agent.(*fakeTurnAgent)
+		if !ok {
+			t.Fatalf("agent is %T, want *fakeTurnAgent", m.deps.Agent)
+		}
+		fa.script = []agent.Event{
+			agent.TextDelta{Text: "Filed. See ^[wiki/queries/paris.md]"},
+			agent.DoneEv{Reason: "stop", Rounds: 1},
+		}
+		pane, cmd := m.Update(specialKey('s', tea.ModCtrl))
+		m = pane.(*Model)
+		if cmd == nil {
+			t.Fatal("ctrl+s produced no command")
+		}
+		var seen []tea.Msg
+		runCmd(t, m, cmd, &seen)
+		msgs := fa.sentMsgs()
+		if len(msgs) < 2 {
+			t.Fatalf("the filing turn sent %d messages, want the question + the filing message", len(msgs))
+		}
+		last := msgs[len(msgs)-1]
+		if !strings.Contains(last, "^[raw/articles/kv-cache-explained.md]") {
+			t.Fatalf("the filing message lost the raw marker:\n%s", last)
+		}
+		if !strings.Contains(last, "Not from your vault:") {
+			t.Fatalf("the filing message lost the raw label:\n%s", last)
+		}
+	})
+
+	// ctrl_p_does_not_move_scroll: the 022-class interaction — a toggle
+	// must not move the scroll offset behind the user. ctrl+p changes the
+	// rendered line count (markers and labels shorten answers), and back is
+	// a count-from-the-bottom, so both directions of the toggle must leave
+	// it exactly where it was.
+	t.Run("ctrl_p_does_not_move_scroll", func(t *testing.T) {
+		m := newRenderModel(t)
+		m.applyEvent(agent.TextDelta{Text: "first ^[raw/a.md]\n\n" + strings.Repeat("filler sentence. ", 60)})
+		m.applyEvent(agent.DoneEv{Reason: "stop", Rounds: 1})
+		m.applyEvent(agent.TextDelta{Text: "second ^[raw/b.md]"})
+		m.applyEvent(agent.DoneEv{Reason: "stop", Rounds: 1})
+		m.scrollBy(5)
+		if m.back != 5 {
+			t.Fatalf("precondition: scrollBy(5) left back=%d", m.back)
+		}
+		pane, _ := m.Update(specialKey('p', tea.ModCtrl))
+		m = pane.(*Model)
+		if m.back != 5 {
+			t.Fatalf("ctrl+p moved the scroll offset: back=%d, want 5", m.back)
+		}
+		pane, _ = m.Update(specialKey('p', tea.ModCtrl))
+		m = pane.(*Model)
+		if m.back != 5 {
+			t.Fatalf("the second ctrl+p moved the scroll offset: back=%d, want 5", m.back)
+		}
+		if m.back > m.maxBack() || m.back < 0 {
+			t.Fatalf("back left the clamped range: %d (max %d)", m.back, m.maxBack())
+		}
+	})
+
 	// ctrl_t_chrome_ignores_provenance: the reasoning view reads no answer
 	// text — byte-identical with provenance hidden and shown, on a turn
 	// carrying both reasoning and a marked, labelled live answer; and the

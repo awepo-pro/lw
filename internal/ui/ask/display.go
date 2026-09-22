@@ -151,7 +151,12 @@ func stripLineMarkers(line string, last bool) string {
 
 // opensFence reports whether line opens a fenced code block: after at most
 // three leading spaces, a run of at least three backticks or tildes — the
-// rest of the line is the info string.
+// rest of the line is the info string. Three spaces is CommonMark's
+// top-level limit; a fence indented deeper (inside a nested list) is not
+// recognized and loses its markers in the hidden view. Accepted (027
+// Tier-2): the alternative — fence detection at any indent — misclassifies
+// ordinary indented prose as code and leaves machinery showing, against
+// the user's whole point; the record and ctrl+p always keep the bytes.
 func opensFence(line string) (ch byte, n int, ok bool) {
 	i := 0
 	for i < 3 && i < len(line) && line[i] == ' ' {
