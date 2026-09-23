@@ -75,6 +75,24 @@ func TestAgentExtractors(t *testing.T) {
 		}
 	})
 
+	t.Run("pdf_handled_by_default_chain", func(t *testing.T) {
+		// 007 W11: since F.W1 the shared chain carries the PDF sidecar, so
+		// query, lint --fix, the TUI and the MCP server can ingest a paper
+		// the same way cmdIngest does. CanHandle is the extension test —
+		// the sidecar itself only runs on Extract, never here.
+		got := captureExtractor(t)
+		if _, err := newAgent(nil, nil, nil); err != nil {
+			t.Fatalf("newAgent: %v", err)
+		}
+		ex := *got // read only after newAgent ran
+		if ex == nil {
+			t.Fatal("newAgent passed no extractor to newIngestAgent")
+		}
+		if !ex.CanHandle(writtenSource(t, "paper.pdf", "PAGES=1\n")) {
+			t.Error("newAgent's extractor cannot handle a local .pdf file")
+		}
+	})
+
 	t.Run("mcp_deps_use_the_same_chain", func(t *testing.T) {
 		root := testutil.CopyFixture(t, "minimal")
 		webConfigEnv(t, "") // scratch XDG config: never the user's config.toml

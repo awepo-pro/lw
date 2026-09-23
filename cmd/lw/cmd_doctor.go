@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -24,6 +25,8 @@ import (
 	"time"
 
 	"github.com/awepo-pro/lw/internal/config"
+	"github.com/awepo-pro/lw/internal/extract"
+	"github.com/awepo-pro/lw/internal/extract/cache"
 	"github.com/awepo-pro/lw/internal/index"
 	"github.com/awepo-pro/lw/internal/llm"
 	"github.com/awepo-pro/lw/internal/stage"
@@ -51,11 +54,18 @@ const (
 
 	openChangesetsRel     = stateDirName + "/changesets/open"
 	rejectedChangesetsRel = stateDirName + "/changesets/rejected"
+	cacheRel              = stateDirName + "/cache/extract"
 )
 
-// doctorProbeTimeout bounds the provider probe: a hung endpoint must not
-// hang a health check.
+// doctorProbeTimeout bounds the provider probe, and the PDF sidecar's
+// --version with it (007 F.W7): a hung endpoint or sidecar must not hang a
+// health check.
 const doctorProbeTimeout = 20 * time.Second
+
+// doclingTestedVersion is the Docling release lw's PDF backend is tested
+// against (007 T1's probe measured it, 2026-09-23); doctor warns when the
+// installed sidecar differs.
+const doclingTestedVersion = "2.130.0"
 
 // probeProvider runs the provider health check behind a package-level var —
 // the same seam cmd_ingest.go's newAgent uses, because the seam inside
@@ -82,6 +92,12 @@ var probeProvider = func(ctx context.Context, cfg *config.Config) llm.ProbeResul
 	})
 	return client.Probe(ctx)
 }
+
+// probeExtractorVersion runs the PDF sidecar's version check behind a
+// package-level var — the same seam shape as probeProvider above, because
+// extract.PDFVersion shells out to the configured sidecar and no test may
+// depend on a real Docling install or pay its ~4 s --version (007 F.W7).
+var probeExtractorVersion = extract.PDFVersion
 
 // doctorCheck is the result of one health check. Detail states what is true;
 // Remedy, empty when OK, states the fix and never restates the symptom.
@@ -325,6 +341,9 @@ func runDoctor(ctx context.Context, root string, o doctorOptions) doctorReport {
 	cfg, cfgErr := config.Load()
 	rep.Checks = append(rep.Checks, checkConfig(cfg, cfgErr))
 	if c := checkWeb(cfg, cfgErr); c != nil {
+		rep.Checks = append(rep.Checks, *c)
+	}
+	if c := checkPDFExtractor(ctx, cfg, cfgErr, root, o.probe); c != nil {
 		rep.Checks = append(rep.Checks, *c)
 	}
 	rep.Checks = append(rep.Checks, checkLLMBudget(cfg, cfgErr))
@@ -950,6 +969,68 @@ func checkWeb(cfg *config.Config, cfgErr error) *doctorCheck {
 			Detail: fmt.Sprintf("%s, api_key literal (set)", about),
 		}
 	}
+}
+
+// checkPDFExtractor reports the PDF extraction backend (007 F.W7): whether
+// the sidecar is installed, its version against the one lw is tested with,
+// and the extraction cache's size. It follows checkWeb's nil discipline — a
+// config that did not load gets no line here, because checkConfig above
+// already reports the load failure with its remedy — and it is a warn,
+// never a failure, unless the version probe itself errors: a missing or
+// merely newer sidecar turns PDF ingest off or makes it a variant, and the
+// vault itself stays healthy. The probe runs only when o.probe is set, so
+// an unprobing doctor makes no claim about the sidecar beyond LookPath.
+func checkPDFExtractor(ctx context.Context, cfg *config.Config, cfgErr error, root string, probe bool) *doctorCheck {
+	const name = "pdf extractor"
+	if cfgErr != nil {
+		return nil
+	}
+	argv := cfg.Extract.Argv()
+	path, err := exec.LookPath(argv[0])
+	if err != nil {
+		return &doctorCheck{
+			Name:   name,
+			OK:     true,
+			Warn:   true,
+			Detail: "not installed — PDF ingest is off; other sources are unaffected",
+			Remedy: fmt.Sprintf("uv tool install docling==2.130.0, or lw config set extract.command %q", argv[0]),
+		}
+	}
+	if !probe {
+		return &doctorCheck{Name: name, OK: true, Detail: path + " (version not probed)"}
+	}
+
+	pctx, cancel := context.WithTimeout(ctx, doctorProbeTimeout)
+	defer cancel()
+	version, err := probeExtractorVersion(pctx, extract.PDFConfig{Command: argv, Timeout: cfg.Extract.TimeoutDuration()})
+	if err != nil {
+		return &doctorCheck{
+			Name:   name,
+			Detail: fmt.Sprintf("%s --version failed: %v", argv[0], err),
+			Remedy: "reinstall: uv tool install --force docling==2.130.0",
+		}
+	}
+	if version != doclingTestedVersion {
+		return &doctorCheck{
+			Name:   name,
+			OK:     true,
+			Warn:   true,
+			Detail: fmt.Sprintf("docling %s at %s", version, path),
+			Remedy: "lw is tested with Docling 2.130.0; another version may extract differently (a new raw source, not a duplicate)",
+		}
+	}
+
+	// The cache is advisory (007 T2 degrades every cache failure), so a
+	// Stat error is reported inside an OK row rather than failing the
+	// check — the sidecar itself answered and that is what this row vouches
+	// for.
+	detail := fmt.Sprintf("docling %s at %s", version, path)
+	if entries, bytes, serr := cache.Stat(filepath.Join(root, cacheRel)); serr != nil {
+		detail += fmt.Sprintf("; cache unavailable: %v", serr)
+	} else {
+		detail += fmt.Sprintf("; cache %d entries, %d KB", entries, ingestKB(int(bytes)))
+	}
+	return &doctorCheck{Name: name, OK: true, Detail: detail}
 }
 
 // checkLLMBudget warns when llm.max_tokens sits below

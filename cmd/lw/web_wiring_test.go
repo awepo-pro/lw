@@ -5,7 +5,10 @@ package main
 // resolves — a *web.Tavily over the house HTTP client — and offer nothing
 // otherwise, and doctor reports the configured lookup on its own `web:`
 // line without ever printing a value. The regression test ships with the
-// subtask and stays forever (D-10C).
+// subtask and stays forever (D-10C). The agentExtractors call sites were
+// updated mechanically for 007 F.W1's signature — it now takes the vault
+// root and config so it can wire the extraction cache and per-source cap —
+// with no change to what this file pins.
 
 import (
 	"context"
@@ -62,7 +65,8 @@ api_key = "env:LW_TEST_KEY"
 `)
 		e := openEngine(t, testutil.CopyFixture(t, "minimal"))
 
-		deps := agentToolDeps(e, loadedConfig(t), agentExtractors())
+		cfg := loadedConfig(t)
+		deps := agentToolDeps(e, cfg, agentExtractors(e.Vault().Root(), cfg))
 
 		if deps.Search == nil {
 			t.Fatal("Deps.Search is nil with a resolvable web.api_key; web.search would not be offered")
@@ -86,7 +90,8 @@ api_key = "env:LW_TEST_KEY"
 		webConfigEnv(t, "")
 		e := openEngine(t, testutil.CopyFixture(t, "minimal"))
 
-		deps := agentToolDeps(e, loadedConfig(t), agentExtractors())
+		cfg := loadedConfig(t)
+		deps := agentToolDeps(e, cfg, agentExtractors(e.Vault().Root(), cfg))
 
 		if deps.Search != nil {
 			t.Fatalf("Deps.Search = %T with no web.api_key configured, want nil", deps.Search)
@@ -221,7 +226,7 @@ func TestSearchProviderGuard(t *testing.T) {
 		t.Errorf("webSearchProvider with provider %q = %T, want nil", cfg.Web.Provider, got)
 	}
 	e := openEngine(t, testutil.CopyFixture(t, "minimal"))
-	if deps := agentToolDeps(e, cfg, agentExtractors()); deps.Search != nil {
+	if deps := agentToolDeps(e, cfg, agentExtractors(e.Vault().Root(), cfg)); deps.Search != nil {
 		t.Errorf("agentToolDeps Search with provider %q = %T, want nil", cfg.Web.Provider, deps.Search)
 	}
 

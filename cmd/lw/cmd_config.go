@@ -108,6 +108,12 @@ var configFields = []configField{
 	{key: "web.max_results", get: func(c *config.Config) string { return strconv.Itoa(c.Web.MaxResults) },
 		set:     setIntBounded(func(c *config.Config) *int { return &c.Web.MaxResults }, "web.max_results", 1, 10),
 		display: displayPlain},
+	{key: "extract.command", get: func(c *config.Config) string { return c.Extract.Command },
+		set:     setExtractCommand,
+		display: displayExtractCommand},
+	{key: "extract.timeout", get: func(c *config.Config) string { return c.Extract.Timeout },
+		set:     setExtractTimeout,
+		display: displayExtractTimeout},
 	{key: "theme", get: func(c *config.Config) string { return c.Theme },
 		set:     func(c *config.Config, v string) error { c.Theme = v; return nil },
 		display: displayNotSet},
@@ -144,6 +150,54 @@ func setStallTimeout(c *config.Config, v string) error {
 func displayStallTimeout(raw string) string {
 	if raw == "" {
 		return fmt.Sprintf("(default %s)", config.DefaultStallTimeout)
+	}
+	return raw
+}
+
+// setExtractCommand validates extract.command before anything is written
+// (007 F.W6): the PDF sidecar's argv prefix, non-empty after trim — an
+// empty value would silently mean "docling" again through Extract.Argv's
+// fallback, so the word the user meant to say is refused rather than stored
+// as nothing.
+func setExtractCommand(c *config.Config, v string) error {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return fmt.Errorf("extract.command: want the PDF sidecar's argv prefix, e.g. \"docling\" or \"uvx --from docling==2.130.0 docling\"")
+	}
+	c.Extract.Command = v
+	return nil
+}
+
+// displayExtractCommand renders the stored argv prefix. An empty value
+// means the key is absent and Extract.Argv falls back to docling, so the
+// table says that instead of printing a blank.
+func displayExtractCommand(raw string) string {
+	if raw == "" {
+		return `(default "docling")`
+	}
+	return raw
+}
+
+// setExtractTimeout validates extract.timeout before anything is written,
+// applying the single source of truth, config.ValidateExtractTimeout (007
+// T3 — the same rule Load enforces when the saved file is read back): a Go
+// duration, strictly positive. There is no "0 = off" here, unlike
+// llm.stall_timeout: an extraction that never returns is a defect, so the
+// validator rejects zero the way it rejects a negative bound.
+func setExtractTimeout(c *config.Config, v string) error {
+	if err := config.ValidateExtractTimeout(v); err != nil {
+		return err
+	}
+	c.Extract.Timeout = v
+	return nil
+}
+
+// displayExtractTimeout renders the stored string. An empty value means the
+// key is absent and Load applies config.DefaultExtractTimeout, so the table
+// says that instead of printing a blank.
+func displayExtractTimeout(raw string) string {
+	if raw == "" {
+		return fmt.Sprintf("(default %s)", config.DefaultExtractTimeout)
 	}
 	return raw
 }
@@ -329,6 +383,7 @@ keys:
   llm.stall_timeout           llm.limits.max_tool_rounds
   llm.limits.context_tokens   web.provider
   web.api_key                 web.max_results
+  extract.command             extract.timeout
   theme
 
 llm.thinking is off|on|default: off sends thinking:{"type":"disabled"} so a
@@ -338,6 +393,11 @@ decides.
 llm.stall_timeout is a Go duration ("90s", "2m"): the longest a turn waits
 with no bytes from the provider before failing (default 120s). "0" disables
 the bound; omitting the key keeps the default.
+extract.command is the PDF sidecar's argv prefix ("docling", or pin a
+version with "uvx --from docling==2.130.0 docling").
+extract.timeout is a Go duration bounding one PDF extraction (default 5m0s);
+it must be positive — an extraction that never returns is a defect, so
+there is no "0 disables" form.
 llm.api_key and web.api_key are stored as references, never values: export
 the key and set the variable's name, e.g. lw config set llm.api_key env:LW_API_KEY.
 A literal that looks like a key is refused.
