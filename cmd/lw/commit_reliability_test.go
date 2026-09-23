@@ -99,7 +99,7 @@ func TestCmdCommitNothingToCommit(t *testing.T) {
 }
 
 // TestCmdCommitRawOnlyWarns pins the raw-only commit notice: a changeset
-// with live raw sources and no live create_page commits — the notice goes
+// with live raw sources and no other live op (A-029-1) commits — the notice goes
 // to stderr first, and the commit still lands.
 func TestCmdCommitRawOnlyWarns(t *testing.T) {
 	t.Run("warning_on_stderr_then_commits", func(t *testing.T) {
