@@ -231,6 +231,23 @@ func TestPDFExitStatus(t *testing.T) {
 	}
 }
 
+// TestPDFStderrTail pins F.P2's "last 2 048 bytes" on the buffer that
+// delivers it: a real conversion floods stderr with progress lines, so the
+// buffer must slide — keep the tail, not the head — or a long run's error
+// would quote the earliest chatter and drop the traceback naming the cause.
+func TestPDFStderrTail(t *testing.T) {
+	b := &tailBuffer{cap: 8}
+	b.Write([]byte("12345"))
+	b.Write([]byte("67890"))
+	if got, want := b.String(), "34567890"; got != want {
+		t.Errorf(`"12345"+"67890" into a cap-8 buffer = %q, want %q`, got, want)
+	}
+	b.Write([]byte("abcdefghij")) // one write larger than the whole buffer
+	if got, want := b.String(), "cdefghij"; got != want {
+		t.Errorf(`"abcdefghij" into a cap-8 buffer = %q, want %q`, got, want)
+	}
+}
+
 // TestPDFTimeout is pin PDF6: a stalled sidecar is cut off at
 // PDFConfig.Timeout with the exact F.P3 message, in well under the 5 s the
 // fake would sleep — a wall-clock bound, because a hung conversion that
@@ -321,6 +338,18 @@ func TestPDFPagesStreamed(t *testing.T) {
 	if n != 7 {
 		t.Errorf("countJSONPages = %d, want 7", n)
 	}
+
+	// Malformed and truncated sidecar output must surface as an error
+	// (wrapped as "read docling json" by Extract), never as a silent
+	// count — a half-written JSON that read as 0 pages would masquerade
+	// as "docling reported no pages" instead of the real defect.
+	t.Run("malformed and truncated json are errors", func(t *testing.T) {
+		for _, bad := range []string{"", `not json`, `[1,2]`, `{"pages":null}`, `{"pages":{"1":{`} {
+			if n, err := countJSONPages(strings.NewReader(bad)); err == nil {
+				t.Errorf("countJSONPages(%q) = %d, nil error, want an error", bad, n)
+			}
+		}
+	})
 }
 
 // TestPDFTempDirRemoved is pin PDF9: the F.P2 temp dir is removed on every

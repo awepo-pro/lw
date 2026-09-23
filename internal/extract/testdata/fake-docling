@@ -110,7 +110,7 @@ if [ "$nojson" -eq 0 ]; then
 		# everything else — including any TEXTS=<bytes> padding inside
 		# texts, which is what makes whole-file unmarshal expensive and
 		# Token() streaming necessary (F.P4).
-		printf '{"schema_name":"DoclingDocument","version":"2.130.0","name":"%s","origin":{},"furniture":{},"body":{},"groups":[' "$stem"
+		printf '{"schema_name":"DoclingDocument","version":"2.130.0","name":"%s","origin":{},"furniture":{},"body":{},"groups":[],"texts":[' "$stem"
 		if [ "$texts_bytes" -gt 0 ]; then
 			printf '{"text":"'
 			dd if=/dev/zero bs="$texts_bytes" count=1 2>/dev/null | tr '\0' 'x'
