@@ -53,16 +53,17 @@ func wireEstimate(msgs []llm.Message) int {
 	return total
 }
 
-// writeBigPage writes wiki/concepts/big.md with a body of exactly n bytes.
-// The body is multi-byte ("éa" repeats: 3 bytes per 2 runes) because T0b
-// caps wiki.get at wikiGetMaxRunes — 16000 RUNES — while P2's frozen
-// elision placeholder counts BYTES ("wiki.get result, 20000 bytes"); an
-// ASCII page calibrated to 20000 bytes is 20000 runes and would trip the
-// cap, so the body runs 2 bytes per rune to stay well under it (004 seam
-// G1). Serialize appends the body verbatim and neither 'é' nor 'a' is
-// transformed by a JSON encoder, so len(wiki.get's Result.Content) stays
-// linear in n and one calibration correction below lands exactly.
-func writeBigPage(t *testing.T, root string, n int) {
+// writeNamedBigPage writes wiki/concepts/<name>.md with a body of exactly
+// n bytes. The body is multi-byte ("éa" repeats: 3 bytes per 2 runes)
+// because T0b caps wiki.get at wikiGetMaxRunes — 16000 RUNES — while P2's
+// frozen elision placeholder counts BYTES ("wiki.get result, 20000
+// bytes"); an ASCII page calibrated to 20000 bytes is 20000 runes and
+// would trip the cap, so the body runs 2 bytes per rune to stay well under
+// it (004 seam G1). Serialize appends the body verbatim and neither 'é'
+// nor 'a' is transformed by a JSON encoder, so len(wiki.get's
+// Result.Content) stays linear in n and one calibration correction below
+// lands exactly.
+func writeNamedBigPage(t *testing.T, root, name string, n int) {
 	t.Helper()
 	const unit = "éa" // 3 bytes, 2 runes
 	body := strings.Repeat(unit, n/len(unit))
@@ -75,23 +76,70 @@ func writeBigPage(t *testing.T, root string, n int) {
 	if len(body) != n {
 		t.Fatalf("body construction: %d bytes, want %d", len(body), n)
 	}
-	page := "---\ntitle: Big\ncreated: 2026-08-20\nupdated: 2026-08-20\ntype: concept" +
-		"\ntags: [inference]\nsources: [raw/articles/kv-cache-explained.md]\nconfidence: high\n---\n\n# Big\n\n" +
+	page := "---\ntitle: " + name + "\ncreated: 2026-08-20\nupdated: 2026-08-20\ntype: concept" +
+		"\ntags: [inference]\nsources: [raw/articles/kv-cache-explained.md]\nconfidence: high\n---\n\n# " + name + "\n\n" +
 		body + "\n"
-	if err := os.WriteFile(filepath.Join(root, "wiki", "concepts", "big.md"), []byte(page), 0o644); err != nil {
-		t.Fatalf("write big.md: %v", err)
+	if err := os.WriteFile(filepath.Join(root, "wiki", "concepts", name+".md"), []byte(page), 0o644); err != nil {
+		t.Fatalf("write %s.md: %v", name, err)
 	}
+}
+
+// calibrateBigPage writes wiki/concepts/<name>.md and rewrites it until
+// the real wiki.get — called through reg with {"page":"<name>"} — returns
+// exactly resultBytes bytes: the serialize-measure-correct loop the
+// fixture has always used, extracted so the A-004-2 pins can calibrate
+// further distinct pages ("a", "b") to the same exact size. Serialize
+// appends the body verbatim, so len(Content) is linear in the body length:
+// one delta correction must land exactly. A third miss fails the test
+// instead of papering over a format drift. The vault serves pages from an
+// immutable snapshot (snapshot.go), so every rewrite is followed by
+// Vault.Reload before the next calibration read — the same registry call
+// the scripted rounds make. Returns the final body length and result.
+func calibrateBigPage(t *testing.T, root string, reg *tools.Registry, e *stage.Engine, name string, resultBytes int) (int, string) {
+	t.Helper()
+	args := fmt.Sprintf(`{"page":%q}`, name)
+	read := func() string {
+		t.Helper()
+		res, err := reg.Call(context.Background(), "wiki.get", json.RawMessage(args))
+		if err != nil {
+			t.Fatalf("wiki.get: %v", err)
+		}
+		if res.IsError {
+			t.Fatalf("wiki.get %s failed: %s", name, res.Content)
+		}
+		return res.Content
+	}
+
+	writeNamedBigPage(t, root, name, 4096)
+	bodyLen := 4096
+	if err := e.Vault().Reload(); err != nil {
+		t.Fatalf("Vault.Reload: %v", err)
+	}
+	got := read()
+	for pass := 0; pass < 2 && len(got) != resultBytes; pass++ {
+		bodyLen += resultBytes - len(got)
+		writeNamedBigPage(t, root, name, bodyLen)
+		if err := e.Vault().Reload(); err != nil {
+			t.Fatalf("Vault.Reload: %v", err)
+		}
+		got = read()
+	}
+	if len(got) != resultBytes {
+		t.Fatalf("wiki.get %s = %d bytes after calibration, want exactly %d — the page format drifted", name, len(got), resultBytes)
+	}
+	if strings.Contains(got, "[truncated:") {
+		t.Fatalf("calibrated fixture result hit wiki.get's 16000-rune cap — the page must stay under it in runes while hitting %d bytes", resultBytes)
+	}
+	return bodyLen, got
 }
 
 // newBudgetFixture is newTestLoopFixture plus one synthetic page,
 // wiki/concepts/big.md, calibrated until the real wiki.get returns exactly
-// resultBytes bytes. The vault serves pages from an immutable snapshot
-// (snapshot.go), so every rewrite is followed by Vault.Reload before the
-// next calibration read — the same registry call the scripted rounds make.
-func newBudgetFixture(t *testing.T, resultBytes int) (*testLoopFixture, string) {
+// resultBytes bytes. It also returns the calibrated body length, so the
+// wide fixtures below can clone big under further names.
+func newBudgetFixture(t *testing.T, resultBytes int) (*testLoopFixture, string, int) {
 	t.Helper()
 	root := testutil.CopyFixture(t, "minimal")
-	writeBigPage(t, root, 4096)
 
 	e, err := stage.OpenEngine(root)
 	if err != nil {
@@ -102,37 +150,7 @@ func newBudgetFixture(t *testing.T, resultBytes int) (*testLoopFixture, string) 
 	author := stage.Author{Kind: "agent", Model: "test-model"}
 	reg := tools.NewRegistry(tools.Deps{Vault: e.Vault(), Index: e.Index(), Engine: e, Author: author})
 
-	read := func() string {
-		t.Helper()
-		res, err := reg.Call(context.Background(), "wiki.get", json.RawMessage(bigWikiArgs))
-		if err != nil {
-			t.Fatalf("wiki.get: %v", err)
-		}
-		if res.IsError {
-			t.Fatalf("wiki.get failed: %s", res.Content)
-		}
-		return res.Content
-	}
-
-	// Serialize appends the body verbatim, so len(Content) is linear in
-	// the body length: one delta correction must land exactly. A third
-	// miss fails the test instead of papering over a format drift.
-	bodyLen := 4096
-	got := read()
-	for pass := 0; pass < 2 && len(got) != resultBytes; pass++ {
-		bodyLen += resultBytes - len(got)
-		writeBigPage(t, root, bodyLen)
-		if err := e.Vault().Reload(); err != nil {
-			t.Fatalf("Vault.Reload: %v", err)
-		}
-		got = read()
-	}
-	if len(got) != resultBytes {
-		t.Fatalf("wiki.get result = %d bytes after calibration, want exactly %d — the page format drifted", len(got), resultBytes)
-	}
-	if strings.Contains(got, "[truncated:") {
-		t.Fatalf("calibrated fixture result hit wiki.get's 16000-rune cap — the page must stay under it in runes while hitting %d bytes", resultBytes)
-	}
+	bodyLen, got := calibrateBigPage(t, root, reg, e, "big", resultBytes)
 
 	cs, err := e.OpenChangeset("budget test", author)
 	if err != nil {
@@ -142,17 +160,75 @@ func newBudgetFixture(t *testing.T, resultBytes int) (*testLoopFixture, string) 
 	if _, err := store.Create(cs.ID); err != nil {
 		t.Fatalf("Create session: %v", err)
 	}
-	return &testLoopFixture{engine: e, reg: reg, store: store, csID: cs.ID}, got
+	return &testLoopFixture{engine: e, reg: reg, store: store, csID: cs.ID}, got, bodyLen
 }
 
 // newBudgetLoop wires a Loop with cfg over newBudgetFixture and returns the
 // fixture plus the calibrated 20000-byte page content.
 func newBudgetLoop(t *testing.T, rounds [][]llm.Chunk, cfg LoopConfig) (*Loop, *testLoopFixture, *fakeStreamer, string) {
 	t.Helper()
-	fx, big := newBudgetFixture(t, bigResultBytes)
+	fx, big, _ := newBudgetFixture(t, bigResultBytes)
 	fake := &fakeStreamer{rounds: rounds}
 	l := newLoop(fake, fx.reg, fx.store, fx.engine, cfg)
 	return l, fx, fake, big
+}
+
+// widePageNames returns n distinct 3-char page basenames (aaz, abz, …).
+// Three chars so every clone's front matter is exactly as wide as big's,
+// and the cloned pages' wiki.get results stay the same size.
+func widePageNames(n int) []string {
+	names := make([]string, 0, n)
+	for _, first := range []string{"a", "b", "c"} {
+		for second := 'a'; second <= 'z' && len(names) < n; second++ {
+			names = append(names, string(first)+string(second)+"z")
+		}
+	}
+	if len(names) < n {
+		panic(fmt.Sprintf("widePageNames: %d exceeds the 78 3-char names", n))
+	}
+	return names
+}
+
+// addBigPages clones the calibrated big page under the given names — same
+// body length and title width, so each clone's wiki.get result is the same
+// 20000 bytes — with one Vault.Reload at the end.
+func addBigPages(t *testing.T, fx *testLoopFixture, names []string, bodyLen int) {
+	t.Helper()
+	root := fx.engine.Vault().Root()
+	for _, name := range names {
+		writeNamedBigPage(t, root, name, bodyLen)
+	}
+	if err := fx.engine.Vault().Reload(); err != nil {
+		t.Fatalf("Vault.Reload: %v", err)
+	}
+}
+
+// newWideLoop is newBudgetLoop plus distinct page clones under names: the
+// A-004-2 pressure probes script many elidable results, and a shared
+// signature is ONE read under second-chance pinning, so every scripted
+// call needs its own page.
+func newWideLoop(t *testing.T, rounds [][]llm.Chunk, cfg LoopConfig, names []string) (*Loop, *testLoopFixture, *fakeStreamer) {
+	t.Helper()
+	fx, _, bodyLen := newBudgetFixture(t, bigResultBytes)
+	addBigPages(t, fx, names, bodyLen)
+	fake := &fakeStreamer{rounds: rounds}
+	l := newLoop(fake, fx.reg, fx.store, fx.engine, cfg)
+	return l, fx, fake
+}
+
+// newRereadFixture is newBudgetFixture plus two further calibrated pages,
+// wiki/concepts/a.md and b.md, each returning the same exact result size
+// as big — P7 scripts the live livelock's alternating re-reads of two
+// distinct big reads (A-004-2), and its budget sizing needs both results
+// known-big.
+func newRereadFixture(t *testing.T) *testLoopFixture {
+	t.Helper()
+	fx, _, _ := newBudgetFixture(t, bigResultBytes)
+	root := fx.engine.Vault().Root()
+	for _, name := range []string{"a", "b"} {
+		_, _ = calibrateBigPage(t, root, fx.reg, fx.engine, name, bigResultBytes)
+	}
+	return fx
 }
 
 // bigWikiRounds scripts the three-round shape P1/P2/P4/P5 pin: two rounds
@@ -569,6 +645,228 @@ func TestBudgetNeverElidesPriorHistory(t *testing.T) {
 	}
 }
 
+// ---- A-004-2 second-chance pinning (live-found livelock repair) ----
+
+// pinSignature is the test-side identity of one distinct read under
+// A-004-2: the canonical tool name plus the call's arguments after
+// json.Compact — the exact frozen rule — falling back to the raw string
+// when compacting fails. Deliberately re-derived here instead of read back
+// from production's own signature function: if the implementation's
+// signature ever drifted from the frozen rule, this test must fail, not
+// silently agree.
+func pinSignature(wireName, args string) string {
+	canonical := tools.CanonicalName(wireName)
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, []byte(args)); err != nil {
+		return canonical + "\x00" + args
+	}
+	return canonical + "\x00" + buf.String()
+}
+
+// newRereadTurn scripts the live defect's shape (A-004-2, acceptance step
+// 4): round 1 reads two big pages, then rounds 2–7 the model re-requests,
+// alternating, whatever was just elided — six re-read rounds, page a's
+// third read re-spaced (`{ "page": "a" }`) so the whitespace case rides
+// along — and only then answers. Every call id is mapped to its argument
+// payload, so assertions below can attribute each wire placeholder to the
+// distinct read it stands for.
+func newRereadTurn() ([][]llm.Chunk, map[string]string) {
+	rounds := [][]llm.Chunk{
+		{
+			toolCallChunk("call-a1", "wiki_get", `{"page":"a"}`),
+			toolCallChunk("call-b1", "wiki_get", `{"page":"b"}`),
+			{Finish: "tool_calls"},
+		},
+		{toolCallChunk("call-a2", "wiki_get", `{"page":"a"}`), {Finish: "tool_calls"}},
+		{toolCallChunk("call-b2", "wiki_get", `{"page":"b"}`), {Finish: "tool_calls"}},
+		{toolCallChunk("call-a3", "wiki_get", `{ "page": "a" }`), {Finish: "tool_calls"}},
+		{toolCallChunk("call-b3", "wiki_get", `{"page":"b"}`), {Finish: "tool_calls"}},
+		{toolCallChunk("call-a4", "wiki_get", `{"page":"a"}`), {Finish: "tool_calls"}},
+		{toolCallChunk("call-b4", "wiki_get", `{"page":"b"}`), {Finish: "tool_calls"}},
+		{{Text: "I have both pages now"}, {Finish: "stop"}},
+	}
+	script := map[string]string{
+		"call-a1": `{"page":"a"}`,
+		"call-b1": `{"page":"b"}`,
+		"call-a2": `{"page":"a"}`,
+		"call-b2": `{"page":"b"}`,
+		"call-a3": `{ "page": "a" }`,
+		"call-b3": `{"page":"b"}`,
+		"call-a4": `{"page":"a"}`,
+		"call-b4": `{"page":"b"}`,
+	}
+	return rounds, script
+}
+
+// runRereadTurn Sends one scripted turn over a fresh newRereadFixture at
+// cfg and returns the recorded requests and drained events.
+func runRereadTurn(t *testing.T, rounds [][]llm.Chunk, cfg LoopConfig) (*fakeStreamer, []Event) {
+	t.Helper()
+	fx := newRereadFixture(t)
+	fake := &fakeStreamer{rounds: rounds}
+	l := newLoop(fake, fx.reg, fx.store, fx.engine, cfg)
+	out := make(chan Event, 512)
+	if err := l.Send(context.Background(), fx.csID, "read a and b until they elide", out); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	return fake, drain(out)
+}
+
+// assertStopTurn asserts the turn ended the scripted way: exactly one
+// terminal DoneEv{reason, rounds} and no ErrorEv anywhere.
+func assertStopTurn(t *testing.T, events []Event, wantRounds int) {
+	t.Helper()
+	dones := 0
+	for _, ev := range events {
+		switch e := ev.(type) {
+		case DoneEv:
+			dones++
+			if e.Reason != "stop" || e.Rounds != wantRounds {
+				t.Errorf("DoneEv = {reason %q rounds %d}, want {stop %d}", e.Reason, e.Rounds, wantRounds)
+			}
+		case ErrorEv:
+			t.Errorf("unexpected ErrorEv: %v", e.Err)
+		}
+	}
+	if dones != 1 {
+		t.Errorf("want exactly one DoneEv, got %d", dones)
+	}
+}
+
+// TestBudgetPinsRereadOfElidedCall is P7 (A-004-2): the live livelock —
+// each round the model re-requests what the last round just elided, the
+// placeholder's own invitation — must be unable to form. At a budget that
+// fits roughly ONE big result, every round from 2 on is over budget, so
+// the walk has real work every round. Assertions: across ALL requests,
+// each distinct read (canonical tool + json.Compact'ed arguments) is
+// elided on at most one tool call; every re-read's result is intact in
+// every request that carries it — including the re-spaced-JSON read,
+// which is the SAME read as its compact twin; and the turn still ends
+// with DoneEv{stop}. The live run this repair answers ended
+// reason=max_rounds after 24 rounds of exactly this shape, never answering.
+func TestBudgetPinsRereadOfElidedCall(t *testing.T) {
+	rounds, script := newRereadTurn()
+
+	// Size off a control run at 1 000 000: budget = the fixed parts (round
+	// 1's request) plus a little over ONE big result.
+	ctlFake, _ := runRereadTurn(t, rounds, LoopConfig{ContextTokens: 1000000})
+	base := wireEstimate(ctlFake.Requests()[0].Messages)
+	budget := base + 5500
+
+	fake, events := runRereadTurn(t, rounds, LoopConfig{ContextTokens: budget})
+	reqs := fake.Requests()
+	if len(reqs) != 8 {
+		t.Fatalf("Stream called %d times, want 8", len(reqs))
+	}
+	assertStopTurn(t, events, 8)
+
+	originals := map[string]string{}
+	for _, ev := range events {
+		if res, ok := ev.(ToolResEv); ok {
+			originals[res.ID] = res.Content
+		}
+	}
+	rereads := []string{"call-a2", "call-b2", "call-a3", "call-b3", "call-a4", "call-b4"}
+
+	// Per request: the wire must stay valid (checkWireShape), every
+	// placeholder is attributed to its read's signature, and every
+	// re-read must arrive intact.
+	elidedReads := map[string]map[string]bool{}
+	elidedAny := false
+	for k, req := range reqs {
+		for _, i := range checkWireShape(t, req, k+1, originals) {
+			elidedAny = true
+			id := req.Messages[i].ToolCallID
+			sig := pinSignature("wiki_get", script[id])
+			if elidedReads[sig] == nil {
+				elidedReads[sig] = map[string]bool{}
+			}
+			elidedReads[sig][id] = true
+		}
+		for _, m := range req.Messages {
+			if m.Role != "tool" {
+				continue
+			}
+			for _, id := range rereads {
+				if m.ToolCallID == id && m.Content != originals[id] {
+					t.Errorf("round %d: re-read %q (args %q) is not intact on the wire: %q", k+1, id, script[id], m.Content)
+				}
+			}
+		}
+	}
+	if !elidedAny {
+		t.Fatalf("nothing was ever elided (base %d, budget %d) — sizing broke, pin vacuous", base, budget)
+	}
+
+	// THE pin: one elision per distinct read, whole turn. The placeholder
+	// persists on the call it elided (that is F.C2's own rule); what may
+	// never happen is a SECOND call — a re-read — losing its result too.
+	sigA := pinSignature("wiki_get", `{"page":"a"}`)
+	sigB := pinSignature("wiki_get", `{"page":"b"}`)
+	if ids := elidedReads[sigA]; len(ids) != 1 || !ids["call-a1"] {
+		t.Errorf("page a was elided on calls %v — A-004-2 wants exactly {call-a1}: the re-reads (call-a2, call-a3 with re-spaced JSON, call-a4) are the same read and must stay intact", ids)
+	}
+	if ids := elidedReads[sigB]; len(ids) != 1 || !ids["call-b1"] {
+		t.Errorf("page b was elided on calls %v — A-004-2 wants exactly {call-b1}", ids)
+	}
+}
+
+// TestBudgetPinRereadMatchesAcrossJSONSpacing is P7's focused whitespace
+// case: the re-request differs from the elided call ONLY in JSON spacing
+// (`{"page":"a"}` vs `{ "page":  "a" }`). Three tool rounds, so that at
+// round 4's request the spaced re-read is no longer the most recent
+// round's result (F.C2a would shield it there and the pin would be
+// vacuous) and the walk genuinely reaches it. The budget sits under one
+// result, so eliding round 1's result is never enough: the pin must
+// recognize the re-read as the same read across the spacing and skip it —
+// leaving the request over budget with F.C3's warn — rather than elide it
+// and re-create the cycle.
+func TestBudgetPinRereadMatchesAcrossJSONSpacing(t *testing.T) {
+	logPath := installFileLog(t)
+	rounds := [][]llm.Chunk{
+		{toolCallChunk("call-1", "wiki_get", `{"page":"a"}`), {Finish: "tool_calls"}},
+		{toolCallChunk("call-2", "wiki_get", `{ "page":  "a" }`), {Finish: "tool_calls"}},
+		{toolCallChunk("call-3", "wiki_get", `{"page":"b"}`), {Finish: "tool_calls"}},
+		{{Text: "got it"}, {Finish: "stop"}},
+	}
+
+	ctlFake, _ := runRereadTurn(t, rounds, LoopConfig{ContextTokens: 1000000})
+	base := wireEstimate(ctlFake.Requests()[0].Messages)
+	budget := base + 3000 // under ONE result: the walk must reach the re-read
+
+	fake, events := runRereadTurn(t, rounds, LoopConfig{ContextTokens: budget})
+	reqs := fake.Requests()
+	if len(reqs) != 4 {
+		t.Fatalf("Stream called %d times, want 4", len(reqs))
+	}
+	assertStopTurn(t, events, 4)
+
+	originals := map[string]string{}
+	for _, ev := range events {
+		if res, ok := ev.(ToolResEv); ok {
+			originals[res.ID] = res.Content
+		}
+	}
+
+	// Non-vacuous: round 1's result really was elided at round 3.
+	if msg := toolMsgByID(t, reqs[2].Messages, "call-1"); msg.Content != probePlaceholder("wiki.get", len(originals["call-1"])) {
+		t.Fatalf("call-1's result was not elided — sizing broke, pin vacuous: %q", msg.Content)
+	}
+	// THE pin: the spaced re-read is the same read — intact at round 4,
+	// where the walk visits it and pinning is the only thing protecting it.
+	if msg := toolMsgByID(t, reqs[3].Messages, "call-2"); msg.Content != originals["call-2"] {
+		t.Errorf("re-read with re-spaced JSON ({ \"page\":  \"a\" }) was elided too — the cycle is back: %q", msg.Content)
+	}
+
+	log := readLog(t, logPath)
+	if n := strings.Count(log, `msg="context elided"`); n != 1 {
+		t.Errorf("want exactly 1 elision log line (round 3, one message), got %d:\n%s", n, log)
+	}
+	if !strings.Contains(log, `msg="context over budget"`) {
+		t.Errorf("skipping the pinned re-read must leave round 4 over budget with an F.C3 warn:\n%s", log)
+	}
+}
+
 // ---- fresh-eyes review probes (004 T0a review, 2026-09-23) ----
 
 // probePlaceholder builds the exact F.C2 placeholder for a tool result whose
@@ -664,17 +962,23 @@ func TestProbeWireHoldsAcrossMaxRounds(t *testing.T) {
 	base := wireEstimate(ctlFake.Requests()[0].Messages)
 	budget := base + 18000 // per-round fresh pressure is 2×~5000 tokens
 
+	// Two fresh reads per round over 48 DISTINCT pages: under A-004-2 a
+	// repeated page is one read, elidable once — a same-page script would
+	// pin every round-4+ result and starve the walk this probe exists to
+	// observe (its purpose is wire-shape validity under max-rounds
+	// pressure, and pressure means fresh reads).
+	names := widePageNames(48)
 	rounds := make([][]llm.Chunk, 24)
 	for r := range rounds {
 		id1, id2 := fmt.Sprintf("call-w%02da", r+1), fmt.Sprintf("call-w%02db", r+1)
 		rounds[r] = []llm.Chunk{
-			toolCallChunk(id1, "wiki_get", bigWikiArgs),
-			toolCallChunk(id2, "wiki_get", bigWikiArgs),
+			toolCallChunk(id1, "wiki_get", fmt.Sprintf(`{"page":%q}`, names[2*r])),
+			toolCallChunk(id2, "wiki_get", fmt.Sprintf(`{"page":%q}`, names[2*r+1])),
 			{Finish: "tool_calls"},
 		}
 	}
 
-	l, fx, fake, _ := newBudgetLoop(t, rounds, LoopConfig{ContextTokens: budget})
+	l, fx, fake := newWideLoop(t, rounds, LoopConfig{ContextTokens: budget}, names)
 	out := make(chan Event, 512)
 	if err := l.Send(context.Background(), fx.csID, "read the big page, a lot", out); err != nil {
 		t.Fatalf("Send: %v", err)
@@ -770,27 +1074,31 @@ func TestProbeCorrectableResultsElideWithCanonicalNames(t *testing.T) {
 	base := wireEstimate(ctlFake.Requests()[0].Messages)
 	budget := base + 8000 // one 20 KB result over what two rounds of results leave room for
 
+	// The four big reads are four DISTINCT pages: under A-004-2 a repeated
+	// page is one read, so g2–g4 sharing g1's args would pin them after
+	// g1's elision and this probe's later rounds would go over budget.
+	names := widePageNames(4)
 	rounds := [][]llm.Chunk{
 		{
 			toolCallChunk("call-bad", "wiki_get", "{oops"), // malformed JSON → correctable, Name "wiki_get"
-			toolCallChunk("call-g1", "wiki_get", bigWikiArgs),
+			toolCallChunk("call-g1", "wiki_get", fmt.Sprintf(`{"page":%q}`, names[0])),
 			{Finish: "tool_calls"},
 		},
 		{
 			toolCallChunk("call-empty", "", `{"page":"big"}`), // empty wire name → unknown tool → correctable, Name ""
-			toolCallChunk("call-g2", "wiki_get", bigWikiArgs),
+			toolCallChunk("call-g2", "wiki_get", fmt.Sprintf(`{"page":%q}`, names[1])),
 			{Finish: "tool_calls"},
 		},
 		{
 			toolCallChunk("call-unk", "bogus_tool", `{"x":1}`), // unknown tool → correctable, Name "bogus_tool"
-			toolCallChunk("call-g3", "wiki_get", bigWikiArgs),
+			toolCallChunk("call-g3", "wiki_get", fmt.Sprintf(`{"page":%q}`, names[2])),
 			{Finish: "tool_calls"},
 		},
-		{toolCallChunk("call-g4", "wiki_get", bigWikiArgs), {Finish: "tool_calls"}},
+		{toolCallChunk("call-g4", "wiki_get", fmt.Sprintf(`{"page":%q}`, names[3])), {Finish: "tool_calls"}},
 		{{Text: "done"}, {Finish: "stop"}},
 	}
 
-	l, fx, fake, _ := newBudgetLoop(t, rounds, LoopConfig{ContextTokens: budget})
+	l, fx, fake := newWideLoop(t, rounds, LoopConfig{ContextTokens: budget}, names)
 	out := make(chan Event, 256)
 	if err := l.Send(context.Background(), fx.csID, "fumble some calls", out); err != nil {
 		t.Fatalf("Send: %v", err)
@@ -884,24 +1192,29 @@ func TestProbeCorrectableResultsElideWithCanonicalNames(t *testing.T) {
 // reallocation boundContext's own fresh copy makes likely (its copy has
 // cap == len, so the very next append reallocates) and asserts the map
 // still names the right messages: the earlier placeholder is NOT re-elided,
-// the newly eligible one is, and the most recent round stays intact.
+// the newly eligible one is, and the most recent round stays intact. The
+// three synthetic reads carry DISTINCT pages: under A-004-2 a shared
+// signature would pin the later reads (their result would then be intact
+// by the pin, not by index tracking), which would moot this probe's own
+// question.
 func TestProbeElidedMapTracksIndicesAcrossGrowth(t *testing.T) {
 	big := strings.Repeat("x", 400) // 100 estimated tokens
-	toolCall := func(id string) llm.ToolCall {
-		return *toolCallChunk(id, "wiki_get", `{"page":"big"}`).ToolCall
+	toolCall := func(id, page string) llm.ToolCall {
+		return *toolCallChunk(id, "wiki_get", `{"page":"`+page+`"}`).ToolCall
 	}
 	msgs := []llm.Message{
 		{Role: "system", Content: strings.Repeat("s", 40)},
 		{Role: "user", Content: strings.Repeat("u", 40)},
-		{Role: "assistant", ToolCalls: []llm.ToolCall{toolCall("id-a")}},
+		{Role: "assistant", ToolCalls: []llm.ToolCall{toolCall("id-a", "pa")}},
 		{Role: "tool", ToolCallID: "id-a", Name: "wiki_get", Content: big},
-		{Role: "assistant", ToolCalls: []llm.ToolCall{toolCall("id-b")}},
+		{Role: "assistant", ToolCalls: []llm.ToolCall{toolCall("id-b", "pb")}},
 		{Role: "tool", ToolCallID: "id-b", Name: "wiki_get", Content: big},
 	}
 
 	turnStart := 2
 	elided := map[int]bool{}
-	out1 := boundContext(msgs, turnStart, elided, 2, 10) // budget 10: far over
+	pinned := map[string]bool{}                                  // the same maps Send passes across rounds
+	out1 := boundContext(msgs, turnStart, elided, pinned, 2, 10) // budget 10: far over
 
 	// Round 2's result (index 5) is the most recent round — only index 3
 	// (round 1's result) may be elided.
@@ -919,14 +1232,14 @@ func TestProbeElidedMapTracksIndicesAcrossGrowth(t *testing.T) {
 	// (boundContext's fresh copy), so this append MUST reallocate: the
 	// slice base changes out from under the map's index keys.
 	msgs2 := append(out1,
-		llm.Message{Role: "assistant", ToolCalls: []llm.ToolCall{toolCall("id-c")}},
+		llm.Message{Role: "assistant", ToolCalls: []llm.ToolCall{toolCall("id-c", "pc")}},
 		llm.Message{Role: "tool", ToolCallID: "id-c", Name: "wiki_get", Content: big},
 	)
 	if &msgs2[0] == &out1[0] {
 		t.Fatalf("append did not reallocate — the test no longer exercises index stability across a new backing array")
 	}
 
-	out2 := boundContext(msgs2, turnStart, elided, 3, 10)
+	out2 := boundContext(msgs2, turnStart, elided, pinned, 3, 10)
 
 	// Index 3 still holds round-1's placeholder — NOT a re-elision of it
 	// (which would name len(placeholder), ~95 bytes, not 400).
@@ -1023,8 +1336,10 @@ func BenchmarkBoundContextRealisticWorstCase(b *testing.B) {
 	b.Cleanup(func() { slog.SetDefault(prev) })
 
 	big := strings.Repeat("x", 20000)
-	args := `{"page":"big"}`
-	toolCall := func(id string) llm.ToolCall {
+	// Distinct pages per call: under A-004-2 a shared signature would pin
+	// every later result after the first elision, and the walk would have
+	// nothing to do — the worst case for the walk is many distinct reads.
+	toolCall := func(id, args string) llm.ToolCall {
 		return *toolCallChunk(id, "wiki_get", args).ToolCall
 	}
 	msgs := make([]llm.Message, 0, 4+2*24)
@@ -1035,7 +1350,10 @@ func BenchmarkBoundContextRealisticWorstCase(b *testing.B) {
 		llm.Message{Role: "user", Content: "read the big page, a lot"},
 	)
 	for r := 0; r < 24; r++ {
-		msgs = append(msgs, llm.Message{Role: "assistant", ToolCalls: []llm.ToolCall{toolCall(fmt.Sprintf("a%d", r))}})
+		msgs = append(msgs, llm.Message{Role: "assistant", ToolCalls: []llm.ToolCall{
+			toolCall(fmt.Sprintf("a%d", r), fmt.Sprintf(`{"page":"big-a%d"}`, r)),
+			toolCall(fmt.Sprintf("b%d", r), fmt.Sprintf(`{"page":"big-b%d"}`, r)),
+		}})
 		msgs = append(msgs,
 			llm.Message{Role: "tool", ToolCallID: fmt.Sprintf("a%d", r), Name: "wiki_get", Content: big},
 			llm.Message{Role: "tool", ToolCallID: fmt.Sprintf("b%d", r), Name: "wiki_get", Content: big},
@@ -1050,6 +1368,6 @@ func BenchmarkBoundContextRealisticWorstCase(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		boundContext(msgs, 4, make(map[int]bool), 24, budget)
+		boundContext(msgs, 4, make(map[int]bool), make(map[string]bool), 24, budget)
 	}
 }
