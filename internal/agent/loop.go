@@ -76,11 +76,26 @@ func (l *Loop) Send(ctx context.Context, sessionID, msg string, out chan<- Event
 		return l.fail(ctx, out, fmt.Errorf("agent: build context: %w", err))
 	}
 
+	// 004 T0a (F.C1/F.C2): everything Build returned is fixed context —
+	// system parts, compacted prior-session history, the user message —
+	// and only messages this turn's own rounds append are ever elidable,
+	// so the turn's first index is where boundContext's region starts.
+	// elided remembers which indices were already replaced so no message
+	// is elided twice across rounds; both live only for this Send, so a
+	// Loop reused for a second turn starts clean.
+	turnStart := len(msgs)
+	elided := make(map[int]bool)
+
 	badCalls := 0
 	rounds := 0
 
 	for {
 		rounds++
+
+		// 004 T0a (F.C1): estimate the request before every Stream call,
+		// round 1 included; runRound is the only Stream caller, so this
+		// is the one checkpoint a round's request passes through.
+		msgs = boundContext(msgs, turnStart, elided, rounds, l.cfg.ContextTokens)
 
 		newMsgs, toolCalled, finish, err := l.runRound(ctx, sessionID, msgs, &badCalls, out)
 		if err != nil {
