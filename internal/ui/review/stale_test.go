@@ -112,7 +112,7 @@ func TestOwnerlessWindowIsNeverYNCursorTarget(t *testing.T) {
 		},
 	}
 
-	const want = "this window has no hunk id — it cannot be accepted or dropped individually"
+	const want = "this window has no hunk id — press d to drop the whole op (op1)" // A-030-2
 
 	p := send(t, m, keyPress('y'))
 	if msg, level := statusOf(t, p); msg != want || level != ui.StatusWarn {

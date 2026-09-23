@@ -30,14 +30,19 @@ type KeyMap struct {
 	// Review screen keys, fixed by /docs/design.md §9.
 	AcceptHunk key.Binding // y — undrop-and-advance (Engine.UndropHunk, D-CL)
 	DropHunk   key.Binding // n — drop-and-advance (Engine.DropHunk)
-	SplitHunk  key.Binding // s — not built in v0.1 (C-90/TD-2)
-	AcceptAll  key.Binding // A — refused unless lint is clean
-	Reject     key.Binding // X — reject the changeset
-	Commit     key.Binding // C — commit
-	MoveDown   key.Binding // j, down
-	MoveUp     key.Binding // k, up
-	Top        key.Binding // g
-	Bottom     key.Binding // G
+	// DropOp and RestoreOp are workflow 030's op-level verbs (030 contract
+	// §T2): d two-press-drops an op with everything that cannot survive
+	// without it, u restores a dropped op with its prerequisites.
+	DropOp    key.Binding // d — drop op + dependents (Engine.DropOps, two-press)
+	RestoreOp key.Binding // u — restore op + prerequisites (Engine.RestoreOps)
+	SplitHunk key.Binding // s — not built in v0.1 (C-90/TD-2)
+	AcceptAll key.Binding // A — refused unless lint is clean
+	Reject    key.Binding // X — reject the changeset
+	Commit    key.Binding // C — commit
+	MoveDown  key.Binding // j, down
+	MoveUp    key.Binding // k, up
+	Top       key.Binding // g
+	Bottom    key.Binding // G
 	// Preview toggles Review's detail panel between Diff and Preview
 	// (contract §4).
 	Preview key.Binding // p
@@ -65,6 +70,8 @@ func defaultKeyMap() KeyMap {
 	return KeyMap{
 		AcceptHunk: key.NewBinding(key.WithKeys("y"), key.WithHelp("y", "accept hunk")),
 		DropHunk:   key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "drop hunk")),
+		DropOp:     key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "drop op")),
+		RestoreOp:  key.NewBinding(key.WithKeys("u"), key.WithHelp("u", "restore op")),
 		SplitHunk:  key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "split hunk")),
 		AcceptAll:  key.NewBinding(key.WithKeys("A"), key.WithHelp("A", "accept all")),
 		Reject:     key.NewBinding(key.WithKeys("X"), key.WithHelp("X", "reject changeset")),
@@ -100,6 +107,8 @@ func defaultKeyMap() KeyMap {
 type keysFile struct {
 	AcceptHunk     []string `toml:"accept_hunk"`
 	DropHunk       []string `toml:"drop_hunk"`
+	DropOp         []string `toml:"drop_op"`
+	RestoreOp      []string `toml:"restore_op"`
 	SplitHunk      []string `toml:"split_hunk"`
 	AcceptAll      []string `toml:"accept_all"`
 	Reject         []string `toml:"reject_changeset"`
@@ -130,6 +139,8 @@ func (f keysFile) applyOverrides(km *KeyMap) {
 	}
 	set(&km.AcceptHunk, f.AcceptHunk)
 	set(&km.DropHunk, f.DropHunk)
+	set(&km.DropOp, f.DropOp)
+	set(&km.RestoreOp, f.RestoreOp)
 	set(&km.SplitHunk, f.SplitHunk)
 	set(&km.AcceptAll, f.AcceptAll)
 	set(&km.Reject, f.Reject)

@@ -40,11 +40,14 @@ func (m *Model) FooterHelp() []key.Binding {
 
 // OverlayHelp returns the Review section of the ? overlay (contract §5
 // OverlayHelper; the keys-* grids' left column). The disabled split-hunk
-// entry is D9's "not built" marker (C-90/TD-2).
+// entry is D9's "not built" marker (C-90/TD-2); the d/u entries are
+// workflow 030's op-level drop/restore.
 func (m *Model) OverlayHelp() (string, []ui.HelpEntry) {
 	return "Review", []ui.HelpEntry{
 		{Key: "y", Desc: "accept hunk"},
 		{Key: "n", Desc: "drop hunk"},
+		{Key: "d", Desc: "drop op"},
+		{Key: "u", Desc: "restore op"},
 		{Key: "A", Desc: "accept all"},
 		{Key: "X", Desc: "reject changeset"},
 		{Key: "C", Desc: "commit"},

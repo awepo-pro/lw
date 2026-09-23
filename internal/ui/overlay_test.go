@@ -8,13 +8,17 @@ import (
 )
 
 // reviewOverlayHelp is a fake OverlayHelper standing in for Review's own
-// (mockgen.keys_overlay's `left` list plus the disabled split-hunk row, D9).
+// (mockgen.keys_overlay's `left` list plus the disabled split-hunk row, D9;
+// workflow 030's d/u joined it after n — A-030-1's amendment, which is why
+// the box grew to 17 rows).
 type reviewOverlayHelp struct{}
 
 func (reviewOverlayHelp) OverlayHelp() (string, []HelpEntry) {
 	return "Review", []HelpEntry{
 		{Key: "y", Desc: "accept hunk"},
 		{Key: "n", Desc: "drop hunk"},
+		{Key: "d", Desc: "drop op"},
+		{Key: "u", Desc: "restore op"},
 		{Key: "A", Desc: "accept all"},
 		{Key: "X", Desc: "reject changeset"},
 		{Key: "C", Desc: "commit"},

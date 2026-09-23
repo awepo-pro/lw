@@ -36,8 +36,9 @@ var (
 )
 
 // readOverlayBoxGrid returns testdata/frozen/keys-overlay-120x40-box.txt's
-// 15 rows — the Keys box of the regenerated keys-120x40.txt grid (amendment
-// A-3), cut at the box's own geometry (bw=64 at x=28, bh=15 at y=12).
+// 17 rows — the Keys box of the regenerated keys-120x40.txt grid (amendment
+// A-3; 030's d/u entries grew the box 15→17, A-030-1), cut at the box's own
+// geometry (bw=64 at x=28, bh=17 at y=11).
 func readOverlayBoxGrid(t *testing.T) []string {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join("testdata", "frozen", "keys-overlay-120x40-box.txt"))
@@ -68,7 +69,7 @@ func overlayBoxAt(t *testing.T, pane Pane) []string {
 		t.Fatalf("the frame is %d lines, want %d", len(lines), h)
 	}
 
-	bw, bh := min(64, w-4), min(15, h-2)
+	bw, bh := min(64, w-4), min(17, h-2)
 	x, y := (w-bw)/2, (h-bh)/2
 
 	box := make([]string, 0, bh)

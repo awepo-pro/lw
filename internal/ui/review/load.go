@@ -105,6 +105,7 @@ func (m *Model) applyLoaded(msg loadedMsg) {
 			// C-807: the changeset the confirmation was armed for is gone
 			// (committed or rejected elsewhere); the arm dies with it.
 			m.commitArmedFor = ""
+			m.dropArm = dropArm{}
 			return
 		}
 		m.loadErr = msg.err
@@ -123,6 +124,12 @@ func (m *Model) applyLoaded(msg loadedMsg) {
 		// to disarm it (another process's commit reloading in a new
 		// changeset, say). The next C must warn again, not commit.
 		m.commitArmedFor = ""
+	}
+	if m.dropArm.opID != "" && m.dropArm.csID != msg.changeset.ID {
+		// C-807 for the op-drop arm (030): the same swap rule — a load of a
+		// different changeset id disarms, so the second d can never drop
+		// ids previewed against another changeset.
+		m.dropArm = dropArm{}
 	}
 	m.diff = msg.diff
 	m.ops = flattenAllOps(msg.changeset)

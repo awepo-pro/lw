@@ -22,14 +22,19 @@ var everywhereHelp = []HelpEntry{
 }
 
 // overlayBox returns the "Keys" panel's lines (bw×bh, clamped to min(64,
-// w-4) × min(15, h-2)) and where it belongs, centred in a w×h frame
+// w-4) × min(17, h-2)) and where it belongs, centred in a w×h frame
 // (mockgen.keys_overlay). p may be nil, and may implement neither optional
 // interface — a pane with no OverlayHelp leaves the left column just its
 // (empty) title, and a pane that is not a Scroller (or reports false)
 // leaves the Scroll group's rows blank (contract §5 frame note 4).
+//
+// The height cap is 17, not the mockup's original 15: Review's OverlayHelp
+// grew to eleven entries in workflow 030 (d/u joined y/n, A-030-1), and the
+// entries render at rows 3.. — a 15-row box holds ten of them and silently
+// clipped the last (the disabled split-hunk row, D9's not-built marker).
 func overlayBox(t Theme, keys KeyMap, p Pane, w, h int) (lines []string, bw, bh, x, y int) {
 	bw = min(64, w-4)
-	bh = min(15, h-2)
+	bh = min(17, h-2)
 	x = (w - bw) / 2
 	y = (h - bh) / 2
 
