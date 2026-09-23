@@ -20,6 +20,11 @@
 set -u
 
 if [ "${1:-}" = "--version" ]; then
+	# FAKE_DOCLING_VERSION_SLEEP wedges --version the way a broken sidecar
+	# install can (007 whole-branch review): the probe must give up on it.
+	if [ -n "${FAKE_DOCLING_VERSION_SLEEP:-}" ]; then
+		sleep "${FAKE_DOCLING_VERSION_SLEEP}"
+	fi
 	echo "Docling version: 2.130.0"
 	echo "Docling Core version: 2.98.0"
 	exit 0

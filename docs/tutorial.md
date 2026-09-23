@@ -331,7 +331,12 @@ The default install is ≈ 6 GB because it pulls GPU libraries; it runs
 CPU-only all the same, at roughly a second per page. `lw doctor` reports the
 sidecar on its own `pdf extractor` line — whether it is installed, which
 version, and how much the cache holds — so it is the first stop when a PDF
-ingest misbehaves.
+ingest misbehaves. A differently named sidecar is set with
+`lw config set extract.command "<argv words>"` — the value is split on
+whitespace into the argv words handed to the conversion (for example
+`uvx --from docling==2.130.0 docling`), so a path containing a space cannot
+be expressed; keep such a sidecar on PATH, or call it through a wrapper
+script whose own path has none.
 
 What lw refuses, and why:
 

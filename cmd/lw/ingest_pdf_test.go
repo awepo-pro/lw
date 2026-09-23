@@ -19,6 +19,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/awepo-pro/lw/internal/testutil"
 )
@@ -254,6 +255,37 @@ func TestIngestPDFDryRunCachesForRealRun(t *testing.T) {
 	}
 	if converts != 1 {
 		t.Errorf("the sidecar ran convert %d times across dry-run + ingest, want exactly 1 (the second run must be a cache hit)\nargv log:\n%s", converts, b)
+	}
+}
+
+// TestPDFVersionProbeBounded pins the cache's sidecar --version probe
+// bound: a sidecar whose --version wedges (a broken install can hang the
+// Python import) must not hang the ingest. The probe gives up, the error
+// is cached for the process, and the extraction proceeds uncached — the
+// ingest still lands. RED if the bound is dropped: the probe waits out the
+// fake's whole sleep and the elapsed assertion fires.
+func TestPDFVersionProbeBounded(t *testing.T) {
+	root := testutil.CopyFixture(t, "minimal")
+	pdfIngestEnv(t, 0, fakeDoclingCommand(t))
+	t.Setenv("FAKE_DOCLING_VERSION_SLEEP", "30")
+	oldBound := pdfVersionProbeTimeout
+	pdfVersionProbeTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { pdfVersionProbeTimeout = oldBound })
+
+	paper := pdfSource(t, t.TempDir(), "paper.pdf", paperFixture(1))
+	rec := withRecordingIngestAgent(t, oneIngestOp(), nil)
+
+	start := time.Now()
+	stdout, stderr, code := captureRun(t, func() int {
+		return run([]string{"ingest", "--vault", root, paper})
+	})
+	elapsed := time.Since(start)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 (the wedged probe must degrade to an uncached extraction); stderr=%q stdout=%q", code, stderr, stdout)
+	}
+	wantSourcesEqual(t, originalSources(t, rec.gotMsg), []string{paper})
+	if elapsed > 10*time.Second {
+		t.Errorf("ingest took %s with a wedged --version (probe bound %s); the probe must give up, not hang the command", elapsed, oldBound)
 	}
 }
 

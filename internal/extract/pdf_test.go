@@ -166,6 +166,44 @@ func TestPDFArgv(t *testing.T) {
 	}
 }
 
+// TestPDFArgvDashPath pins the dash guard on the sidecar argument: a
+// relative "PDF" whose name starts with "-" ("-v.pdf", or anything under a
+// directory the caller spelled "-dir/") reaches the sidecar as ./-v.pdf.
+// The real Docling 2.130.0 (a click CLI) parses a bare -v.pdf as an option
+// and exits 2 with "No such option: -" — measured 2026-09-23 — so the bare
+// spelling would refuse every dash-named PDF. The Doc's provenance keeps
+// the caller's own spelling. RED if the guard is dropped: the argv log
+// then carries the bare -v.pdf.
+func TestPDFArgvDashPath(t *testing.T) {
+	cfg := fakeDocling(t)
+	dir := t.TempDir()
+	t.Chdir(dir) // the argument must be RELATIVE: an absolute path cannot start with "-"
+	argvPath := filepath.Join(dir, "argv.log")
+	t.Setenv("FAKE_DOCLING_ARGV", argvPath)
+	pdfFixture(t, dir, "-v.pdf", "PAGES=1\n"+padTo("", 150)+"\n")
+	uri := "-v.pdf"
+
+	doc, err := NewPDF(cfg).Extract(context.Background(), uri)
+	b, rerr := os.ReadFile(argvPath)
+	if rerr != nil {
+		t.Fatalf("read argv log: %v", rerr)
+	}
+	args := strings.Split(strings.TrimRight(string(b), "\n"), "\n")
+	if len(args) < 2 || args[0] != "convert" {
+		t.Fatalf("argv = %q, want it to start with convert", args)
+	}
+	if args[1] != "./"+uri {
+		t.Errorf("sidecar argument = %q, want %q — the sidecar parses a bare leading-dash name as an option",
+			args[1], "./"+uri)
+	}
+	if err != nil {
+		t.Fatalf("Extract: %v — the conversion failed on the argument shown above", err)
+	}
+	if doc.SourceURL != uri {
+		t.Errorf("SourceURL = %q, want the caller's own spelling %q", doc.SourceURL, uri)
+	}
+}
+
 // TestPDFTooLittleTextGate is pin PDF3: the F.P5 floor is
 // MinPDFCharsPerPage × pages, with the exact refusal message. 199
 // non-space characters over 2 pages is one short of 2 × 100 and must be

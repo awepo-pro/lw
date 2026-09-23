@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/awepo-pro/lw/internal/agent"
 	"github.com/awepo-pro/lw/internal/config"
@@ -61,11 +62,22 @@ func ingestExtractors(root string, cfg *config.Config) extract.Extractor {
 	)
 }
 
+// pdfVersionProbeTimeout bounds the cache's one-time sidecar --version
+// probe. lw doctor bounds the same probe at doctorProbeTimeout because a
+// hung endpoint or sidecar must not hang a health check; an ingest hangs
+// all the same when the probe is unbounded, so the cache gives up here,
+// caches the error for the process, and extraction proceeds uncached.
+var pdfVersionProbeTimeout = 20 * time.Second
+
 // pdfVersionOnce is the cache's version func (007 F.W1): PDFVersion of the
 // configured sidecar. cache.New memoizes it — the probe shells out to the
 // sidecar and costs ~4 s, so a cache hit must not re-pay it.
 func pdfVersionOnce(pdfCfg extract.PDFConfig) func(context.Context) (string, error) {
-	return func(ctx context.Context) (string, error) { return extract.PDFVersion(ctx, pdfCfg) }
+	return func(ctx context.Context) (string, error) {
+		ctx, cancel := context.WithTimeout(ctx, pdfVersionProbeTimeout)
+		defer cancel()
+		return extract.PDFVersion(ctx, pdfCfg)
+	}
 }
 
 // agentExtractors returns the chain every agent's tool registry is built

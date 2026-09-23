@@ -13,11 +13,14 @@ package main
 
 import (
 	"errors"
+	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -700,6 +703,33 @@ func TestIngestFlagsAmongSources(t *testing.T) {
 		}
 		wantSourcesEqual(t, originalSources(t, rec.gotMsg), []string{a, b})
 		wantSourcesEqual(t, originalKinds(t, rec.gotMsg), []string{"paper", "paper"})
+	})
+
+	// double_dash_after_source_takes_rest_verbatim is the case the flag
+	// package breaks when a FLAG directly precedes the "--": flag.Parse
+	// consumes the terminator and fs.Args no longer shows it was there, so
+	// a leading-dash source after a mid-list "--" would be re-parsed as a
+	// flag and the invocation would die on "flag provided but not defined:
+	// -v.pdf" (measured with the built binary, 2026-09-23). Every source
+	// writtenSource returns is absolute — its name cannot start with "-" —
+	// so the pin drives parseIngestSources directly with relative
+	// leading-dash spellings.
+	t.Run("double_dash_after_flags_takes_rest_verbatim", func(t *testing.T) {
+		fs := flag.NewFlagSet("ingest", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		vault := fs.String("vault", "", "")
+		dryRun := fs.Bool("dry-run", false, "")
+		sources, err := parseIngestSources(fs, []string{"--vault", "v", "--dry-run", "--", "-v.pdf", "--weird.md"})
+		if err != nil {
+			t.Fatalf("parseIngestSources: %v", err)
+		}
+		if *vault != "v" || !*dryRun {
+			t.Errorf("flags = vault %q dry-run %v, want v, true", *vault, *dryRun)
+		}
+		want := []string{"-v.pdf", "--weird.md"}
+		if !slices.Equal(sources, want) {
+			t.Errorf("sources = %q, want %q (verbatim after the \"--\")", sources, want)
+		}
 	})
 
 	t.Run("double_dash_after_source_takes_rest_verbatim", func(t *testing.T) {

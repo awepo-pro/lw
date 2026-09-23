@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -151,16 +152,27 @@ func parseIngestSources(fs *flag.FlagSet, args []string) ([]string, error) {
 		if args[0] == "--" {
 			return append(sources, args[1:]...), nil
 		}
-		if err := fs.Parse(args); err != nil {
+		// flag.Parse consumes a bare "--" itself, and fs.Args no longer
+		// shows it was there — so a source after a MID-LIST "--" would be
+		// re-parsed as flags on the next round (`lw ingest --vault v --
+		// -v.pdf` died on "flag provided but not defined: -v.pdf"). The
+		// chunk handed to Parse therefore stops before the first bare
+		// "--"; the tail is rejoined below, and the loop head returns it
+		// verbatim.
+		chunk, tail := args, []string(nil)
+		if i := slices.Index(args, "--"); i >= 0 {
+			chunk, tail = args[:i], args[i:]
+		}
+		if err := fs.Parse(chunk); err != nil {
 			return nil, err
 		}
-		if rest := fs.Args(); len(rest) == len(args) {
+		rest := fs.Args()
+		args = append(append(make([]string, 0, len(rest)+len(tail)), rest...), tail...)
+		if len(rest) == len(chunk) {
 			// Parse consumed nothing: it stopped on this leading
 			// argument, which is a source, not a flag.
-			sources = append(sources, rest[0])
-			args = rest[1:]
-		} else {
-			args = rest
+			sources = append(sources, args[0])
+			args = args[1:]
 		}
 	}
 	return sources, nil

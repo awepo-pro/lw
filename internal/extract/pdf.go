@@ -147,8 +147,20 @@ func (p *pdfExtractor) Extract(ctx context.Context, uri string) (*Doc, error) {
 	defer cancel()
 
 	stderr := &tailBuffer{cap: stderrTailBytes}
+	// A relative path whose first byte is "-" ("-v.pdf", or anything under
+	// a directory the caller spelled "-dir/") would reach the sidecar as an
+	// option, not an operand: the real Docling 2.130.0 (a click CLI) answers
+	// `convert -v.pdf` with "No such option: -" and exit 2, and operand
+	// parsers generally agree (GNU tail refuses a bare -v.pdf the same way).
+	// "./" marks the same file in the same directory as an operand. Errors
+	// and the Doc's provenance keep the caller's own spelling; an absolute
+	// path cannot start with "-".
+	sidecarArg := uri
+	if !filepath.IsAbs(sidecarArg) && strings.HasPrefix(sidecarArg, "-") {
+		sidecarArg = "./" + sidecarArg
+	}
 	argv := append(append([]string{}, p.command...),
-		"convert", uri,
+		"convert", sidecarArg,
 		"--to", "md",
 		"--to", "json",
 		// Probe §2.2 #4: without --image-export-mode placeholder a 100 KB
@@ -354,7 +366,13 @@ func PDFVersion(ctx context.Context, cfg PDFConfig) (string, error) {
 		return "", sidecarMissing(command)
 	}
 	argv := append(append([]string{}, command[1:]...), "--version")
-	out, err := exec.CommandContext(ctx, command[0], argv...).Output()
+	cmd := exec.CommandContext(ctx, command[0], argv...)
+	// The same grace Extract gives its conversion: a killed --version's
+	// children (a model loader, a sleep in a test fake) can outlive it
+	// holding the output pipe, and Output would block on them past the
+	// caller's deadline instead of letting it bite.
+	cmd.WaitDelay = time.Second
+	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("docling --version: %w", err)
 	}
