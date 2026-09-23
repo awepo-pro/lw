@@ -295,10 +295,13 @@ lw: ingest: 14 files (212 KB) to ingest; the limit is 10 files and 94 KB per ing
 
 Sources the vault already holds are skipped before the cap is counted, and
 naming files or URLs alongside a directory works as you would expect — each
-argument stays where you put it. To see what a folder ingest would do
-without calling the provider at all, add `--dry-run`: it prints
+argument stays where you put it. To see what an ingest would do without
+calling the provider at all, add `--dry-run`: it prints
 `would ingest <path>` per kept file and the verdict line, then exits — no
-changeset, no session, no agent.
+changeset, no session, no agent. The flags may sit anywhere among the
+sources (`lw ingest ~/notes/ --dry-run` is the same command), and one
+caveat: a URL source is still downloaded on a dry run, because its size
+cannot be counted without fetching it.
 
 ```
 $ lw ingest --dry-run ~/notes/

@@ -123,6 +123,37 @@ func ingestKB(n int) int {
 	return (n + 1023) / 1024
 }
 
+// parseIngestSources parses args into fs's flag values and the returned
+// source arguments, accepting flags anywhere among the sources. The frozen
+// usage `lw ingest <url|path|dir>... [--kind K] [--dry-run]` promises
+// `lw ingest notes/ --dry-run` works, but flag.FlagSet.Parse stops at the
+// first positional, so parsing runs a chunk at a time: parse a flag run,
+// take the one positional Parse stopped at, re-parse the rest — until
+// every argument is consumed. "--" still ends flag parsing: everything
+// after it is returned verbatim, so a file literally named "--x" stays
+// expressible however far into the argument list it sits. An unparseable
+// flag run is reported through fs (its error output) and returned.
+func parseIngestSources(fs *flag.FlagSet, args []string) ([]string, error) {
+	var sources []string
+	for len(args) > 0 {
+		if args[0] == "--" {
+			return append(sources, args[1:]...), nil
+		}
+		if err := fs.Parse(args); err != nil {
+			return nil, err
+		}
+		if rest := fs.Args(); len(rest) == len(args) {
+			// Parse consumed nothing: it stopped on this leading
+			// argument, which is a source, not a flag.
+			sources = append(sources, rest[0])
+			args = rest[1:]
+		} else {
+			args = rest
+		}
+	}
+	return sources, nil
+}
+
 // cmdIngest extracts one or more sources (a URL, a local path, or a local
 // directory — 004) into deterministic markdown, opens a changeset, and
 // hands it to the agent to ingest the raw content and compile wiki pages
@@ -133,11 +164,11 @@ func cmdIngest(args []string) error {
 	fs.SetOutput(os.Stderr)
 	vaultPath := fs.String("vault", "", "vault root (default: nearest ancestor directory containing SCHEMA.md)")
 	kindFlag := fs.String("kind", "", "override the detected kind for every source: article|paper|transcript")
-	dryRun := fs.Bool("dry-run", false, "report what would be ingested and the limit verdict, then exit — opens no changeset, constructs no agent")
-	if err := fs.Parse(args); err != nil {
+	dryRun := fs.Bool("dry-run", false, "report what would be ingested and the limit verdict, then exit — opens no changeset, constructs no agent (URL sources are still fetched, to size them)")
+	sources, err := parseIngestSources(fs, args)
+	if err != nil {
 		return &exitError{code: 2}
 	}
-	sources := fs.Args()
 	if len(sources) == 0 {
 		fmt.Fprintln(os.Stderr, "usage: lw ingest <url|path|dir>... [--kind K] [--dry-run]")
 		return &exitError{code: 2}

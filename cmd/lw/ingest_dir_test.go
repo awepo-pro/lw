@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/awepo-pro/lw/internal/agent"
@@ -93,6 +94,35 @@ func wantSourcesEqual(t *testing.T, got, want []string) {
 	for i := range want {
 		if got[i] != want[i] {
 			t.Fatalf("agent message source[%d] = %q, want %q (full list %q, want %q)", i, got[i], want[i], got, want)
+		}
+	}
+}
+
+// originalKinds extracts the "  kind: <kind>" lines the agent message
+// carries, in buildIngestMessage's order — the per-source kind after any
+// --kind override.
+func originalKinds(t *testing.T, msg string) []string {
+	t.Helper()
+	var got []string
+	for _, line := range strings.Split(msg, "\n") {
+		if s, ok := strings.CutPrefix(line, "  kind: "); ok {
+			got = append(got, s)
+		}
+	}
+	if len(got) == 0 {
+		t.Fatalf("the agent message lists no kinds; message:\n%s", msg)
+	}
+	return got
+}
+
+// noChangesetsAnywhere fails the test if the vault holds a changeset in
+// any state — the absence proof for "opened nothing" that also covers
+// rejected rollbacks, not just open ones.
+func noChangesetsAnywhere(t *testing.T, root string) {
+	t.Helper()
+	for _, state := range []string{"open", "committed", "rejected"} {
+		if got := countChangesets(t, root, state); got != 0 {
+			t.Errorf("changesets/%s = %d, want 0 (nothing may be opened)", state, got)
 		}
 	}
 }
@@ -574,4 +604,313 @@ func TestIngestUsageAndHelp(t *testing.T) {
 			t.Fatalf("help output = %q, want it to contain the dir-ingest row", stdout)
 		}
 	})
+}
+
+// TestIngestFlagsAmongSources pins the interleaved parse: the frozen usage
+// `lw ingest <url|path|dir>... [--kind K] [--dry-run]` lets the flags sit
+// anywhere among the sources, but flag.FlagSet stops at the first
+// positional — so cmdIngest must parse flag runs and sources a chunk at a
+// time (parse, take one positional, re-parse the rest). "--" still ends
+// flag parsing, so a file literally named "--weird.md" stays expressible,
+// and flags-first invocations parse exactly as before the fix.
+func TestIngestFlagsAmongSources(t *testing.T) {
+	t.Run("dry_run_flag_after_dir", func(t *testing.T) {
+		root := testutil.CopyFixture(t, "minimal")
+		ingestLimitsEnv(t, 0)
+		dir := t.TempDir()
+		dirFile(t, dir, "a.md", "# A\n\nAlpha.\n")
+		noAgentEver(t)
+
+		stdout, stderr, code := captureRun(t, func() int {
+			return run([]string{"ingest", "--vault", root, dir, "--dry-run"})
+		})
+		if code != 0 {
+			t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr, stdout)
+		}
+		if want := "would ingest " + filepath.Join(dir, "a.md"); !strings.Contains(stdout, want) {
+			t.Errorf("stdout = %q, want it to contain %q", stdout, want)
+		}
+		if want := "within limits: 1 files, 1 KB (limit 10 files, 94 KB)"; !strings.Contains(stdout, want) {
+			t.Errorf("stdout = %q, want it to contain %q", stdout, want)
+		}
+		noChangesetsAnywhere(t, root)
+	})
+
+	t.Run("kind_flag_between_files_applies_to_both", func(t *testing.T) {
+		root := testutil.CopyFixture(t, "minimal")
+		ingestLimitsEnv(t, 0)
+		a := writtenSource(t, "first.md", "# First\n\nBody.\n")
+		b := writtenSource(t, "second.md", "# Second\n\nBody.\n")
+		rec := withRecordingIngestAgent(t, oneIngestOp(), nil)
+
+		stdout, stderr, code := captureRun(t, func() int {
+			return run([]string{"ingest", "--vault", root, a, "--kind", "paper", b})
+		})
+		if code != 0 {
+			t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr, stdout)
+		}
+		wantSourcesEqual(t, originalSources(t, rec.gotMsg), []string{a, b})
+		wantSourcesEqual(t, originalKinds(t, rec.gotMsg), []string{"paper", "paper"})
+	})
+
+	t.Run("double_dash_after_source_takes_rest_verbatim", func(t *testing.T) {
+		root := testutil.CopyFixture(t, "minimal")
+		ingestLimitsEnv(t, 0)
+		plain := writtenSource(t, "plain.md", "# Plain\n\nBody.\n")
+		weird := writtenSource(t, "--weird.md", "# Weird\n\nBody.\n")
+		rec := withRecordingIngestAgent(t, oneIngestOp(), nil)
+
+		stdout, stderr, code := captureRun(t, func() int {
+			return run([]string{"ingest", "--vault", root, plain, "--", weird})
+		})
+		if code != 0 {
+			t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr, stdout)
+		}
+		wantSourcesEqual(t, originalSources(t, rec.gotMsg), []string{plain, weird})
+	})
+
+	t.Run("double_dash_first_takes_rest_verbatim", func(t *testing.T) {
+		root := testutil.CopyFixture(t, "minimal")
+		ingestLimitsEnv(t, 0)
+		weird := writtenSource(t, "--weird.md", "# Weird\n\nBody.\n")
+		rec := withRecordingIngestAgent(t, oneIngestOp(), nil)
+
+		stdout, stderr, code := captureRun(t, func() int {
+			return run([]string{"ingest", "--vault", root, "--", weird})
+		})
+		if code != 0 {
+			t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr, stdout)
+		}
+		wantSourcesEqual(t, originalSources(t, rec.gotMsg), []string{weird})
+	})
+
+	t.Run("flags_first_unchanged", func(t *testing.T) {
+		root := testutil.CopyFixture(t, "minimal")
+		ingestLimitsEnv(t, 0)
+		dir := t.TempDir()
+		dirFile(t, dir, "a.md", "# A\n\nAlpha.\n")
+		noAgentEver(t)
+
+		stdout, stderr, code := captureRun(t, func() int {
+			return run([]string{"ingest", "--dry-run", "--vault", root, dir})
+		})
+		if code != 0 {
+			t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr, stdout)
+		}
+		if want := "within limits: 1 files, 1 KB (limit 10 files, 94 KB)"; !strings.Contains(stdout, want) {
+			t.Errorf("stdout = %q, want it to contain %q", stdout, want)
+		}
+		noChangesetsAnywhere(t, root)
+	})
+
+	t.Run("undefined_flag_after_source_still_usage_error", func(t *testing.T) {
+		root := testutil.CopyFixture(t, "minimal")
+		ingestLimitsEnv(t, 0)
+		a := writtenSource(t, "one.md", "# One\n\nBody.\n")
+		noAgentEver(t)
+
+		_, stderr, code := captureRun(t, func() int {
+			return run([]string{"ingest", "--vault", root, a, "--bogus"})
+		})
+		if code != 2 {
+			t.Fatalf("exit code = %d, want 2; stderr=%q", code, stderr)
+		}
+		if !strings.Contains(stderr, "flag provided but not defined") {
+			t.Fatalf("stderr = %q, want the flag package's undefined-flag error", stderr)
+		}
+	})
+}
+
+// TestIngestDirAndFileCountedTogether pins F.I4's counting scope: one
+// invocation carrying a directory AND an explicit file counts both against
+// the caps — 10 walker files + 1 file = 11 kept sources, over the 10-file
+// limit, refused with the F.I4 message.
+func TestIngestDirAndFileCountedTogether(t *testing.T) {
+	root := testutil.CopyFixture(t, "minimal")
+	ingestLimitsEnv(t, 0)
+	dir := t.TempDir()
+	for i := 0; i < 10; i++ {
+		dirFile(t, dir, fmt.Sprintf("n%02d.md", i), fmt.Sprintf("# Note %02d\n\nBody.\n", i))
+	}
+	extra := writtenSource(t, "extra.md", "# Extra\n\nBody.\n")
+	noAgentEver(t)
+
+	want := "11 files (1 KB) to ingest; the limit is 10 files and 94 KB per ingest" +
+		" (llm.limits.context_tokens 96000 × 4 × 25%). Split the folder into smaller ones."
+	_, stderr, code := captureRun(t, func() int {
+		return run([]string{"ingest", "--vault", root, dir, extra})
+	})
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1; stderr=%q", code, stderr)
+	}
+	if !strings.Contains(stderr, want) {
+		t.Fatalf("stderr = %q, want it to contain %q", stderr, want)
+	}
+	noChangesetsAnywhere(t, root)
+}
+
+// TestIngestSameDirTwiceDedupedNotDoubleCounted pins F.I3's same-invocation
+// dedupe for directories: the same directory given twice expands to every
+// file twice, and the unchanged A-807 same-content rule drops the second
+// copies — they print `skipped …: same content as …` and do NOT count
+// toward the limits (10 kept files pass; double-counting would reject 20).
+func TestIngestSameDirTwiceDedupedNotDoubleCounted(t *testing.T) {
+	root := testutil.CopyFixture(t, "minimal")
+	ingestLimitsEnv(t, 0)
+	dir := t.TempDir()
+	var want []string
+	for i := 0; i < 10; i++ {
+		name := fmt.Sprintf("n%02d.md", i)
+		dirFile(t, dir, name, fmt.Sprintf("# Note %02d\n\nBody.\n", i))
+		want = append(want, filepath.Join(dir, name))
+	}
+	rec := withRecordingIngestAgent(t, oneIngestOp(), nil)
+
+	stdout, stderr, code := captureRun(t, func() int {
+		return run([]string{"ingest", "--vault", root, dir, dir})
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr, stdout)
+	}
+	for _, p := range want {
+		if skip := "skipped " + p + ": same content as " + p; !strings.Contains(stdout, skip) {
+			t.Errorf("stdout = %q, want it to contain %q", stdout, skip)
+		}
+	}
+	wantSourcesEqual(t, originalSources(t, rec.gotMsg), want)
+	if got := countChangesets(t, root, "open"); got != 1 {
+		t.Errorf("open changesets = %d, want 1", got)
+	}
+}
+
+// TestIngestKBRoundBoundaries pins the KB rendering at the exact rounding
+// edges (KB = (bytes+1023)/1024): 1024 extracted bytes render as 1 KB and
+// pass a 1024-byte cap exactly; 1025 render as 2 KB and fail it. The file
+// contents end with exactly one "\n" and hold no "\r", so
+// len(doc.Markdown) == len(file content) and the byte math is exact.
+func TestIngestKBRoundBoundaries(t *testing.T) {
+	t.Run("exactly_1024_bytes_is_1KB_and_passes", func(t *testing.T) {
+		root := testutil.CopyFixture(t, "minimal")
+		ingestLimitsEnv(t, 1024) // capBytes = 1024 × 4 × 25% = 1024
+		dir := t.TempDir()
+		dirFile(t, dir, "exact.md", strings.Repeat("a", 1023)+"\n") // 1024 bytes
+		noAgentEver(t)
+
+		stdout, stderr, code := captureRun(t, func() int {
+			return run([]string{"ingest", "--vault", root, "--dry-run", dir})
+		})
+		if code != 0 {
+			t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr, stdout)
+		}
+		want := "within limits: 1 files, 1 KB (limit 10 files, 1 KB)"
+		if !strings.Contains(stdout, want) {
+			t.Errorf("stdout = %q, want it to contain %q", stdout, want)
+		}
+	})
+
+	t.Run("exactly_1025_bytes_is_2KB_and_fails", func(t *testing.T) {
+		root := testutil.CopyFixture(t, "minimal")
+		ingestLimitsEnv(t, 1024) // capBytes = 1024
+		dir := t.TempDir()
+		dirFile(t, dir, "over.md", strings.Repeat("a", 1024)+"\n") // 1025 bytes
+		noAgentEver(t)
+
+		want := "1 files (2 KB) to ingest; the limit is 10 files and 1 KB per ingest" +
+			" (llm.limits.context_tokens 1024 × 4 × 25%). Split the folder into smaller ones."
+		_, stderr, code := captureRun(t, func() int {
+			return run([]string{"ingest", "--vault", root, "--dry-run", dir})
+		})
+		if code != 1 {
+			t.Fatalf("exit code = %d, want 1; stderr=%q", code, stderr)
+		}
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want it to contain %q", stderr, want)
+		}
+	})
+}
+
+// TestIngestConfigLoadFailureStillSensible pins the config.Load hoist's
+// blast radius (F.I4 needs Limits.ContextTokens earlier than pre-004, when
+// Load ran after the scratch staging): a broken config.toml fails a
+// file-only ingest with the same `load config:` verdict — exit 1, nothing
+// opened, no agent — the same visible outcome as before 004. When the
+// config is broken AND the folder over the cap, the config error wins:
+// capBytes cannot even be computed without it.
+func TestIngestConfigLoadFailureStillSensible(t *testing.T) {
+	t.Run("file_only_ingest_reports_load_config", func(t *testing.T) {
+		root := testutil.CopyFixture(t, "minimal")
+		dir := filepath.Join(t.TempDir(), "xdg-config")
+		t.Setenv("XDG_CONFIG_HOME", dir)
+		writeConfigFile(t, dir, "not toml at all [[[")
+		a := writtenSource(t, "one.md", "# One\n\nBody.\n")
+		b := writtenSource(t, "two.md", "# Two\n\nBody.\n")
+		noAgentEver(t)
+
+		_, stderr, code := captureRun(t, func() int {
+			return run([]string{"ingest", "--vault", root, a, b})
+		})
+		if code != 1 {
+			t.Fatalf("exit code = %d, want 1; stderr=%q", code, stderr)
+		}
+		if !strings.Contains(stderr, "load config:") {
+			t.Fatalf("stderr = %q, want it to carry the load-config verdict", stderr)
+		}
+		noChangesetsAnywhere(t, root)
+	})
+
+	t.Run("bad_config_wins_over_limit", func(t *testing.T) {
+		root := testutil.CopyFixture(t, "minimal")
+		dir := filepath.Join(t.TempDir(), "xdg-config")
+		t.Setenv("XDG_CONFIG_HOME", dir)
+		writeConfigFile(t, dir, "not toml at all [[[")
+		over := t.TempDir()
+		for i := 0; i < 11; i++ {
+			dirFile(t, over, fmt.Sprintf("n%02d.md", i), fmt.Sprintf("# Note %02d\n\nBody.\n", i))
+		}
+		noAgentEver(t)
+
+		_, stderr, code := captureRun(t, func() int {
+			return run([]string{"ingest", "--vault", root, over})
+		})
+		if code != 1 {
+			t.Fatalf("exit code = %d, want 1; stderr=%q", code, stderr)
+		}
+		if !strings.Contains(stderr, "load config:") {
+			t.Fatalf("stderr = %q, want the config error to win over the limit message", stderr)
+		}
+		noChangesetsAnywhere(t, root)
+	})
+}
+
+// TestIngestDryRunURLStillFetches documents --dry-run's network half:
+// sizing a URL source means downloading it, so a dry run still fetches the
+// URL — what it skips is the provider call, the changeset, the session and
+// the agent. Pinned with a counting httptest server so a future
+// "dry-run touches nothing at all" change has to face this behaviour.
+func TestIngestDryRunURLStillFetches(t *testing.T) {
+	root := testutil.CopyFixture(t, "minimal")
+	ingestLimitsEnv(t, 0)
+	var hits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprint(w, "<html><body><h1>Dry</h1><p>Body.</p></body></html>")
+	}))
+	defer srv.Close()
+	url := srv.URL + "/posts/dry.html"
+	noAgentEver(t)
+
+	stdout, stderr, code := captureRun(t, func() int {
+		return run([]string{"ingest", "--vault", root, "--dry-run", url})
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr, stdout)
+	}
+	if atomic.LoadInt32(&hits) == 0 {
+		t.Error("the URL was never fetched; --dry-run must still download a URL source to size it")
+	}
+	if want := "would ingest " + url; !strings.Contains(stdout, want) {
+		t.Errorf("stdout = %q, want it to contain %q", stdout, want)
+	}
+	noChangesetsAnywhere(t, root)
 }
