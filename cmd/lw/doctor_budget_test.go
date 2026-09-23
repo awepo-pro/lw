@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/awepo-pro/lw/internal/extract"
 	"github.com/awepo-pro/lw/internal/testutil"
 )
 
@@ -37,8 +38,16 @@ func budgetEnv(t *testing.T, toml string) {
 // nothing depends on the ambient environment (C-809).
 func TestDoctorBudget(t *testing.T) {
 	t.Run("low_budget_warns_with_remedy", func(t *testing.T) {
-		budgetEnv(t, "[llm]\nmax_tokens = 8192\napi_key = \"env:"+budgetKeyEnv+"\"\n")
+		// (A-007-5) the [extract] table pins the fake sidecar's ABSOLUTE
+		// path and probeExtractorVersion is swapped, mirroring
+		// doctorTestEnv: run() below dispatches with probe: true, so the
+		// pdf extractor check would otherwise exec the real `docling
+		// --version` (or take a different branch without it).
+		budgetEnv(t, "[llm]\nmax_tokens = 8192\napi_key = \"env:"+budgetKeyEnv+"\"\n"+"[extract]\ncommand = \""+fakeDoclingCommand(t)+"\"\n")
 		withProbe(t, healthyProbe) // the run() below probes with doctorOptions{probe: true}; never the network
+		withExtractorProbe(t, func(ctx context.Context, cfg extract.PDFConfig) (string, error) {
+			return doclingTestedVersion, nil
+		})
 		root := testutil.CopyFixture(t, "minimal")
 
 		rep := runDoctor(context.Background(), root, doctorOptions{})
