@@ -253,37 +253,45 @@ func TestK7CorruptEntryReExtractsAndRewrites(t *testing.T) {
 	c := New(inner, dir, "sidecar/docling", constVersion("v1", &vc))
 	ctx := context.Background()
 
-	// Pre-seed the directory with one garbage .json entry so whatever key
-	// the cache computes, it finds garbage there.
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	garbage := filepath.Join(dir, "garbage.json")
-	if err := os.WriteFile(garbage, []byte("\x00\xffnot json"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
+	// Populate a valid entry first, then corrupt it AT ITS REAL KEY PATH.
+	// Garbage at any other name would never be read — the lookup is by
+	// content-derived key, so only the entry file itself exercises F.K5.
 	d1, err := c.Extract(ctx, src)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if inner.calls != 1 {
-		t.Fatalf("inner called %d times, want 1 (corrupt entry must miss)", inner.calls)
+		t.Fatalf("inner called %d times, want 1", inner.calls)
 	}
-	// Second call must now hit the rewritten, valid entry — inner stays
-	// at its single call from the miss above.
+	matches, err := filepath.Glob(filepath.Join(dir, "*.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("want exactly 1 entry file, got %v", matches)
+	}
+	if err := os.WriteFile(matches[0], []byte("\x00\xffnot json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Corrupt entry → miss: inner called again, no error surfaces.
+	d2, err := c.Extract(ctx, src)
+	if err != nil {
+		t.Fatalf("corrupt entry must never error: %v", err)
+	}
+	if inner.calls != 2 {
+		t.Fatalf("inner called %d times, want 2 (corrupt entry must miss)", inner.calls)
+	}
+	if d2.Markdown != d1.Markdown {
+		t.Fatalf("re-extracted doc serves different markdown")
+	}
+
+	// The miss rewrote the entry validly: the next call hits again.
 	if _, err := c.Extract(ctx, src); err != nil {
 		t.Fatal(err)
 	}
-	if inner.calls != 1 {
-		t.Fatalf("inner called %d times after rewrite, want 1 (entry was not rewritten validly)", inner.calls)
-	}
-	d2, _ := c.Extract(ctx, src)
-	if d2.Markdown != d1.Markdown {
-		t.Fatalf("rewritten entry serves different markdown")
-	}
-	if inner.calls != 1 {
-		t.Fatalf("hit after rewrite did not happen: inner called %d times", inner.calls)
+	if inner.calls != 2 {
+		t.Fatalf("inner called %d times after rewrite, want 2 (entry was not rewritten validly)", inner.calls)
 	}
 }
 

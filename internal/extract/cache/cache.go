@@ -175,10 +175,12 @@ func (c *cached) readEntry(path, fileSHA, version string) *extract.Doc {
 }
 
 // writeEntry stores doc at path atomically: a temp file in the same
-// directory, fsynced by the OS at rename time on the same filesystem, so a
-// crash mid-write never leaves a half-written entry that a later run would
-// misread as a hit (007 T2 F.K4). A failure is logged and otherwise
-// swallowed — the caller already has the Doc.
+// directory, renamed over the entry, so a crash mid-write never leaves a
+// half-written entry that a later run would misread as a hit — the reader
+// sees either the old entry or the complete new one (007 T2 F.K4). The
+// write is not fsynced: a cache entry is a pure optimization, and losing
+// the last write to a power cut only costs one re-extraction. A failure is
+// logged and otherwise swallowed — the caller already has the Doc.
 func (c *cached) writeEntry(path, fileSHA, version string, doc *extract.Doc) {
 	if err := os.MkdirAll(c.dir, 0o700); err != nil {
 		slog.Warn("extract cache write", "err", err)
