@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/awepo-pro/lw/internal/index"
 	"github.com/awepo-pro/lw/internal/lint"
@@ -71,6 +72,13 @@ func wikiSearchHandler(ctx context.Context, d Deps, args json.RawMessage) (Resul
 
 // --- wiki.get ----------------------------------------------------------
 
+// wikiGetMaxRunes caps a wiki.get result's body (004 F.W1): the same
+// number as rawChunkRunes, so one wiki.get result costs a turn roughly
+// what one raw.get chunk costs. 24 rounds × uncapped wiki.get results was
+// the one unbounded term in runRound's context estimate (004 correction 5);
+// the notice points the model at section reads instead of paging.
+const wikiGetMaxRunes = rawChunkRunes
+
 type wikiGetArgs struct {
 	Page    string `json:"page"`
 	Section string `json:"section,omitempty"`
@@ -81,8 +89,9 @@ func wikiGetTool(d Deps) Tool {
 		Name: "wiki.get",
 		Description: "Read one wiki page in full, or a single named section " +
 			"of it (section is the exact heading line, e.g. \"## Related\"). " +
-			"If the page has staged bytes in the open changeset, the staged " +
-			"content is returned, prefixed with a (staged in the open " +
+			"Results over 16000 characters are truncated; read long pages by " +
+			"section. If the page has staged bytes in the open changeset, the " +
+			"staged content is returned, prefixed with a (staged in the open " +
 			"changeset, not yet committed) notice.",
 		Schema:   json.RawMessage(wikiGetSchema),
 		ReadOnly: true,
@@ -108,6 +117,19 @@ func wikiGetHandler(ctx context.Context, d Deps, args json.RawMessage) (Result, 
 
 	if a.Section == "" {
 		content := string(p.Serialize())
+		if n := utf8.RuneCountInString(content); n > wikiGetMaxRunes {
+			// 004 F.W1: the notice lists the same headings the not-found
+			// error does, so the model's next move needs no second call.
+			// A page with no ATX headings has nothing to point at, so the
+			// pointer clause is dropped rather than printed with an empty
+			// list — a dangling "Read the rest by section: ]" would send
+			// the model hunting for sections that do not exist.
+			notice := fmt.Sprintf("\n\n[truncated: %s is %d runes; showing the first %d.", resolved, n, wikiGetMaxRunes)
+			if heads := sectionHeadings(p); len(heads) > 0 {
+				notice += fmt.Sprintf(" Read the rest by section: %s", strings.Join(heads, ", "))
+			}
+			content = firstRunes(content, wikiGetMaxRunes) + notice + "]"
+		}
 		if staged {
 			content = stagedSourceMarker + content
 		}
@@ -122,10 +144,26 @@ func wikiGetHandler(ctx context.Context, d Deps, args json.RawMessage) (Result, 
 		)}, nil
 	}
 	body := p.Body[sec.Start:sec.End]
+	if n := utf8.RuneCountInString(body); n > wikiGetMaxRunes {
+		body = firstRunes(body, wikiGetMaxRunes) + fmt.Sprintf(
+			"\n\n[truncated: section %q of %s is %d runes; showing the first %d.]",
+			sec.Heading, resolved, n, wikiGetMaxRunes,
+		)
+	}
 	if staged {
 		body = stagedSourceMarker + body
 	}
 	return Result{Content: body}, nil
+}
+
+// firstRunes cuts s to at most max runes without splitting a UTF-8 rune —
+// the same rune-safe cutting chunkText does, without its chunking.
+func firstRunes(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max])
 }
 
 func sectionHeadings(p *vault.Page) []string {
