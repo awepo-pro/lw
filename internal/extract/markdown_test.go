@@ -171,6 +171,43 @@ func TestFileExtractNotText(t *testing.T) {
 	}
 }
 
+// A multi-byte rune that straddles the sniff window edge is a truncation
+// artifact of the window, not a property of the file: a valid UTF-8 file
+// whose é (2 B) or 量 (3 B) crosses byte 8192 must still extract. Invalid
+// bytes fully inside the window are still rejected — but the pin below
+// puts one at byte 8190 of the é case, so only the cut sequence may be
+// forgiven.
+func TestFileExtractRuneStraddlesSniffWindow(t *testing.T) {
+	dir := t.TempDir()
+	cases := []struct {
+		name    string
+		content []byte
+	}{
+		{"two-byte.md", append(bytes.Repeat([]byte("a"), 8191), "é after the edge\n"...)},
+		// 量 = E9 87 8F, start byte at 8190: the window keeps E9 87.
+		{"three-byte.md", append(bytes.Repeat([]byte("a"), 8190), "量 after the edge\n"...)},
+		// Same straddle, but a genuinely invalid byte sits fully inside
+		// the window — the straddle must not launder it through.
+		{"straddle-and-garbage.md", append(append(bytes.Repeat([]byte("a"), 8191), "\xff"...), "é after the edge\n"...)},
+	}
+	for _, tc := range cases {
+		path := filepath.Join(dir, tc.name)
+		if err := os.WriteFile(path, tc.content, 0o644); err != nil {
+			t.Fatalf("write %s: %v", tc.name, err)
+		}
+		_, err := NewFile().Extract(context.Background(), path)
+		if tc.name == "straddle-and-garbage.md" {
+			if !errors.Is(err, ErrNotText) {
+				t.Errorf("%s: Extract error %v, want ErrNotText (garbage inside the window)", tc.name, err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("%s: Extract error %v, want nil (the rune cut by the window edge is not the file's fault)", tc.name, err)
+		}
+	}
+}
+
 // A NUL at byte 8192 is past the sniff window — the file is extracted.
 func TestFileExtractNULPastWindow(t *testing.T) {
 	dir := t.TempDir()

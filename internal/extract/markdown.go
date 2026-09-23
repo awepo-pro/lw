@@ -29,6 +29,49 @@ var ErrNotText = errors.New("not text")
 // not disqualify a file (004 F.E3).
 const sniffWindow = 8 * 1024
 
+// trimTruncatedTail drops the final, possibly truncated UTF-8 sequence
+// from a window cut out of a larger file: a multi-byte rune straddling
+// the cut leaves an incomplete tail in the window, and that is an
+// artifact of the window, not a property of the file. Only the last
+// sequence is ever touched — a rune cut by the edge is forgiven, while
+// invalid bytes fully inside the window remain and utf8.Valid still
+// rejects them.
+func trimTruncatedTail(window []byte) []byte {
+	n := len(window)
+	k := 0
+	// Walk back over the trailing continuation bytes of the final rune.
+	for k < n && !utf8.RuneStart(window[n-1-k]) {
+		k++
+	}
+	if k == n {
+		// The whole window is continuation bytes. A cut rune carries at
+		// most UTFMax-1 of them, so this cannot be a cut artifact —
+		// leave it for utf8.Valid to reject.
+		return window
+	}
+	var size int
+	switch c := window[n-1-k]; {
+	case c < utf8.RuneSelf:
+		size = 1
+	case c < 0xE0:
+		size = 2
+	case c < 0xF0:
+		size = 3
+	case c < 0xF8:
+		size = 4
+	default:
+		// 0xF8..0xFF can begin no rune, not even a cut one.
+		return window
+	}
+	if size > k+1 {
+		// The final rune's continuation bytes continue past the cut:
+		// drop the partial sequence (start byte and its continuations).
+		return window[:n-1-k]
+	}
+	// The final sequence is complete as cut — judge it as-is.
+	return window
+}
+
 // fileExtractor is the Extractor NewFile returns.
 type fileExtractor struct{}
 
@@ -73,7 +116,7 @@ func (fileExtractor) Extract(ctx context.Context, uri string) (*Doc, error) {
 	// first sniffWindow bytes are examined (see sniffWindow).
 	window := b
 	if len(window) > sniffWindow {
-		window = window[:sniffWindow]
+		window = trimTruncatedTail(window[:sniffWindow])
 	}
 	if !utf8.Valid(window) || bytes.IndexByte(window, 0) >= 0 {
 		return nil, fmt.Errorf("extract: %s: %w", uri, ErrNotText)
