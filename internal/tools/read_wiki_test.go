@@ -324,6 +324,85 @@ func TestWikiGetToolDescriptionMentionsTruncation(t *testing.T) {
 	}
 }
 
+// TestWikiGetNoticeHeadingsRoundTrip is the reviewer's probe: a truncated
+// whole-page result's "Read the rest by section: ..." list must name
+// headings that succeed verbatim as the section argument — including one
+// whose heading line sits entirely beyond the 16000-rune cut, proving the
+// list describes the whole page, not the shown prefix.
+func TestWikiGetNoticeHeadingsRoundTrip(t *testing.T) {
+	dir := testutil.CopyFixture(t, "minimal")
+	rel := "wiki/concepts/roundtrip.md"
+	// First section is huge, so the cut lands inside it; "## Deep" lives
+	// entirely past the cut and only ever reaches the model via the notice.
+	content := fmt.Sprintf("---\ntitle: Roundtrip\ncreated: 2026-08-30\nupdated: 2026-08-30\ntype: concept\ntags: [inference]\nconfidence: high\n---\n\n# Roundtrip\n\n## Big\n\n%s\n\n## Deep\n\ndeep body\n", strings.Repeat("a", 30000))
+	if err := os.WriteFile(filepath.Join(dir, "wiki", "concepts", "roundtrip.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", rel, err)
+	}
+	reg := NewRegistry(newTestDeps(t, dir))
+
+	res, err := reg.Call(context.Background(), "wiki.get", json.RawMessage(`{"page": "roundtrip"}`))
+	if err != nil || res.IsError {
+		t.Fatalf("Call(wiki.get) = %+v, err = %v", res, err)
+	}
+	i := strings.Index(res.Content, "Read the rest by section: ")
+	if i < 0 {
+		t.Fatalf("truncated result carries no section list:\n%.200s", res.Content[len(res.Content)-200:])
+	}
+	list := strings.TrimSuffix(res.Content[i+len("Read the rest by section: "):], "]")
+	if list != "# Roundtrip, ## Big, ## Deep" {
+		t.Fatalf("notice list = %q, want the full heading list", list)
+	}
+	if prefix := strings.SplitN(res.Content, "\n\n[truncated:", 2)[0]; utf8.RuneCountInString(prefix) > 16000 {
+		t.Fatal("shown prefix exceeds the cap")
+	}
+	for _, h := range strings.Split(list, ", ") {
+		sres, err := reg.Call(context.Background(), "wiki.get", json.RawMessage(fmt.Sprintf(`{"page": "roundtrip", "section": %q}`, h)))
+		if err != nil || sres.IsError {
+			t.Fatalf("notice-listed heading %q is not fetchable verbatim: %+v, err = %v", h, sres, err)
+		}
+	}
+	if sres, _ := reg.Call(context.Background(), "wiki.get", json.RawMessage(`{"page": "roundtrip", "section": "## Deep"}`)); !strings.Contains(sres.Content, "deep body") {
+		t.Fatalf("## Deep read past the cut returned wrong content: %.200s", sres.Content)
+	}
+}
+
+// TestWikiGetTruncatedHeadinglessPageDropsDeadPointer pins the reviewer's
+// fix: an oversized page with no ATX headings has nothing to point at, so
+// its notice must not carry the "Read the rest by section: " clause — a
+// dangling pointer with an empty list would send the model hunting for
+// sections that do not exist. Pages WITH headings keep the clause (pinned
+// byte-exact by the tests above).
+func TestWikiGetTruncatedHeadinglessPageDropsDeadPointer(t *testing.T) {
+	dir := testutil.CopyFixture(t, "minimal")
+	rel := "wiki/concepts/noheadings.md"
+	content := fmt.Sprintf("---\ntitle: Noheadings\ncreated: 2026-08-30\nupdated: 2026-08-30\ntype: concept\ntags: [inference]\nconfidence: high\n---\n\n%s\n", strings.Repeat("a", 20000))
+	if err := os.WriteFile(filepath.Join(dir, "wiki", "concepts", "noheadings.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", rel, err)
+	}
+	reg := NewRegistry(newTestDeps(t, dir))
+	res, err := reg.Call(context.Background(), "wiki.get", json.RawMessage(`{"page": "noheadings"}`))
+	if err != nil || res.IsError {
+		t.Fatalf("Call(wiki.get) = %+v, err = %v", res, err)
+	}
+	if strings.Contains(res.Content, "Read the rest by section") {
+		t.Fatalf("headingless page's notice kept the dead section pointer:\n%.160s", res.Content[len(res.Content)-160:])
+	}
+	if !strings.HasSuffix(res.Content, "[truncated: wiki/concepts/noheadings.md is 20117 runes; showing the first 16000.]") {
+		t.Fatalf("headingless notice malformed:\n%.80s", res.Content[len(res.Content)-80:])
+	}
+}
+
+// BenchmarkFirstRunesFiveMB measures firstRunes' cost on a 5 MB page —
+// the scratch probe behind the []rune-conversion review question.
+func BenchmarkFirstRunesFiveMB(b *testing.B) {
+	s := strings.Repeat("量é", 1<<21) // 5 MB of 3-byte runes
+	for b.Loop() {
+		if got := firstRunes(s, wikiGetMaxRunes); utf8.RuneCountInString(got) != wikiGetMaxRunes {
+			b.Fatalf("firstRunes cut to %d runes", utf8.RuneCountInString(got))
+		}
+	}
+}
+
 func isNumberedHitLine(line string) bool {
 	return len(line) > 2 && line[0] >= '1' && line[0] <= '9' && strings.Contains(line, ". ")
 }

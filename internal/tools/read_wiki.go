@@ -120,10 +120,15 @@ func wikiGetHandler(ctx context.Context, d Deps, args json.RawMessage) (Result, 
 		if n := utf8.RuneCountInString(content); n > wikiGetMaxRunes {
 			// 004 F.W1: the notice lists the same headings the not-found
 			// error does, so the model's next move needs no second call.
-			content = firstRunes(content, wikiGetMaxRunes) + fmt.Sprintf(
-				"\n\n[truncated: %s is %d runes; showing the first %d. Read the rest by section: %s]",
-				resolved, n, wikiGetMaxRunes, strings.Join(sectionHeadings(p), ", "),
-			)
+			// A page with no ATX headings has nothing to point at, so the
+			// pointer clause is dropped rather than printed with an empty
+			// list — a dangling "Read the rest by section: ]" would send
+			// the model hunting for sections that do not exist.
+			notice := fmt.Sprintf("\n\n[truncated: %s is %d runes; showing the first %d.", resolved, n, wikiGetMaxRunes)
+			if heads := sectionHeadings(p); len(heads) > 0 {
+				notice += fmt.Sprintf(" Read the rest by section: %s", strings.Join(heads, ", "))
+			}
+			content = firstRunes(content, wikiGetMaxRunes) + notice + "]"
 		}
 		if staged {
 			content = stagedSourceMarker + content
