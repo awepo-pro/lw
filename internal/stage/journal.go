@@ -22,6 +22,7 @@ type EventKind string
 
 const (
 	EvChangesetOpened   EventKind = "changeset_opened"
+	EvChangesetJoined   EventKind = "changeset_joined" // a verb joined the already-open changeset (019)
 	EvOpProposed        EventKind = "op_proposed"
 	EvOpAccepted        EventKind = "op_accepted"
 	EvOpDropped         EventKind = "op_dropped"

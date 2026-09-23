@@ -24,9 +24,13 @@ import (
 // guarantee cmdQuery actually enforces is structural, below: any changeset
 // the turn opened — one open at the end that was not open at the start — is
 // rejected before cmdQuery returns, so "this turn opened nothing" holds
-// regardless of what the model attempts. A changeset already open before
-// `lw query` ran is the curator's own review in progress and is left
-// untouched (C-116).
+// regardless of what the model attempts. Since 019 stage.open JOINS an
+// already-open changeset instead of failing, so the second half of the
+// guarantee is scoped to the op: ops the turn appends to a changeset that
+// was already open when `lw query` started are dropped again before the
+// command returns — the 019 scoped-rollback rule, DropOps over only what
+// the turn added, never Reject (the changeset is the curator's own review
+// in progress, C-116).
 const queryPromptPrefix = "Answer the following question about the vault, citing the wiki pages you draw from by path. This is a read-only query: do not open a changeset or propose any change.\n\nQuestion: "
 
 // cmdQuery asks the curator agent a one-shot, read-only question over the
@@ -73,38 +77,68 @@ func cmdQuery(args []string) error {
 		return fmt.Errorf("create session: %w", err)
 	}
 
-	// C-116: snapshot the open changeset BEFORE the turn. The guard below can
-	// only enforce query's invariant against a changeset this turn opened,
-	// and the only way it can tell that one from a changeset that was already
-	// open is to have looked before it started. `lw ingest` leaves a
-	// changeset open for human review as a matter of course, so "a changeset
-	// is open" is a normal state of a vault a curator queries mid-review —
-	// and rejecting it on the way out silently demoted live work to
-	// changesets/rejected/ (C-116, found live at G5).
-	priorID, priorOpen := "", false
+	// C-116: snapshot the open changeset BEFORE the turn — its id and its op
+	// count. The guard below can only enforce query's invariant against work
+	// this turn created, and the only way it can tell that work from a
+	// changeset (and the ops already in it) that was already open is to have
+	// looked before it started. `lw ingest` leaves a changeset open for human
+	// review as a matter of course, so "a changeset is open" is a normal
+	// state of a vault a curator queries mid-review — and rejecting it on the
+	// way out silently demoted live work to changesets/rejected/ (C-116,
+	// found live at G5).
+	priorID, priorOpen, priorOps := "", false, 0
 	if cs, err := e.Current(); err == nil {
-		priorID, priorOpen = cs.ID, true
+		priorID, priorOpen, priorOps = cs.ID, true, len(cs.Ops)
 	}
 
 	sendErr := runAgentTurn(context.Background(), ag, sess.ID, queryPromptPrefix+question, os.Stdout)
 	fmt.Println()
 
-	// Enforce "no changeset" structurally: if the model called stage.open
-	// (or any tool that opens one implicitly) despite the prompt above, the
-	// changeset open at the end of the turn is not the one open at its start,
-	// and it is rejected immediately rather than leaving query's one
-	// invariant dependent on the model's good behaviour. A changeset with the
-	// same id before and after was already open — the turn's own tools cannot
-	// close one (stage.close only summarizes) — so it is left exactly as the
-	// turn found it. dispatch already prefixes every returned error with
-	// "lw: query: ", so nothing here repeats that prefix itself.
-	if cs, curErr := e.Current(); curErr == nil && (!priorOpen || cs.ID != priorID) {
-		reason := "lw query must not stage changes; the agent attempted to during a read-only turn"
-		if rejErr := e.Reject(reason); rejErr != nil {
-			return fmt.Errorf("reject unexpected changeset %s: %w", cs.ID, rejErr)
-		}
-		if sendErr == nil {
-			return fmt.Errorf("agent attempted to stage changeset %s; rejected", cs.ID)
+	// Enforce "no changes" structurally, whatever the model attempted:
+	//
+	//   - a changeset open at the end that was NOT open at the start is one
+	//     the turn opened (OpenChangeset on an empty changesets/open/), and
+	//     it is rejected immediately rather than leaving query's invariant
+	//     dependent on the model's good behaviour;
+	//   - a changeset with the same id before and after was already open —
+	//     the turn's own tools cannot close one (stage.close only
+	//     summarizes) — so the changeset is left exactly as the turn found
+	//     it, and (019) only the ops past the snapshot are undone: since
+	//     stage.open JOINS the open changeset, ops the turn appended there
+	//     used to survive a query silently. They are dropped by id — the
+	//     same scoped rollback a joined ingest takes — never Reject, which
+	//     would take the curator's own work down with the turn's.
+	//
+	// dispatch already prefixes every returned error with "lw: query: ", so
+	// nothing here repeats that prefix itself.
+	if cs, curErr := e.Current(); curErr == nil {
+		if !priorOpen || cs.ID != priorID {
+			reason := "lw query must not stage changes; the agent attempted to during a read-only turn"
+			if rejErr := e.Reject(reason); rejErr != nil {
+				return fmt.Errorf("reject unexpected changeset %s: %w", cs.ID, rejErr)
+			}
+			if sendErr == nil {
+				return fmt.Errorf("agent attempted to stage changeset %s; rejected", cs.ID)
+			}
+		} else {
+			// The ops the turn appended, past the snapshot — the ones still
+			// standing get dropped; ones the turn already dropped itself
+			// stay dropped (a re-drop is a no-op, and naming them again
+			// would only pad the count in the message below).
+			var ids []string
+			for i := priorOps; i < len(cs.Ops); i++ {
+				if cs.Ops[i].State != stage.StateDropped {
+					ids = append(ids, cs.Ops[i].ID)
+				}
+			}
+			if len(ids) > 0 {
+				if err := e.DropOps(ids); err != nil {
+					return fmt.Errorf("agent attempted to stage %d op(s) into changeset %s during a read-only query; dropping them failed: %w", len(ids), cs.ID, err)
+				}
+				if sendErr == nil {
+					return fmt.Errorf("agent attempted to stage %d op(s) into changeset %s during a read-only query; they were dropped", len(ids), cs.ID)
+				}
+			}
 		}
 	}
 

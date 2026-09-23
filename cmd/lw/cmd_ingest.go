@@ -456,13 +456,22 @@ func cmdIngest(args []string) error {
 		return fmt.Errorf("construct agent: %w", err)
 	}
 
-	cs, err := e.OpenChangeset(ingestIntent(sources), stage.Author{Kind: "agent", Model: cfg.LLM.Model})
+	// 019: open — or, when a changeset is already open, JOIN it. n0 is the
+	// op count this verb found at open/join: on a failure its scoped
+	// rollback drops only the ops past this index, never the other work in
+	// the changeset.
+	cs, joined, err := e.OpenOrJoin(ingestIntent(sources), stage.Author{Kind: "agent", Model: cfg.LLM.Model})
 	if err != nil {
 		return fmt.Errorf("open changeset: %w", err)
 	}
-	sess, err := sessions.Create(cs.ID)
+	n0 := len(cs.Ops)
+	if joined {
+		fmt.Fprintf(os.Stderr, "joined open changeset %s (%d op(s) already staged; they will be reviewed and committed together)\n",
+			cs.ID, len(cs.Live()))
+	}
+	sess, err := verbSession(sessions, cs.ID, joined)
 	if err != nil {
-		return rejectAndReturn(e, fmt.Errorf("create session: %w", err))
+		return ingestRollback(e, joined, cs.ID, n0, fmt.Errorf("create session: %w", err))
 	}
 
 	sendErr := runAgentTurn(ctx, ag, sess.ID, buildIngestMessage(items), os.Stdout)
@@ -470,19 +479,24 @@ func cmdIngest(args []string) error {
 	final, curErr := e.Current()
 	if curErr != nil {
 		if sendErr != nil {
-			return rejectAndReturn(e, fmt.Errorf("%w (and reading back the changeset failed: %v)", agentErrorHint(sendErr, cfg.LLM.MaxTokens, true), curErr))
+			return ingestRollback(e, joined, cs.ID, n0, fmt.Errorf("%w (and reading back the changeset failed: %v)", agentErrorHint(sendErr, cfg.LLM.MaxTokens, true), curErr))
 		}
-		return rejectAndReturn(e, fmt.Errorf("read back changeset %s: %w", cs.ID, curErr))
+		return ingestRollback(e, joined, cs.ID, n0, fmt.Errorf("read back changeset %s: %w", cs.ID, curErr))
 	}
 
 	if sendErr != nil {
-		return rejectAndReturn(e, agentErrorHint(sendErr, cfg.LLM.MaxTokens, true))
+		return ingestRollback(e, joined, cs.ID, n0, agentErrorHint(sendErr, cfg.LLM.MaxTokens, true))
 	}
 
-	// A clean turn that staged nothing is not a success (U1's sibling,
-	// 000006's zero-page commit): reject the empty changeset with the
-	// contract's own message rather than printing a summary of nothing.
-	if len(final.Live()) == 0 {
+	// A clean turn that added nothing is not a success (U1's sibling,
+	// 000006's zero-page commit). For a joined verb "nothing" means none of
+	// ITS OWN ops are live — the pre-existing work stays, and the message
+	// says so rather than claiming the rejection that would destroy it.
+	if joinedOwnLive(final, n0) == 0 {
+		if joined {
+			return joinRollback(e, cs.ID, n0, fmt.Errorf("agent proposed nothing for this ingest; nothing was added (the open changeset %s keeps its %d op(s))",
+				cs.ID, len(final.Live())), false)
+		}
 		return rejectAndReturn(e, errors.New("agent proposed nothing for this ingest; the changeset was rejected"))
 	}
 
@@ -512,11 +526,94 @@ func cmdIngest(args []string) error {
 // the audit trail. It must not mask origErr: a Reject failure is reported
 // alongside it, never in its place, so a human sees the real cause of the
 // failure and, separately, that the rollback itself needs attention.
+//
+// 019: this is the OPENED-HERE rollback only. A verb that JOINED the open
+// changeset must never Reject — the changeset holds other verbs' work —
+// and takes ingestRollback instead.
 func rejectAndReturn(e *stage.Engine, origErr error) error {
 	if rerr := e.Reject(origErr.Error()); rerr != nil {
 		return fmt.Errorf("%w (and rejecting the changeset failed: %v)", origErr, rerr)
 	}
 	return origErr
+}
+
+// ingestRollback is cmdIngest's single failure tail (019). A verb that
+// OPENED the changeset rejects it exactly as before (rejectAndReturn); one
+// that JOINED must never destroy the other work in it and takes
+// joinRollback — DropOps over only its own ops.
+func ingestRollback(e *stage.Engine, joined bool, csID string, n0 int, origErr error) error {
+	if !joined {
+		return rejectAndReturn(e, origErr)
+	}
+	return joinRollback(e, csID, n0, origErr, true)
+}
+
+// joinRollback rolls a joined verb's failed turn back without touching the
+// work the open changeset already held (019): Engine.DropOps over exactly
+// the ops at index >= n0 that are not already dropped — never Reject — so
+// the changeset stays open with its earlier ops live for review.
+// appendClause adds the "; its own ops were dropped ..." sentence the
+// joined failure paths append to today's error text; the joined zero-ops
+// message already says what was kept and passes false. Like
+// rejectAndReturn it must not mask origErr: a drop failure is reported
+// alongside it, never in its place.
+func joinRollback(e *stage.Engine, csID string, n0 int, origErr error, appendClause bool) error {
+	cur, err := e.Current()
+	if err != nil {
+		return fmt.Errorf("%w (and reading back the changeset failed: %v)", origErr, err)
+	}
+	var ids []string
+	for i := n0; i < len(cur.Ops); i++ {
+		if cur.Ops[i].State != stage.StateDropped {
+			ids = append(ids, cur.Ops[i].ID)
+		}
+	}
+	if err := e.DropOps(ids); err != nil {
+		return fmt.Errorf("%w (and dropping this ingest's own ops failed: %v)", origErr, err)
+	}
+	if appendClause {
+		return fmt.Errorf("%w; its own ops were dropped (the open changeset %s keeps the rest)", origErr, csID)
+	}
+	return origErr
+}
+
+// joinedOwnLive counts cs's live ops at index >= n0 — the ops THIS verb
+// contributed, under Live()'s own predicate (dropped and rejected are not
+// live). n0 is the op count the verb found at open/join, so the count
+// isolates its own work from whatever the changeset already held.
+func joinedOwnLive(cs *stage.Changeset, n0 int) int {
+	n := 0
+	for i := n0; i < len(cs.Ops); i++ {
+		if cs.Ops[i].State != stage.StateDropped && cs.Ops[i].State != stage.StateRejected {
+			n++
+		}
+	}
+	return n
+}
+
+// verbSession resolves the session a staging verb's turn runs under. An
+// opened-here changeset has no session yet — Create. A joined one reuses
+// the changeset's own session (Get), so the transcript stays one
+// continuous record per changeset across processes — the ask pane's
+// ensureSession rule — creating one only when Get reports none, and never
+// failing on errSessionExists (019): the contract sentence covers the
+// Get-then-Create race too, so a Create failure on a joined verb retries
+// Get once — if the session is there now, another verb created it in the
+// window and its record is ours to reuse; a returned error is always the
+// Create error itself (the retry can only narrow it, never mask it).
+func verbSession(sessions agent.SessionStore, csID string, joined bool) (*agent.Session, error) {
+	if joined {
+		if s, err := sessions.Get(csID); err == nil {
+			return s, nil
+		}
+	}
+	s, err := sessions.Create(csID)
+	if joined && err != nil {
+		if s2, gerr := sessions.Get(csID); gerr == nil {
+			return s2, nil
+		}
+	}
+	return s, err
 }
 
 // ingestItem is one extracted source, staged locally and described to the

@@ -163,7 +163,14 @@ func writeChangesetJSON(dir string, c *Changeset) (journalStamp, error) {
 func (e *Engine) OpenChangeset(intent string, a Author) (*Changeset, error) {
 	e.writeMu.Lock()
 	defer e.writeMu.Unlock()
+	return e.openChangesetWriteLocked(intent, a)
+}
 
+// openChangesetWriteLocked is OpenChangeset's body (its contract comment
+// stays there). The caller holds writeMu (A-803; sync.Mutex is not
+// reentrant, so a holder never re-locks): OpenOrJoin reuses it for its own
+// open leg instead of calling the exported verb through a second lock.
+func (e *Engine) openChangesetWriteLocked(intent string, a Author) (*Changeset, error) {
 	openDir := e.changesetOpenDir()
 	entries, err := os.ReadDir(openDir)
 	if err != nil {
