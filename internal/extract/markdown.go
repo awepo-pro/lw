@@ -7,12 +7,27 @@ package extract
 // (00-conventions.md §2, "every file ends with exactly one newline").
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 )
+
+// ErrNotText is wrapped by an Extractor that refuses a file because its
+// content is not text — invalid UTF-8, or a NUL byte in the first 8 KiB
+// (004 F.E3). The walker never reads contents, so this sentinel is how the
+// backend reports the verdict back to the folder-ingest caller.
+var ErrNotText = errors.New("not text")
+
+// sniffWindow is how many leading bytes the text sniff inspects: enough
+// for any real magic-number signature (PNG's is 8 bytes), small enough
+// that the verdict is cheap. A NUL or invalid UTF-8 past the window does
+// not disqualify a file (004 F.E3).
+const sniffWindow = 8 * 1024
 
 // fileExtractor is the Extractor NewFile returns.
 type fileExtractor struct{}
@@ -24,13 +39,15 @@ func NewFile() Extractor {
 }
 
 // CanHandle reports whether uri is a local path (not http/https) with a
-// .md or .txt extension.
+// .md, .markdown or .txt extension (004 F.E2 added .markdown — the
+// canonical extension of the format this extractor passes through —
+// case-insensitive like .md always was).
 func (fileExtractor) CanHandle(uri string) bool {
 	if isRemoteURL(uri) {
 		return false
 	}
 	ext := strings.ToLower(filepath.Ext(uri))
-	return ext == ".md" || ext == ".txt"
+	return ext == ".md" || ext == ".markdown" || ext == ".txt"
 }
 
 // Extract reads uri and returns it as a Doc: Markdown is the file's
@@ -48,6 +65,18 @@ func (fileExtractor) Extract(ctx context.Context, uri string) (*Doc, error) {
 	b, err := os.ReadFile(uri)
 	if err != nil {
 		return nil, fmt.Errorf("extract: read %s: %w", uri, err)
+	}
+
+	// 004 F.E3: whether a file is text is decided here, in the backend,
+	// not in the walker — Walk is stat-only and selects by CanHandle, so
+	// the sniff must happen where the bytes are already in hand. Only the
+	// first sniffWindow bytes are examined (see sniffWindow).
+	window := b
+	if len(window) > sniffWindow {
+		window = window[:sniffWindow]
+	}
+	if !utf8.Valid(window) || bytes.IndexByte(window, 0) >= 0 {
+		return nil, fmt.Errorf("extract: %s: %w", uri, ErrNotText)
 	}
 
 	body := normalizeNewlines(string(b))

@@ -1,7 +1,9 @@
 package extract
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -118,5 +120,73 @@ func TestFileExtractDeterministic(t *testing.T) {
 	}
 	if doc1.Markdown != doc2.Markdown {
 		t.Fatalf("markdown drifted across two extractions of the same input")
+	}
+}
+
+func TestFileCanHandleMarkdownExtension(t *testing.T) {
+	ex := NewFile()
+	cases := []struct {
+		uri  string
+		want bool
+	}{
+		{"notes.markdown", true},
+		{"notes.MARKDOWN", true},
+		{"notes.Markdown", true},
+		{"notes.md", true},
+		{"notes.txt", true},
+		{"notes.html", false},
+		{"notes.htm", false},
+		{"https://example.org/notes.markdown", false},
+	}
+	for _, tc := range cases {
+		if got := ex.CanHandle(tc.uri); got != tc.want {
+			t.Errorf("CanHandle(%q) = %v, want %v", tc.uri, got, tc.want)
+		}
+	}
+}
+
+// TestFileExtractNotText is the frozen F.E3 pin: a file that is not valid
+// UTF-8 or carries a NUL in its first 8 KiB refuses with ErrNotText.
+func TestFileExtractNotText(t *testing.T) {
+	dir := t.TempDir()
+	cases := []struct {
+		name    string
+		content []byte
+	}{
+		{"nul.txt", []byte("hello\x00world")},
+		{"invalid.md", []byte("\xff\xfe")},
+	}
+	for _, tc := range cases {
+		path := filepath.Join(dir, tc.name)
+		if err := os.WriteFile(path, tc.content, 0o644); err != nil {
+			t.Fatalf("write %s: %v", tc.name, err)
+		}
+		_, err := NewFile().Extract(context.Background(), path)
+		if err == nil {
+			t.Fatalf("%s: Extract error = nil, want ErrNotText", tc.name)
+		}
+		if !errors.Is(err, ErrNotText) {
+			t.Errorf("%s: Extract error %v does not wrap ErrNotText", tc.name, err)
+		}
+	}
+}
+
+// A NUL at byte 8192 is past the sniff window — the file is extracted.
+func TestFileExtractNULPastWindow(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "late-nul.txt")
+	content := bytes.Repeat([]byte("a"), 8193)
+	copy(content, "first line\n")
+	content[8192] = 0
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	doc, err := NewFile().Extract(context.Background(), path)
+	if err != nil {
+		t.Fatalf("Extract error: %v", err)
+	}
+	if len(doc.Markdown) == 0 {
+		t.Fatal("Extract returned empty markdown for a text file with a late NUL")
 	}
 }
