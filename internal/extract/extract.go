@@ -15,6 +15,10 @@ type Doc struct {
 	Markdown  string
 	Kind      string // "article" | "paper" | "transcript"
 	Extractor string // "go/html" | "passthrough"
+
+	// Original is the absolute path of the local binary file this Doc was
+	// extracted from (the PDF backend only); "" for HTML, text and markdown.
+	Original string
 }
 
 // Extractor turns a URI into a Doc. Implementations must be deterministic:

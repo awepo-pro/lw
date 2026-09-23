@@ -365,3 +365,32 @@ func TestK10Stat(t *testing.T) {
 		t.Fatalf("Stat on missing dir = %d, %d, want 0, 0", e2, b2n)
 	}
 }
+
+// K11 — a hit restores Doc.Original (033 T1): the PDF backend's absolute
+// original path is part of the extracted content, so a cache hit must serve
+// it exactly as inner produced it — a pre-033 entry (no original field)
+// degrades to "", which is why the PDF cache version ends in +anchors1.
+func TestK11OriginalCarriedThroughEntry(t *testing.T) {
+	home := t.TempDir()
+	src := writeSource(t, home, "a.pdf", "not really a pdf\n")
+	dir := t.TempDir()
+	var vc int
+	inner := &fakeInner{doc: newFakeDoc()}
+	inner.doc.Original = "/tmp/elsewhere/a.pdf"
+	c := New(inner, dir, "sidecar/docling", constVersion("2.130.0+anchors1", &vc))
+	ctx := context.Background()
+
+	if _, err := c.Extract(ctx, src); err != nil {
+		t.Fatal(err)
+	}
+	d2, err := c.Extract(ctx, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inner.calls != 1 {
+		t.Fatalf("inner called %d times, want 1", inner.calls)
+	}
+	if d2.Original != inner.doc.Original {
+		t.Errorf("hit Original = %q, want %q", d2.Original, inner.doc.Original)
+	}
+}

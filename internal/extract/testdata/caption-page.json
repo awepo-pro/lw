@@ -1,0 +1,49 @@
+{
+  "schema_name": "DoclingDocument",
+  "version": "2.130.0",
+  "name": "captions",
+  "origin": {
+    "mimetype": "application/pdf",
+    "binary_hash": 12345678901234567890,
+    "filename": "captions.pdf"
+  },
+  "furniture": {},
+  "body": {
+    "self_ref": "#/body",
+    "children": [
+      {"$ref": "#/texts/0"},
+      {"$ref": "#/pictures/0"}
+    ]
+  },
+  "groups": [],
+  "texts": [
+    {
+      "self_ref": "#/texts/0",
+      "label": "title",
+      "text": "Alpha opening sentence for page one.",
+      "prov": [{"page_no": 1, "bbox": {"l": 72.0, "t": 90.0, "r": 540.0, "b": 110.0, "coord_origin": "TOPLEFT"}, "charspan": [0, 36]}]
+    },
+    {
+      "self_ref": "#/texts/1",
+      "label": "caption",
+      "text": "Figure 11 shows the win-rate comparison across model pairs.",
+      "prov": [{"page_no": 2, "bbox": {"l": 72.0, "t": 600.0, "r": 540.0, "b": 620.0, "coord_origin": "TOPLEFT"}, "charspan": [0, 59]}]
+    }
+  ],
+  "pictures": [
+    {
+      "self_ref": "#/pictures/0",
+      "children": [
+        {"$ref": "#/texts/1"}
+      ],
+      "prov": [{"page_no": 2, "bbox": {"l": 100.0, "t": 200.0, "r": 500.0, "b": 580.0, "coord_origin": "TOPLEFT"}, "charspan": [0, 0]}]
+    }
+  ],
+  "tables": [],
+  "key_value_items": [],
+  "form_items": [],
+  "pages": {
+    "1": {"size": {"width": 612.0, "height": 792.0}},
+    "2": {"size": {"width": 612.0, "height": 792.0}}
+  }
+}

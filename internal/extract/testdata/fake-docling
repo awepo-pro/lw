@@ -10,7 +10,10 @@
 # directives: PAGES=<n> (members of the JSON's pages object; the first
 # line), EXIT=<code>, SLEEP=<secs>, NOMD (write no .md), NOJSON (write no
 # .json), TEXTS=<bytes> (pad the texts array, so pages is not the first
-# key, as in the real DoclingDocument). Everything after the directives is
+# key, as in the real DoclingDocument), JSONDOC=<file> (write
+# <testdata>/<file> verbatim as the .json — a full real-shape
+# DoclingDocument for 033's anchor tests; its own pages object then
+# decides the page count). Everything after the directives is
 # the markdown written verbatim to <output>/<stem>.md.
 #
 # When FAKE_DOCLING_ARGV names a file, the arguments after argv[0] are
@@ -79,6 +82,7 @@ sleep_secs=0
 nomd=0
 nojson=0
 texts_bytes=0
+jsondoc=
 ndirectives=0
 while IFS= read -r line; do
 	case $line in
@@ -86,6 +90,7 @@ while IFS= read -r line; do
 	EXIT=*) exit_code=${line#EXIT=} ;;
 	SLEEP=*) sleep_secs=${line#SLEEP=} ;;
 	TEXTS=*) texts_bytes=${line#TEXTS=} ;;
+	JSONDOC=*) jsondoc=${line#JSONDOC=} ;;
 	NOMD) nomd=1 ;;
 	NOJSON) nojson=1 ;;
 	*) break ;;
@@ -110,7 +115,13 @@ if [ "$nomd" -eq 0 ]; then
 fi
 
 if [ "$nojson" -eq 0 ]; then
-	{
+	if [ -n "$jsondoc" ]; then
+		# 033 T1: a full real-shape DoclingDocument verbatim from testdata
+		# — body children as $ref, prov page_no, table_cells, pages keyed
+		# by page number — instead of the stub emitted below.
+		cat "$(dirname "$0")/$jsondoc" >"$out/$stem.json"
+	else
+		{
 		# Key order mimics the real DoclingDocument: pages last, after
 		# everything else — including any TEXTS=<bytes> padding inside
 		# texts, which is what makes whole-file unmarshal expensive and
@@ -131,7 +142,8 @@ if [ "$nojson" -eq 0 ]; then
 			i=$((i + 1))
 		done
 		printf '}}'
-	} >"$out/$stem.json"
+		} >"$out/$stem.json"
+	fi
 fi
 
 exit 0

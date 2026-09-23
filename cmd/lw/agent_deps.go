@@ -69,14 +69,15 @@ func ingestExtractors(root string, cfg *config.Config) extract.Extractor {
 // caches the error for the process, and extraction proceeds uncached.
 var pdfVersionProbeTimeout = 20 * time.Second
 
-// pdfVersionOnce is the cache's version func (007 F.W1): PDFVersion of the
-// configured sidecar. cache.New memoizes it — the probe shells out to the
-// sidecar and costs ~4 s, so a cache hit must not re-pay it.
+// pdfVersionOnce is the cache's version func (007 F.W1): PDFCacheVersion of
+// the configured sidecar — the sidecar's version plus 033's +anchors1
+// suffix. cache.New memoizes it — the probe shells out to the sidecar and
+// costs ~4 s, so a cache hit must not re-pay it.
 func pdfVersionOnce(pdfCfg extract.PDFConfig) func(context.Context) (string, error) {
 	return func(ctx context.Context) (string, error) {
 		ctx, cancel := context.WithTimeout(ctx, pdfVersionProbeTimeout)
 		defer cancel()
-		return extract.PDFVersion(ctx, pdfCfg)
+		return extract.PDFCacheVersion(ctx, pdfCfg) // 033: "<docling>+anchors1" re-converts pre-anchor entries
 	}
 }
 

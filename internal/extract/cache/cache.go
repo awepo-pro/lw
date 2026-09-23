@@ -67,6 +67,7 @@ type entry struct {
 		Markdown  string `json:"markdown"`
 		Kind      string `json:"kind"`
 		Extractor string `json:"extractor"`
+		Original  string `json:"original,omitempty"`
 	} `json:"doc"`
 }
 
@@ -171,6 +172,7 @@ func (c *cached) readEntry(path, fileSHA, version string) *extract.Doc {
 		Markdown:  e.Doc.Markdown,
 		Kind:      e.Doc.Kind,
 		Extractor: e.Doc.Extractor,
+		Original:  e.Doc.Original,
 	}
 }
 
@@ -194,6 +196,7 @@ func (c *cached) writeEntry(path, fileSHA, version string, doc *extract.Doc) {
 	e.Doc.Markdown = doc.Markdown
 	e.Doc.Kind = doc.Kind
 	e.Doc.Extractor = doc.Extractor
+	e.Doc.Original = doc.Original
 	b, err := json.Marshal(&e)
 	if err != nil {
 		slog.Warn("extract cache write", "err", err)

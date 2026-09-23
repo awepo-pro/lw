@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -125,7 +126,7 @@ func (p *pdfExtractor) CanHandle(uri string) bool {
 // conversion's output is files in a fresh temp dir (the sidecar writes
 // nothing to stdout — 007 correction log #5), so the happy path is: run,
 // find the two files, stream the page count out of the JSON, hold the
-// markdown to the F.P5 floor, shape the Doc.
+// markdown to the F.P5 floor, anchor the pages (033 T1), shape the Doc.
 func (p *pdfExtractor) Extract(ctx context.Context, uri string) (*Doc, error) {
 	// F.P2: LookPath first, so a missing sidecar is reported before any
 	// temp dir is created, with the install hint (PDF4).
@@ -251,18 +252,50 @@ func (p *pdfExtractor) Extract(ctx context.Context, uri string) (*Doc, error) {
 			uri, ErrTooLittleText, n, pages, MinPDFCharsPerPage)
 	}
 
+	// 033 T1: align the DoclingDocument's body-order items to the markdown
+	// and insert the `<!-- page N -->` anchors a later 033 stage cites. The
+	// second streaming pass over the JSON is cheap next to the conversion,
+	// and the markdown is otherwise untouched — the title scan below runs
+	// on the anchored body, whose comment lines no heading regex matches.
+	items, err := docAnchorItems(jsons[0])
+	if err != nil {
+		return nil, fmt.Errorf("extract: %s: read docling json: %w", uri, err)
+	}
+	body, anchorCount := insertPageAnchors(body, items)
+	slog.Debug("pdf page anchors", "uri", uri, "anchors", anchorCount, "pages", pages)
+
 	title := ""
 	if m := pdfTitleRe.FindStringSubmatch(body); m != nil {
 		title = strings.TrimSpace(m[1])
 	}
 
+	// Doc.Original: the absolute path of the file the bytes came from —
+	// the provenance 033's ingest stages the original PDF beside the raw
+	// markdown from. SourceURL keeps the caller's own spelling.
+	original, err := filepath.Abs(uri)
+	if err != nil {
+		original = uri
+	}
+
 	return &Doc{
 		Title:     title,
 		SourceURL: uri,
+		Original:  original,
 		Markdown:  body,
 		Kind:      "paper",
 		Extractor: PDFExtractorID,
 	}, nil
+}
+
+// docAnchorItems opens path and returns parseDocItems over its contents —
+// the body-order alignment records the anchors are placed from.
+func docAnchorItems(path string) ([]docItem, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return parseDocItems(f)
 }
 
 // countJSONFile opens path and returns countJSONPages over its contents.
