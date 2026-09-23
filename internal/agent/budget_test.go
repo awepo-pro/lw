@@ -14,6 +14,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -461,8 +463,20 @@ func TestBudgetLeavesRecordsByteIdentical(t *testing.T) {
 // touch history at all, that 20000-byte history message would be its first
 // victim; it must arrive untouched, and nothing in the request may carry
 // the elision marker.
+//
+// Turn 2 runs TWO rounds, and the second round's assertions are the load-
+// bearing ones: in any turn's ROUND 1 nothing is elidable anyway (the most
+// recent round is undefined, so every result is protected whatever the
+// turn boundary does), but by round 2 the walk has a live region — and a
+// bound that started at index 0 instead of the turn's first message would
+// elide the prior-turn history messages OLDEST FIRST, before anything in
+// the current turn. A single-round turn 2 cannot tell those apart.
 func TestBudgetNeverElidesPriorHistory(t *testing.T) {
-	rounds := append(bigWikiRounds(), [][]llm.Chunk{{{Text: "second turn"}, {Finish: "stop"}}}...)
+	turn2 := [][]llm.Chunk{
+		{toolCallChunk("call-w3", "wiki_get", bigWikiArgs), {Finish: "tool_calls"}},
+		{{Text: "second turn"}, {Finish: "stop"}},
+	}
+	rounds := append(append([][]llm.Chunk{}, bigWikiRounds()...), turn2...)
 	l, fx, fake, big := newBudgetLoop(t, rounds, LoopConfig{ContextTokens: 2000})
 
 	out := make(chan Event, 256)
@@ -478,10 +492,11 @@ func TestBudgetNeverElidesPriorHistory(t *testing.T) {
 	drain(out2)
 
 	reqs := fake.Requests()
-	if len(reqs) != 4 {
-		t.Fatalf("Stream called %d times, want 4 (3 rounds + turn 2's one round)", len(reqs))
+	if len(reqs) != 5 {
+		t.Fatalf("Stream called %d times, want 5 (3 rounds + turn 2's two rounds)", len(reqs))
 	}
 
+	// Turn 2, round 1: nothing is elidable yet — history must be whole.
 	history := 0
 	for _, m := range reqs[3].Messages {
 		if strings.Contains(m.Content, "wiki.get(") {
@@ -499,5 +514,525 @@ func TestBudgetNeverElidesPriorHistory(t *testing.T) {
 	}
 	if last := reqs[3].Messages[len(reqs[3].Messages)-1]; last.Role != "user" || last.Content != "and once more, briefly" {
 		t.Errorf("turn 2's own user message = %+v, want it last and untouched", last)
+	}
+
+	// Turn 2, round 2: the walk now has a live region. On the wire, round
+	// 1 of turn 2 is the MOST RECENT round — its result is protected like
+	// any other (F.C2a), and the region before it inside this turn is
+	// empty, so nothing is elidable at all. The load-bearing assertion is
+	// that nothing OUTSIDE this turn was touched: a bound that started at
+	// index 0 would walk the prior-turn history messages oldest-first and
+	// replace them with markers before ever reaching this turn.
+	req5 := reqs[4].Messages
+	history = 0
+	sawTurn2Result := false
+	for _, m := range req5 {
+		if m.Role == "tool" && m.ToolCallID == "call-w3" {
+			sawTurn2Result = true
+			if m.Content != big {
+				t.Errorf("turn 2's own round-1 result (the most recent round) was elided: %q", m.Content)
+			}
+			continue
+		}
+		if strings.Contains(m.Content, "[elided to fit the context budget") {
+			t.Errorf("elision marker reached a message outside this turn's own rounds: %+v", m)
+		}
+		if strings.Contains(m.Content, "wiki.get(") {
+			history++
+			if !strings.Contains(m.Content, big) {
+				t.Errorf("prior-turn history message was elided once the turn had a second round: %q", m.Content)
+			}
+		}
+	}
+	if !sawTurn2Result {
+		t.Fatalf("turn 2 round 2's request lost the call-w3 tool result entirely")
+	}
+	if history != 2 {
+		t.Errorf("turn 2 round 2's request carries %d rendered wiki.get history messages, want 2", history)
+	}
+}
+
+// ---- fresh-eyes review probes (004 T0a review, 2026-09-23) ----
+
+// probePlaceholder builds the exact F.C2 placeholder for a tool result whose
+// original content was n bytes under the canonical dotted name canonical.
+func probePlaceholder(canonical string, n int) string {
+	return fmt.Sprintf(elidedResultFormat, canonical, n, canonical)
+}
+
+// probeCanonical returns the canonical dotted name a placeholder carries for
+// a tool-result message with wire Name name — the same CanonicalName call
+// budget.go makes on the message's Name field.
+func probeCanonical(name string) string { return tools.CanonicalName(name) }
+
+// checkWireShape asserts one recorded request's wire validity (the probe-1
+// contract): every assistant ToolCall id is answered by exactly one tool
+// message that appears after it, in call order; no tool message content is
+// empty (an assistant message's Content may legally be empty when the round
+// streamed only tool calls); and every elided message keeps its wire
+// identity. originals maps tool-call id → the result's original bytes, read
+// from the same run's ToolResEv events. It returns the indices of elided
+// (placeholder) tool messages, oldest first.
+func checkWireShape(t *testing.T, req llm.Request, round int, originals map[string]string) []int {
+	t.Helper()
+	pending := []string{} // tool-call ids awaiting their result, in order
+	answered := map[string]int{}
+	var elidedIdx []int
+	for i, m := range req.Messages {
+		switch m.Role {
+		case "assistant":
+			for _, tc := range m.ToolCalls {
+				pending = append(pending, tc.ID)
+			}
+		case "tool":
+			if len(pending) == 0 {
+				t.Fatalf("round %d: tool message for %q at index %d with no unanswered tool call before it", round, m.ToolCallID, i)
+			}
+			if got := pending[0]; m.ToolCallID != got {
+				t.Fatalf("round %d: tool message at index %d answers %q, want %q (results out of call order)", round, i, m.ToolCallID, got)
+			}
+			pending = pending[1:]
+			answered[m.ToolCallID]++
+			if answered[m.ToolCallID] > 1 {
+				t.Fatalf("round %d: tool call %q answered by %d tool messages, want exactly 1", round, m.ToolCallID, answered[m.ToolCallID])
+			}
+			if m.Content == "" {
+				t.Errorf("round %d: tool message for %q has empty content at index %d", round, m.ToolCallID, i)
+			}
+			orig, ok := originals[m.ToolCallID]
+			if !ok {
+				t.Fatalf("round %d: no original result recorded for call %q", round, m.ToolCallID)
+			}
+			canonical := probeCanonical(m.Name)
+			switch m.Content {
+			case orig:
+				// intact
+			case probePlaceholder(canonical, len(orig)):
+				elidedIdx = append(elidedIdx, i)
+				if m.Role != "tool" {
+					t.Errorf("round %d: elided message at %d lost its role: %q", round, i, m.Role)
+				}
+				if canonical == "wiki.get" && strings.Contains(m.Content, "wiki_get") {
+					t.Errorf("round %d: placeholder at %d carries the wire spelling: %q", round, i, m.Content)
+				}
+			default:
+				// Neither original nor the exact single-elision placeholder —
+				// a placeholder of a placeholder (double elision) lands here,
+				// because re-eliding would name len(placeholder), not len(orig).
+				t.Errorf("round %d: tool message for %q at index %d is neither the original (%d bytes) nor its exact F.C2 placeholder: %q", round, m.ToolCallID, i, len(orig), m.Content)
+			}
+		}
+	}
+	if len(pending) > 0 {
+		t.Fatalf("round %d: tool call(s) %v never answered by a tool message", round, pending)
+	}
+	return elidedIdx
+}
+
+// TestProbeWireHoldsAcrossMaxRounds is probe 1: the full MaxToolRounds cap —
+// 24 rounds, each with two parallel 20 KB wiki.get calls, under a budget
+// sized so every round from the third on must elide — must keep every
+// recorded request wire-valid: pairing, order, non-empty contents, no double
+// elision, canonical names in placeholders. It also pins F.C2's early stop
+// ("stopping at the first point the estimate is ≤ budget"): in any round
+// whose elisions DID reach the budget, restoring all but the last elided
+// message must push the estimate back over — otherwise the walk elided more
+// than it had to.
+func TestProbeWireHoldsAcrossMaxRounds(t *testing.T) {
+	logPath := installFileLog(t)
+
+	// Control run sizes the budget off the real fixed parts (its round-1
+	// request is the same Build output the sized run's round 1 carries).
+	ctlFake, _, _ := runBigTurn(t, LoopConfig{ContextTokens: 1000000})
+	base := wireEstimate(ctlFake.Requests()[0].Messages)
+	budget := base + 18000 // per-round fresh pressure is 2×~5000 tokens
+
+	rounds := make([][]llm.Chunk, 24)
+	for r := range rounds {
+		id1, id2 := fmt.Sprintf("call-w%02da", r+1), fmt.Sprintf("call-w%02db", r+1)
+		rounds[r] = []llm.Chunk{
+			toolCallChunk(id1, "wiki_get", bigWikiArgs),
+			toolCallChunk(id2, "wiki_get", bigWikiArgs),
+			{Finish: "tool_calls"},
+		}
+	}
+
+	l, fx, fake, _ := newBudgetLoop(t, rounds, LoopConfig{ContextTokens: budget})
+	out := make(chan Event, 512)
+	if err := l.Send(context.Background(), fx.csID, "read the big page, a lot", out); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	events := drain(out)
+
+	reqs := fake.Requests()
+	if len(reqs) != 24 {
+		t.Fatalf("Stream called %d times, want 24", len(reqs))
+	}
+
+	// Every round must have elided something from round 3 on, or the
+	// sizing failed and the pins below are vacuous.
+	elidedAny := false
+
+	for k, req := range reqs {
+		round := k + 1
+		// Elision replaces content, never drops messages (F.C2): every
+		// round appends exactly one assistant message plus one tool result
+		// per call — three messages per scripted round.
+		if got, want := len(req.Messages), len(reqs[0].Messages)+3*k; got != want {
+			t.Fatalf("round %d: request carries %d messages, want %d — elision must never drop messages", round, got, want)
+		}
+
+		originals := map[string]string{}
+		for _, ev := range events {
+			if res, ok := ev.(ToolResEv); ok {
+				originals[res.ID] = res.Content
+			}
+		}
+		elidedIdx := checkWireShape(t, req, round, originals)
+
+		// F.C2a: the most recent round's results are never elided. The
+		// last assistant message in the request is the round just
+		// completed; everything after it is its results.
+		for i := len(req.Messages) - 1; i >= 0; i-- {
+			m := req.Messages[i]
+			if m.Role == "assistant" && len(m.ToolCalls) > 0 {
+				for _, tc := range m.ToolCalls {
+					msg := toolMsgByID(t, req.Messages, tc.ID)
+					if msg.Content != originals[tc.ID] {
+						t.Errorf("round %d: most recent round's result for %q was elided (F.C2a)", round, tc.ID)
+					}
+				}
+				break
+			}
+		}
+
+		// F.C2's early stop: if this round's elisions reached the budget,
+		// they were minimal — the LAST elision was taken only because the
+		// estimate was still over before it, so restoring exactly that one
+		// must push the estimate back over budget. (Rounds where even all
+		// eligible elisions can't reach the budget are exempt: there the
+		// walk ran out, not stopped early.)
+		if len(elidedIdx) > 0 {
+			elidedAny = true
+			if est := wireEstimate(req.Messages); est <= budget {
+				last := elidedIdx[len(elidedIdx)-1]
+				sim := append([]llm.Message{}, req.Messages...)
+				sim[last] = llm.Message{Role: "tool", ToolCallID: sim[last].ToolCallID, Name: sim[last].Name, Content: originals[sim[last].ToolCallID]}
+				if rest := wireEstimate(sim); rest <= budget {
+					t.Errorf("round %d: estimate %d still fits with the last elision restored (%d ≤ %d) — the walk elided past the first point it fit (F.C2)", round, est, rest, budget)
+				}
+			}
+		}
+	}
+	if !elidedAny {
+		t.Fatalf("no round ever elided anything (base estimate %d, budget %d) — sizing broke, pins vacuous", base, budget)
+	}
+
+	log := readLog(t, logPath)
+	if strings.Contains(log, "context over budget") {
+		t.Errorf("every round from 3 on should fit after elision at this budget; got F.C3 warns:\n%s", log)
+	}
+	if n := strings.Count(log, `msg="context elided"`); n < 20 {
+		t.Errorf("want an elision log line for nearly every round from 3 on (22 rounds), got %d:\n%s", n, log)
+	}
+}
+
+// TestProbeCorrectableResultsElideWithCanonicalNames is probe 2: tool-result
+// messages produced by the correctable paths — malformed JSON (Name =
+// "wiki_get"), a call with an EMPTY function name (Name = ""), and an
+// unknown tool (Name = "bogus_tool") — all carry the wire Name, and the
+// elision walk canonicalizes each: the malformed call's placeholder names
+// "wiki.get" (not skipped, not named wiki_get), the unknown tool's names
+// "bogus_tool" and is NOT skipped (a bogus name gains no stage.*
+// protection), and the empty name's placeholder is still a non-empty,
+// correctly paired message. The most recent round is never touched.
+func TestProbeCorrectableResultsElideWithCanonicalNames(t *testing.T) {
+	logPath := installFileLog(t)
+
+	ctlFake, _, _ := runBigTurn(t, LoopConfig{ContextTokens: 1000000})
+	base := wireEstimate(ctlFake.Requests()[0].Messages)
+	budget := base + 8000 // one 20 KB result over what two rounds of results leave room for
+
+	rounds := [][]llm.Chunk{
+		{
+			toolCallChunk("call-bad", "wiki_get", "{oops"), // malformed JSON → correctable, Name "wiki_get"
+			toolCallChunk("call-g1", "wiki_get", bigWikiArgs),
+			{Finish: "tool_calls"},
+		},
+		{
+			toolCallChunk("call-empty", "", `{"page":"big"}`), // empty wire name → unknown tool → correctable, Name ""
+			toolCallChunk("call-g2", "wiki_get", bigWikiArgs),
+			{Finish: "tool_calls"},
+		},
+		{
+			toolCallChunk("call-unk", "bogus_tool", `{"x":1}`), // unknown tool → correctable, Name "bogus_tool"
+			toolCallChunk("call-g3", "wiki_get", bigWikiArgs),
+			{Finish: "tool_calls"},
+		},
+		{toolCallChunk("call-g4", "wiki_get", bigWikiArgs), {Finish: "tool_calls"}},
+		{{Text: "done"}, {Finish: "stop"}},
+	}
+
+	l, fx, fake, _ := newBudgetLoop(t, rounds, LoopConfig{ContextTokens: budget})
+	out := make(chan Event, 256)
+	if err := l.Send(context.Background(), fx.csID, "fumble some calls", out); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	events := drain(out)
+
+	reqs := fake.Requests()
+	if len(reqs) != 5 {
+		t.Fatalf("Stream called %d times, want 5 (the one-retry path must have kept the turn alive)", len(reqs))
+	}
+	originals := map[string]string{}
+	for _, ev := range events {
+		if res, ok := ev.(ToolResEv); ok {
+			originals[res.ID] = res.Content
+		}
+	}
+	for _, id := range []string{"call-bad", "call-empty", "call-unk"} {
+		if originals[id] == "" {
+			t.Fatalf("correctable call %q produced an empty error result — events: %#v", id, events)
+		}
+	}
+
+	// The correctable tool messages carry the WIRE Name on the way out —
+	// pinned on the first request that contains each (round N's own results
+	// first appear in round N+1's request).
+	if msg := toolMsgByID(t, reqs[1].Messages, "call-bad"); msg.Name != "wiki_get" {
+		t.Errorf("malformed-call tool message Name = %q, want the wire spelling %q", msg.Name, "wiki_get")
+	}
+	if msg := toolMsgByID(t, reqs[2].Messages, "call-empty"); msg.Name != "" {
+		t.Errorf("empty-name call tool message Name = %q, want %q", msg.Name, "")
+	}
+	if msg := toolMsgByID(t, reqs[3].Messages, "call-unk"); msg.Name != "bogus_tool" {
+		t.Errorf("unknown-call tool message Name = %q, want the bogus wire spelling %q", msg.Name, "bogus_tool")
+	}
+
+	for k, req := range reqs {
+		checkWireShape(t, req, k+1, originals)
+	}
+
+	// Round 3's request elides round 1: the malformed call's result must be
+	// replaced by a placeholder naming the CANONICAL name, not skipped and
+	// not named wiki_get.
+	elidedBad := toolMsgByID(t, reqs[2].Messages, "call-bad")
+	if want := probePlaceholder("wiki.get", len(originals["call-bad"])); elidedBad.Content != want {
+		t.Errorf("malformed call's elided content = %q, want %q (canonical name, exact F.C2 string)", elidedBad.Content, want)
+	}
+	if elidedBad.ToolCallID != "call-bad" || elidedBad.Name != "wiki_get" {
+		t.Errorf("elided malformed-call message lost its wire identity: %+v", elidedBad)
+	}
+
+	// Round 4 elides round 2: the EMPTY-name call is still elided — not
+	// skipped — with a non-empty placeholder built from canonical("") = "".
+	elidedEmpty := toolMsgByID(t, reqs[3].Messages, "call-empty")
+	if want := probePlaceholder("", len(originals["call-empty"])); elidedEmpty.Content != want {
+		t.Errorf("empty-name call's elided content = %q, want %q", elidedEmpty.Content, want)
+	}
+	if elidedEmpty.Content == "" {
+		t.Errorf("empty-name call's placeholder is empty content on the wire")
+	}
+
+	// Round 5 elides round 3: the unknown tool's result is NOT skipped (a
+	// bogus name gains no stage.* protection) and names the canonicalized
+	// bogus name — whatever CanonicalName makes of it ("bogus.tool": the
+	// switch's default maps unknown _ to .).
+	elidedUnk := toolMsgByID(t, reqs[4].Messages, "call-unk")
+	if want := probePlaceholder(probeCanonical("bogus_tool"), len(originals["call-unk"])); elidedUnk.Content != want {
+		t.Errorf("unknown tool's elided content = %q, want %q", elidedUnk.Content, want)
+	}
+	if !strings.HasPrefix(elidedUnk.Content, "[elided to fit the context budget: bogus.") {
+		t.Errorf("unknown tool's placeholder should carry the canonicalized name, got %q", elidedUnk.Content)
+	}
+
+	// Most recent round intact in every request (F.C2a).
+	for k := 1; k < len(reqs); k++ {
+		id := []string{"call-g1", "call-g2", "call-g3", "call-g4"}[k-1]
+		if msg := toolMsgByID(t, reqs[k].Messages, id); msg.Content != originals[id] {
+			t.Errorf("round %d: most recent round's result for %q was elided (F.C2a)", k+1, id)
+		}
+	}
+
+	if log := readLog(t, logPath); strings.Contains(log, "context over budget") {
+		t.Errorf("this sizing should always fit after elision; got F.C3 warns:\n%s", log)
+	}
+}
+
+// TestProbeElidedMapTracksIndicesAcrossGrowth is probe 3, pinned directly:
+// msgs only ever grows by runRound's append (order- and index-preserving,
+// whether or not the append reallocates) and boundContext returns either
+// msgs itself or a same-length copy — so the index keys in elided cannot
+// point at a different message between rounds. The test forces the exact
+// reallocation boundContext's own fresh copy makes likely (its copy has
+// cap == len, so the very next append reallocates) and asserts the map
+// still names the right messages: the earlier placeholder is NOT re-elided,
+// the newly eligible one is, and the most recent round stays intact.
+func TestProbeElidedMapTracksIndicesAcrossGrowth(t *testing.T) {
+	big := strings.Repeat("x", 400) // 100 estimated tokens
+	toolCall := func(id string) llm.ToolCall {
+		return *toolCallChunk(id, "wiki_get", `{"page":"big"}`).ToolCall
+	}
+	msgs := []llm.Message{
+		{Role: "system", Content: strings.Repeat("s", 40)},
+		{Role: "user", Content: strings.Repeat("u", 40)},
+		{Role: "assistant", ToolCalls: []llm.ToolCall{toolCall("id-a")}},
+		{Role: "tool", ToolCallID: "id-a", Name: "wiki_get", Content: big},
+		{Role: "assistant", ToolCalls: []llm.ToolCall{toolCall("id-b")}},
+		{Role: "tool", ToolCallID: "id-b", Name: "wiki_get", Content: big},
+	}
+
+	turnStart := 2
+	elided := map[int]bool{}
+	out1 := boundContext(msgs, turnStart, elided, 2, 10) // budget 10: far over
+
+	// Round 2's result (index 5) is the most recent round — only index 3
+	// (round 1's result) may be elided.
+	if got := out1[3].Content; got != probePlaceholder("wiki.get", len(big)) {
+		t.Fatalf("round-1 result not elided: %q", got)
+	}
+	if got := out1[5].Content; got != big {
+		t.Fatalf("most recent round's result was elided: %q", got)
+	}
+	if len(elided) != 1 || !elided[3] {
+		t.Fatalf("elided = %v, want only index 3", elided)
+	}
+
+	// Grow the way runRound does — append a third round. out1's cap == len
+	// (boundContext's fresh copy), so this append MUST reallocate: the
+	// slice base changes out from under the map's index keys.
+	msgs2 := append(out1,
+		llm.Message{Role: "assistant", ToolCalls: []llm.ToolCall{toolCall("id-c")}},
+		llm.Message{Role: "tool", ToolCallID: "id-c", Name: "wiki_get", Content: big},
+	)
+	if &msgs2[0] == &out1[0] {
+		t.Fatalf("append did not reallocate — the test no longer exercises index stability across a new backing array")
+	}
+
+	out2 := boundContext(msgs2, turnStart, elided, 3, 10)
+
+	// Index 3 still holds round-1's placeholder — NOT a re-elision of it
+	// (which would name len(placeholder), ~95 bytes, not 400).
+	if got := out2[3].Content; got != probePlaceholder("wiki.get", len(big)) {
+		t.Errorf("index 3 changed after growth — double elision: %q", got)
+	}
+	// Index 5 is now the newly eligible round-2 result, elided exactly once.
+	if got := out2[5].Content; got != probePlaceholder("wiki.get", len(big)) {
+		t.Errorf("round-2 result should have been elided at round 3: %q", got)
+	}
+	// Index 7 is the most recent round's result — intact.
+	if got := out2[7].Content; got != big {
+		t.Errorf("most recent round's result was elided: %q", got)
+	}
+	if len(elided) != 2 || !elided[3] || !elided[5] {
+		t.Errorf("elided = %v, want exactly indices 3 and 5", elided)
+	}
+}
+
+// TestProbeSessionNDJSONByteIdenticalOnDisk is probe 5 — F.C4 against the
+// durable artifact, not the in-memory view: a P2-shaped turn at an eliding
+// budget and the same script at budget 1 000 000 must leave the session
+// ndjson ON DISK equal, line for line, once the wall-clock ts field is
+// normalized away. ts is the only nondeterministic field; everything else —
+// including the FULL un-elided tool results — must match byte for byte.
+func TestProbeSessionNDJSONByteIdenticalOnDisk(t *testing.T) {
+	ctlFake, _, ctlFx := runBigTurn(t, LoopConfig{ContextTokens: 1000000})
+	budget := wireEstimate(ctlFake.Requests()[2].Messages) - 2000
+
+	sizedFake, _, sizedFx := runBigTurn(t, LoopConfig{ContextTokens: budget})
+
+	// Non-vacuous: the sized run really elided on the wire.
+	req3 := sizedFake.Requests()[2].Messages
+	if elided := toolMsgByID(t, req3, "call-w1"); !strings.HasPrefix(elided.Content, "[elided to fit the context budget:") {
+		t.Fatalf("sized run did not elide — pin is vacuous: %q", elided.Content)
+	}
+
+	readNDJSON := func(t *testing.T, fx *testLoopFixture) [][]byte {
+		t.Helper()
+		path := filepath.Join(fx.engine.Vault().Root(), ".llmwiki", "changesets", "open", fx.csID, "session.ndjson")
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		var out [][]byte
+		for _, line := range strings.Split(strings.TrimRight(string(raw), "\n"), "\n") {
+			if line == "" {
+				continue
+			}
+			var m map[string]any
+			if err := json.Unmarshal([]byte(line), &m); err != nil {
+				t.Fatalf("parse ndjson line: %v", err)
+			}
+			delete(m, "ts") // wall clock, not content
+			norm, err := json.Marshal(m)
+			if err != nil {
+				t.Fatalf("re-marshal ndjson line: %v", err)
+			}
+			out = append(out, norm)
+		}
+		return out
+	}
+
+	ctlLines := readNDJSON(t, ctlFx)
+	sizedLines := readNDJSON(t, sizedFx)
+	if len(ctlLines) != len(sizedLines) {
+		t.Fatalf("session.ndjson: sized run wrote %d records, control wrote %d", len(sizedLines), len(ctlLines))
+	}
+	sawBigResult := false
+	for i := range ctlLines {
+		if !bytes.Equal(ctlLines[i], sizedLines[i]) {
+			t.Errorf("record %d differs on disk after elision:\n control %s\n sized  %s", i, ctlLines[i], sizedLines[i])
+		}
+		if len(ctlLines[i]) > bigResultBytes {
+			sawBigResult = true
+		}
+	}
+	if !sawBigResult {
+		t.Errorf("neither session recorded a full %d-byte tool result — the fixture stopped producing them", bigResultBytes)
+	}
+}
+
+// BenchmarkBoundContextRealisticWorstCase is probe 4: the cost of one
+// boundContext call at the loop's realistic worst case — a full
+// MaxToolRounds turn (24 rounds × two 20 KB results on the wire, 48 tool
+// messages) with a budget forcing several elisions per call, so the walk
+// re-estimates the whole request after each elision, on top of the initial
+// estimate. Fix only if this exceeds ~5 ms per round.
+func BenchmarkBoundContextRealisticWorstCase(b *testing.B) {
+	// Silence F.C5's per-call Info line: the benchmark runs it millions of
+	// times.
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	b.Cleanup(func() { slog.SetDefault(prev) })
+
+	big := strings.Repeat("x", 20000)
+	args := `{"page":"big"}`
+	toolCall := func(id string) llm.ToolCall {
+		return *toolCallChunk(id, "wiki_get", args).ToolCall
+	}
+	msgs := make([]llm.Message, 0, 4+2*24)
+	msgs = append(msgs,
+		llm.Message{Role: "system", Content: strings.Repeat("s", 4000)},
+		llm.Message{Role: "system", Content: strings.Repeat("m", 2000)},
+		llm.Message{Role: "system", Content: strings.Repeat("d", 1000)},
+		llm.Message{Role: "user", Content: "read the big page, a lot"},
+	)
+	for r := 0; r < 24; r++ {
+		msgs = append(msgs, llm.Message{Role: "assistant", ToolCalls: []llm.ToolCall{toolCall(fmt.Sprintf("a%d", r))}})
+		msgs = append(msgs,
+			llm.Message{Role: "tool", ToolCallID: fmt.Sprintf("a%d", r), Name: "wiki_get", Content: big},
+			llm.Message{Role: "tool", ToolCallID: fmt.Sprintf("b%d", r), Name: "wiki_get", Content: big},
+		)
+	}
+
+	// Over by ~2.5 elisions' worth: the walk elides three results,
+	// re-estimating after each, before it fits — the worst steady-state
+	// shape the loop can produce.
+	budget := requestTokens(msgs) - 3*4976 - 2000
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		boundContext(msgs, 4, make(map[int]bool), 24, budget)
 	}
 }
