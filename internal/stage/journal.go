@@ -25,6 +25,7 @@ const (
 	EvOpProposed        EventKind = "op_proposed"
 	EvOpAccepted        EventKind = "op_accepted"
 	EvOpDropped         EventKind = "op_dropped"
+	EvOpRestored        EventKind = "op_restored" // RestoreOps: one op back from StateDropped (030, D-30A)
 	EvHunkDropped       EventKind = "hunk_dropped"
 	EvHunkUndropped     EventKind = "hunk_undropped" // UndropHunk (MASTER §9 D-CL, S4-T0)
 	EvCommitBegin       EventKind = "commit_begin"
