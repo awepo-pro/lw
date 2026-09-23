@@ -66,48 +66,19 @@ func walkWholeTree(root string) (map[string][]byte, error) {
 	return tree, nil
 }
 
-// walkAttachments adds every already-committed raw/ attachment — the
-// non-.md binary beside an ingested raw source (033) — into tree, the
-// projectedTree seed. Snapshots deliberately stay .md-only (buildSnapshot
-// keeps walkWholeTree): the revert world does not see attachments, while
-// the projection world must, or a committed original would vanish from
-// every later projected vault and src-integrity would report it missing.
-// Attachments outside raw/ are not a thing — Commit writes originals only
-// beside their raw sources — so the walk is scoped to raw/ rather than a
-// second whole-tree pass.
-func walkAttachments(root string, tree map[string][]byte) error {
-	fsys := os.DirFS(root)
-	if _, err := fs.Stat(fsys, "raw"); err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil
-		}
-		return fmt.Errorf("stage: walk raw attachments: %w", err)
-	}
-	err := fs.WalkDir(fsys, "raw", func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			if strings.HasPrefix(d.Name(), ".") {
-				return fs.SkipDir
-			}
-			return nil
-		}
-		if strings.HasPrefix(d.Name(), ".") || path.Ext(p) == ".md" {
-			return nil
-		}
-		b, err := fs.ReadFile(fsys, p)
-		if err != nil {
-			return err
-		}
-		tree[p] = b
-		return nil
-	})
-	if err != nil {
-		return fmt.Errorf("stage: walk raw attachments: %w", err)
-	}
-	return nil
-}
+// walkAttachments is gone (033 scaling fix): it used to read EVERY
+// committed raw/ attachment's bytes into the projection seed, so a vault
+// with ~100 multi-MB PDFs re-read hundreds of megabytes on every Append,
+// Refresh and Checks computation. The projection vault now answers
+// attachment questions through the WithAttachments delegate
+// (resolveAttachments, below) instead: a live op's staged original
+// resolves to the sha Append already recorded on the op — no CAS read —
+// and a committed one to the disk vault's persistent cached
+// AttachmentSHA256. Exists stays true for both, src-integrity keeps
+// comparing real shas, and not one attachment byte is read for a file no
+// live op touched. Snapshots stay .md-only as before (buildSnapshot keeps
+// walkWholeTree): the revert world sees neither attachment bytes nor
+// attachment shas.
 
 // postImage returns op's stored post-image bytes: Store.Get(After), or
 // Store.Get(SHA256) for ingest_source. op.Content is consulted only as a
@@ -150,7 +121,7 @@ func (e *Engine) postImage(op Op) ([]byte, error) {
 // projection still applied was landing baked into a dependent patch with
 // no hunk describing it, while the pre-commit lint gate described a tree
 // Commit would not write (020 fix wave 3a, G3 review finding 1).
-func (e *Engine) applyOp(tree map[string][]byte, op Op) error {
+func (e *Engine) applyOp(tree map[string][]byte, atts map[string]string, op Op) error {
 	if op.State == StateDropped || op.State == StateRejected {
 		return nil
 	}
@@ -161,17 +132,16 @@ func (e *Engine) applyOp(tree map[string][]byte, op Op) error {
 			return err
 		}
 		tree[op.Path] = b
-		// 033: the projected tree carries the original's bytes too, from
-		// the CAS blob Append stored. Without it, the projected vault a
-		// Checks/lint run reads would report src-integrity "original
-		// missing" for the very changeset the reviewer is being asked to
-		// approve — and D-AG's regression check would refuse the commit.
-		if op.OriginalPath != "" {
-			orig, err := e.store.Get(op.Original)
-			if err != nil {
-				return err
-			}
-			tree[op.OriginalPath] = orig
+		// 033: the projected tree does NOT carry the original's bytes — a
+		// live op's original resolves through atts to the sha Append
+		// recorded on the op (the CAS key the bytes hash to), which is
+		// exactly what src-integrity compares original_sha256 against.
+		// Without an answer the projected vault a Checks/lint run reads
+		// would report src-integrity "original missing" for the very
+		// changeset the reviewer is being asked to approve — and D-AG's
+		// regression check would refuse the commit.
+		if op.OriginalPath != "" && op.Original != "" {
+			atts[op.OriginalPath] = op.Original
 		}
 	case OpCreatePage, OpPatchPage:
 		b, err := e.postImage(op)
@@ -207,20 +177,28 @@ func (e *Engine) applyOp(tree map[string][]byte, op Op) error {
 		// Content-free marker (D-AK); its edits are sibling patch_page ops.
 	}
 	for _, sub := range op.Cascade {
-		if err := e.applyOp(tree, sub); err != nil {
+		if err := e.applyOp(tree, atts, sub); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// projectedTree returns the whole-vault, in-memory projection: every *.md
-// file on disk plus every raw/ attachment already committed (033 — the
-// projection is the tree the projected vault is opened FROM, and
-// src-integrity must see committed originals or every changeset after an
-// ingest-with-original would regress against a phantom "original
-// missing"), overridden by the post-image of every op in ops (backbone
-// §5.4, MASTER §9 D-AX point 2 — every live op, not just the newest one).
+// projectedTree returns the tree half of project — the shape tests and
+// the diff surfaces already consume. New callers want project itself.
+func (e *Engine) projectedTree(ops []Op) (map[string][]byte, error) {
+	tree, _, err := e.project(ops)
+	return tree, err
+}
+
+// project returns the whole-vault, in-memory projection as two maps: tree,
+// every *.md file on disk overridden by the post-image of every op in ops
+// (backbone §5.4, MASTER §9 D-AX point 2 — every live op, not just the
+// newest one), and atts, the raw/ attachments those live ops stage as
+// path → sha256-hex pairs. Committed attachments appear in NEITHER map:
+// since the 033 scaling fix the projection carries no attachment bytes,
+// and the vault opened from this projection resolves committed originals
+// through the disk vault's persistent cache instead (resolveAttachments).
 //
 // After the override loop, the identical S2-T8 rule (a) derivation pass
 // buildCommitMaterialization runs at Commit time (apply.go) runs here too,
@@ -230,17 +208,15 @@ func (e *Engine) applyOp(tree map[string][]byte, op Op) error {
 // landed there — applyOp writes into tree in place — so the running seed
 // this derivation starts from is simply whatever tree currently holds. A
 // tree with no "index.md" entry at all derives nothing.
-func (e *Engine) projectedTree(ops []Op) (map[string][]byte, error) {
-	tree, err := walkWholeTree(e.root)
+func (e *Engine) project(ops []Op) (tree map[string][]byte, atts map[string]string, err error) {
+	tree, err = walkWholeTree(e.root)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	if err := walkAttachments(e.root, tree); err != nil {
-		return nil, err
-	}
+	atts = map[string]string{}
 	for _, op := range ops {
-		if err := e.applyOp(tree, op); err != nil {
-			return nil, err
+		if err := e.applyOp(tree, atts, op); err != nil {
+			return nil, nil, err
 		}
 	}
 
@@ -248,25 +224,52 @@ func (e *Engine) projectedTree(ops []Op) (map[string][]byte, error) {
 		if running, ok := tree["index.md"]; ok {
 			updated, err := deriveIndex(running, creates, e.postImage)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			tree["index.md"] = updated
 		}
 	}
 
-	return tree, nil
+	return tree, atts, nil
+}
+
+// resolveAttachments builds the WithAttachments delegate a projection
+// vault is opened with: staged (live-op) originals answer from atts' op-
+// recorded shas with no read at all, and everything else — the committed
+// attachments — from the engine's disk vault, whose AttachmentSHA256 is
+// backed by the persistent stat cache under .llmwiki/cache/. Paths that
+// are not raw/ non-.md files answer fs.ErrNotExist without touching the
+// cache: .md content lives in the tree, and nothing else is an attachment.
+func (e *Engine) resolveAttachments(atts map[string]string) func(string) (string, bool, error) {
+	return func(p string) (string, bool, error) {
+		if sha, ok := atts[p]; ok {
+			return sha, true, nil
+		}
+		if !strings.HasPrefix(p, "raw/") || path.Ext(p) == ".md" || e.vault == nil {
+			return "", false, fs.ErrNotExist
+		}
+		sha, err := e.vault.AttachmentSHA256(p)
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				return "", false, fs.ErrNotExist
+			}
+			return "", false, err
+		}
+		return sha, true, nil
+	}
 }
 
 // openProjection builds the fs.FS view of tree and opens it as a Vault,
-// never touching disk. The single seam computeChecks and ProjectedReport
-// share, so the tree a Checks verdict describes and the tree a lint.Report
-// counts can never drift apart (they are the same call).
-func openProjection(tree map[string][]byte) (*vault.Vault, error) {
+// never touching disk, with atts wired in as the attachment delegate. The
+// single seam computeChecks, cascadeBase and ProjectedReport share, so the
+// tree a Checks verdict describes and the tree a lint.Report counts can
+// never drift apart (they are the same call).
+func (e *Engine) openProjection(tree map[string][]byte, atts map[string]string) (*vault.Vault, error) {
 	mfs := make(fstest.MapFS, len(tree))
 	for p, b := range tree {
 		mfs[p] = &fstest.MapFile{Data: b, Mode: 0o644}
 	}
-	return vault.OpenFS(mfs)
+	return vault.OpenFS(mfs, vault.WithAttachments(e.resolveAttachments(atts)))
 }
 
 // lintProjection runs the 16 checks (page-abstract added by 014,
@@ -275,11 +278,11 @@ func lintProjection(pv *vault.Vault) lint.Report {
 	return lint.Run(&lint.Context{Vault: pv, Index: index.Build(pv), Graph: pv.Graph()}, nil)
 }
 
-// computeChecks builds the fs.FS view of tree, opens it as a Vault (never
-// touching disk), lints it, and returns the four Checks fields per
-// backbone §5.3's Checks Contract.
-func computeChecks(tree map[string][]byte) (Checks, error) {
-	pv, err := openProjection(tree)
+// computeChecks builds the fs.FS view of tree, opens it as a Vault with
+// atts as the attachment delegate (never touching disk), lints it, and
+// returns the four Checks fields per backbone §5.3's Checks Contract.
+func (e *Engine) computeChecks(tree map[string][]byte, atts map[string]string) (Checks, error) {
+	pv, err := e.openProjection(tree, atts)
 	if err != nil {
 		return Checks{}, fmt.Errorf("stage: recompute checks: %w", err)
 	}
@@ -327,11 +330,11 @@ func (e *Engine) ProjectedReport() (lint.Report, error) {
 	if err != nil {
 		return lint.Report{}, err
 	}
-	tree, err := e.projectedTree(c.Live())
+	tree, atts, err := e.project(c.Live())
 	if err != nil {
 		return lint.Report{}, err
 	}
-	pv, err := openProjection(tree)
+	pv, err := e.openProjection(tree, atts)
 	if err != nil {
 		return lint.Report{}, fmt.Errorf("stage: projected report: %w", err)
 	}
@@ -342,9 +345,9 @@ func (e *Engine) ProjectedReport() (lint.Report, error) {
 // DropOp and Refresh all share: project the whole tree overridden by
 // c.Live(), then compute Checks over it (backbone §5.4 Contract).
 func (e *Engine) recomputeChecks(c *Changeset) (Checks, error) {
-	tree, err := e.projectedTree(c.Live())
+	tree, atts, err := e.project(c.Live())
 	if err != nil {
 		return Checks{}, err
 	}
-	return computeChecks(tree)
+	return e.computeChecks(tree, atts)
 }

@@ -815,11 +815,11 @@ func (e *Engine) cascadeBase(base []Op) (*vault.Vault, error) {
 	if len(base) == 0 {
 		return e.vault, nil
 	}
-	tree, err := e.projectedTree(base)
+	tree, atts, err := e.project(base)
 	if err != nil {
 		return nil, err
 	}
-	return openProjection(tree)
+	return e.openProjection(tree, atts)
 }
 
 // liveBefore returns the ops at indices < i that Live() would keep — the

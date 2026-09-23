@@ -56,13 +56,16 @@ func (srcIntegrityCheck) Run(ctx *Context) []Finding {
 
 		// 033: the original is the ground truth the extracted text is
 		// checked against, so its absence or drift is an error on the raw
-		// file, not a warning. A file that Exists but cannot be Read is
-		// reported as missing — from this check's vantage there is no
-		// readable original at the declared path.
+		// file, not a warning. The hash comes from AttachmentSHA256 — for
+		// a disk vault that is the persistent stat cache (033 scaling
+		// fix), so lint costs one stat per unchanged original, not one
+		// multi-MB read. A file whose hash cannot be resolved is reported
+		// as missing — from this check's vantage there is no readable
+		// original at the declared path.
 		if r.Original == "" {
 			continue
 		}
-		b, err := ctx.Vault.Read(r.Original)
+		sha, err := ctx.Vault.AttachmentSHA256(r.Original)
 		switch {
 		case err != nil:
 			findings = append(findings, Finding{
@@ -71,7 +74,7 @@ func (srcIntegrityCheck) Run(ctx *Context) []Finding {
 				Severity: SevError,
 				Message:  fmt.Sprintf("original %s is missing", r.Original),
 			})
-		case vault.BodySHA256(string(b)) != r.OriginalSHA256:
+		case sha != r.OriginalSHA256:
 			findings = append(findings, Finding{
 				Check:    "src-integrity",
 				Path:     r.Path,
