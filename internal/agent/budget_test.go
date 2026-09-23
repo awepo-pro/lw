@@ -53,14 +53,28 @@ func wireEstimate(msgs []llm.Message) int {
 	return total
 }
 
-// writeBigPage writes wiki/concepts/big.md with a body of exactly n plain
-// ASCII bytes — no character the frontmatter encoder or a JSON encoder
-// would transform, so len(wiki.get's Result.Content) is linear in n and
-// one calibration correction below lands exactly.
+// writeBigPage writes wiki/concepts/big.md with a body of exactly n bytes.
+// The body is multi-byte ("éa" repeats: 3 bytes per 2 runes) because T0b
+// caps wiki.get at wikiGetMaxRunes — 16000 RUNES — while P2's frozen
+// elision placeholder counts BYTES ("wiki.get result, 20000 bytes"); an
+// ASCII page calibrated to 20000 bytes is 20000 runes and would trip the
+// cap, so the body runs 2 bytes per rune to stay well under it (004 seam
+// G1). Serialize appends the body verbatim and neither 'é' nor 'a' is
+// transformed by a JSON encoder, so len(wiki.get's Result.Content) stays
+// linear in n and one calibration correction below lands exactly.
 func writeBigPage(t *testing.T, root string, n int) {
 	t.Helper()
-	filler := "The key value cache stores decoded attention states so decoding stays cheap. "
-	body := strings.Repeat(filler, n/len(filler)+1)[:n]
+	const unit = "éa" // 3 bytes, 2 runes
+	body := strings.Repeat(unit, n/len(unit))
+	switch n % len(unit) {
+	case 1:
+		body += "x" // 1 byte, 1 rune
+	case 2:
+		body += "é" // 2 bytes, 1 rune
+	}
+	if len(body) != n {
+		t.Fatalf("body construction: %d bytes, want %d", len(body), n)
+	}
 	page := "---\ntitle: Big\ncreated: 2026-08-20\nupdated: 2026-08-20\ntype: concept" +
 		"\ntags: [inference]\nsources: [raw/articles/kv-cache-explained.md]\nconfidence: high\n---\n\n# Big\n\n" +
 		body + "\n"
@@ -115,6 +129,9 @@ func newBudgetFixture(t *testing.T, resultBytes int) (*testLoopFixture, string) 
 	}
 	if len(got) != resultBytes {
 		t.Fatalf("wiki.get result = %d bytes after calibration, want exactly %d — the page format drifted", len(got), resultBytes)
+	}
+	if strings.Contains(got, "[truncated:") {
+		t.Fatalf("calibrated fixture result hit wiki.get's 16000-rune cap — the page must stay under it in runes while hitting %d bytes", resultBytes)
 	}
 
 	cs, err := e.OpenChangeset("budget test", author)
