@@ -1,0 +1,132 @@
+#!/bin/sh
+# fake-docling stands in for the real `docling` sidecar in pdf_test.go
+# (007 T1). It mimics the boundary measured on Docling 2.130.0, 2026-09-23:
+# `docling convert <file> --to md --to json ... --output <dir>` writes
+# <dir>/<stem>.md and <dir>/<stem>.json, keeps stdout empty and sends
+# progress to stderr, and a scanned PDF still exits 0 with a near-empty
+# .md — the refusal is lw's job (F.P5), not the sidecar's.
+#
+# The "PDF" it converts is a text fixture. Its leading lines are
+# directives: PAGES=<n> (members of the JSON's pages object; the first
+# line), EXIT=<code>, SLEEP=<secs>, NOMD (write no .md), NOJSON (write no
+# .json), TEXTS=<bytes> (pad the texts array, so pages is not the first
+# key, as in the real DoclingDocument). Everything after the directives is
+# the markdown written verbatim to <output>/<stem>.md.
+#
+# When FAKE_DOCLING_ARGV names a file, the arguments after argv[0] are
+# appended to it, one per line (PDF2 pins lw's exact argv). --version
+# prints the real tool's first two lines.
+
+set -u
+
+if [ "${1:-}" = "--version" ]; then
+	echo "Docling version: 2.130.0"
+	echo "Docling Core version: 2.98.0"
+	exit 0
+fi
+
+if [ -n "${FAKE_DOCLING_ARGV:-}" ]; then
+	for arg in "$@"; do
+		printf '%s\n' "$arg" >>"$FAKE_DOCLING_ARGV"
+	done
+fi
+
+[ $# -ge 2 ] || { echo "fake-docling: usage: fake-docling convert <file> ... --output <dir>" >&2; exit 2; }
+[ "$1" = "convert" ] || { echo "fake-docling: expected subcommand convert, got $1" >&2; exit 2; }
+shift
+
+in=
+out=
+while [ $# -gt 0 ]; do
+	case $1 in
+	--output)
+		[ $# -ge 2 ] || { echo "fake-docling: --output needs a value" >&2; exit 2; }
+		out=$2
+		shift 2
+		;;
+	--to | --image-export-mode)
+		# Paired flags: their values are not positional arguments.
+		shift 2
+		;;
+	--*)
+		shift
+		;;
+	*)
+		if [ -z "$in" ]; then
+			in=$1
+		fi
+		shift
+		;;
+	esac
+done
+[ -n "$in" ] || { echo "fake-docling: no input file in argv" >&2; exit 2; }
+[ -n "$out" ] || { echo "fake-docling: no --output dir in argv" >&2; exit 2; }
+
+stem=$(basename "$in")
+stem=${stem%.pdf}
+
+# Parse the fixture: leading directive lines, then the markdown. The
+# markdown is replayed with tail below, so the loop only counts where the
+# directives end.
+pages=1
+exit_code=0
+sleep_secs=0
+nomd=0
+nojson=0
+texts_bytes=0
+ndirectives=0
+while IFS= read -r line; do
+	case $line in
+	PAGES=*) pages=${line#PAGES=} ;;
+	EXIT=*) exit_code=${line#EXIT=} ;;
+	SLEEP=*) sleep_secs=${line#SLEEP=} ;;
+	TEXTS=*) texts_bytes=${line#TEXTS=} ;;
+	NOMD) nomd=1 ;;
+	NOJSON) nojson=1 ;;
+	*) break ;;
+	esac
+	ndirectives=$((ndirectives + 1))
+done <"$in"
+
+if [ "$sleep_secs" -gt 0 ]; then
+	sleep "$sleep_secs"
+fi
+
+if [ "$exit_code" -ne 0 ]; then
+	# Real docling's failure chatter goes to stderr; stdout stays empty.
+	echo "fake-docling: conversion failed catastrophically" >&2
+	exit "$exit_code"
+fi
+
+echo "fake-docling: converting $in (progress 50%)" >&2
+
+if [ "$nomd" -eq 0 ]; then
+	tail -n +"$((ndirectives + 1))" "$in" >"$out/$stem.md"
+fi
+
+if [ "$nojson" -eq 0 ]; then
+	{
+		# Key order mimics the real DoclingDocument: pages last, after
+		# everything else — including any TEXTS=<bytes> padding inside
+		# texts, which is what makes whole-file unmarshal expensive and
+		# Token() streaming necessary (F.P4).
+		printf '{"schema_name":"DoclingDocument","version":"2.130.0","name":"%s","origin":{},"furniture":{},"body":{},"groups":[' "$stem"
+		if [ "$texts_bytes" -gt 0 ]; then
+			printf '{"text":"'
+			dd if=/dev/zero bs="$texts_bytes" count=1 2>/dev/null | tr '\0' 'x'
+			printf '"}]'
+		else
+			printf ']'
+		fi
+		printf ',"pictures":[],"tables":[],"key_value_items":[],"form_items":[],"pages":{'
+		i=1
+		while [ "$i" -le "$pages" ]; do
+			[ "$i" -gt 1 ] && printf ','
+			printf '"%d":{}' "$i"
+			i=$((i + 1))
+		done
+		printf '}}'
+	} >"$out/$stem.json"
+fi
+
+exit 0
