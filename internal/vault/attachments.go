@@ -38,8 +38,13 @@ type attachmentEntry struct {
 // Trade-off, deliberate: an edit that changes neither size nor mtime is
 // not detected and keeps answering the old sha. mtime is the standard
 // stat-cache trade-off used by make and git; a same-size, same-mtime edit
-// is the accepted blind spot. There is no `lw lint --rehash`: rebuilding
-// the cache is a matter of deleting the file.
+// is the accepted blind spot. mtime granularity bounds how small that
+// blind spot is: on ns-resolution filesystems (ext4, btrfs, xfs, tmpfs)
+// a rewrite always bumps mtime and is caught, but on coarse-mtime
+// filesystems (1 s on ext3, 2 s on FAT) a same-size rewrite landing
+// within the same mtime tick is invisible to the stat check. There is no
+// `lw lint --rehash`: rebuilding the cache is a matter of deleting the
+// file.
 //
 // Cache READ problems are not errors either — a missing or corrupt
 // attachments.json simply starts empty and is rewritten by the next

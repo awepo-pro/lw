@@ -114,3 +114,41 @@ func TestAttachmentSHA256Missing(t *testing.T) {
 		t.Fatalf("FS vault missing attachment = %v, want fs.ErrNotExist", err)
 	}
 }
+
+// TestAttachmentSHA256RefusesNonAttachments pins the shape rule: an
+// attachment is a non-.md file under raw/. Wiki content, SCHEMA.md, a
+// dotfile and anything containing ".." are refused with fs.ErrNotExist —
+// refused BEFORE the cache is consulted, so a non-attachment is never
+// hashed and never lands in .llmwiki/cache/attachments.json (a refusal
+// leaves no cache file behind at all).
+func TestAttachmentSHA256RefusesNonAttachments(t *testing.T) {
+	dir := testutil.CopyFixture(t, "minimal")
+	v, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	// Shape refusals — inside the vault, just not an attachment — are
+	// fs.ErrNotExist. Escape refusals keep resolvePath's own contract,
+	// ErrOutsideVault. Every row must refuse BEFORE the cache is consulted.
+	for _, tt := range []struct {
+		path string
+		want error
+	}{
+		{"wiki/some-page.md", fs.ErrNotExist},   // wiki content is not an attachment
+		{"SCHEMA.md", fs.ErrNotExist},           // root bookkeeping is not an attachment
+		{"raw/notes.txt.md", fs.ErrNotExist},    // .md under raw/ is a raw source, not an attachment
+		{"../outside.pdf", ErrOutsideVault},     // escapes the vault
+		{"/etc/passwd", ErrOutsideVault},        // absolute
+		{".llmwiki/cache.json", fs.ErrNotExist}, // dotfile, outside raw/
+	} {
+		if _, err := v.AttachmentSHA256(tt.path); !errors.Is(err, tt.want) {
+			t.Errorf("AttachmentSHA256(%q) = %v, want %v", tt.path, err, tt.want)
+		}
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, ".llmwiki", "cache", "attachments.json")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("a refused non-attachment must never be cached, yet %s exists: %v",
+			filepath.Join(dir, ".llmwiki", "cache", "attachments.json"), err)
+	}
+}

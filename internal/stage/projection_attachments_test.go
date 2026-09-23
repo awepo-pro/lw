@@ -1,6 +1,8 @@
 package stage
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -166,5 +168,58 @@ func TestProjectionDoesNotReadCommittedAttachments(t *testing.T) {
 		if f.Check == "src-integrity" {
 			t.Errorf("projected lint reports src-integrity with unreadable committed attachments: %+v", f)
 		}
+	}
+}
+
+// TestDroppedOpWritesNoAttachment pins the dropped-op half of applyOp's
+// contract: an op marked StateDropped writes NOTHING into the projection —
+// no tree bytes, no atts sha — so an original whose ingest op was dropped
+// does not resolve in the projected vault, exactly as if the op had never
+// been staged. The committed vault is untouched by a drop, so the path
+// must answer fs.ErrNotExist there too, via the disk-vault delegate.
+func TestDroppedOpWritesNoAttachment(t *testing.T) {
+	e, _ := newTestEngine(t)
+	id := stageOriginalIngest(t, e)
+	if err := e.DropOp(id); err != nil {
+		t.Fatalf("DropOp: %v", err)
+	}
+
+	c, err := e.Current()
+	if err != nil {
+		t.Fatalf("Current: %v", err)
+	}
+	// project c.Ops — INCLUDING the dropped one — not c.Live(): the point
+	// is that applyOp's dropped guard writes nothing even when handed the
+	// op directly.
+	tree, atts, err := e.project(c.Ops)
+	if err != nil {
+		t.Fatalf("project: %v", err)
+	}
+
+	if sha, ok := atts[originalPDFPath]; ok {
+		t.Errorf("dropped op staged a sha for %s in the projection (%s); dropped ops write nothing", originalPDFPath, sha)
+	}
+	for _, p := range []string{originalPDFPath, originalRawPath} {
+		if b, ok := tree[p]; ok {
+			t.Errorf("dropped op wrote %s into the projected tree (%d bytes); dropped ops write nothing", p, len(b))
+		}
+	}
+
+	pv, err := e.openProjection(tree, atts)
+	if err != nil {
+		t.Fatalf("openProjection: %v", err)
+	}
+	if pv.Exists(originalPDFPath) {
+		t.Errorf("projection Exists(%s) = true after the ingest op was dropped; a dropped op's original must not resolve", originalPDFPath)
+	}
+	for _, f := range lintProjection(pv).Findings {
+		if f.Check == "src-integrity" {
+			t.Errorf("projected lint reports src-integrity after the op was dropped (no raw source may remain to name the original): %+v", f)
+		}
+	}
+
+	// The committed disk vault never saw the original either.
+	if _, err := e.Vault().AttachmentSHA256(originalPDFPath); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("disk vault AttachmentSHA256 for the never-committed original = %v, want fs.ErrNotExist", err)
 	}
 }

@@ -56,9 +56,11 @@ type vaultOptions struct {
 // original from the op's recorded sha and everything else from the disk
 // vault's cached AttachmentSHA256 — no bytes ever cross the seam.
 //
-// resolve receives a cleaned, vault-relative path. It reports the sha and
-// whether the attachment exists; exists=false carries a nil error for a
-// plain miss (which AttachmentSHA256 surfaces as fs.ErrNotExist) and a
+// resolve receives a cleaned, vault-relative path, already verified to be
+// attachment-shaped (non-.md under raw/ — see AttachmentSHA256; other
+// paths are refused before the delegate is consulted). It reports the sha
+// and whether the attachment exists; exists=false carries a nil error for
+// a plain miss (which AttachmentSHA256 surfaces as fs.ErrNotExist) and a
 // non-nil error only for a real lookup failure.
 func WithAttachments(resolve func(path string) (sha string, exists bool, err error)) Option {
 	return func(o *vaultOptions) { o.attachments = resolve }
@@ -197,17 +199,28 @@ func (v *Vault) Exists(path string) bool {
 // given vault-relative path — the ground truth src-integrity checks a raw
 // source's original against (033). It never returns the bytes themselves.
 //
-// Resolution order: a WithAttachments delegate answers first (projection
-// vaults); then a disk vault's persistent stat cache at
-// .llmwiki/cache/attachments.json, which returns the recorded sha without
-// opening the file when size and mtime are unchanged (see attachments.go
-// for the cache's trade-offs); a plain FS vault simply reads and hashes.
-// A path with no file behind it — in the delegate's judgement, on disk, or
-// in the FS — is an error wrapping fs.ErrNotExist.
+// An attachment is a non-.md file under raw/ — the only shape an ingest
+// op's original pair can take (stage's validateIngestOriginal). Any other
+// path — wiki content, SCHEMA.md, a dotfile, something with ".." in it —
+// is an error wrapping fs.ErrNotExist, refused BEFORE the delegate or the
+// cache is consulted, so a non-attachment is never hashed and never
+// enters .llmwiki/cache/attachments.json.
+//
+// Resolution order for an attachment-shaped path: a WithAttachments
+// delegate answers first (projection vaults); then a disk vault's
+// persistent stat cache at .llmwiki/cache/attachments.json, which returns
+// the recorded sha without opening the file when size and mtime are
+// unchanged (see attachments.go for the cache's trade-offs); a plain FS
+// vault simply reads and hashes. A path with no file behind it — in the
+// delegate's judgement, on disk, or in the FS — is an error wrapping
+// fs.ErrNotExist.
 func (v *Vault) AttachmentSHA256(path string) (string, error) {
 	p, err := v.resolvePath(path)
 	if err != nil {
 		return "", err
+	}
+	if !strings.HasPrefix(p, "raw/") || filepath.Ext(p) == ".md" {
+		return "", fmt.Errorf("vault: attachment %s: %w", path, fs.ErrNotExist)
 	}
 	if v.attachResolve != nil {
 		sha, ok, err := v.attachResolve(p)
