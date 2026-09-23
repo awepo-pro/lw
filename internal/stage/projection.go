@@ -6,6 +6,7 @@
 package stage
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -65,6 +66,49 @@ func walkWholeTree(root string) (map[string][]byte, error) {
 	return tree, nil
 }
 
+// walkAttachments adds every already-committed raw/ attachment — the
+// non-.md binary beside an ingested raw source (033) — into tree, the
+// projectedTree seed. Snapshots deliberately stay .md-only (buildSnapshot
+// keeps walkWholeTree): the revert world does not see attachments, while
+// the projection world must, or a committed original would vanish from
+// every later projected vault and src-integrity would report it missing.
+// Attachments outside raw/ are not a thing — Commit writes originals only
+// beside their raw sources — so the walk is scoped to raw/ rather than a
+// second whole-tree pass.
+func walkAttachments(root string, tree map[string][]byte) error {
+	fsys := os.DirFS(root)
+	if _, err := fs.Stat(fsys, "raw"); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("stage: walk raw attachments: %w", err)
+	}
+	err := fs.WalkDir(fsys, "raw", func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if strings.HasPrefix(d.Name(), ".") {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if strings.HasPrefix(d.Name(), ".") || path.Ext(p) == ".md" {
+			return nil
+		}
+		b, err := fs.ReadFile(fsys, p)
+		if err != nil {
+			return err
+		}
+		tree[p] = b
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("stage: walk raw attachments: %w", err)
+	}
+	return nil
+}
+
 // postImage returns op's stored post-image bytes: Store.Get(After), or
 // Store.Get(SHA256) for ingest_source. op.Content is consulted only as a
 // defensive fallback for a caller that has not yet gone through Append's
@@ -111,7 +155,25 @@ func (e *Engine) applyOp(tree map[string][]byte, op Op) error {
 		return nil
 	}
 	switch op.Kind {
-	case OpCreatePage, OpPatchPage, OpIngestSource:
+	case OpIngestSource:
+		b, err := e.postImage(op)
+		if err != nil {
+			return err
+		}
+		tree[op.Path] = b
+		// 033: the projected tree carries the original's bytes too, from
+		// the CAS blob Append stored. Without it, the projected vault a
+		// Checks/lint run reads would report src-integrity "original
+		// missing" for the very changeset the reviewer is being asked to
+		// approve — and D-AG's regression check would refuse the commit.
+		if op.OriginalPath != "" {
+			orig, err := e.store.Get(op.Original)
+			if err != nil {
+				return err
+			}
+			tree[op.OriginalPath] = orig
+		}
+	case OpCreatePage, OpPatchPage:
 		b, err := e.postImage(op)
 		if err != nil {
 			return err
@@ -153,7 +215,11 @@ func (e *Engine) applyOp(tree map[string][]byte, op Op) error {
 }
 
 // projectedTree returns the whole-vault, in-memory projection: every *.md
-// file on disk, overridden by the post-image of every op in ops (backbone
+// file on disk plus every raw/ attachment already committed (033 — the
+// projection is the tree the projected vault is opened FROM, and
+// src-integrity must see committed originals or every changeset after an
+// ingest-with-original would regress against a phantom "original
+// missing"), overridden by the post-image of every op in ops (backbone
 // §5.4, MASTER §9 D-AX point 2 — every live op, not just the newest one).
 //
 // After the override loop, the identical S2-T8 rule (a) derivation pass
@@ -167,6 +233,9 @@ func (e *Engine) applyOp(tree map[string][]byte, op Op) error {
 func (e *Engine) projectedTree(ops []Op) (map[string][]byte, error) {
 	tree, err := walkWholeTree(e.root)
 	if err != nil {
+		return nil, err
+	}
+	if err := walkAttachments(e.root, tree); err != nil {
 		return nil, err
 	}
 	for _, op := range ops {

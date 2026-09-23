@@ -72,6 +72,18 @@ type FileOpDiff struct {
 	Kind  OpKind
 	Stale bool
 	Hunks []DisplayHunk
+
+	// OriginalLine is the review display's one-line description of the
+	// original binary an ingest_source op travels with (033) —
+	//
+	//	original: raw/papers/x.pdf (2411073 bytes, sha256 3af19c02e8d1)
+	//
+	// — and "" for every entry whose op carries no original. It is
+	// display-only, with no hunk and no window of its own: the renderer
+	// shows it beside the op's header, and nothing in Diff or Commit reads
+	// it. The byte count comes from the CAS blob at Op.Original; when that
+	// blob cannot be read the line is left off rather than guessed at.
+	OriginalLine string
 }
 
 // OpDiff returns the proposed change of op opID (top-level or cascade) as
@@ -128,7 +140,36 @@ func (e *Engine) OpDiff(opID string) ([]FileOpDiff, error) {
 	if idx != nil {
 		out = append(out, *idx)
 	}
+
+	// 033: the ingest's own entry carries the display-only original line.
+	// Best effort by design — a CAS read failure drops the line rather
+	// than misdescribing the attachment, and no hunk or window is touched.
+	if op.Kind == OpIngestSource && op.OriginalPath != "" {
+		for i := range out {
+			if out[i].OpID == op.ID && out[i].Path == op.Path {
+				out[i].OriginalLine = e.originalDisplayLine(*op)
+				break
+			}
+		}
+	}
 	return out, nil
+}
+
+// originalDisplayLine renders the ingest window's header line for op's
+// original — "original: <path> (<N> bytes, sha256 <first 12 hex>)" — or
+// "" when the CAS blob cannot be read, so the count shown is always the
+// count committed. The sha prefix is defensive: ValidateOp requires a full
+// 64-hex Original, so the truncation never fires for a staged op.
+func (e *Engine) originalDisplayLine(op Op) string {
+	b, err := e.store.Get(op.Original)
+	if err != nil {
+		return ""
+	}
+	sha := op.Original
+	if len(sha) > 12 {
+		sha = sha[:12]
+	}
+	return fmt.Sprintf("original: %s (%d bytes, sha256 %s)", op.OriginalPath, len(b), sha)
 }
 
 // opDiffFileDiffs returns the FileDiff entries op (top-level or cascade)

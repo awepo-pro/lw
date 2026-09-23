@@ -158,8 +158,9 @@ func validateOpForAppend(op Op, v, committed *vault.Vault, s *vault.Schema) erro
 
 // validateIngestSource enforces: path under raw/, does not already exist,
 // its body sha not already present in any raw source (dedupe by hash, on
-// the body parsed from op.Content — 008 contract §3), and a non-empty
-// Extractor (the schema's required set, D-BH).
+// the body parsed from op.Content — 008 contract §3), a non-empty
+// Extractor (the schema's required set, D-BH), and — 033 — the original
+// pair's self-consistency (validateIngestOriginal below).
 func validateIngestSource(op Op, v *vault.Vault) error {
 	if !strings.HasPrefix(op.Path, "raw/") {
 		return fmt.Errorf("%w: ingest_source: path %q must be under raw/", ErrValidation, op.Path)
@@ -175,6 +176,67 @@ func validateIngestSource(op Op, v *vault.Vault) error {
 		if r.SHA256 == sha {
 			return fmt.Errorf("%w: ingest_source: content already ingested at %s (sha256 %s); dedupe by hash", ErrValidation, r.Path, sha)
 		}
+	}
+	return validateIngestOriginal(op, v)
+}
+
+// validateIngestOriginal enforces the 033 original pair's shape, in the
+// all-or-nothing order a refusal needs to name the fix:
+//
+//   - the three fields are set together: OriginalPath, Original (the
+//     sha256 of the original's bytes) and OriginalContent — or none of
+//     them, which is every original-less ingest and every other kind;
+//   - OriginalContent hashes to Original, so the CAS key the bytes land
+//     under is the sha the raw file's frontmatter records (the D-AY rule,
+//     bytes in, sha out — checked here, BEFORE Append stores them, because
+//     a silent storeOpContent overwrite would leave a committed md whose
+//     original_sha256 misdescribes the bytes beside it);
+//   - OriginalPath sits in Path's directory under Path's base name with a
+//     non-empty, non-.md extension — so the pair is a md/pdf couple and
+//     no attachment path can walk out of the raw directory its md names;
+//   - OriginalPath does not already exist (same rule as Path itself);
+//   - the raw file the op stages (op.Content, the whole file) declares
+//     exactly this pair in its frontmatter — the invariant lint's
+//     src-integrity check later verifies against the committed bytes, so
+//     it is enforced at proposal time, not discovered after commit.
+func validateIngestOriginal(op Op, v *vault.Vault) error {
+	if op.OriginalPath == "" && op.Original == "" && op.OriginalContent == nil {
+		return nil
+	}
+	if op.OriginalPath == "" {
+		return fmt.Errorf("%w: ingest_source: original is set without original_path; all three original fields are required together", ErrValidation)
+	}
+	if op.Original == "" {
+		return fmt.Errorf("%w: ingest_source: original_path %s is set without original (sha256); all three original fields are required together", ErrValidation, op.OriginalPath)
+	}
+	if len(op.OriginalContent) == 0 {
+		return fmt.Errorf("%w: ingest_source: original_path %s is set without original content; all three original fields are required together", ErrValidation, op.OriginalPath)
+	}
+	if got := sha256Hex(op.OriginalContent); got != op.Original {
+		return fmt.Errorf("%w: ingest_source: original content hashes to %s, not the declared original %s", ErrValidation, got, op.Original)
+	}
+
+	if dir := path.Dir(op.OriginalPath); dir != path.Dir(op.Path) {
+		return fmt.Errorf("%w: ingest_source: original_path %s must sit in %s, beside the raw source", ErrValidation, op.OriginalPath, path.Dir(op.Path))
+	}
+	ext := path.Ext(op.OriginalPath)
+	if ext == "" || ext == ".md" {
+		return fmt.Errorf("%w: ingest_source: original_path %s must carry a non-.md extension", ErrValidation, op.OriginalPath)
+	}
+	if base := path.Base(op.OriginalPath); base != strings.TrimSuffix(path.Base(op.Path), ".md")+ext {
+		return fmt.Errorf("%w: ingest_source: original_path %s must be %s's base name with that extension", ErrValidation, op.OriginalPath, path.Base(op.Path))
+	}
+	if v.Exists(op.OriginalPath) {
+		return fmt.Errorf("%w: ingest_source: original_path %s already exists", ErrValidation, op.OriginalPath)
+	}
+
+	src, err := vault.ParseRawSource(op.Path, op.Content)
+	if err != nil {
+		return fmt.Errorf("%w: ingest_source: raw file does not parse: %v", ErrValidation, err)
+	}
+	if src.Original != op.OriginalPath || src.OriginalSHA256 != op.Original {
+		return fmt.Errorf("%w: ingest_source: raw frontmatter declares original %q / original_sha256 %q, but the op stages %q / %q",
+			ErrValidation, src.Original, src.OriginalSHA256, op.OriginalPath, op.Original)
 	}
 	return nil
 }

@@ -47,24 +47,32 @@ type Hunk struct {
 
 // Op is one proposed edit within a Changeset.
 type Op struct {
-	ID         string   `json:"id"` // "op1", "op2", … unique within the changeset
-	Kind       OpKind   `json:"op"`
-	Path       string   `json:"path,omitempty"`
-	From       string   `json:"from,omitempty"` // rename/merge source
-	To         string   `json:"to,omitempty"`
-	Sources    []string `json:"sources,omitempty"` // merge_pages / split_page members
-	Section    string   `json:"section,omitempty"`
-	Before     string   `json:"before,omitempty"` // sha256 of the pre-image blob ("" = new file)
-	After      string   `json:"after,omitempty"`  // sha256 of the post-image blob
-	SHA256     string   `json:"sha256,omitempty"` // ingest_source: sha of the raw body
-	Extractor  string   `json:"extractor,omitempty"`
-	Hunks      []Hunk   `json:"hunks,omitempty"`
-	Cascade    []Op     `json:"cascade,omitempty"`     // rename: inbound wikilink rewrites
-	SourceSHAs []string `json:"source_shas,omitempty"` // staleness anchor (MASTER §9 D-BC)
-	Rationale  string   `json:"rationale,omitempty"`
-	Provenance []string `json:"provenance,omitempty"`
-	State      OpState  `json:"state"`
-	Content    []byte   `json:"-"` // post-image bytes in, sha out (MASTER §9 D-AY)
+	ID        string   `json:"id"` // "op1", "op2", … unique within the changeset
+	Kind      OpKind   `json:"op"`
+	Path      string   `json:"path,omitempty"`
+	From      string   `json:"from,omitempty"` // rename/merge source
+	To        string   `json:"to,omitempty"`
+	Sources   []string `json:"sources,omitempty"` // merge_pages / split_page members
+	Section   string   `json:"section,omitempty"`
+	Before    string   `json:"before,omitempty"` // sha256 of the pre-image blob ("" = new file)
+	After     string   `json:"after,omitempty"`  // sha256 of the post-image blob
+	SHA256    string   `json:"sha256,omitempty"` // ingest_source: sha of the raw body
+	Extractor string   `json:"extractor,omitempty"`
+	// OriginalPath/Original (033) travel with an ingest_source op's original
+	// binary: the vault-relative file Commit writes beside Path —
+	// "raw/papers/x.pdf" — and the sha256 of its bytes, which is the CAS
+	// key the bytes are recoverable under. All three original fields are
+	// set together or not at all; every other kind leaves them empty.
+	OriginalPath    string   `json:"original_path,omitempty"`
+	Original        string   `json:"original,omitempty"`
+	OriginalContent []byte   `json:"-"` // bytes in, sha out (like Content, D-AY)
+	Hunks           []Hunk   `json:"hunks,omitempty"`
+	Cascade         []Op     `json:"cascade,omitempty"`     // rename: inbound wikilink rewrites
+	SourceSHAs      []string `json:"source_shas,omitempty"` // staleness anchor (MASTER §9 D-BC)
+	Rationale       string   `json:"rationale,omitempty"`
+	Provenance      []string `json:"provenance,omitempty"`
+	State           OpState  `json:"state"`
+	Content         []byte   `json:"-"` // post-image bytes in, sha out (MASTER §9 D-AY)
 }
 
 // Contract — Content (MASTER §9 D-AY). The ONLY channel by which raw bytes
@@ -80,6 +88,17 @@ type Op struct {
 // spec/changeset.schema.json are unchanged. After Append, the content is
 // recoverable only from the CAS via After — which is what Diff, Commit and
 // a reloaded Current all use, so nothing else ever needs this field.
+
+// Contract — OriginalContent (033, mirroring D-AY). The only channel by
+// which the original binary's bytes reach the engine — an ingest_source
+// op's extracted source PDF, which the agent never supplies: the extractor
+// chain sets extract.Doc.Original, the tool reads the file (backbone
+// invariant 1). ValidateOp checks the bytes hash to op.Original, so the
+// frontmatter the op stages can never misdescribe them; Append
+// (storeOpContent) Stores them and overwrites Original with the CAS sha,
+// then clears the field. json:"-" keeps the bytes out of changeset.json;
+// OriginalPath and Original serialize so a fresh process — Commit, Diff,
+// the review screen — can recover everything through the CAS.
 
 // Contract — SourceSHAs (MASTER §9 D-BC, superseding D-AJ's "unexported,
 // non-serialized" clause). The canonical sha of each source page captured
@@ -198,12 +217,12 @@ func (c *Changeset) Touches() []string {
 
 // clone returns a deep copy of c, nil for a nil receiver. Every slice the
 // type graph holds is copied — Ops, each op's Sources/SourceSHAs/
-// Provenance/Content, each Hunk's Before/Add/Del lines, and each Cascade
-// tree recursively — so mutating a clone, or any slice reachable from it,
-// can never reach the original. This is what makes D-8H's copy rule
-// possible: Current hands callers a clone of the engine's cached changeset,
-// never the cache itself, so a caller's mutation cannot corrupt engine
-// state.
+// Provenance/Content/OriginalContent, each Hunk's Before/Add/Del lines,
+// and each Cascade tree recursively — so mutating a clone, or any slice
+// reachable from it, can never reach the original. This is what makes
+// D-8H's copy rule possible: Current hands callers a clone of the engine's
+// cached changeset, never the cache itself, so a caller's mutation cannot
+// corrupt engine state.
 func (c *Changeset) clone() *Changeset {
 	if c == nil {
 		return nil
@@ -233,6 +252,7 @@ func (op Op) clone() Op {
 	op.SourceSHAs = cloneStrings(op.SourceSHAs)
 	op.Provenance = cloneStrings(op.Provenance)
 	op.Content = cloneBytes(op.Content)
+	op.OriginalContent = cloneBytes(op.OriginalContent)
 	op.Hunks = cloneHunks(op.Hunks)
 	op.Cascade = cloneOps(op.Cascade)
 	return op

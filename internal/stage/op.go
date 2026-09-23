@@ -57,7 +57,8 @@ func maxOpN(ops []Op) int {
 }
 
 // opTouches returns the vault-relative paths op itself affects — Path,
-// From, To, every entry of Sources, whichever are non-empty — plus,
+// From, To, every entry of Sources, and — for an ingest_source with one —
+// the original attachment path (033), whichever are non-empty — plus,
 // recursively, every path its Cascade entries touch. Used by
 // Changeset.Touches and by the journal Paths carried on op_proposed /
 // op_dropped / hunk_dropped events.
@@ -65,6 +66,9 @@ func opTouches(op Op) []string {
 	var out []string
 	if op.Path != "" {
 		out = append(out, op.Path)
+	}
+	if op.OriginalPath != "" {
+		out = append(out, op.OriginalPath)
 	}
 	if op.From != "" {
 		out = append(out, op.From)

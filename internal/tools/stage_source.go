@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"os"
+	"path"
 	"strings"
 	"time"
 
@@ -122,8 +124,37 @@ func stageIngestSourceTool(d Deps) Tool {
 		if sourceURL == "" {
 			sourceURL = uri
 		}
-		content := rawSourceDocument(sourceURL, ingestDate(), body)
-		if defect := rawDocumentDefect(sourceURL, body, content); defect != "" {
+		// The staged path must be settled before the raw file is built: an
+		// original names itself after it. resolveSourcePath only reads the
+		// committed vault and the open changeset, so hoisting it above the
+		// refusal checks below cannot change the path it lands at.
+		_, sourcePath, suffixed := resolveSourcePath(d, kindDir, name)
+		// 033: the original travels with the ingest. Every bit of it comes
+		// from the extractor chain — Doc.Original was set by the PDF
+		// sidecar, and THIS handler is what touches the file — so backbone
+		// invariant 1 holds: the agent supplies no bytes and no paths.
+		// A missing unreadable file is a recoverable IsError, not a staged
+		// op with a dangling original.
+		var (
+			originalPath    string
+			originalSHA     string
+			originalContent []byte
+		)
+		if doc.Original != "" {
+			b, rerr := os.ReadFile(doc.Original)
+			if rerr != nil {
+				return Result{IsError: true, Content: fmt.Sprintf("stage.ingest_source: the extractor's original %q could not be read: %v", doc.Original, rerr)}, nil
+			}
+			ext := strings.ToLower(path.Ext(doc.Original))
+			if ext == "" || ext == ".md" {
+				return Result{IsError: true, Content: fmt.Sprintf("stage.ingest_source: the extractor's original %q has no usable non-.md extension", doc.Original)}, nil
+			}
+			originalContent = b
+			originalSHA = vault.BodySHA256(string(b))
+			originalPath = strings.TrimSuffix(sourcePath, ".md") + ext
+		}
+		content := rawSourceDocumentWithOriginal(sourceURL, ingestDate(), body, originalPath, originalSHA)
+		if defect := rawDocumentDefect(sourceURL, body, originalPath, originalSHA, content); defect != "" {
 			return Result{IsError: true, Content: defect}, nil
 		}
 		// The engine's own dedupe (stage.validateIngestSource) compares
@@ -168,12 +199,20 @@ func stageIngestSourceTool(d Deps) Tool {
 				}
 			}
 		}
-		_, sourcePath, suffixed := resolveSourcePath(d, kindDir, name)
 		extractor := doc.Extractor
 		if extractor == "" {
 			extractor = "local"
 		}
-		res, err := appendStageOp(d, "stage.ingest_source", stage.Op{Kind: stage.OpIngestSource, Path: sourcePath, Content: content, SHA256: bodySHA, Extractor: extractor})
+		res, err := appendStageOp(d, "stage.ingest_source", stage.Op{
+			Kind:            stage.OpIngestSource,
+			Path:            sourcePath,
+			Content:         content,
+			SHA256:          bodySHA,
+			Extractor:       extractor,
+			OriginalPath:    originalPath,
+			Original:        originalSHA,
+			OriginalContent: originalContent,
+		})
 		if err != nil || res.IsError {
 			return res, err
 		}
@@ -235,11 +274,21 @@ func stagedBodySHA(d Deps, path string) string {
 // proposed bytes are exactly what the same RawSource re-serializes to and
 // the frontmatter sha256 is BodySHA256 of the body src-integrity compares.
 func rawSourceDocument(sourceURL string, ingested vault.Date, body string) []byte {
+	return rawSourceDocumentWithOriginal(sourceURL, ingested, body, "", "")
+}
+
+// rawSourceDocumentWithOriginal is rawSourceDocument with the 033 original
+// pair: original and original_sha256 emitted after sha256, only when set,
+// so the bytes name the PDF sitting beside the md and pin its content the
+// way sha256 pins the body's.
+func rawSourceDocumentWithOriginal(sourceURL string, ingested vault.Date, body, originalPath, originalSHA string) []byte {
 	return (&vault.RawSource{
-		SourceURL: sourceURL,
-		Ingested:  ingested,
-		SHA256:    vault.BodySHA256(body),
-		Body:      body,
+		SourceURL:      sourceURL,
+		Ingested:       ingested,
+		SHA256:         vault.BodySHA256(body),
+		Original:       originalPath,
+		OriginalSHA256: originalSHA,
+		Body:           body,
 	}).Serialize()
 }
 
@@ -258,17 +307,26 @@ func ingestDate() vault.Date {
 // back to exactly the source it was built from, returning "" when it does.
 // raw/ is write-once (00-conventions §5.3): a malformed proposal is not
 // reviewable junk the agent can re-edit but a permanent vault resident, so
-// the one thing that can break it — a source_url that is not representable
-// as a plain YAML scalar (a newline, or a " #" the parser reads as a
-// comment) — is caught here, before it is staged, and named for the model
-// to fix.
-func rawDocumentDefect(sourceURL, body string, b []byte) string {
+// the things that can break it — a source_url, or the 033 original pair,
+// that is not representable as a plain YAML scalar (a newline, or a " #"
+// the parser reads as a comment) — are caught here, before staging, and
+// named for the model to fix.
+func rawDocumentDefect(sourceURL, body, originalPath, originalSHA string, b []byte) string {
 	// The path argument only feeds ParseRawSource's error text, which this
 	// check discards in favour of its own message; the placeholder is never
 	// a real file.
 	parsed, err := vault.ParseRawSource("raw/proposed/proposal.md", b)
-	if err == nil && parsed.SourceURL == sourceURL && parsed.SHA256 == vault.BodySHA256(body) && parsed.Body == body {
+	if err == nil &&
+		parsed.SourceURL == sourceURL &&
+		parsed.SHA256 == vault.BodySHA256(body) &&
+		parsed.Body == body &&
+		parsed.Original == originalPath &&
+		parsed.OriginalSHA256 == originalSHA {
 		return ""
+	}
+	if originalPath != "" {
+		return fmt.Sprintf(
+			"source url %q or original %q cannot be recorded in raw frontmatter as a plain YAML scalar; ingest from a path or URL without newlines or \" #\" sequences", sourceURL, originalPath)
 	}
 	return fmt.Sprintf(
 		"source url %q cannot be recorded in raw frontmatter as a plain YAML scalar; ingest from a path or URL without newlines or \" #\" sequences", sourceURL)

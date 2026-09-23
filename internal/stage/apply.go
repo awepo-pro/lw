@@ -475,7 +475,27 @@ func (e *Engine) planOp(m *commitMaterialization, op Op, retractedDate string) e
 	}
 
 	switch op.Kind {
-	case OpCreatePage, OpPatchPage, OpIngestSource:
+	case OpIngestSource:
+		b, err := e.postImage(op)
+		if err != nil {
+			return fmt.Errorf("commit %s: %w", op.ID, err)
+		}
+		m.writes[op.Path] = b
+		// 033: the original binary lands beside the raw md in the same
+		// commit, from the CAS blob Append stored at op.Original —
+		// wherever sorted order puts the pair, both are journaled (step
+		// 3), CAS-stored (step 4) and written atomically (step 5) as one
+		// materialization. A dropped or rejected op never reaches this
+		// case (the guard above), so dropping writes neither file.
+		if op.OriginalPath != "" {
+			orig, err := e.store.Get(op.Original)
+			if err != nil {
+				return fmt.Errorf("commit %s: original %s: %w", op.ID, op.OriginalPath, err)
+			}
+			m.writes[op.OriginalPath] = orig
+		}
+
+	case OpCreatePage, OpPatchPage:
 		b, err := e.postImage(op)
 		if err != nil {
 			return fmt.Errorf("commit %s: %w", op.ID, err)
@@ -1065,6 +1085,12 @@ func collectRecoverTargets(targets map[string]recoverTarget, op Op, dateStr stri
 		targets[op.Path] = recoverTarget{sha: op.After}
 	case OpIngestSource:
 		targets[op.Path] = recoverTarget{sha: op.SHA256}
+		// 033: the original is a commit_target like the md — its sha lives
+		// on the op, so Recover can tell Applied from Pending for it and
+		// judge Fixable against the CAS blob Append stored.
+		if op.OriginalPath != "" {
+			targets[op.OriginalPath] = recoverTarget{sha: op.Original}
+		}
 	case OpRenamePage:
 		if len(op.SourceSHAs) > 0 {
 			targets[op.From] = recoverTarget{move: true, sha: op.SourceSHAs[0]}

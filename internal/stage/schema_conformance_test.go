@@ -303,6 +303,68 @@ func TestSchemaConformance(t *testing.T) {
 		assertValidatesAgainstSchema(t, root, s, c)
 	})
 
+	// 033: an ingest_source op carrying its original pair must validate —
+	// before the schema grew original_path/original, the branch's
+	// additionalProperties:false refused the very changeset.json a PDF
+	// ingest persists — and an original-less ingest must keep validating.
+	t.Run("ingest_source with and without its original pair", func(t *testing.T) {
+		c := &Changeset{
+			ID:       "cs-3333333",
+			Intent:   "ingest a pdf with its original, and one without",
+			Author:   Author{Kind: "agent", Model: "m"},
+			OpenedAt: testutil.FixedClock()(),
+			Ops: []Op{
+				{
+					ID:           "op1",
+					Kind:         OpIngestSource,
+					Path:         "raw/papers/leviathan-2023.md",
+					SHA256:       "aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111",
+					Extractor:    "docling/pdf",
+					OriginalPath: "raw/papers/leviathan-2023.pdf",
+					Original:     "bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222",
+					State:        StateProposed,
+				},
+				{
+					ID:        "op2",
+					Kind:      OpIngestSource,
+					Path:      "raw/articles/chen-2023.md",
+					SHA256:    "cccc3333cccc3333cccc3333cccc3333cccc3333cccc3333cccc3333cccc3333",
+					Extractor: "go/html",
+					State:     StateProposed,
+				},
+			},
+			Checks: Checks{Schema: "pass", Lint: "pass", Orphans: 0, BrokenLinks: 0},
+		}
+		assertValidatesAgainstSchema(t, root, s, c)
+
+		// The negative direction, against the parsed schema directly: the
+		// original keys are legal ONLY on the ingest branch — an op of any
+		// other kind carrying them matches no oneOf branch.
+		bad := *c
+		bad.Ops = []Op{{
+			ID:           "op1",
+			Kind:         OpCreatePage,
+			Path:         "wiki/concepts/speculative-decoding.md",
+			After:        "dddd4444dddd4444dddd4444dddd4444dddd4444dddd4444dddd4444dddd4444",
+			Rationale:    "r",
+			Provenance:   []string{"raw/papers/leviathan-2023.md"},
+			OriginalPath: "raw/papers/leviathan-2023.pdf",
+			Original:     "bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222",
+			State:        StateProposed,
+		}}
+		b, err := json.Marshal(&bad)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var generic any
+		if err := json.Unmarshal(b, &generic); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if errs := s.validate(root, generic, "$"); len(errs) == 0 {
+			t.Fatalf("a create_page carrying the original pair validated; want schema violations:\n%s", b)
+		}
+	})
+
 	t.Run("cascade sub-op with no section", func(t *testing.T) {
 		c := &Changeset{
 			ID:       "cs-2222222",

@@ -94,12 +94,21 @@
           "type": "object",
           "additionalProperties": false,
           "required": ["op", "path", "sha256", "extractor"],
+          "description": "ingest_source. original_path/original (033) are optional and set together or not at all: the vault-relative file Commit writes beside path (same directory, same base name, a non-.md extension — the pattern's tail matches every [a-z0-9]+ extension except exactly \"md\"), and the hex sha256 of that file's bytes, which is the CAS key they are recoverable under (stage.Op.OriginalPath / stage.Op.Original; the bytes themselves never serialize).",
           "properties": {
             "id": { "$ref": "#/$defs/opId" },
             "op": { "const": "ingest_source" },
             "path": { "$ref": "#/$defs/vaultPath" },
             "sha256": { "type": "string" },
             "extractor": { "type": "string", "minLength": 1 },
+            "original_path": {
+              "type": "string",
+              "pattern": "^raw/[a-z0-9/_.-]+\\.([a-z0-9]|[a-ln-z][a-z0-9]|m[a-ce-z]|[a-z0-9]{3,})$"
+            },
+            "original": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
             "state": { "$ref": "#/$defs/opState" }
           }
         },

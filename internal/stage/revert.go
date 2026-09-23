@@ -337,10 +337,17 @@ func (e *Engine) buildRevertOps(commitID string, prev, cur Snapshot, renames []r
 	// ADDED, unpaired: under wiki/ -> retract. Under raw/ -> not
 	// invertible at all (a RawSource is not a vault.Page, so both retract
 	// and patch_page reject it outright) — reported, never attempted
-	// (MASTER §9 D-BY).
+	// (MASTER §9 D-BY). A raw source carrying an original (033) reports
+	// its attachment beside itself, read from the committed raw's
+	// frontmatter — the attachment is not a snapshot entry (snapshots stay
+	// .md-only), so without this it would vanish from the delta unreported,
+	// the exact silent drop D-BY exists to prevent.
 	for _, p := range added {
 		if strings.HasPrefix(p, "raw/") {
 			skipped = append(skipped, p)
+			if r, ok := e.vault.RawSource(p); ok && r.Original != "" {
+				skipped = append(skipped, r.Original)
+			}
 			continue
 		}
 		op := Op{

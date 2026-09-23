@@ -338,10 +338,14 @@ func (e *Engine) currentOpen() (*Changeset, error) {
 // content of a patch_page op's Path — so op.Before, already validated to
 // equal that content's sha, is backed by a real object DropHunk can
 // Store.Get later — and op.Content, writing the resulting sha into After
-// (and into SHA256 for ingest_source), then clearing Content. Recurses
-// through Cascade, since a cascade sub-op's pre- and post-image bytes
-// travel through the identical channels (backbone §5.3/§5.4, MASTER §9
-// D-AY).
+// (and into SHA256 for ingest_source), then clearing Content. For an
+// ingest_source carrying its original binary (033) it stores
+// op.OriginalContent under its own sha too, confirming op.Original —
+// validation has already proved the declared sha equals these bytes', so
+// the write is a confirmation, never a silent correction — and clearing
+// the field. Recurses through Cascade, since a cascade sub-op's pre- and
+// post-image bytes travel through the identical channels (backbone
+// §5.3/§5.4, MASTER §9 D-AY).
 func (e *Engine) storeOpContent(op *Op) error {
 	if op.Kind == OpPatchPage {
 		if pre, ok := canonicalContent(e.vault, op.Path); ok {
@@ -360,6 +364,14 @@ func (e *Engine) storeOpContent(op *Op) error {
 			op.SHA256 = sha
 		}
 		op.Content = nil
+	}
+	if op.Kind == OpIngestSource && op.OriginalContent != nil {
+		sha, err := e.store.Put(op.OriginalContent)
+		if err != nil {
+			return fmt.Errorf("stage: store op original: %w", err)
+		}
+		op.Original = sha
+		op.OriginalContent = nil
 	}
 	for i := range op.Cascade {
 		if err := e.storeOpContent(&op.Cascade[i]); err != nil {
