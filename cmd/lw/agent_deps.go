@@ -7,10 +7,12 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/awepo-pro/lw/internal/agent"
 	"github.com/awepo-pro/lw/internal/config"
 	"github.com/awepo-pro/lw/internal/extract"
+	"github.com/awepo-pro/lw/internal/extract/cache"
 	"github.com/awepo-pro/lw/internal/llm"
 	"github.com/awepo-pro/lw/internal/slug"
 	"github.com/awepo-pro/lw/internal/stage"
@@ -20,22 +22,110 @@ import (
 
 // agent_deps.go holds everything cmd/lw needs to build and drive an
 // agent.Agent: the constructors (newIngestAgent, newAgent, agentExtractors,
-// webSearchProvider, agentToolDeps), the preExtracted chain link cmdIngest
-// stages scratch docs into, the scratch-name slug (U6), and the one error
-// hint every verb applies to a failed turn (U1). Split out of cmd_ingest.go
-// by 008 — which also added agentExtractors (U7), so query, lint --fix and
-// the TUI stop handing their agents a bare extract.NewFile() that could not
-// fetch a page or read a saved one.
+// ingestExtractors, webSearchProvider, agentToolDeps), the preExtracted
+// chain link cmdIngest stages scratch docs into, the scratch-name slug
+// (U6), and the one error hint every verb applies to a failed turn (U1).
+// Split out of cmd_ingest.go by 008 — which also added agentExtractors
+// (U7), so query, lint --fix and the TUI stop handing their agents a bare
+// extract.NewFile() that could not fetch a page or read a saved one. 007
+// F.W1 made ingestExtractors the one constructor (correction #1: cmdIngest
+// used to hand-roll a second copy of the chain) and F.W3 put the per-source
+// byte cap on the agent path.
 
-// agentExtractors returns the extractor chain every agent's tool registry
-// is built over (U7): remote HTML through extract.NewHTTPClient(httpTimeout)
-// — the house client (010 contract §1), which sends the lw User-Agent,
-// caps the body and validates every redirect hop — and local files, saved
-// .html pages and .md/.txt sources alike, through extract.NewFile. newAgent,
-// mcpDeps and cmdIngest's tool chain all share it, so the model can fetch or
-// read the same sources no matter which verb is driving it.
-func agentExtractors() extract.Extractor {
-	return extract.Chain(extract.NewHTML(extract.NewHTTPClient(httpTimeout)), extract.NewFile())
+// ingestExtractors returns the extractor chain every `lw ingest` invocation
+// extracts sources over, and — wrapped by the F.W3 cap in agentExtractors —
+// every agent's tool registry is built over: remote HTML through
+// extract.NewHTTPClient(httpTimeout) — the house client (010 contract §1),
+// which sends the lw User-Agent, caps the body and validates every redirect
+// hop — local files, saved .html pages and .md/.txt sources alike through
+// extract.NewFile, and local PDFs through the Docling sidecar (007 T1)
+// behind the extraction cache (007 T2) under
+// <root>/.llmwiki/cache/extract. root == "" skips the cache (cache.New
+// returns the backend unwrapped), and cfg == nil means config.Default()'s
+// values — newAgent(nil, nil, nil) in the tests relies on both. cmdIngest,
+// newAgent and mcpDeps all derive from this one constructor, so the CLI and
+// the model extract the same sources the same way no matter which verb is
+// driving.
+func ingestExtractors(root string, cfg *config.Config) extract.Extractor {
+	if cfg == nil {
+		cfg = config.Default()
+	}
+	cacheDir := ""
+	if root != "" {
+		cacheDir = filepath.Join(root, stateDirName, "cache", "extract")
+	}
+	pdfCfg := extract.PDFConfig{Command: cfg.Extract.Argv(), Timeout: cfg.Extract.TimeoutDuration()}
+	return extract.Chain(
+		extract.NewHTML(extract.NewHTTPClient(httpTimeout)),
+		extract.NewFile(),
+		cache.New(extract.NewPDF(pdfCfg), cacheDir, extract.PDFExtractorID, pdfVersionOnce(pdfCfg)),
+	)
+}
+
+// pdfVersionProbeTimeout bounds the cache's one-time sidecar --version
+// probe. lw doctor bounds the same probe at doctorProbeTimeout because a
+// hung endpoint or sidecar must not hang a health check; an ingest hangs
+// all the same when the probe is unbounded, so the cache gives up here,
+// caches the error for the process, and extraction proceeds uncached.
+var pdfVersionProbeTimeout = 20 * time.Second
+
+// pdfVersionOnce is the cache's version func (007 F.W1): PDFVersion of the
+// configured sidecar. cache.New memoizes it — the probe shells out to the
+// sidecar and costs ~4 s, so a cache hit must not re-pay it.
+func pdfVersionOnce(pdfCfg extract.PDFConfig) func(context.Context) (string, error) {
+	return func(ctx context.Context) (string, error) {
+		ctx, cancel := context.WithTimeout(ctx, pdfVersionProbeTimeout)
+		defer cancel()
+		return extract.PDFVersion(ctx, pdfCfg)
+	}
+}
+
+// agentExtractors returns the chain every agent's tool registry is built
+// over (U7): ingestExtractors wrapped by the per-source byte cap (007
+// F.W3). The CLI's own limit check (F.W2) fires before an ingest opens
+// anything, but the agent path — stage.ingest_source called by the model
+// mid-turn, over MCP, or from query, lint --fix and the TUI — has no such
+// gate ahead of it, so a single extracted Doc over the budget must be
+// refused here, never staged.
+func agentExtractors(root string, cfg *config.Config) extract.Extractor {
+	if cfg == nil {
+		cfg = config.Default()
+	}
+	return perSourceCap{
+		inner:    ingestExtractors(root, cfg),
+		capBytes: ingestCapBytes(cfg.Limits.ContextTokens),
+		tokens:   cfg.Limits.ContextTokens,
+	}
+}
+
+// perSourceCap is F.W3's agent-path wrapper. Its error text is frozen:
+// `extract: <uri>: extracted <B> KB, over the <C> KB per-source limit
+// (llm.limits.context_tokens <T> × 4 × 75%)` — stage.ingest_source turns it
+// into an IsError result the model can read (stage_source.go), so the KB
+// rounding is ingestKB's, the same unit the CLI's limit message quotes.
+type perSourceCap struct {
+	inner    extract.Extractor
+	capBytes int
+	tokens   int
+}
+
+// CanHandle delegates: the cap changes what may be staged, never which URIs
+// the chain accepts.
+func (c perSourceCap) CanHandle(uri string) bool { return c.inner.CanHandle(uri) }
+
+// Extract delegates and holds the result to the per-source byte cap — the
+// agent-path sibling of cmdIngest's F.W2 check, which runs before anything
+// is opened but cannot see what the model extracts later in the turn.
+func (c perSourceCap) Extract(ctx context.Context, uri string) (*extract.Doc, error) {
+	doc, err := c.inner.Extract(ctx, uri)
+	if err != nil {
+		return nil, err
+	}
+	if n := len(doc.Markdown); n > c.capBytes {
+		return nil, fmt.Errorf("extract: %s: extracted %d KB, over the %d KB per-source limit (llm.limits.context_tokens %d × 4 × 75%%)",
+			uri, ingestKB(n), ingestKB(c.capBytes), c.tokens)
+	}
+	return doc, nil
 }
 
 // webSearchProvider builds the provider behind Deps.Search (010 contract
@@ -141,12 +231,18 @@ func ingestLLMConfig(cfg *config.Config, apiKey string) llm.Config {
 
 // newAgent is the seam cmd_query.go, cmd_lint.go and cmd_tui.go call and
 // swap in their own tests. Since 008's U7 it hands the agent the full
-// agentExtractors() chain — remote HTML and local files — instead of the
-// bare extract.NewFile() it built inline before, matching what mcpDeps and
-// cmdIngest's own tool chain already offered; the signature is unchanged,
-// so none of those callers or tests are affected.
+// shared chain instead of the bare extract.NewFile() it built inline
+// before; since 007's F.W1/F.W3 that chain is agentExtractors over the
+// engine's vault root — the extraction cache and the sidecar live under it
+// — and nil for the engine (as the tests call it) means root "", which
+// skips the cache. The signature is unchanged, so none of those callers or
+// tests are affected.
 var newAgent = func(e *stage.Engine, cfg *config.Config, sessions agent.SessionStore) (agent.Agent, error) {
-	return newIngestAgent(e, cfg, sessions, agentExtractors())
+	root := ""
+	if e != nil {
+		root = e.Vault().Root()
+	}
+	return newIngestAgent(e, cfg, sessions, agentExtractors(root, cfg))
 }
 
 // preExtracted is the extract.Extractor cmdIngest hands the agent's tools

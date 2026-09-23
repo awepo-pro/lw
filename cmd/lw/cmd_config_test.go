@@ -830,3 +830,70 @@ func TestConfigSetOnMalformedFileFails(t *testing.T) {
 		t.Fatal("show: exit code = 0, want nonzero for an unparsable config file")
 	}
 }
+
+// TestConfigSetExtractKeys pins 007 F.W6: the two [extract] keys are
+// settable through lw config under the house disciplines — the timeout
+// through config.ValidateExtractTimeout (the single source of truth Load
+// enforces too; zero is refused because an extraction that never returns
+// is a defect, not a mode), the command non-empty after trim — and both
+// are listed in the verb's help where the web.* keys are.
+func TestConfigSetExtractKeys(t *testing.T) {
+	t.Run("zero_timeout_refused", func(t *testing.T) {
+		configTestEnv(t)
+		_, stderr, code := runConfig(t, "set", "extract.timeout", "0s")
+		if code != 2 {
+			t.Fatalf("exit code = %d, want 2; stderr=%q", code, stderr)
+		}
+		if !strings.Contains(stderr, `extract.timeout: "0s" is not positive`) {
+			t.Fatalf("stderr = %q, want the ValidateExtractTimeout verdict", stderr)
+		}
+	})
+
+	t.Run("command_round_trips_through_the_file", func(t *testing.T) {
+		configTestEnv(t)
+		const want = "uvx --from docling==2.130.0 docling"
+		stdout, stderr, code := runConfig(t, "set", "extract.command", want)
+		if code != 0 {
+			t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+		}
+		if !strings.Contains(stdout, "extract.command set to "+want) {
+			t.Fatalf("stdout = %q, want the confirmation to echo the argv prefix", stdout)
+		}
+		got, err := config.Load()
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if got.Extract.Command != want {
+			t.Fatalf("Extract.Command = %q, want %q (Save must round-trip the [extract] table)", got.Extract.Command, want)
+		}
+		stdout, _, code = runConfig(t) // `lw config` shows the row as (file)
+		if code != 0 {
+			t.Fatalf("show: exit code = %d, want 0", code)
+		}
+		wantRow(t, stdout, "extract.command", want, "(file)")
+	})
+
+	t.Run("blank_command_refused", func(t *testing.T) {
+		configTestEnv(t)
+		_, stderr, code := runConfig(t, "set", "extract.command", "   ")
+		if code != 2 {
+			t.Fatalf("exit code = %d, want 2; stderr=%q", code, stderr)
+		}
+		if !strings.Contains(stderr, "extract.command") {
+			t.Fatalf("stderr = %q, want it to name extract.command", stderr)
+		}
+	})
+
+	t.Run("help_lists_both_keys", func(t *testing.T) {
+		configTestEnv(t)
+		_, stderr, code := runConfig(t, "set", "no.such.key", "x")
+		if code != 2 {
+			t.Fatalf("exit code = %d, want 2", code)
+		}
+		for _, key := range []string{"extract.command", "extract.timeout"} {
+			if !strings.Contains(stderr, key) {
+				t.Errorf("usage on stderr = %q, want it to list %s", stderr, key)
+			}
+		}
+	})
+}

@@ -32,6 +32,12 @@ const MinRecommendedMaxTokens = 16000
 // before failing the turn with llm.ErrStalled.
 const DefaultStallTimeout = 120 * time.Second
 
+// DefaultExtractTimeout is the [extract] timeout bound a config that omits
+// the key gets (007 T3): the wall-clock ceiling on one PDF's extraction,
+// sized for a cold first run — the backend may need to download its models
+// (~30 s) on top of ~0.7 s CPU per page.
+const DefaultExtractTimeout = 300 * time.Second
+
 // LLM is the language-model endpoint lw talks to.
 type LLM struct {
 	BaseURL     string  `toml:"base_url"`
@@ -66,6 +72,48 @@ func (l LLM) StallTimeoutDuration() time.Duration {
 	return d
 }
 
+// Extract configures the PDF extraction backend behind `lw ingest` (007
+// T3). Command is an argv prefix — split on whitespace, the PDF path is
+// appended as the last argument — so a pinned install reads
+// "uvx --from docling==2.130.0 docling". Timeout is a Go duration string
+// bounding one extraction; unlike llm.stall_timeout there is no "0 = off":
+// an extraction that never returns is a defect, so Load rejects zero too
+// (validateExtractTimeout).
+type Extract struct {
+	Command string `toml:"command"` // argv prefix; "" → ["docling"]
+	// Timeout is the per-document wall-clock bound ("90s", "2m"). The
+	// mapping to the duration the backend consumes lives in
+	// TimeoutDuration below; this key only carries the user's word, like
+	// StallTimeout.
+	Timeout string `toml:"timeout"`
+}
+
+// Argv splits Command into the argv prefix the extraction runner execs,
+// with the document path appended after it. An empty Command still names a
+// backend: it falls back to docling, the same default Default() ships, so
+// a hand-written `[extract]` table naming only timeout cannot leave the
+// runner without a command.
+func (x Extract) Argv() []string {
+	if f := strings.Fields(x.Command); len(f) > 0 {
+		return f
+	}
+	return []string{"docling"}
+}
+
+// TimeoutDuration maps the raw extract.timeout string onto the
+// time.Duration the extraction runner consumes (007 T3). "" — the key
+// absent, which is how Default ships — is DefaultExtractTimeout. Load
+// rejects an unparsable, zero or negative value (validateExtractTimeout),
+// so by the time a loaded config reaches this method the string always
+// parses.
+func (x Extract) TimeoutDuration() time.Duration {
+	if x.Timeout == "" {
+		return DefaultExtractTimeout
+	}
+	d, _ := time.ParseDuration(x.Timeout)
+	return d
+}
+
 // Limits bounds the agent loop's resource usage.
 type Limits struct {
 	MaxToolRounds int `toml:"max_tool_rounds"`
@@ -97,10 +145,11 @@ type Web struct {
 // see toShadow/fromShadow. The [web] table is the one post-v1 addition,
 // amended by workflow 010 (C-1001).
 type Config struct {
-	LLM    LLM    `toml:"llm"`
-	Limits Limits `toml:"llm.limits"`
-	Web    Web    `toml:"web"`
-	Theme  string `toml:"theme"`
+	LLM     LLM     `toml:"llm"`
+	Limits  Limits  `toml:"llm.limits"`
+	Web     Web     `toml:"web"`
+	Extract Extract `toml:"extract"`
+	Theme   string  `toml:"theme"`
 }
 
 // shadowLLM is LLM with Limits nested inside it as "limits", so encoding
@@ -120,15 +169,25 @@ type shadowLLM struct {
 	Limits       Limits `toml:"limits"`
 }
 
+// shadowExtract is Extract with the on-disk tags (007 T3, F.X4): omitempty
+// on timeout keeps a keyless config keyless on Save — the 300s default
+// lives in DefaultExtractTimeout, not on disk, exactly as stall_timeout is
+// treated in shadowLLM.
+type shadowExtract struct {
+	Command string `toml:"command"`
+	Timeout string `toml:"timeout,omitempty"`
+}
+
 // shadowConfig is the on-disk shape of Config: the same fields, with Limits
 // relocated under LLM. It exists solely so Load/Save can hand BurntSushi a
 // struct whose tags actually produce the documented nested table; Config
 // itself is never decoded/encoded directly. Web needs no relocation — its
 // tags already match the flat [web] table the file carries (C-1001).
 type shadowConfig struct {
-	LLM   shadowLLM `toml:"llm"`
-	Web   Web       `toml:"web"`
-	Theme string    `toml:"theme"`
+	LLM     shadowLLM     `toml:"llm"`
+	Web     Web           `toml:"web"`
+	Extract shadowExtract `toml:"extract"`
+	Theme   string        `toml:"theme"`
 }
 
 // toShadow converts a Config to its on-disk shape, for Save.
@@ -144,8 +203,9 @@ func toShadow(c *Config) shadowConfig {
 			StallTimeout: c.LLM.StallTimeout,
 			Limits:       c.Limits,
 		},
-		Web:   c.Web,
-		Theme: c.Theme,
+		Web:     c.Web,
+		Extract: shadowExtract{Command: c.Extract.Command, Timeout: c.Extract.Timeout},
+		Theme:   c.Theme,
 	}
 }
 
@@ -162,9 +222,10 @@ func fromShadow(s shadowConfig) *Config {
 			Thinking:     s.LLM.Thinking,
 			StallTimeout: s.LLM.StallTimeout,
 		},
-		Limits: s.LLM.Limits,
-		Web:    s.Web,
-		Theme:  s.Theme,
+		Limits:  s.LLM.Limits,
+		Web:     s.Web,
+		Extract: Extract{Command: s.Extract.Command, Timeout: s.Extract.Timeout},
+		Theme:   s.Theme,
 	}
 }
 
@@ -206,6 +267,9 @@ func Load() (*Config, error) {
 	if err := ValidateStallTimeout(cfg.LLM.StallTimeout); err != nil {
 		return nil, err
 	}
+	if err := ValidateExtractTimeout(cfg.Extract.Timeout); err != nil {
+		return nil, err
+	}
 	return cfg, nil
 }
 
@@ -224,6 +288,27 @@ func ValidateStallTimeout(v string) error {
 	}
 	if d < 0 {
 		return fmt.Errorf("config: llm.stall_timeout: %q is negative; use \"0\" to disable the bound", v)
+	}
+	return nil
+}
+
+// ValidateExtractTimeout rejects an extract.timeout value Load cannot honour
+// (007 T3, F.X3): not a Go duration string, zero, or negative — zero here is
+// a defect, not a mode: llm.stall_timeout reads "0" as "no bound", but an
+// extraction that never runs would leave every PDF unprocessed, so the
+// validator rejects it the way it rejects a negative bound. "" is the key
+// absent and always valid; TimeoutDuration owns the default. Exported so
+// writers of the key (lw config set) apply the same rule before saving.
+func ValidateExtractTimeout(v string) error {
+	if v == "" {
+		return nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return fmt.Errorf("config: extract.timeout: %q is not a duration (e.g. \"90s\", \"2m\")", v)
+	}
+	if d <= 0 {
+		return fmt.Errorf("config: extract.timeout: %q is not positive; extraction needs a real wall-clock bound", v)
 	}
 	return nil
 }
@@ -269,6 +354,12 @@ func mergeOverDefault(def, file *Config, md toml.MetaData) *Config {
 	}
 	if md.IsDefined("web", "max_results") {
 		def.Web.MaxResults = file.Web.MaxResults
+	}
+	if md.IsDefined("extract", "command") {
+		def.Extract.Command = file.Extract.Command
+	}
+	if md.IsDefined("extract", "timeout") {
+		def.Extract.Timeout = file.Extract.Timeout
 	}
 	if md.IsDefined("theme") {
 		def.Theme = file.Theme
@@ -351,6 +442,12 @@ func Default() *Config {
 			Provider:   "tavily",
 			APIKey:     "",
 			MaxResults: 5,
+		},
+		// Extract ships the default backend and a keyless timeout (007 T3):
+		// the 300s lives in TimeoutDuration, not on disk.
+		Extract: Extract{
+			Command: "docling",
+			Timeout: "",
 		},
 	}
 }

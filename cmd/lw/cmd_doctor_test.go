@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/awepo-pro/lw/internal/config"
+	"github.com/awepo-pro/lw/internal/extract"
 	"github.com/awepo-pro/lw/internal/llm"
 	"github.com/awepo-pro/lw/internal/stage"
 	"github.com/awepo-pro/lw/internal/testutil"
@@ -28,17 +29,29 @@ const testAPIKey = "lw-test-key-not-a-real-secret"
 // are hermetic even where a real key is exported.
 const testKeyEnv = "DEEPSEEK_API_KEY"
 
-// doctorTestEnv makes a doctor run hermetic: the config is read from an
-// empty XDG_CONFIG_HOME (so config.Load returns Default and resolves
-// llm.api_key from testKeyEnv), the key itself is set to testAPIKey, and
-// probeProvider is swapped for a fake reporting a healthy, tool-calling
-// provider — so no test touches the network no matter what the real
-// environment carries.
+// doctorTestEnv makes a doctor run hermetic: the config is read from a
+// scratch XDG_CONFIG_HOME whose only content pins extract.command at the
+// fake sidecar's ABSOLUTE path — llm.api_key stays Default's env:testKeyEnv
+// reference, resolved from testKeyEnv — and BOTH probe seams are swapped
+// for fakes: probeProvider reporting a healthy, tool-calling provider, and
+// (since 007's pdf extractor check) probeExtractorVersion reporting the
+// tested Docling. The absolute path is what keeps the check off the
+// machine: checkPDFExtractor's exec.LookPath consults the real PATH for a
+// bare "docling", so a shell without ~/.local/bin made the healthy-vault
+// rows report "not installed" with a remedy (A-007-2, the amendment 007
+// F.W7 forced — the check is one of doctor's always-on lines, so the suite
+// needs both halves of it faked: where the binary is AND what --version
+// says). The fake is LookPath'd, never run, here.
 func doctorTestEnv(t *testing.T) {
 	t.Helper()
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "xdg-config"))
+	dir := filepath.Join(t.TempDir(), "xdg-config")
+	t.Setenv("XDG_CONFIG_HOME", dir)
 	t.Setenv(testKeyEnv, testAPIKey)
+	writeConfigFile(t, dir, "[extract]\ncommand = \""+fakeDoclingCommand(t)+"\"\n")
 	withProbe(t, healthyProbe)
+	withExtractorProbe(t, func(ctx context.Context, cfg extract.PDFConfig) (string, error) {
+		return doclingTestedVersion, nil
+	})
 }
 
 // healthyProbe is the fake every "all clear" case runs behind: reachable,
@@ -497,8 +510,8 @@ func TestDoctorJSON(t *testing.T) {
 		if !out.OK || out.Vault != root {
 			t.Errorf("report = %+v, want ok with vault %q", out, root)
 		}
-		if len(out.Checks) != 9 {
-			t.Errorf("%d checks, want 9 (the 008 llm budget check included): %+v", len(out.Checks), out.Checks)
+		if len(out.Checks) != 10 {
+			t.Errorf("%d checks, want 10 (the 008 llm budget and 007 pdf extractor checks included): %+v", len(out.Checks), out.Checks)
 		}
 		for _, c := range out.Checks {
 			if !c.OK || c.Remedy != "" {
@@ -990,4 +1003,127 @@ func commitCreatePageForDoctorTest(t *testing.T, root string) {
 	if _, err := e.Commit("doctor test create commit"); err != nil {
 		t.Fatalf("commit: %v", err)
 	}
+}
+
+// withExtractorProbe swaps the probeExtractorVersion seam (007 F.W7) — the
+// same shape as withProbe, and for the same reason: no test ever runs the
+// real Docling this machine may or may not carry.
+func withExtractorProbe(t *testing.T, fn func(context.Context, extract.PDFConfig) (string, error)) {
+	t.Helper()
+	orig := probeExtractorVersion
+	probeExtractorVersion = fn
+	t.Cleanup(func() { probeExtractorVersion = orig })
+}
+
+// pdfDoctorEnv points config.Load at a scratch dir whose [extract] command
+// is command, fakes the provider probe (the report always carries it), and,
+// when probe is non-nil, fakes the PDF sidecar's version probe too. Returns
+// a fresh fixture vault root.
+func pdfDoctorEnv(t *testing.T, command string, probe func(context.Context, extract.PDFConfig) (string, error)) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "xdg-config")
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv(testKeyEnv, testAPIKey)
+	writeConfigFile(t, dir, "[llm]\nmax_tokens = 8192\n\n[extract]\ncommand = \""+command+"\"\n")
+	withProbe(t, healthyProbe)
+	if probe != nil {
+		withExtractorProbe(t, probe)
+	}
+	return testutil.CopyFixture(t, "minimal")
+}
+
+// TestDoctorPDFExtractor pins W9/F.W7's five rows. The check follows
+// checkWeb's nil discipline (no config, no line), is a warn — never a
+// failure — whenever it is not probing, and only the probe-error row fails,
+// which o.probe == false can never reach.
+func TestDoctorPDFExtractor(t *testing.T) {
+	const name = "pdf extractor"
+
+	t.Run("not_installed_is_a_warn_never_a_failure", func(t *testing.T) {
+		root := pdfDoctorEnv(t, "/nonexistent/docling", nil)
+		c := checkByName(t, runDoctor(context.Background(), root, doctorOptions{probe: true}), name)
+		if !c.OK {
+			t.Fatalf("check = %+v, want OK: true — PDF ingest is off, the vault is healthy", c)
+		}
+		if !c.Warn {
+			t.Errorf("check = %+v, want Warn: true so the condition is made visible", c)
+		}
+		if want := "not installed — PDF ingest is off; other sources are unaffected"; c.Detail != want {
+			t.Errorf("detail = %q, want %q", c.Detail, want)
+		}
+		wantRemedy := `uv tool install docling==2.130.0, or lw config set extract.command "/nonexistent/docling"`
+		if c.Remedy != wantRemedy {
+			t.Errorf("remedy = %q, want %q", c.Remedy, wantRemedy)
+		}
+	})
+
+	t.Run("found_but_not_probed", func(t *testing.T) {
+		fake := fakeDoclingCommand(t)
+		root := pdfDoctorEnv(t, fake, nil)
+		c := checkByName(t, runDoctor(context.Background(), root, doctorOptions{}), name)
+		if !c.OK || c.Warn || c.Remedy != "" {
+			t.Fatalf("check = %+v, want a plain OK without probing", c)
+		}
+		if want := fake + " (version not probed)"; c.Detail != want {
+			t.Errorf("detail = %q, want %q", c.Detail, want)
+		}
+	})
+
+	t.Run("probed_current_version_names_the_cache", func(t *testing.T) {
+		fake := fakeDoclingCommand(t)
+		root := pdfDoctorEnv(t, fake, func(context.Context, extract.PDFConfig) (string, error) { return "2.130.0", nil })
+		// Seed the extraction cache so the row's counting is pinned, not
+		// just its absence: one 100-byte entry → "1 entries, 1 KB".
+		cacheDir := filepath.Join(root, stateDirName, "cache", "extract")
+		if err := os.MkdirAll(cacheDir, 0o700); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(cacheDir, "k.json"), []byte(strings.Repeat("x", 100)), 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		c := checkByName(t, runDoctor(context.Background(), root, doctorOptions{probe: true}), name)
+		if !c.OK || c.Warn || c.Remedy != "" {
+			t.Fatalf("check = %+v, want a plain OK at the tested version", c)
+		}
+		want := fmt.Sprintf("docling 2.130.0 at %s; cache 1 entries, 1 KB", fake)
+		if c.Detail != want {
+			t.Errorf("detail = %q, want %q", c.Detail, want)
+		}
+	})
+
+	t.Run("probed_other_version_warns", func(t *testing.T) {
+		fake := fakeDoclingCommand(t)
+		root := pdfDoctorEnv(t, fake, func(context.Context, extract.PDFConfig) (string, error) { return "2.99.0", nil })
+		c := checkByName(t, runDoctor(context.Background(), root, doctorOptions{probe: true}), name)
+		if !c.OK {
+			t.Fatalf("check = %+v, want OK: true — another version still works", c)
+		}
+		if !c.Warn {
+			t.Errorf("check = %+v, want Warn: true off the tested version", c)
+		}
+		if want := "docling 2.99.0 at " + fake; c.Detail != want {
+			t.Errorf("detail = %q, want %q", c.Detail, want)
+		}
+		wantPart := "lw is tested with Docling 2.130.0; another version may extract differently (a new raw source, not a duplicate)"
+		if c.Remedy != wantPart {
+			t.Errorf("remedy = %q, want %q", c.Remedy, wantPart)
+		}
+	})
+
+	t.Run("probe_error_fails_with_the_reinstall_remedy", func(t *testing.T) {
+		root := pdfDoctorEnv(t, fakeDoclingCommand(t), func(context.Context, extract.PDFConfig) (string, error) {
+			return "", errors.New("boom")
+		})
+		c := checkByName(t, runDoctor(context.Background(), root, doctorOptions{probe: true}), name)
+		if c.OK {
+			t.Fatalf("check = %+v, want a failure — a sidecar that cannot answer --version cannot convert", c)
+		}
+		if want := fakeDoclingCommand(t) + " --version failed: boom"; c.Detail != want {
+			t.Errorf("detail = %q, want %q", c.Detail, want)
+		}
+		wantRemedy := "reinstall: uv tool install --force docling==2.130.0"
+		if c.Remedy != wantRemedy {
+			t.Errorf("remedy = %q, want %q", c.Remedy, wantRemedy)
+		}
+	})
 }

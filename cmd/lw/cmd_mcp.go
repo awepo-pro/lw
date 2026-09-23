@@ -47,11 +47,12 @@ func cmdMCP(args []string) error {
 
 // mcpDeps assembles the tool registry's dependencies for the MCP server.
 //
-// Extract is agentExtractors() (U7) — the same chain cmd_ingest.go's
-// agents are built over — so stage_ingest_source works over MCP the same
-// way it does in-process: the two-consumers contract (backbone §6/§7)
-// promises the same tool surface to both, and without an extractor the
-// tool answers "no extractor configured" for every source.
+// Extract is agentExtractors(e.Vault().Root(), cfg) (U7, capped per 007
+// F.W3) — the same chain cmd_ingest.go's agents are built over, with the
+// extraction cache under this vault's root — so stage_ingest_source works
+// over MCP the same way it does in-process: the two-consumers contract
+// (backbone §6/§7) promises the same tool surface to both, and without an
+// extractor the tool answers "no extractor configured" for every source.
 //
 // Search is webSearchProvider(cfg) (010 contract §4) — the same wiring the
 // CLI's agent verbs build agentToolDeps over — so a configured user's MCP
@@ -63,7 +64,7 @@ func mcpDeps(e *stage.Engine, cfg *config.Config) tools.Deps {
 		Vault:   e.Vault(),
 		Index:   e.Index(),
 		Engine:  e,
-		Extract: agentExtractors(),
+		Extract: agentExtractors(e.Vault().Root(), cfg),
 		Search:  webSearchProvider(cfg),
 		Author:  stage.Author{Kind: "agent", Model: "mcp"},
 	}

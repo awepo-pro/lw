@@ -2,19 +2,25 @@ package main
 
 // ingest_dir_test.go pins 004 T2: `lw ingest <dir>` — folder expansion
 // through extract.Walk (F.I1), the soft ErrNotText skip for directory
-// files only (F.I2), the unchanged A-807 dedupe (F.I3), the per-invocation
-// limits applied only when at least one argument was a directory (F.I4,
-// correction #3), `--dry-run` (F.I5) and the usage text (F.I6). Every test
+// files only (F.I2), the unchanged A-807 dedupe (F.I3), `--dry-run`
+// (F.I5) and the usage text (F.I6). The per-invocation limits (F.I4) were
+// amended by A-007-1: 007 F.W2 applies them to EVERY invocation — folder
+// or not — at 75% of the context budget (the 2026-09-23 decision that
+// reverses 004's correction #3), with the largest kept source named in the
+// refusal. Each amended test keeps its 004 mutation. Every test
 // runs through the real run() dispatch with the newIngestAgent seam swapped
 // for a fake — no LLM, no network (httptest for the URL pin only).
 
 import (
 	"errors"
+	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -29,8 +35,8 @@ import (
 
 // ingestLimitsEnv points config.Load at a scratch XDG dir carrying
 // max_tokens = 8192 and, when contextTokens > 0, [llm.limits]
-// context_tokens — the only knob the F.I4 byte cap reads (capBytes =
-// context_tokens × 4 × 25%). Never the user's real config.toml.
+// context_tokens — the only knob the F.W2 byte cap reads (capBytes =
+// context_tokens × 4 × 75%). Never the user's real config.toml.
 func ingestLimitsEnv(t *testing.T, contextTokens int) {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "xdg-config")
@@ -260,11 +266,13 @@ func TestIngestDirEmptyErrorsWithNoChangeset(t *testing.T) {
 	}
 }
 
-// TestIngestDirOverFileLimit pins F.I4's file half: 11 walker files from a
-// directory invocation fail after dedupe with the exact limit message, no
-// changeset and no agent — the key is never resolved. Default limits: 10
-// files, context_tokens 96000 → 96000 bytes ≈ 94 KB; 11 tiny files stay
-// under the byte cap, so the file cap is what trips.
+// TestIngestDirOverFileLimit pins F.W2's file half (A-007-1): 11 walker
+// files fail after dedupe with the exact limit message, naming the largest
+// kept source — no changeset and no agent, the key never resolved.
+// Default limits: 10 files; context_tokens 96000 puts
+// capBytes at 288 000 = 282 KB, and 11 tiny files stay under it, so the
+// file cap is what trips. Its 004 mutation is kept: over-by-one-file
+// refuses.
 func TestIngestDirOverFileLimit(t *testing.T) {
 	root := testutil.CopyFixture(t, "minimal")
 	ingestLimitsEnv(t, 0)
@@ -274,8 +282,9 @@ func TestIngestDirOverFileLimit(t *testing.T) {
 	}
 	noAgentEver(t)
 
-	want := "11 files (1 KB) to ingest; the limit is 10 files and 94 KB per ingest" +
-		" (llm.limits.context_tokens 96000 × 4 × 25%). Split the folder into smaller ones."
+	want := "11 files (1 KB) to ingest; the limit is 10 files and 282 KB per ingest" +
+		" (llm.limits.context_tokens 96000 × 4 × 75%); largest: n00.md (1 KB)." +
+		" Nothing was opened — ingest fewer files, or raise llm.limits.context_tokens."
 	_, stderr, code := captureRun(t, func() int {
 		return run([]string{"ingest", "--vault", root, dir})
 	})
@@ -290,21 +299,23 @@ func TestIngestDirOverFileLimit(t *testing.T) {
 	}
 }
 
-// TestIngestDirOverByteLimit pins F.I4's byte half: context_tokens = 40
-// puts capBytes at 40; two files totalling 41 bytes of extracted markdown
-// fail with the same message shape. Every file ends with exactly one "\n"
-// and holds no "\r", so len(doc.Markdown) == len(file content) and the
-// byte math is exact.
+// TestIngestDirOverByteLimit pins F.W2's byte half (A-007-1):
+// context_tokens = 40 puts capBytes at 40 × 4 × 75% = 120; two files
+// totalling 121 bytes of extracted markdown — one over — fail with the
+// same message shape. Every file ends with exactly one "\n" and holds no
+// "\r", so len(doc.Markdown) == len(file content) and the byte math is
+// exact. Its 004 mutation is kept: over-by-one-byte refuses.
 func TestIngestDirOverByteLimit(t *testing.T) {
 	root := testutil.CopyFixture(t, "minimal")
 	ingestLimitsEnv(t, 40)
 	dir := t.TempDir()
-	dirFile(t, dir, "big.md", strings.Repeat("a", 29)+"\n")   // 30 bytes
-	dirFile(t, dir, "small.md", strings.Repeat("b", 10)+"\n") // 11 bytes → 41 total
+	dirFile(t, dir, "big.md", strings.Repeat("a", 118)+"\n") // 119 bytes
+	dirFile(t, dir, "small.md", "b\n")                       // 2 bytes → 121 total, cap 120
 	noAgentEver(t)
 
 	want := "2 files (1 KB) to ingest; the limit is 10 files and 1 KB per ingest" +
-		" (llm.limits.context_tokens 40 × 4 × 25%). Split the folder into smaller ones."
+		" (llm.limits.context_tokens 40 × 4 × 75%); largest: big.md (1 KB)." +
+		" Nothing was opened — ingest fewer files, or raise llm.limits.context_tokens."
 	_, stderr, code := captureRun(t, func() int {
 		return run([]string{"ingest", "--vault", root, dir})
 	})
@@ -351,10 +362,10 @@ func TestIngestDirExactlyAtCaps(t *testing.T) {
 
 	t.Run("exactly_cap_bytes", func(t *testing.T) {
 		root := testutil.CopyFixture(t, "minimal")
-		ingestLimitsEnv(t, 40) // capBytes = 40
+		ingestLimitsEnv(t, 40) // capBytes = 120
 		dir := t.TempDir()
-		dirFile(t, dir, "big.md", strings.Repeat("a", 29)+"\n")  // 30
-		dirFile(t, dir, "small.md", strings.Repeat("b", 9)+"\n") // 10 → 40 total
+		dirFile(t, dir, "big.md", strings.Repeat("a", 117)+"\n") // 118
+		dirFile(t, dir, "small.md", "b\n")                       // 2 → 120 total, exactly at the cap
 		rec := withRecordingIngestAgent(t, oneIngestOp(), nil)
 
 		stdout, stderr, code := captureRun(t, func() int {
@@ -471,12 +482,12 @@ func TestIngestExplicitNotTextInsideDirFails(t *testing.T) {
 	}
 }
 
-// TestIngestDirDryRun pins F.I5: --dry-run runs expansion, extraction,
-// dedupe and the limit check, prints `would ingest <src>` per kept source
-// plus the final verdict line — and opens nothing: no changeset in any
-// state (sessions live inside open changesets, so this covers "no session
-// file" too) and no agent construction. The over-limit dry-run fails with
-// the F.I4 message, exit 1, still nothing opened.
+// TestIngestDirDryRun pins F.I5 as amended by A-007-1: --dry-run runs
+// expansion, extraction, dedupe and the limit check, prints `would ingest
+// <src>` per kept source plus the final verdict line — and opens nothing:
+// no changeset in any state (sessions live inside open changesets, so this
+// covers "no session file" too) and no agent construction. The over-limit
+// dry-run fails with the F.W2 message, exit 1, still nothing opened.
 func TestIngestDirDryRun(t *testing.T) {
 	t.Run("within_limits_prints_verdict_opens_nothing", func(t *testing.T) {
 		root := testutil.CopyFixture(t, "minimal")
@@ -500,7 +511,7 @@ func TestIngestDirDryRun(t *testing.T) {
 			}
 		}
 		// 34 extracted bytes → ceiling to 1 KB.
-		wantVerdict := "within limits: 3 files, 1 KB (limit 10 files, 94 KB)"
+		wantVerdict := "within limits: 3 files, 1 KB (limit 10 files, 282 KB)"
 		if !strings.Contains(stdout, wantVerdict) {
 			t.Errorf("stdout = %q, want it to contain %q", stdout, wantVerdict)
 		}
@@ -523,8 +534,9 @@ func TestIngestDirDryRun(t *testing.T) {
 		}
 		noAgentEver(t)
 
-		want := "11 files (1 KB) to ingest; the limit is 10 files and 94 KB per ingest" +
-			" (llm.limits.context_tokens 96000 × 4 × 25%). Split the folder into smaller ones."
+		want := "11 files (1 KB) to ingest; the limit is 10 files and 282 KB per ingest" +
+			" (llm.limits.context_tokens 96000 × 4 × 75%); largest: n00.md (1 KB)." +
+			" Nothing was opened — ingest fewer files, or raise llm.limits.context_tokens."
 		_, stderr, code := captureRun(t, func() int {
 			return run([]string{"ingest", "--vault", root, "--dry-run", dir})
 		})
@@ -586,31 +598,34 @@ func TestIngestDirAlreadyIngestedNotCounted(t *testing.T) {
 	}
 }
 
-// TestIngestFileOnlyNoLimit pins correction #3: the F.I4 limits apply only
-// when at least one argument was a directory — 11 explicit file arguments
-// (more than the 10-file cap) still ingest, byte-identical behaviour to
-// before 004 for the invocation shape users already rely on.
-func TestIngestFileOnlyNoLimit(t *testing.T) {
+// TestIngestFileOnlyLimited pins A-007-1's inversion: 007 F.W2 applies the
+// limits to EVERY invocation, so 11 explicit file arguments — more than the
+// 10-file cap, no directory in sight — are refused like any folder. This
+// test was TestIngestFileOnlyNoLimit: it pinned 004's correction #3
+// (file-only invocations are limit-free), which the 2026-09-23 decision
+// reverses. Its mutation is kept: over-by-one-file refuses.
+func TestIngestFileOnlyLimited(t *testing.T) {
 	root := testutil.CopyFixture(t, "minimal")
 	ingestLimitsEnv(t, 0)
 	var args []string
 	for i := 0; i < 11; i++ {
 		args = append(args, writtenSource(t, fmt.Sprintf("solo%02d.md", i), fmt.Sprintf("# Solo %02d\n\nBody.\n", i)))
 	}
-	rec := withRecordingIngestAgent(t, oneIngestOp(), nil)
+	noAgentEver(t)
 
-	stdout, stderr, code := captureRun(t, func() int {
+	want := "11 files (1 KB) to ingest; the limit is 10 files and 282 KB per ingest" +
+		" (llm.limits.context_tokens 96000 × 4 × 75%); largest: solo00.md (1 KB)." +
+		" Nothing was opened — ingest fewer files, or raise llm.limits.context_tokens."
+	_, stderr, code := captureRun(t, func() int {
 		return run(append([]string{"ingest", "--vault", root}, args...))
 	})
-	if code != 0 {
-		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr, stdout)
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1; stderr=%q", code, stderr)
 	}
-	if got := originalSources(t, rec.gotMsg); len(got) != 11 {
-		t.Fatalf("agent message lists %d source(s), want 11", len(got))
+	if !strings.Contains(stderr, want) {
+		t.Fatalf("stderr = %q, want it to contain %q", stderr, want)
 	}
-	if got := countChangesets(t, root, "open"); got != 1 {
-		t.Errorf("open changesets = %d, want 1", got)
-	}
+	noChangesetsAnywhere(t, root)
 }
 
 // TestIngestUsageAndHelp pins F.I6: the no-args usage line names dirs and
@@ -667,7 +682,7 @@ func TestIngestFlagsAmongSources(t *testing.T) {
 		if want := "would ingest " + filepath.Join(dir, "a.md"); !strings.Contains(stdout, want) {
 			t.Errorf("stdout = %q, want it to contain %q", stdout, want)
 		}
-		if want := "within limits: 1 files, 1 KB (limit 10 files, 94 KB)"; !strings.Contains(stdout, want) {
+		if want := "within limits: 1 files, 1 KB (limit 10 files, 282 KB)"; !strings.Contains(stdout, want) {
 			t.Errorf("stdout = %q, want it to contain %q", stdout, want)
 		}
 		noChangesetsAnywhere(t, root)
@@ -688,6 +703,33 @@ func TestIngestFlagsAmongSources(t *testing.T) {
 		}
 		wantSourcesEqual(t, originalSources(t, rec.gotMsg), []string{a, b})
 		wantSourcesEqual(t, originalKinds(t, rec.gotMsg), []string{"paper", "paper"})
+	})
+
+	// double_dash_after_source_takes_rest_verbatim is the case the flag
+	// package breaks when a FLAG directly precedes the "--": flag.Parse
+	// consumes the terminator and fs.Args no longer shows it was there, so
+	// a leading-dash source after a mid-list "--" would be re-parsed as a
+	// flag and the invocation would die on "flag provided but not defined:
+	// -v.pdf" (measured with the built binary, 2026-09-23). Every source
+	// writtenSource returns is absolute — its name cannot start with "-" —
+	// so the pin drives parseIngestSources directly with relative
+	// leading-dash spellings.
+	t.Run("double_dash_after_flags_takes_rest_verbatim", func(t *testing.T) {
+		fs := flag.NewFlagSet("ingest", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		vault := fs.String("vault", "", "")
+		dryRun := fs.Bool("dry-run", false, "")
+		sources, err := parseIngestSources(fs, []string{"--vault", "v", "--dry-run", "--", "-v.pdf", "--weird.md"})
+		if err != nil {
+			t.Fatalf("parseIngestSources: %v", err)
+		}
+		if *vault != "v" || !*dryRun {
+			t.Errorf("flags = vault %q dry-run %v, want v, true", *vault, *dryRun)
+		}
+		want := []string{"-v.pdf", "--weird.md"}
+		if !slices.Equal(sources, want) {
+			t.Errorf("sources = %q, want %q (verbatim after the \"--\")", sources, want)
+		}
 	})
 
 	t.Run("double_dash_after_source_takes_rest_verbatim", func(t *testing.T) {
@@ -734,7 +776,7 @@ func TestIngestFlagsAmongSources(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr, stdout)
 		}
-		if want := "within limits: 1 files, 1 KB (limit 10 files, 94 KB)"; !strings.Contains(stdout, want) {
+		if want := "within limits: 1 files, 1 KB (limit 10 files, 282 KB)"; !strings.Contains(stdout, want) {
 			t.Errorf("stdout = %q, want it to contain %q", stdout, want)
 		}
 		noChangesetsAnywhere(t, root)
@@ -758,10 +800,11 @@ func TestIngestFlagsAmongSources(t *testing.T) {
 	})
 }
 
-// TestIngestDirAndFileCountedTogether pins F.I4's counting scope: one
-// invocation carrying a directory AND an explicit file counts both against
-// the caps — 10 walker files + 1 file = 11 kept sources, over the 10-file
-// limit, refused with the F.I4 message.
+// TestIngestDirAndFileCountedTogether pins F.W2's counting scope (A-007-1
+// keeps the mutation): one invocation carrying a directory AND an explicit
+// file counts both against the caps — 10 walker files + 1 file = 11 kept
+// sources, over the 10-file limit, refused with the F.W2 message naming
+// the largest kept source.
 func TestIngestDirAndFileCountedTogether(t *testing.T) {
 	root := testutil.CopyFixture(t, "minimal")
 	ingestLimitsEnv(t, 0)
@@ -772,8 +815,9 @@ func TestIngestDirAndFileCountedTogether(t *testing.T) {
 	extra := writtenSource(t, "extra.md", "# Extra\n\nBody.\n")
 	noAgentEver(t)
 
-	want := "11 files (1 KB) to ingest; the limit is 10 files and 94 KB per ingest" +
-		" (llm.limits.context_tokens 96000 × 4 × 25%). Split the folder into smaller ones."
+	want := "11 files (1 KB) to ingest; the limit is 10 files and 282 KB per ingest" +
+		" (llm.limits.context_tokens 96000 × 4 × 75%); largest: n00.md (1 KB)." +
+		" Nothing was opened — ingest fewer files, or raise llm.limits.context_tokens."
 	_, stderr, code := captureRun(t, func() int {
 		return run([]string{"ingest", "--vault", root, dir, extra})
 	})
@@ -821,16 +865,19 @@ func TestIngestSameDirTwiceDedupedNotDoubleCounted(t *testing.T) {
 }
 
 // TestIngestKBRoundBoundaries pins the KB rendering at the exact rounding
-// edges (KB = (bytes+1023)/1024): 1024 extracted bytes render as 1 KB and
-// pass a 1024-byte cap exactly; 1025 render as 2 KB and fail it. The file
-// contents end with exactly one "\n" and hold no "\r", so
+// edges (KB = (bytes+1023)/1024) against F.W2's cap (A-007-1):
+// context_tokens 1024 puts capBytes at 1024 × 4 × 75% = 3 072, so 3 072
+// extracted bytes render as 3 KB and pass the cap exactly, while 3 073
+// render as 4 KB and fail it — a single file over the cap, no directory
+// anywhere, which is exactly the pin that hadDir would have broken. The
+// file contents end with exactly one "\n" and hold no "\r", so
 // len(doc.Markdown) == len(file content) and the byte math is exact.
 func TestIngestKBRoundBoundaries(t *testing.T) {
-	t.Run("exactly_1024_bytes_is_1KB_and_passes", func(t *testing.T) {
+	t.Run("exactly_3072_bytes_is_3KB_and_passes", func(t *testing.T) {
 		root := testutil.CopyFixture(t, "minimal")
-		ingestLimitsEnv(t, 1024) // capBytes = 1024 × 4 × 25% = 1024
+		ingestLimitsEnv(t, 1024) // capBytes = 1024 × 4 × 75% = 3072
 		dir := t.TempDir()
-		dirFile(t, dir, "exact.md", strings.Repeat("a", 1023)+"\n") // 1024 bytes
+		dirFile(t, dir, "exact.md", strings.Repeat("a", 3071)+"\n") // 3072 bytes
 		noAgentEver(t)
 
 		stdout, stderr, code := captureRun(t, func() int {
@@ -839,21 +886,22 @@ func TestIngestKBRoundBoundaries(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr, stdout)
 		}
-		want := "within limits: 1 files, 1 KB (limit 10 files, 1 KB)"
+		want := "within limits: 1 files, 3 KB (limit 10 files, 3 KB)"
 		if !strings.Contains(stdout, want) {
 			t.Errorf("stdout = %q, want it to contain %q", stdout, want)
 		}
 	})
 
-	t.Run("exactly_1025_bytes_is_2KB_and_fails", func(t *testing.T) {
+	t.Run("exactly_3073_bytes_is_4KB_and_fails", func(t *testing.T) {
 		root := testutil.CopyFixture(t, "minimal")
-		ingestLimitsEnv(t, 1024) // capBytes = 1024
+		ingestLimitsEnv(t, 1024) // capBytes = 3072
 		dir := t.TempDir()
-		dirFile(t, dir, "over.md", strings.Repeat("a", 1024)+"\n") // 1025 bytes
+		dirFile(t, dir, "over.md", strings.Repeat("a", 3072)+"\n") // 3073 bytes
 		noAgentEver(t)
 
-		want := "1 files (2 KB) to ingest; the limit is 10 files and 1 KB per ingest" +
-			" (llm.limits.context_tokens 1024 × 4 × 25%). Split the folder into smaller ones."
+		want := "1 files (4 KB) to ingest; the limit is 10 files and 3 KB per ingest" +
+			" (llm.limits.context_tokens 1024 × 4 × 75%); largest: over.md (4 KB)." +
+			" Nothing was opened — ingest fewer files, or raise llm.limits.context_tokens."
 		_, stderr, code := captureRun(t, func() int {
 			return run([]string{"ingest", "--vault", root, "--dry-run", dir})
 		})
@@ -867,12 +915,17 @@ func TestIngestKBRoundBoundaries(t *testing.T) {
 }
 
 // TestIngestConfigLoadFailureStillSensible pins the config.Load hoist's
-// blast radius (F.I4 needs Limits.ContextTokens earlier than pre-004, when
-// Load ran after the scratch staging): a broken config.toml fails a
-// file-only ingest with the same `load config:` verdict — exit 1, nothing
-// opened, no agent — the same visible outcome as before 004. When the
-// config is broken AND the folder over the cap, the config error wins:
-// capBytes cannot even be computed without it.
+// blast radius (F.I4 needed Limits.ContextTokens earlier than pre-004; 007
+// correction #7 hoists it further, ahead of extraction): a broken
+// config.toml fails an ingest with the same `load config:` verdict — exit
+// 1, nothing opened, no agent — the same visible outcome as before 004.
+// When the config is broken AND the folder over the cap, the config error
+// wins: capBytes cannot even be computed without it. A-007-3, the one
+// mechanical amendment #7 forced: with Load first, a broken config fails
+// before OpenEngine ever creates .llmwiki/, so the absence proof is
+// Current() on a freshly opened engine — the house idiom for "no
+// changesets/ directory to count" — instead of noChangesetsAnywhere's
+// directory read.
 func TestIngestConfigLoadFailureStillSensible(t *testing.T) {
 	t.Run("file_only_ingest_reports_load_config", func(t *testing.T) {
 		root := testutil.CopyFixture(t, "minimal")
@@ -892,7 +945,13 @@ func TestIngestConfigLoadFailureStillSensible(t *testing.T) {
 		if !strings.Contains(stderr, "load config:") {
 			t.Fatalf("stderr = %q, want it to carry the load-config verdict", stderr)
 		}
-		noChangesetsAnywhere(t, root)
+		// The config fails before the engine ever opens (correction #7),
+		// so there is no changesets/ directory to count — Current() is the
+		// absence proof.
+		e := openEngine(t, root)
+		if _, err := e.Current(); !errors.Is(err, stage.ErrNoChangeset) {
+			t.Errorf("Current = %v, want ErrNoChangeset (nothing opened)", err)
+		}
 	})
 
 	t.Run("bad_config_wins_over_limit", func(t *testing.T) {
@@ -915,7 +974,11 @@ func TestIngestConfigLoadFailureStillSensible(t *testing.T) {
 		if !strings.Contains(stderr, "load config:") {
 			t.Fatalf("stderr = %q, want the config error to win over the limit message", stderr)
 		}
-		noChangesetsAnywhere(t, root)
+		// Same absence proof as above: the engine never opened.
+		e := openEngine(t, root)
+		if _, err := e.Current(); !errors.Is(err, stage.ErrNoChangeset) {
+			t.Errorf("Current = %v, want ErrNoChangeset (nothing opened)", err)
+		}
 	})
 }
 

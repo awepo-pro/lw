@@ -271,10 +271,11 @@ lives in the open changeset until you review and commit it.
 ### Folders, limits, and --dry-run
 
 An argument that is a directory expands into every file under it that lw can
-extract — `.md`, `.markdown` and `.txt`, plus saved `.html` pages — in
-alphabetical order, descending into subfolders. Dot-files and `.git/` are
-left alone, symlinks are never followed, and anything else is passed over
-with a `skipped <path>: <reason>` line before the ingest begins:
+extract — `.md`, `.markdown` and `.txt`, saved `.html` pages, and `.pdf`
+files (see the next section) — in alphabetical order, descending into
+subfolders. Dot-files and `.git/` are left alone, symlinks are never
+followed, and anything else is passed over with a `skipped <path>: <reason>`
+line before the ingest begins:
 
 ```
 $ lw ingest ~/notes/
@@ -283,30 +284,81 @@ skipped /home/you/notes/logo.png: unsupported type
 skipped /home/you/notes/scan.txt: not text
 ```
 
-A folder ingest is capped so one command cannot flood the curator: at most
-**10 files** and at most **25% of the agent's context budget in bytes**
-(`llm.limits.context_tokens` × 4 bytes per token × 25% — 96 000 bytes at the
-default `context_tokens = 96000`, shown rounded up as 94 KB). Over either cap
-the command fails before anything is opened:
+Every ingest — one explicit file or a whole folder — is capped so one
+command cannot flood the curator: at most **10 files** and at most **75% of
+the agent's context budget in bytes** (`llm.limits.context_tokens` × 4 bytes
+per token × 75% — 288 000 bytes at the default `context_tokens = 96000`,
+shown rounded up as 282 KB). The margin is deliberate: the raw source is
+only the seed. The agent reads it back and writes pages from it, and the
+curator then reviews all of that in the same context — an ingest that took
+the whole budget would leave nothing to read what was built from it. (25%
+was measured against real papers first and refused three of five.) Over
+either cap the command fails before anything is opened, naming the largest
+kept source — the one to split out first:
 
 ```
-lw: ingest: 14 files (212 KB) to ingest; the limit is 10 files and 94 KB per ingest (llm.limits.context_tokens 96000 × 4 × 25%). Split the folder into smaller ones.
+lw: ingest: 14 files (212 KB) to ingest; the limit is 10 files and 282 KB per ingest (llm.limits.context_tokens 96000 × 4 × 75%); largest: thesis.pdf (180 KB). Nothing was opened — ingest fewer files, or raise llm.limits.context_tokens.
 ```
 
-Sources the vault already holds are skipped before the cap is counted, and
+Sources the vault already holds are skipped before the caps are counted, and
 naming files or URLs alongside a directory works as you would expect — each
 argument stays where you put it. To see what an ingest would do without
-calling the provider at all, add `--dry-run`: it prints
-`would ingest <path>` per kept file and the verdict line, then exits — no
-changeset, no session, no agent. The flags may sit anywhere among the
-sources (`lw ingest ~/notes/ --dry-run` is the same command), and one
-caveat: a URL source is still downloaded on a dry run, because its size
-cannot be counted without fetching it.
+calling the provider at all, add `--dry-run`: it extracts everything (a PDF
+is really converted, and the conversion is cached, so the ingest that
+follows does not convert again), prints `would ingest <path>` per kept file
+and the verdict line, then exits — no changeset, no session, no agent. The
+flags may sit anywhere among the sources (`lw ingest ~/notes/ --dry-run` is
+the same command), and one caveat: a URL source is still downloaded on a dry
+run, because its size cannot be counted without fetching it.
 
 ```
 $ lw ingest --dry-run ~/notes/
-within limits: 3 files, 8 KB (limit 10 files, 94 KB)
+within limits: 3 files, 8 KB (limit 10 files, 282 KB)
 ```
+
+### PDFs
+
+`lw ingest paper.pdf` converts PDFs with [Docling](https://github.com/docling-project/docling),
+run as a sidecar: lw hands the file over, reads the markdown and structure
+it writes back, and refuses the result unless it clears a confidence floor.
+Install it once:
+
+```bash
+uv tool install docling==2.130.0
+```
+
+The default install is ≈ 6 GB because it pulls GPU libraries; it runs
+CPU-only all the same, at roughly a second per page. `lw doctor` reports the
+sidecar on its own `pdf extractor` line — whether it is installed, which
+version, and how much the cache holds — so it is the first stop when a PDF
+ingest misbehaves. A differently named sidecar is set with
+`lw config set extract.command "<argv words>"` — the value is split on
+whitespace into the argv words handed to the conversion (for example
+`uvx --from docling==2.130.0 docling`), so a path containing a space cannot
+be expressed; keep such a sidecar on PATH, or call it through a wrapper
+script whose own path has none.
+
+What lw refuses, and why:
+
+- A **scanned or image-only PDF** — pages averaging under 100 non-space
+  characters — is refused: OCR is not supported, and a scan silently
+  ingested would be a raw source that is mostly nothing. Inside a folder
+  such a file is soft-skipped (`skipped <path>: too little text (scanned or
+  image-only PDF?)`) while the rest of the folder ingests; named
+  explicitly, it fails the command.
+- A **book** is refused by the ingest cap above — one ingest may carry at
+  most 75% of the context budget, and a whole book does not fit. Ingest it
+  a chapter at a time; the refusal names the file.
+- A **missing sidecar** turns PDF ingest off without touching anything
+  else: a folder's PDFs soft-skip with `no PDF sidecar (see lw doctor)` and
+  the notes still ingest, while an explicit `lw ingest paper.pdf` fails
+  with the install hint.
+
+Conversions are cached under the vault, in `.llmwiki/cache/extract/`, keyed
+by the file's content, the extractor and the sidecar version — re-ingesting
+the same PDF skips the conversion entirely (a `--dry-run` followed by the
+real ingest converts once), and a sidecar upgrade re-converts cleanly. The
+cache is safe to delete; losing it only costs the time to rebuild it.
 
 ## 6. Review before anything lands
 
