@@ -118,7 +118,7 @@ func usage(w io.Writer) {
 commands:
   init [--schema <domain>]     initialize a new vault
   config                       view or edit configuration
-  ingest <url|path>...         ingest one or more sources
+  ingest <url|path|dir>...     ingest one or more sources
   status                       show the open changeset, if any
   diff [--op <id>]             show the projected diff of the open changeset
   commit -m "..." [--force]    commit the open changeset

@@ -109,22 +109,37 @@ func trailingNewlineRun(prev int, s string) int {
 	return min(prev+n, 2)
 }
 
-// cmdIngest extracts one or more sources (a URL or a local path) into
-// deterministic markdown, opens a changeset, and hands it to the agent to
-// ingest the raw content and compile wiki pages from it — leaving the
-// changeset open for human review (/docs/design.md §9.4; nothing in this verb
-// commits).
+// ingestMaxFiles is the file half of the F.I4 folder-ingest limit: a
+// directory invocation carrying more kept sources than this is refused
+// before anything is opened. The byte half is derived from
+// cfg.Limits.ContextTokens (see the limit check below), not a constant —
+// only the file count is.
+const ingestMaxFiles = 10
+
+// ingestKB renders a byte count as whole KB, rounded up, the unit both the
+// F.I4 error and the F.I5 verdict line quote — a partial KB still occupies
+// a whole one as far as the user is concerned.
+func ingestKB(n int) int {
+	return (n + 1023) / 1024
+}
+
+// cmdIngest extracts one or more sources (a URL, a local path, or a local
+// directory — 004) into deterministic markdown, opens a changeset, and
+// hands it to the agent to ingest the raw content and compile wiki pages
+// from it — leaving the changeset open for human review
+// (/docs/design.md §9.4; nothing in this verb commits).
 func cmdIngest(args []string) error {
 	fs := flag.NewFlagSet("ingest", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	vaultPath := fs.String("vault", "", "vault root (default: nearest ancestor directory containing SCHEMA.md)")
 	kindFlag := fs.String("kind", "", "override the detected kind for every source: article|paper|transcript")
+	dryRun := fs.Bool("dry-run", false, "report what would be ingested and the limit verdict, then exit — opens no changeset, constructs no agent")
 	if err := fs.Parse(args); err != nil {
 		return &exitError{code: 2}
 	}
 	sources := fs.Args()
 	if len(sources) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: lw ingest <url|path>...")
+		fmt.Fprintln(os.Stderr, "usage: lw ingest <url|path|dir>... [--kind K] [--dry-run]")
 		return &exitError{code: 2}
 	}
 
@@ -142,16 +157,64 @@ func cmdIngest(args []string) error {
 	// and the web.search provider over.
 	ex := extract.Chain(extract.NewHTML(extract.NewHTTPClient(httpTimeout)), extract.NewFile())
 	ctx := context.Background()
+
+	// 004 F.I1: an argument that stats as a directory is replaced, in
+	// place, by extract.Walk's eligible files — the same chain extracts
+	// them, so the eligible set is exactly what this command could already
+	// have handled one file at a time. Walk is stat-only (004 T1); the
+	// pass-overs print here, before any extraction, so a folder's skips all
+	// land on stdout ahead of the existing flow's output.
+	hadDir := false                   // any argument was a directory — gates the F.I4 limits (correction #3)
+	expanded := make(map[string]bool) // walker-selected paths, for F.I2's soft ErrNotText skip
+	expandedSrcs := make([]string, 0, len(sources))
+	for _, arg := range sources {
+		if info, serr := os.Stat(arg); serr == nil && info.IsDir() {
+			hadDir = true
+			files, skipped, werr := extract.Walk(arg, ex)
+			if werr != nil {
+				return werr
+			}
+			for _, sk := range skipped {
+				fmt.Printf("skipped %s: %s\n", sk.Path, sk.Reason)
+			}
+			if len(files) == 0 {
+				// Nothing the registry could handle — an empty or
+				// all-unsupported directory is a caller mistake worth
+				// failing on, not a silent no-op.
+				return fmt.Errorf("no ingestible files in %s", arg)
+			}
+			for _, f := range files {
+				expandedSrcs = append(expandedSrcs, f)
+				expanded[f] = true
+			}
+			continue
+		}
+		expandedSrcs = append(expandedSrcs, arg)
+	}
+	sources = expandedSrcs
+
 	docs := make([]*extract.Doc, 0, len(sources))
+	srcs := make([]string, 0, len(sources)) // the arguments docs carries — shorter than sources when F.I2 drops one
 	for _, src := range sources {
 		doc, err := ex.Extract(ctx, src)
 		if err != nil {
+			// 004 F.I2: the text sniff is the backend's verdict (F.E3), and
+			// for a walker-selected file it is a soft skip — a folder always
+			// holds some binary alongside the notes, and one of them must
+			// not fail the rest. An EXPLICIT argument keeps today's hard
+			// failure: the caller named that exact file, so silence would
+			// hide the reason the command did nothing.
+			if expanded[src] && errors.Is(err, extract.ErrNotText) {
+				fmt.Printf("skipped %s: not text\n", src)
+				continue
+			}
 			return fmt.Errorf("extract %s: %w", src, err)
 		}
 		if *kindFlag != "" {
 			doc.Kind = *kindFlag
 		}
 		docs = append(docs, doc)
+		srcs = append(srcs, src)
 	}
 
 	// The engine opens before config.Load and the agent is built (A-807):
@@ -175,7 +238,7 @@ func cmdIngest(args []string) error {
 	seenBody := make(map[string]string) // body sha -> the first source argument carrying it
 	keptSrcs := make([]string, 0, len(sources))
 	keptDocs := make([]*extract.Doc, 0, len(docs))
-	for i, src := range sources {
+	for i, src := range srcs {
 		sha := tools.SourceBodySHA(docs[i].Markdown)
 		skip := ""
 		for _, r := range committed {
@@ -199,6 +262,49 @@ func cmdIngest(args []string) error {
 	}
 	if len(keptSrcs) == 0 {
 		fmt.Println("nothing to ingest: every source is already in the vault")
+		return nil
+	}
+
+	// 004 F.I4 moved config.Load ahead of the scratch staging it used to
+	// follow: the limit check below needs Limits.ContextTokens, and the
+	// check must run before the agent is built or a changeset opened. Load
+	// only reads config files — the API key stays unresolved until
+	// newIngestAgent (A-807's "a fully-ingested vault exits 0 without a
+	// key" still holds, since that path returns above).
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
+	// 004 F.I4 (correction #3): the per-invocation limits apply only when
+	// at least one argument was a directory — a file/URL-only invocation is
+	// byte-identical to pre-004 behaviour, limit-free. The counts are of
+	// KEPT sources only (F.I3: dedupe-skipped files do not count), and
+	// capBytes mirrors the agent's own context budget
+	// (llm.limits.context_tokens × 4 bytes/token × 25%): one ingest should
+	// never be able to hand the curator more than a quarter of the context
+	// it will later be read back into. Over either cap the command fails
+	// here — no changeset, no agent, no key resolved.
+	ingestBytes := 0
+	for _, doc := range keptDocs {
+		ingestBytes += len(doc.Markdown)
+	}
+	capBytes := cfg.Limits.ContextTokens * 4 * 25 / 100
+	if hadDir && (len(keptSrcs) > ingestMaxFiles || ingestBytes > capBytes) {
+		return fmt.Errorf("%d files (%d KB) to ingest; the limit is %d files and %d KB per ingest (llm.limits.context_tokens %d × 4 × 25%%). Split the folder into smaller ones.",
+			len(keptSrcs), ingestKB(ingestBytes), ingestMaxFiles, ingestKB(capBytes), cfg.Limits.ContextTokens)
+	}
+
+	// 004 F.I5: --dry-run stops here — expansion, extraction, dedupe and
+	// the limit check have all run, but nothing is opened: no scratch, no
+	// session, no agent construction, no changeset. It reports the verdict
+	// for folder and file-only invocations alike.
+	if *dryRun {
+		for _, src := range keptSrcs {
+			fmt.Println("would ingest " + src)
+		}
+		fmt.Printf("within limits: %d files, %d KB (limit %d files, %d KB)\n",
+			len(keptSrcs), ingestKB(ingestBytes), ingestMaxFiles, ingestKB(capBytes))
 		return nil
 	}
 
@@ -256,11 +362,6 @@ func cmdIngest(args []string) error {
 		}
 		pre.stage(tmpPath, corrected)
 		items = append(items, ingestItem{path: tmpPath, kind: doc.Kind, title: doc.Title, source: src})
-	}
-
-	cfg, err := config.Load()
-	if err != nil {
-		return fmt.Errorf("load config: %w", err)
 	}
 
 	// Construct the agent (which resolves the configured API key) before

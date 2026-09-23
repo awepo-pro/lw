@@ -268,6 +268,43 @@ only thing on disk the agent has read, so it is the only thing a new page can
 cite. Nothing in `wiki/` or `index.md` has actually changed yet — that all
 lives in the open changeset until you review and commit it.
 
+### Folders, limits, and --dry-run
+
+An argument that is a directory expands into every file under it that lw can
+extract — `.md`, `.markdown` and `.txt`, plus saved `.html` pages — in
+alphabetical order, descending into subfolders. Dot-files and `.git/` are
+left alone, symlinks are never followed, and anything else is passed over
+with a `skipped <path>: <reason>` line before the ingest begins:
+
+```
+$ lw ingest ~/notes/
+skipped /home/you/notes/.draft.md: hidden
+skipped /home/you/notes/logo.png: unsupported type
+skipped /home/you/notes/scan.txt: not text
+```
+
+A folder ingest is capped so one command cannot flood the curator: at most
+**10 files** and at most **25% of the agent's context budget in bytes**
+(`llm.limits.context_tokens` × 4 bytes per token × 25% — 96 000 bytes at the
+default `context_tokens = 96000`, shown rounded up as 94 KB). Over either cap
+the command fails before anything is opened:
+
+```
+lw: ingest: 14 files (212 KB) to ingest; the limit is 10 files and 94 KB per ingest (llm.limits.context_tokens 96000 × 4 × 25%). Split the folder into smaller ones.
+```
+
+Sources the vault already holds are skipped before the cap is counted, and
+naming files or URLs alongside a directory works as you would expect — each
+argument stays where you put it. To see what a folder ingest would do
+without calling the provider at all, add `--dry-run`: it prints
+`would ingest <path>` per kept file and the verdict line, then exits — no
+changeset, no session, no agent.
+
+```
+$ lw ingest --dry-run ~/notes/
+within limits: 3 files, 8 KB (limit 10 files, 94 KB)
+```
+
 ## 6. Review before anything lands
 
 While a changeset is open, `lw status` reports **committed** counts, not
