@@ -197,6 +197,7 @@ func cmdIngest(args []string) error {
 	// land on stdout ahead of the existing flow's output.
 	hadDir := false                   // any argument was a directory — gates the F.I4 limits (correction #3)
 	expanded := make(map[string]bool) // walker-selected paths, for F.I2's soft ErrNotText skip
+	explicit := make(map[string]bool) // arguments named outright — F.I2's hard ErrNotText failure wins over folder expansion
 	expandedSrcs := make([]string, 0, len(sources))
 	for _, arg := range sources {
 		if info, serr := os.Stat(arg); serr == nil && info.IsDir() {
@@ -221,6 +222,7 @@ func cmdIngest(args []string) error {
 			continue
 		}
 		expandedSrcs = append(expandedSrcs, arg)
+		explicit[arg] = true
 	}
 	sources = expandedSrcs
 
@@ -234,8 +236,12 @@ func cmdIngest(args []string) error {
 			// holds some binary alongside the notes, and one of them must
 			// not fail the rest. An EXPLICIT argument keeps today's hard
 			// failure: the caller named that exact file, so silence would
-			// hide the reason the command did nothing.
-			if expanded[src] && errors.Is(err, extract.ErrNotText) {
+			// hide the reason the command did nothing. Naming a file both
+			// ways — folder and outright, `lw ingest notes/ notes/nul.md` —
+			// is explicit: the exception exists for the caller's own
+			// spelling, and it wins over the folder the file also rode in
+			// through.
+			if expanded[src] && !explicit[src] && errors.Is(err, extract.ErrNotText) {
 				fmt.Printf("skipped %s: not text\n", src)
 				continue
 			}

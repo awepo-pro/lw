@@ -109,3 +109,50 @@ func TestWalkMissingDir(t *testing.T) {
 		t.Fatal("Walk of a missing directory error = nil, want an error")
 	}
 }
+
+// TestWalkSymlinkedRoot pins the seam between Walk's own os.Stat
+// pre-check — which follows symlinks, so a link to a directory IS a
+// directory — and filepath.WalkDir, which Lstats the root and would
+// otherwise descend nothing and select no files. 004 F.I1 promises that
+// an argument which stats as a directory is replaced by Walk(arg, ex)'s
+// files, so a symlinked source folder must walk its target, with every
+// reported path in the caller's spelling of dir (filepath.Join(dir, rel)).
+func TestWalkSymlinkedRoot(t *testing.T) {
+	real := t.TempDir()
+	write := func(name, content string) {
+		if err := os.WriteFile(filepath.Join(real, name), []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	write("a.md", "# A\n")
+	write("b.txt", "b\n")
+	write(".hidden.md", "# hidden\n")
+
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	files, skipped, err := Walk(link, Chain(NewFile()))
+	if err != nil {
+		t.Fatalf("Walk error: %v", err)
+	}
+	wantFiles := []string{filepath.Join(link, "a.md"), filepath.Join(link, "b.txt")}
+	if len(files) != len(wantFiles) {
+		t.Fatalf("files = %v, want %v", files, wantFiles)
+	}
+	for i := range wantFiles {
+		if files[i] != wantFiles[i] {
+			t.Errorf("files[%d] = %q, want %q", i, files[i], wantFiles[i])
+		}
+	}
+	wantSkipped := []Skipped{{filepath.Join(link, ".hidden.md"), "hidden"}}
+	if len(skipped) != len(wantSkipped) {
+		t.Fatalf("skipped = %v, want %v", skipped, wantSkipped)
+	}
+	for i := range wantSkipped {
+		if skipped[i] != wantSkipped[i] {
+			t.Errorf("skipped[%d] = %+v, want %+v", i, skipped[i], wantSkipped[i])
+		}
+	}
+}

@@ -36,13 +36,30 @@ func Walk(dir string, ex Extractor) (files []string, skipped []Skipped, err erro
 		return nil, nil, fmt.Errorf("walk: %s: not a directory", dir)
 	}
 
-	err = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+	// The Stat above follows symlinks — a link to a directory IS a
+	// directory here — but filepath.WalkDir Lstats its root and would
+	// descend nothing, selecting zero files from a symlinked source
+	// folder full of eligible notes (004 whole-branch review: `lw ingest
+	// linked-notes/` answered "no ingestible files"). Resolve the root
+	// once and walk the resolved path; every reported path is rewritten
+	// to filepath.Join(dir, rel) below, the caller's own spelling of dir.
+	root := dir
+	if resolved, rerr := filepath.EvalSymlinks(dir); rerr == nil {
+		root = resolved
+	}
+
+	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if path == dir {
+		if path == root {
 			return nil
 		}
+		rel, rerr := filepath.Rel(root, path)
+		if rerr != nil {
+			return rerr
+		}
+		path = filepath.Join(dir, rel)
 		// The root is exempt from the dot rule, everything below it is not.
 		if strings.HasPrefix(d.Name(), ".") {
 			skipped = append(skipped, Skipped{path, "hidden"})

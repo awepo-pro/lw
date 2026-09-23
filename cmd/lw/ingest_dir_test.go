@@ -434,6 +434,43 @@ func TestIngestExplicitNotTextFileFails(t *testing.T) {
 	}
 }
 
+// TestIngestExplicitNotTextInsideDirFails pins F.I2's exception holding
+// even when the named file also came in through a folder: `lw ingest dir
+// dir/nul.md` both expands dir (nul.md walker-selected) and names nul.md
+// outright, and the explicit naming wins — the command fails exactly as
+// TestIngestExplicitNotTextFileFails does, it does not soft-skip the file
+// twice and exit 0. The directory's own copy is still dropped softly; it
+// is the explicit argument that refuses to be silent.
+func TestIngestExplicitNotTextInsideDirFails(t *testing.T) {
+	root := testutil.CopyFixture(t, "minimal")
+	ingestLimitsEnv(t, 0)
+	dir := t.TempDir()
+	dirFile(t, dir, "good.md", "# Good\n\nBody.\n")
+	bad := dirFile(t, dir, "bad.txt", "ok\x00binary")
+	noAgentEver(t)
+
+	_, stderr, code := captureRun(t, func() int {
+		return run([]string{"ingest", "--vault", root, dir, bad})
+	})
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1; stderr=%q", code, stderr)
+	}
+	if !strings.Contains(stderr, "not text") {
+		t.Fatalf("stderr = %q, want it to carry the not-text verdict", stderr)
+	}
+	if !strings.Contains(stderr, bad) {
+		t.Fatalf("stderr = %q, want it to name %q", stderr, bad)
+	}
+	e, err := stage.OpenEngine(root)
+	if err != nil {
+		t.Fatalf("OpenEngine: %v", err)
+	}
+	defer e.Close()
+	if _, err := e.Current(); !errors.Is(err, stage.ErrNoChangeset) {
+		t.Fatalf("Current = %v, want ErrNoChangeset (nothing opened)", err)
+	}
+}
+
 // TestIngestDirDryRun pins F.I5: --dry-run runs expansion, extraction,
 // dedupe and the limit check, prints `would ingest <src>` per kept source
 // plus the final verdict line — and opens nothing: no changeset in any
