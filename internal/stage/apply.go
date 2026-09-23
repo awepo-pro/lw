@@ -16,6 +16,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -61,7 +62,26 @@ func (e *Engine) Commit(message string) (string, error) {
 // not defer Close (the TUI's review pane) wedged the engine for the life
 // of the process: every later Commit ErrLocked, every ReloadIfChanged a
 // no-op.
-func (e *Engine) commitWriteLocked(message string) (string, error) {
+func (e *Engine) commitWriteLocked(message string) (commitID string, err error) {
+	// 029 T1 (F2): exactly one slog record per Commit call — success or
+	// failure — so every commit is visible in lw.log where nothing was
+	// logged before. The record never carries page content or the message
+	// text: csID stays "" for any failure before step 2 reads the open
+	// changeset, and liveOps is only set once the applied op count is known.
+	start := time.Now()
+	var (
+		csID    string
+		liveOps int
+	)
+	defer func() {
+		if err != nil {
+			slog.Warn("changeset commit failed", "changeset", csID, "err", err)
+			return
+		}
+		slog.Info("changeset commit",
+			"changeset", csID, "commit", commitID, "live_ops", liveOps, "dur_ms", msSince(start))
+	}()
+
 	// Consume the D-AG force flag first, before any step can fail, so a
 	// refused or errored commit never leaks it into a later one
 	// (MASTER §9 D-CD).
@@ -103,6 +123,7 @@ func (e *Engine) commitWriteLocked(message string) (string, error) {
 		// would; dereferencing the nil cache is not an option.
 		return "", fmt.Errorf("stage: commit: %w", ErrNoChangeset)
 	}
+	csID = c.ID // set as soon as the open changeset is in hand, so an ErrStale refusal still traces its changeset
 	if hasStaleOp(c.Ops) {
 		return "", ErrStale
 	}
@@ -133,12 +154,13 @@ func (e *Engine) commitWriteLocked(message string) (string, error) {
 	}
 
 	now := e.now().UTC()
-	commitID, err := nextCommitID(filepath.Join(e.llmwikiDir(), "snapshots"))
+	commitID, err = nextCommitID(filepath.Join(e.llmwikiDir(), "snapshots"))
 	if err != nil {
 		return "", fmt.Errorf("stage: commit: %w", err)
 	}
 
 	live := c.Live()
+	liveOps = len(live)
 	retractedDate := now.Format("2006-01-02")
 	m, err := e.buildCommitMaterialization(live, retractedDate)
 	if err != nil {

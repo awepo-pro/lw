@@ -124,8 +124,8 @@ func newRawOnlyModel(t *testing.T) (ui.Pane, *stage.Engine, string) {
 	return initModel(t, d), e, root
 }
 
-const wantRawOnlyWarn = "0 pages proposed — this commits raw source(s) only: " +
-	"raw/articles/agent-memory.md, raw/articles/context-window.md · press C again to commit"
+const wantRawOnlyWarn = "press C again to commit — raw source(s) only, no page changes: " +
+	"raw/articles/agent-memory.md, raw/articles/context-window.md"
 
 func TestRawOnlyCommitConfirm(t *testing.T) {
 	t.Run("first_C_warns_and_does_not_commit", func(t *testing.T) {
@@ -234,8 +234,8 @@ func TestRawOnlyCommitConfirm(t *testing.T) {
 		if journalHasCommitBegin(t, root) {
 			t.Error("the swap inherited the arm: the new changeset committed without its warning")
 		}
-		const wantSwap = "0 pages proposed — this commits raw source(s) only: " +
-			"raw/articles/swap-target.md · press C again to commit"
+		const wantSwap = "press C again to commit — raw source(s) only, no page changes: " +
+			"raw/articles/swap-target.md"
 		if msg, level := statusOf(t, m); msg != wantSwap || level != ui.StatusWarn {
 			t.Errorf("Status after the swapped-in changeset's first C = (%q, %v), want its own warning", msg, level)
 		}
@@ -261,8 +261,8 @@ func TestRawOnlyCommitConfirm(t *testing.T) {
 		if journalHasCommitBegin(t, root) {
 			t.Error("a C ahead of the swap's reload committed the new changeset without its warning")
 		}
-		const wantInFlight = "0 pages proposed — this commits raw source(s) only: " +
-			"raw/articles/in-flight-swap.md · press C again to commit"
+		const wantInFlight = "press C again to commit — raw source(s) only, no page changes: " +
+			"raw/articles/in-flight-swap.md"
 		if msg, level := statusOf(t, m); msg != wantInFlight || level != ui.StatusWarn {
 			t.Errorf("Status after the in-flight swap's C = (%q, %v), want the new changeset's warning", msg, level)
 		}

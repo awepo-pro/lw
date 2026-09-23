@@ -165,6 +165,25 @@ func (c *Changeset) Live() []Op {
 	return out
 }
 
+// RawOnly reports whether c's live ops are raw sources only: at least one
+// live ingest_source and no live op of any other kind (029 A-029-1,
+// amending 008 §5/§6's create-only count — a patch_page, rename, merge,
+// split, add_link or retract all change the wiki). Dropped ops do not
+// count: Live() already excludes them. raws lists the live ingest_source
+// paths in live-op order (nil when there are none), set whether or not ok
+// holds, so callers can name the raws in their own refusal/warning texts.
+func (c *Changeset) RawOnly() (raws []string, ok bool) {
+	other := false
+	for _, op := range c.Live() {
+		if op.Kind == OpIngestSource {
+			raws = append(raws, op.Path)
+			continue
+		}
+		other = true
+	}
+	return raws, len(raws) > 0 && !other
+}
+
 // Touches returns every vault path affected by c's live ops — top-level and
 // cascade, recursively — sorted and deduped.
 func (c *Changeset) Touches() []string {

@@ -139,3 +139,72 @@ func TestCmdCommitRawOnlyWarns(t *testing.T) {
 		}
 	})
 }
+
+// TestCmdCommitPatchNoWarning pins A-029-1's CLI half: one ingest_source
+// plus a patch_page is page work — the old create-only rule counted the
+// patch as nothing and printed the raw-only warning anyway. `lw commit`
+// must print no warning and land the commit on stdout.
+func TestCmdCommitPatchNoWarning(t *testing.T) {
+	root := testutil.CopyFixture(t, "minimal")
+	const rawPath = "raw/papers/tilelang-a-composable-tiled-programming-model-for-ai-systemsthanks-mathsection-equal-contributions.md"
+
+	// Stage ingest + patch_page by engine calls, then close so `lw commit`
+	// can take the vault lock itself.
+	e, err := stage.OpenEngine(root)
+	if err != nil {
+		t.Fatalf("OpenEngine: %v", err)
+	}
+	body := "# TileLang\n\nA body the patch below sits beside.\n"
+	fm := fmt.Sprintf("---\nsource_url: https://example.org/tilelang\ningested: 2026-09-09\nsha256: %s\n---\n\n", vault.BodySHA256(body))
+	rs, err := vault.ParseRawSource(rawPath, []byte(fm+body))
+	if err != nil {
+		t.Fatalf("parse raw source: %v", err)
+	}
+	if _, err := e.OpenChangeset("ingest plus patch", stage.Author{Kind: "human"}); err != nil {
+		t.Fatalf("OpenChangeset: %v", err)
+	}
+	if _, err := e.Append(stage.Op{
+		Kind:      stage.OpIngestSource,
+		Path:      rawPath,
+		Extractor: "passthrough",
+		Content:   rs.Serialize(),
+	}); err != nil {
+		t.Fatalf("append ingest_source: %v", err)
+	}
+	kv, ok := e.Vault().Page("wiki/concepts/kv-cache.md")
+	if !ok {
+		t.Fatal("minimal fixture missing wiki/concepts/kv-cache.md")
+	}
+	newKV := strings.Replace(string(kv.Serialize()),
+		"- [[flash-attention]]",
+		"- [[gpt-4]] — an unrelated edit for TestCmdCommitPatchNoWarning.\n- [[flash-attention]]", 1)
+	if newKV == string(kv.Serialize()) {
+		t.Fatal("test setup: replacement did not match kv-cache.md's body")
+	}
+	if _, err := e.Append(stage.Op{
+		Kind:      stage.OpPatchPage,
+		Path:      kv.Path,
+		Section:   "## Related",
+		Before:    kv.SHA256(),
+		Content:   []byte(newKV),
+		Rationale: "one page edit beside the ingest",
+	}); err != nil {
+		t.Fatalf("Append patch_page: %v", err)
+	}
+	if err := e.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	stdout, stderr, code := captureRun(t, func() int {
+		return run([]string{"commit", "--vault", root, "-m", "x"})
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr, stdout)
+	}
+	if strings.Contains(stderr, "0 pages proposed") {
+		t.Errorf("stderr carries the raw-only warning for ingest+patch:\n%s", stderr)
+	}
+	if !strings.Contains(stdout, "committed ") {
+		t.Errorf("stdout = %q, want the committed line", stdout)
+	}
+}

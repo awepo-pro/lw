@@ -489,10 +489,11 @@ func cmdIngest(args []string) error {
 	fmt.Println()
 	printChangesetSummary(os.Stdout, final)
 
-	// A raw-only ingest (live raw sources, no create_page) still succeeds —
-	// the changeset stays open for review — but says so, so the absence of
-	// pages is visible to the human the changeset waits for.
-	if _, rawOnly := ingestOnlyPaths(final); rawOnly {
+	// A raw-only ingest (live raw sources, no other live op — 029 A-029-1)
+	// still succeeds — the changeset stays open for review — but says so,
+	// so the absence of pages is visible to the human the changeset waits
+	// for.
+	if _, rawOnly := final.RawOnly(); rawOnly {
 		fmt.Println("warning: 0 pages proposed — only raw source(s) staged; review before committing")
 	}
 
@@ -516,24 +517,6 @@ func rejectAndReturn(e *stage.Engine, origErr error) error {
 		return fmt.Errorf("%w (and rejecting the changeset failed: %v)", origErr, rerr)
 	}
 	return origErr
-}
-
-// ingestOnlyPaths reports cs's live ingest_source paths, in live-op order,
-// and whether cs is raw-only: at least one live ingest_source op and zero
-// live create_page ops (008 contract §6). Shared by `lw ingest`'s
-// post-turn warning and `lw commit`'s pre-commit one — the same definition
-// review's own raw-only confirmation applies (internal/ui/review).
-func ingestOnlyPaths(cs *stage.Changeset) (paths []string, rawOnly bool) {
-	creates := 0
-	for _, op := range cs.Live() {
-		switch op.Kind {
-		case stage.OpIngestSource:
-			paths = append(paths, op.Path)
-		case stage.OpCreatePage:
-			creates++
-		}
-	}
-	return paths, len(paths) > 0 && creates == 0
 }
 
 // ingestItem is one extracted source, staged locally and described to the

@@ -102,9 +102,9 @@ func cmdCommit(args []string) error {
 	// A raw-only changeset still commits (its raw sources are the point of
 	// an ingest), but says so first — the same notice `lw ingest` printed
 	// when the changeset was opened, and the same shape review's own
-	// raw-only confirmation warns about (008 contract §6). stderr, because
-	// stdout stays the result ("committed <id>").
-	if raws, rawOnly := ingestOnlyPaths(cs); rawOnly {
+	// raw-only confirmation warns about (008 contract §6, as amended by
+	// 029 A-029-1). stderr, because stdout stays the result ("committed <id>").
+	if raws, rawOnly := cs.RawOnly(); rawOnly {
 		fmt.Fprintf(os.Stderr, "warning: 0 pages proposed — committing raw source(s) only: %s\n", strings.Join(raws, ", "))
 	}
 
