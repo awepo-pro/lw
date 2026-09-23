@@ -87,6 +87,8 @@ func TestOverlayHelp(t *testing.T) {
 	want := []ui.HelpEntry{
 		{Key: "y", Desc: "accept hunk"},
 		{Key: "n", Desc: "drop hunk"},
+		{Key: "d", Desc: "drop op"},    // A-030-1
+		{Key: "u", Desc: "restore op"}, // A-030-1
 		{Key: "A", Desc: "accept all"},
 		{Key: "X", Desc: "reject changeset"},
 		{Key: "C", Desc: "commit"},

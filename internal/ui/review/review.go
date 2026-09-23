@@ -15,6 +15,7 @@ package review
 
 import (
 	"fmt"
+	"strings"
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
@@ -60,6 +61,13 @@ type Model struct {
 	// process's commit reloading in a new changeset — must not inherit the
 	// arm and commit unwarned.
 	commitArmedFor string
+
+	// dropArm is the op-drop confirmation (030, dropop.go), the
+	// commitArmedFor pattern mirrored: the first d warns and arms with
+	// (changeset id, op id) plus exactly the dependent ids it previewed;
+	// the second d drops exactly those. Disarmed by any other key, a
+	// ShellKeyMsg, or a load of a different changeset id — the same rules.
+	dropArm dropArm
 
 	// loadsInFlight counts the load commands this pane has returned whose
 	// loadedMsg has not landed back in Update yet (008 contract §8, A-801,
@@ -156,6 +164,7 @@ func (m *Model) Update(msg tea.Msg) (ui.Pane, tea.Cmd) {
 		// while walking between screens. The shell reports them here; the
 		// arm dies like it would for any pane-visible key.
 		m.commitArmedFor = ""
+		m.dropArm = dropArm{}
 		return m, nil
 
 	case tea.KeyPressMsg:
@@ -195,6 +204,11 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (ui.Pane, tea.Cmd) {
 	if !key.Matches(msg, k.Commit) {
 		m.commitArmedFor = ""
 	}
+	// 030: the op-drop arm is single-shot the same way — any key but d
+	// disarms it, u and C included.
+	if !key.Matches(msg, k.DropOp) {
+		m.dropArm = dropArm{}
+	}
 	switch {
 	case key.Matches(msg, k.MoveDown):
 		m.cursor = clampCursor(m.cursor+1, len(m.stops))
@@ -219,6 +233,10 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (ui.Pane, tea.Cmd) {
 		return m.acceptHunk()
 	case key.Matches(msg, k.DropHunk):
 		return m.dropHunk()
+	case key.Matches(msg, k.DropOp):
+		return m.dropOpKey()
+	case key.Matches(msg, k.RestoreOp):
+		return m.restoreOpKey()
 	case key.Matches(msg, k.SplitHunk):
 		// C-90/TD-2: hunk splitting is not built (the ? overlay says so).
 		// No engine call.
@@ -248,20 +266,26 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (ui.Pane, tea.Cmd) {
 }
 
 // reviewRefusal names the reason the cursor's hunk must not be accepted
-// or dropped, or "" when the key may proceed. Two refusals, both decided
+// or dropped, or "" when the key may proceed. Three refusals, all decided
 // BEFORE any engine call (s2-screens.md T06 keys, MASTER §8 ORCH-9):
 //
 //   - a stale op: Engine.DropHunk/UndropHunk have no stale guard, and
 //     OpDiff shows a stale op's windows with HunkID "" — acting on a key
 //     would touch content the reviewer cannot see as attributed;
-//   - an ownerless window: a window with HunkID "" (a create, an ingest,
-//     a derived index.md) has no persisted hunk to accept or drop.
+//   - the derived index.md window (S9, 030): it is the engine's
+//     derivation over the other ops, not an op's content;
+//   - an ownerless window: a window with HunkID "" (a create, an ingest)
+//     has no persisted hunk to accept or drop — the refusal points at
+//     `d`, which drops the whole op instead (S7, 030).
 func (m *Model) reviewRefusal(opID, hunkID string) string {
 	if op, ok := findOp(m.ops, opID); ok && op.State == stage.StateStale {
 		return fmt.Sprintf("op %s is stale: refresh before reviewing its hunks", opID)
 	}
 	if !hasWindow(m.opDiffs[opID], hunkID) {
-		return "this window has no hunk id — it cannot be accepted or dropped individually"
+		if m.isDerivedIndexWindow(opID) {
+			return indexDerivedRefusal
+		}
+		return fmt.Sprintf("this window has no hunk id — press d to drop the whole op (%s)", opID)
 	}
 	return ""
 }
@@ -289,7 +313,11 @@ func (m *Model) acceptHunk() (ui.Pane, tea.Cmd) {
 	return m, tea.Batch(m.load(), stageChangedCmd(m.deps.Engine))
 }
 
-// dropHunk is `n`: Engine.DropHunk.
+// dropHunk is `n`: Engine.DropHunk — refused first by D-30B (030) when
+// later ops build on this one: their hunks chain on this op's projection,
+// so losing the hunk alone would stale them and block Commit. The refusal
+// names them and points at `d`, which drops them together. `y` has no such
+// refusal: an undrop can never strand a dependent.
 func (m *Model) dropHunk() (ui.Pane, tea.Cmd) {
 	opID, hunkID, ok := resolveCursor(m.diff, m.stops, m.cursor)
 	if !ok {
@@ -297,6 +325,12 @@ func (m *Model) dropHunk() (ui.Pane, tea.Cmd) {
 	}
 	if refusal := m.reviewRefusal(opID, hunkID); refusal != "" {
 		m.setStatus(ui.StatusWarn, refusal)
+		return m, nil
+	}
+	if deps, err := m.deps.Engine.OpDependents(opID); err == nil && len(deps) > 0 {
+		m.setStatus(ui.StatusWarn, fmt.Sprintf(
+			"%s cannot lose a hunk: %s build on it — press d to drop them together",
+			opID, strings.Join(deps, ", ")))
 		return m, nil
 	}
 	if err := m.deps.Engine.DropHunk(opID, hunkID); err != nil {

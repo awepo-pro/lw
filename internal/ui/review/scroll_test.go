@@ -314,7 +314,7 @@ func TestReviewScroll(t *testing.T) {
 		m = sendM(t, m, uitest.Key("pgdown"))
 		assertRows(t, m, all, off, 4)
 
-		const want = "this window has no hunk id — it cannot be accepted or dropped individually"
+		const want = "this window has no hunk id — press d to drop the whole op (op1)" // A-030-2
 		for _, key := range []string{"y", "n"} {
 			m = sendM(t, m, keyPress(rune(key[0])))
 			if msg, level := statusOf(t, m); msg != want || level != ui.StatusWarn {

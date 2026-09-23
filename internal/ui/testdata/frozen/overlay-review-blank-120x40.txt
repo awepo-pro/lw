@@ -9,15 +9,16 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-                                                                                                                        
                             ╭ Keys ────────────────────────────────────────── esc to close ╮                            
                             │                                                              │                            
                             │  Review                         Everywhere                   │                            
                             │                                                              │                            
                             │  y       accept hunk            tab       next screen        │                            
                             │  n       drop hunk              ctrl+r    ask → review       │                            
-                            │  A       accept all             ?         close              │                            
-                            │  X       reject changeset       q/ctrl+c  quit               │                            
+                            │  d       drop op                ?         close              │                            
+                            │  u       restore op             q/ctrl+c  quit               │                            
+                            │  A       accept all                                          │                            
+                            │  X       reject changeset                                    │                            
                             │  C       commit                                              │                            
                             │  p       preview / diff                                      │                            
                             │  j/k     down / up                                           │                            
@@ -25,7 +26,6 @@
                             │  s       split hunk · not built                              │                            
                             │                                                              │                            
                             ╰──────────────────────────────────────────────────────────────╯                            
-                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         

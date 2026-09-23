@@ -88,7 +88,7 @@ func currentOpID(t *testing.T, m ui.Pane) (string, bool) {
 // and `y`/`n` on an op-level stop take the ownerless-window refusal
 // without calling the engine (s2-screens.md T06 keys, D-3U).
 func TestReviewCreateOnlyNavigation(t *testing.T) {
-	const ownerless = "this window has no hunk id — it cannot be accepted or dropped individually"
+	const ownerless = "this window has no hunk id — press d to drop the whole op (op1)" // A-030-2
 
 	t.Run("j_moves_between_ops_without_hunks", func(t *testing.T) {
 		m, _ := newCreateOnlyModel(t)
