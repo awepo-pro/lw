@@ -13,8 +13,16 @@ BENCHTIME ?= 1x
 build:
 	go build -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/lw
 
+# Every run keeps its output in $(TESTLOG), and a failing run's log is also
+# copied aside under a timestamp, so a one-off failure survives the green
+# re-run that follows it (session 29 lost a flake exactly that way).
+TESTLOG ?= .testlogs/test.log
+
 test:
-	go test ./...
+	@mkdir -p $(dir $(TESTLOG))
+	@bash -o pipefail -c 'go test ./... 2>&1 | tee $(TESTLOG)' || { \
+		cp $(TESTLOG) "$(TESTLOG).fail-$$(date +%Y%m%d-%H%M%S)"; \
+		echo "test: failed — log kept at $(TESTLOG).fail-*" >&2; exit 1; }
 
 # gofmt -l never fails on its own, so lint splits into a check that does
 # (fmt-check) and go vet (vet). git ls-files, not a filesystem walk, so

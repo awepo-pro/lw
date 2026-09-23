@@ -30,16 +30,22 @@ func TestLexerCacheMatchesRegistry(t *testing.T) {
 // sight of a language string adds exactly one entry, and every later
 // call with the same tag is a read that must not grow the map. The probe
 // tag is chosen so no render elsewhere in the package's tests can have
-// cached it first.
+// cached it first. The cache is process-global, so under -count=N the
+// previous iteration's entry is still there: the test evicts the probe
+// before measuring and again on exit, keeping every run a true first
+// sight (A-018-1).
 func TestLexerCacheFirstMissThenHit(t *testing.T) {
 	const probe = "zz-lexercache-probe-not-a-language"
+	evict := func() {
+		lexerCacheMu.Lock()
+		delete(lexerCache, probe)
+		lexerCacheMu.Unlock()
+	}
+	evict()
+	t.Cleanup(evict)
 
 	lexerCacheMu.Lock()
 	before := len(lexerCache)
-	if _, seeded := lexerCache[probe]; seeded {
-		lexerCacheMu.Unlock()
-		t.Fatalf("probe tag %q already cached; pick a fresh one", probe)
-	}
 	lexerCacheMu.Unlock()
 
 	first := lexersHave(probe)
