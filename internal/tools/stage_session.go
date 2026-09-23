@@ -53,9 +53,16 @@ func stageOpenTool(d Deps) Tool {
 			if d.Engine == nil {
 				return Result{IsError: true, Content: "no staging engine configured"}, nil
 			}
-			cs, err := d.Engine.OpenChangeset(strings.TrimSpace(a.Intent), d.Author)
+			// 019: with a changeset already open, stage.open JOINS it —
+			// the model's first instinct to call stage.open mid-ingest is
+			// no longer a dead end — and the joined result is not an
+			// error.
+			cs, joined, err := d.Engine.OpenOrJoin(strings.TrimSpace(a.Intent), d.Author)
 			if err != nil {
 				return stageFailure("stage.open", err)
+			}
+			if joined {
+				return Result{Content: fmt.Sprintf("joined the open changeset %s (%d op(s) already staged)", cs.ID, len(cs.Live())), Data: cs}, nil
 			}
 			return Result{Content: fmt.Sprintf("opened changeset %s for %q", cs.ID, cs.Intent), Data: cs}, nil
 		},

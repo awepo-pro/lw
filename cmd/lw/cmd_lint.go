@@ -145,11 +145,20 @@ func runLintFix(vaultPath, checksFlag string) error {
 		return fmt.Errorf("construct agent: %w", err)
 	}
 
-	cs, err := e.OpenChangeset(lintFixIntent(report), stage.Author{Kind: "agent", Model: cfg.LLM.Model})
+	// 019: open — or, when a changeset is already open, JOIN it, saying so
+	// on stderr before the first round. A failed round's partial ops stay
+	// live (020 FIX-3b, unchanged below): --fix has no rejectAndReturn
+	// path, so there is no rollback to scope — the ops remain for review,
+	// and the failure lines say which page staged them.
+	cs, joined, err := e.OpenOrJoin(lintFixIntent(report), stage.Author{Kind: "agent", Model: cfg.LLM.Model})
 	if err != nil {
 		return fmt.Errorf("open changeset: %w", err)
 	}
-	sess, err := sessions.Create(cs.ID)
+	if joined {
+		fmt.Fprintf(os.Stderr, "joined open changeset %s (%d op(s) already staged; they will be reviewed and committed together)\n",
+			cs.ID, len(cs.Live()))
+	}
+	sess, err := verbSession(sessions, cs.ID, joined)
 	if err != nil {
 		return fmt.Errorf("create session: %w", err)
 	}
