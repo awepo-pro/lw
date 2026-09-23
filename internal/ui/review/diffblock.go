@@ -89,6 +89,21 @@ func (m *Model) opDiffLines(op stage.Op, cw int, current bool) []panelLine {
 
 	out := []panelLine{{text: opHead(m.theme, op, cw, note, dropped)}}
 
+	// 033: an ingest_source that travels with its original shows the
+	// OpDiff's one-line description of that original directly under the
+	// header, muted and clipped to the content width. Display-only: not a
+	// cursor stop, no hunk or window of its own, nothing keyed off it,
+	// Diff mode only (Preview renders the staged page, not the diff).
+	// A dropped op shows no line at all — stage's diff returns no file
+	// entries for one, the same reason its windows are gone from the
+	// block; `u` restores the whole op, original line included.
+	for _, f := range files {
+		if f.OriginalLine != "" {
+			out = append(out, panelLine{text: ui.Clip(m.theme.Muted.Render(f.OriginalLine), cw)})
+			break
+		}
+	}
+
 	for _, l := range wrapCut(op.Rationale, cw, 4) {
 		out = append(out, panelLine{text: m.theme.Muted.Render(l)})
 	}
