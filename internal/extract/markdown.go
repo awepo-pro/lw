@@ -7,12 +7,70 @@ package extract
 // (00-conventions.md §2, "every file ends with exactly one newline").
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 )
+
+// ErrNotText is wrapped by an Extractor that refuses a file because its
+// content is not text — invalid UTF-8, or a NUL byte in the first 8 KiB
+// (004 F.E3). The walker never reads contents, so this sentinel is how the
+// backend reports the verdict back to the folder-ingest caller.
+var ErrNotText = errors.New("not text")
+
+// sniffWindow is how many leading bytes the text sniff inspects: enough
+// for any real magic-number signature (PNG's is 8 bytes), small enough
+// that the verdict is cheap. A NUL or invalid UTF-8 past the window does
+// not disqualify a file (004 F.E3).
+const sniffWindow = 8 * 1024
+
+// trimTruncatedTail drops the final, possibly truncated UTF-8 sequence
+// from a window cut out of a larger file: a multi-byte rune straddling
+// the cut leaves an incomplete tail in the window, and that is an
+// artifact of the window, not a property of the file. Only the last
+// sequence is ever touched — a rune cut by the edge is forgiven, while
+// invalid bytes fully inside the window remain and utf8.Valid still
+// rejects them.
+func trimTruncatedTail(window []byte) []byte {
+	n := len(window)
+	k := 0
+	// Walk back over the trailing continuation bytes of the final rune.
+	for k < n && !utf8.RuneStart(window[n-1-k]) {
+		k++
+	}
+	if k == n {
+		// The whole window is continuation bytes. A cut rune carries at
+		// most UTFMax-1 of them, so this cannot be a cut artifact —
+		// leave it for utf8.Valid to reject.
+		return window
+	}
+	var size int
+	switch c := window[n-1-k]; {
+	case c < utf8.RuneSelf:
+		size = 1
+	case c < 0xE0:
+		size = 2
+	case c < 0xF0:
+		size = 3
+	case c < 0xF8:
+		size = 4
+	default:
+		// 0xF8..0xFF can begin no rune, not even a cut one.
+		return window
+	}
+	if size > k+1 {
+		// The final rune's continuation bytes continue past the cut:
+		// drop the partial sequence (start byte and its continuations).
+		return window[:n-1-k]
+	}
+	// The final sequence is complete as cut — judge it as-is.
+	return window
+}
 
 // fileExtractor is the Extractor NewFile returns.
 type fileExtractor struct{}
@@ -24,13 +82,15 @@ func NewFile() Extractor {
 }
 
 // CanHandle reports whether uri is a local path (not http/https) with a
-// .md or .txt extension.
+// .md, .markdown or .txt extension (004 F.E2 added .markdown — the
+// canonical extension of the format this extractor passes through —
+// case-insensitive like .md always was).
 func (fileExtractor) CanHandle(uri string) bool {
 	if isRemoteURL(uri) {
 		return false
 	}
 	ext := strings.ToLower(filepath.Ext(uri))
-	return ext == ".md" || ext == ".txt"
+	return ext == ".md" || ext == ".markdown" || ext == ".txt"
 }
 
 // Extract reads uri and returns it as a Doc: Markdown is the file's
@@ -48,6 +108,18 @@ func (fileExtractor) Extract(ctx context.Context, uri string) (*Doc, error) {
 	b, err := os.ReadFile(uri)
 	if err != nil {
 		return nil, fmt.Errorf("extract: read %s: %w", uri, err)
+	}
+
+	// 004 F.E3: whether a file is text is decided here, in the backend,
+	// not in the walker — Walk is stat-only and selects by CanHandle, so
+	// the sniff must happen where the bytes are already in hand. Only the
+	// first sniffWindow bytes are examined (see sniffWindow).
+	window := b
+	if len(window) > sniffWindow {
+		window = trimTruncatedTail(window[:sniffWindow])
+	}
+	if !utf8.Valid(window) || bytes.IndexByte(window, 0) >= 0 {
+		return nil, fmt.Errorf("extract: %s: %w", uri, ErrNotText)
 	}
 
 	body := normalizeNewlines(string(b))

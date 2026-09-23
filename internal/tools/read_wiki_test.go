@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/awepo-pro/lw/internal/testutil"
+	"github.com/awepo-pro/lw/internal/vault"
 )
 
 // synthPage returns a minimal, parseable wiki page under wiki/concepts,
@@ -88,6 +89,317 @@ func TestWikiSearchCapsHitsAndSnippets(t *testing.T) {
 	got := countNumberedHitLines(res.Content)
 	if got != 3 {
 		t.Fatalf("limit=3 returned %d hits, want 3", got)
+	}
+}
+
+// wikiGetTruncationNoticeHead / wikiGetTruncationNoticeSection build the
+// exact truncation notices 004 T0b F.W1 freezes, so the pins below compare
+// full byte-for-byte expected results rather than fragile substrings.
+func wikiGetTruncationNoticeHead(resolved string, n int, headings []string) string {
+	return fmt.Sprintf(
+		"\n\n[truncated: %s is %d runes; showing the first 16000. Read the rest by section: %s]",
+		resolved, n, strings.Join(headings, ", "),
+	)
+}
+
+func wikiGetTruncationNoticeSection(heading, resolved string, n int) string {
+	return fmt.Sprintf(
+		"\n\n[truncated: section %q of %s is %d runes; showing the first 16000.]",
+		heading, resolved, n,
+	)
+}
+
+// firstNRunes cuts s to at most n runes — the rune-safe cut the cap promises.
+func firstNRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n])
+}
+
+// writePaddedPage writes wiki/concepts/<name>.md whose canonical
+// serialization is exactly target runes long, by parsing a draft and
+// padding its body with 'x' runes before the trailing newline. It returns
+// the re-parsed page so a test can build the exact expected wiki.get body.
+func writePaddedPage(t *testing.T, dir, name string, target int) *vault.Page {
+	t.Helper()
+	rel := "wiki/concepts/" + name + ".md"
+	content := fmt.Sprintf(`---
+title: %s
+created: 2026-08-30
+updated: 2026-08-30
+type: concept
+tags: [inference]
+confidence: high
+---
+
+# %s
+
+pad me
+
+## One
+
+one
+
+## Two
+
+two
+`, name, name)
+	p, err := vault.ParsePage(rel, []byte(content))
+	if err != nil {
+		t.Fatalf("ParsePage draft: %v", err)
+	}
+	diff := target - utf8.RuneCountInString(string(p.Serialize()))
+	if diff < 0 {
+		t.Fatalf("draft already exceeds target: %d > %d runes", target-diff, target)
+	}
+	body := p.Body[:len(p.Body)-1] + strings.Repeat("x", diff) + "\n"
+	content = string(p.FM.Encode()) + "\n" + body
+	if err := os.WriteFile(filepath.Join(dir, "wiki", "concepts", name+".md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", rel, err)
+	}
+	p2, err := vault.ParsePage(rel, []byte(content))
+	if err != nil {
+		t.Fatalf("ParsePage padded: %v", err)
+	}
+	if got := utf8.RuneCountInString(string(p2.Serialize())); got != target {
+		t.Fatalf("padded page is %d runes, want exactly %d", got, target)
+	}
+	return p2
+}
+
+// TestWikiGetExactly16000RunesUntouched pins F.W2: a page whose whole
+// serialization is exactly the cap comes back byte-identical, with no
+// truncation notice.
+func TestWikiGetExactly16000RunesUntouched(t *testing.T) {
+	dir := testutil.CopyFixture(t, "minimal")
+	p := writePaddedPage(t, dir, "padded-exact", 16000)
+	reg := NewRegistry(newTestDeps(t, dir))
+
+	res, err := reg.Call(context.Background(), "wiki.get", json.RawMessage(`{"page": "padded-exact"}`))
+	if err != nil || res.IsError {
+		t.Fatalf("Call(wiki.get) = %+v, err = %v", res, err)
+	}
+	if want := string(p.Serialize()); res.Content != want {
+		t.Fatalf("exactly-16000-rune page was not byte-identical (got %d runes, want %d, notice present: %v)",
+			utf8.RuneCountInString(res.Content), utf8.RuneCountInString(want), strings.Contains(res.Content, "[truncated"))
+	}
+	if strings.Contains(res.Content, "[truncated") {
+		t.Fatal("exactly-16000-rune page must not carry a truncation notice")
+	}
+}
+
+// TestWikiGetTruncatesWholePageAt16001 pins F.W1's whole-page leg: one rune
+// over the cap yields the first 16000 runes plus the full notice, naming
+// the resolved path, the page's rune count and sectionHeadings(p).
+func TestWikiGetTruncatesWholePageAt16001(t *testing.T) {
+	dir := testutil.CopyFixture(t, "minimal")
+	p := writePaddedPage(t, dir, "padded-over", 16001)
+	reg := NewRegistry(newTestDeps(t, dir))
+
+	res, err := reg.Call(context.Background(), "wiki.get", json.RawMessage(`{"page": "padded-over"}`))
+	if err != nil || res.IsError {
+		t.Fatalf("Call(wiki.get) = %+v, err = %v", res, err)
+	}
+	full := string(p.Serialize())
+	want := firstNRunes(full, 16000) + wikiGetTruncationNoticeHead(p.Path, utf8.RuneCountInString(full), sectionHeadings(p))
+	if res.Content != want {
+		t.Fatalf("truncated whole page = %d runes, want byte-exact %d-rune prefix + notice",
+			utf8.RuneCountInString(res.Content), utf8.RuneCountInString(want))
+	}
+}
+
+// TestWikiGetTruncationCutIsRuneSafe pins the multibyte leg: a page of
+// é/量 pairs cut at 16000 runes stays valid UTF-8 and equals the rune-wise
+// prefix — a byte-offset cut would corrupt an in-progress rune.
+func TestWikiGetTruncationCutIsRuneSafe(t *testing.T) {
+	dir := testutil.CopyFixture(t, "minimal")
+	rel := "wiki/concepts/multibyte-big.md"
+	body := strings.Repeat("é量", 9000) // 18000 runes, 36000 bytes
+	content := fmt.Sprintf("---\ntitle: Multibyte\ncreated: 2026-08-30\nupdated: 2026-08-30\ntype: concept\ntags: [inference]\nconfidence: high\n---\n\n# Multibyte\n\n%s\n", body)
+	if err := os.WriteFile(filepath.Join(dir, "wiki", "concepts", "multibyte-big.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", rel, err)
+	}
+	p, err := vault.ParsePage(rel, []byte(content))
+	if err != nil {
+		t.Fatalf("ParsePage: %v", err)
+	}
+	reg := NewRegistry(newTestDeps(t, dir))
+
+	res, err := reg.Call(context.Background(), "wiki.get", json.RawMessage(`{"page": "multibyte-big"}`))
+	if err != nil || res.IsError {
+		t.Fatalf("Call(wiki.get) = %+v, err = %v", res, err)
+	}
+	if !utf8.ValidString(res.Content) {
+		t.Fatal("truncated result is not valid UTF-8 — the cap split a rune")
+	}
+	full := string(p.Serialize())
+	want := firstNRunes(full, 16000) + wikiGetTruncationNoticeHead(p.Path, utf8.RuneCountInString(full), sectionHeadings(p))
+	if res.Content != want {
+		t.Fatalf("multibyte cut diverged from the rune-wise prefix")
+	}
+}
+
+// TestWikiGetTruncatesOversizedSection pins F.W1's section leg: a section
+// body over the cap returns its first 16000 runes plus the section notice,
+// naming the heading, the resolved path and the section's own rune count.
+func TestWikiGetTruncatesOversizedSection(t *testing.T) {
+	dir := testutil.CopyFixture(t, "minimal")
+	rel := "wiki/concepts/big-section.md"
+	big := strings.Repeat("a", 20000)
+	content := fmt.Sprintf("---\ntitle: Big Section\ncreated: 2026-08-30\nupdated: 2026-08-30\ntype: concept\ntags: [inference]\nconfidence: high\n---\n\n# Big Section\n\n## Big\n\n%s\n\n## Small\n\ntiny\n", big)
+	if err := os.WriteFile(filepath.Join(dir, "wiki", "concepts", "big-section.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", rel, err)
+	}
+	p, err := vault.ParsePage(rel, []byte(content))
+	if err != nil {
+		t.Fatalf("ParsePage: %v", err)
+	}
+	sec, ok := p.Section("## Big")
+	if !ok {
+		t.Fatal("fixture page lost its ## Big section")
+	}
+	reg := NewRegistry(newTestDeps(t, dir))
+
+	res, err := reg.Call(context.Background(), "wiki.get", json.RawMessage(`{"page": "big-section", "section": "## Big"}`))
+	if err != nil || res.IsError {
+		t.Fatalf("Call(wiki.get, section) = %+v, err = %v", res, err)
+	}
+	body := p.Body[sec.Start:sec.End]
+	want := firstNRunes(body, 16000) + wikiGetTruncationNoticeSection("## Big", p.Path, utf8.RuneCountInString(body))
+	if res.Content != want {
+		t.Fatalf("truncated section = %d runes, want byte-exact %d-rune prefix + notice",
+			utf8.RuneCountInString(res.Content), utf8.RuneCountInString(want))
+	}
+}
+
+// TestWikiGetStagedTruncationKeepsMarkerPrefix pins F.W1's staged leg: the
+// staged-source marker stays a prefix of a truncated result and does not
+// count toward the cap — the first 16000 runes after the marker are all
+// page.
+func TestWikiGetStagedTruncationKeepsMarkerPrefix(t *testing.T) {
+	reg, e, _ := engineRegistry(t, nil)
+	if r := callTool(t, reg, "stage.open", `{"intent":"grow a section past the wiki.get cap"}`); r.IsError {
+		t.Fatal(r.Content)
+	}
+	big := strings.Repeat("量é", 12000) // 24000 runes
+	if r := callTool(t, reg, "stage.patch_page", fmt.Sprintf(
+		`{"path":"wiki/concepts/kv-cache.md","section":"## Why it matters","op":"replace_section","content":%q,"rationale":"oversize the section"}`, big,
+	)); r.IsError {
+		t.Fatalf("patch: %s", r.Content)
+	}
+	b, has, err := e.StagedFile("wiki/concepts/kv-cache.md")
+	if err != nil || !has {
+		t.Fatalf("StagedFile has = %v, err = %v", has, err)
+	}
+	p, err := vault.ParsePage("wiki/concepts/kv-cache.md", b)
+	if err != nil {
+		t.Fatalf("ParsePage staged: %v", err)
+	}
+
+	res := callTool(t, reg, "wiki.get", `{"page":"kv-cache"}`)
+	if res.IsError {
+		t.Fatalf("staged wiki.get: %s", res.Content)
+	}
+	if !strings.HasPrefix(res.Content, stagedSourceMarker) {
+		t.Fatalf("truncated staged result lost the marker prefix:\n%.120s", res.Content)
+	}
+	rest := strings.TrimPrefix(res.Content, stagedSourceMarker)
+	full := string(p.Serialize())
+	want := firstNRunes(full, 16000) + wikiGetTruncationNoticeHead(p.Path, utf8.RuneCountInString(full), sectionHeadings(p))
+	if rest != want {
+		t.Fatalf("staged truncated body = %d runes, want byte-exact %d-rune prefix + notice (marker must not count toward the cap)",
+			utf8.RuneCountInString(rest), utf8.RuneCountInString(want))
+	}
+}
+
+// TestWikiGetToolDescriptionMentionsTruncation pins F.W3: the description
+// carries the one-sentence truncation disclosure so a model reading long
+// pages knows to go by section before it hits the cap.
+func TestWikiGetToolDescriptionMentionsTruncation(t *testing.T) {
+	d := wikiGetTool(Deps{})
+	if !strings.Contains(d.Description, "Results over 16000 characters are truncated; read long pages by section.") {
+		t.Fatalf("wiki.get description missing the F.W3 sentence: %s", d.Description)
+	}
+}
+
+// TestWikiGetNoticeHeadingsRoundTrip is the reviewer's probe: a truncated
+// whole-page result's "Read the rest by section: ..." list must name
+// headings that succeed verbatim as the section argument — including one
+// whose heading line sits entirely beyond the 16000-rune cut, proving the
+// list describes the whole page, not the shown prefix.
+func TestWikiGetNoticeHeadingsRoundTrip(t *testing.T) {
+	dir := testutil.CopyFixture(t, "minimal")
+	rel := "wiki/concepts/roundtrip.md"
+	// First section is huge, so the cut lands inside it; "## Deep" lives
+	// entirely past the cut and only ever reaches the model via the notice.
+	content := fmt.Sprintf("---\ntitle: Roundtrip\ncreated: 2026-08-30\nupdated: 2026-08-30\ntype: concept\ntags: [inference]\nconfidence: high\n---\n\n# Roundtrip\n\n## Big\n\n%s\n\n## Deep\n\ndeep body\n", strings.Repeat("a", 30000))
+	if err := os.WriteFile(filepath.Join(dir, "wiki", "concepts", "roundtrip.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", rel, err)
+	}
+	reg := NewRegistry(newTestDeps(t, dir))
+
+	res, err := reg.Call(context.Background(), "wiki.get", json.RawMessage(`{"page": "roundtrip"}`))
+	if err != nil || res.IsError {
+		t.Fatalf("Call(wiki.get) = %+v, err = %v", res, err)
+	}
+	i := strings.Index(res.Content, "Read the rest by section: ")
+	if i < 0 {
+		t.Fatalf("truncated result carries no section list:\n%.200s", res.Content[len(res.Content)-200:])
+	}
+	list := strings.TrimSuffix(res.Content[i+len("Read the rest by section: "):], "]")
+	if list != "# Roundtrip, ## Big, ## Deep" {
+		t.Fatalf("notice list = %q, want the full heading list", list)
+	}
+	if prefix := strings.SplitN(res.Content, "\n\n[truncated:", 2)[0]; utf8.RuneCountInString(prefix) > 16000 {
+		t.Fatal("shown prefix exceeds the cap")
+	}
+	for _, h := range strings.Split(list, ", ") {
+		sres, err := reg.Call(context.Background(), "wiki.get", json.RawMessage(fmt.Sprintf(`{"page": "roundtrip", "section": %q}`, h)))
+		if err != nil || sres.IsError {
+			t.Fatalf("notice-listed heading %q is not fetchable verbatim: %+v, err = %v", h, sres, err)
+		}
+	}
+	if sres, _ := reg.Call(context.Background(), "wiki.get", json.RawMessage(`{"page": "roundtrip", "section": "## Deep"}`)); !strings.Contains(sres.Content, "deep body") {
+		t.Fatalf("## Deep read past the cut returned wrong content: %.200s", sres.Content)
+	}
+}
+
+// TestWikiGetTruncatedHeadinglessPageDropsDeadPointer pins the reviewer's
+// fix: an oversized page with no ATX headings has nothing to point at, so
+// its notice must not carry the "Read the rest by section: " clause — a
+// dangling pointer with an empty list would send the model hunting for
+// sections that do not exist. Pages WITH headings keep the clause (pinned
+// byte-exact by the tests above).
+func TestWikiGetTruncatedHeadinglessPageDropsDeadPointer(t *testing.T) {
+	dir := testutil.CopyFixture(t, "minimal")
+	rel := "wiki/concepts/noheadings.md"
+	content := fmt.Sprintf("---\ntitle: Noheadings\ncreated: 2026-08-30\nupdated: 2026-08-30\ntype: concept\ntags: [inference]\nconfidence: high\n---\n\n%s\n", strings.Repeat("a", 20000))
+	if err := os.WriteFile(filepath.Join(dir, "wiki", "concepts", "noheadings.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", rel, err)
+	}
+	reg := NewRegistry(newTestDeps(t, dir))
+	res, err := reg.Call(context.Background(), "wiki.get", json.RawMessage(`{"page": "noheadings"}`))
+	if err != nil || res.IsError {
+		t.Fatalf("Call(wiki.get) = %+v, err = %v", res, err)
+	}
+	if strings.Contains(res.Content, "Read the rest by section") {
+		t.Fatalf("headingless page's notice kept the dead section pointer:\n%.160s", res.Content[len(res.Content)-160:])
+	}
+	if !strings.HasSuffix(res.Content, "[truncated: wiki/concepts/noheadings.md is 20117 runes; showing the first 16000.]") {
+		t.Fatalf("headingless notice malformed:\n%.80s", res.Content[len(res.Content)-80:])
+	}
+}
+
+// BenchmarkFirstRunesFiveMB measures firstRunes' cost on a 5 MB page —
+// the scratch probe behind the []rune-conversion review question.
+func BenchmarkFirstRunesFiveMB(b *testing.B) {
+	s := strings.Repeat("量é", 1<<21) // 5 MB of 3-byte runes
+	for b.Loop() {
+		if got := firstRunes(s, wikiGetMaxRunes); utf8.RuneCountInString(got) != wikiGetMaxRunes {
+			b.Fatalf("firstRunes cut to %d runes", utf8.RuneCountInString(got))
+		}
 	}
 }
 
