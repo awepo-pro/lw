@@ -1322,6 +1322,209 @@ func TestProbeSessionNDJSONByteIdenticalOnDisk(t *testing.T) {
 	}
 }
 
+// TestProbeReorderedKeysCannotSustainTheCycle is probe 6 (A-004-2 review,
+// forward-progress hunt): json.Compact normalizes whitespace but NOT key
+// order, so {"page":"a","section":"x"} and {"section":"x","page":"a"} are
+// two signatures for one read under the frozen rule. The livelock question
+// is whether that spelling freedom can re-form the elide→re-read cycle the
+// pinning killed. It cannot: the permutation space of a fixed key set is
+// finite (n! for n keys — 2 here) and a pin, once set, never lifts, so each
+// spelling is elided at most once and the elidable supply for the read dries
+// up — a bounded transient (≤ n! content losses, each costing one round of
+// the ≤ MaxToolRounds cap), not a cycle. This probe drives the worst case at
+// the boundContext seam: a model that alternates BOTH orderings forever,
+// plus the whitespace variant Compact does fold. Asserted: the two orderings
+// really are distinct signatures (the boundary is real), the spacing variant
+// folds onto its ordering's pin, each signature is elided exactly once
+// across the whole simulated turn (the two FIRST spellings, nothing else),
+// and once both pins exist the walk elides nothing for this read — the
+// steady state is F.C3's warn-and-send, not elide-again.
+func TestProbeReorderedKeysCannotSustainTheCycle(t *testing.T) {
+	logPath := installFileLog(t)
+
+	ord1 := `{"page":"a","section":"x"}`
+	ord2 := `{"section":"x","page":"a"}`
+	spaced := `{ "section": "x", "page": "a" }`
+
+	// The boundary facts the whole question rests on.
+	if callSignature("wiki_get", ord1) == callSignature("wiki_get", ord2) {
+		t.Fatalf("key order folded — the reordering analysis this probe pins is moot")
+	}
+	if callSignature("wiki_get", ord2) != callSignature("wiki_get", spaced) {
+		t.Fatalf("whitespace did not fold — json.Compact is not being applied")
+	}
+
+	big := strings.Repeat("x", 400) // 100 estimated tokens
+	asst := func(id, args string) llm.Message {
+		return llm.Message{Role: "assistant", ToolCalls: []llm.ToolCall{*toolCallChunk(id, "wiki_get", args).ToolCall}}
+	}
+	tool := func(id string) llm.Message {
+		return llm.Message{Role: "tool", ToolCallID: id, Name: "wiki_get", Content: big}
+	}
+	spellings := []struct{ id, args string }{
+		{"r1", ord1}, {"r2", ord2}, {"r3", ord1}, {"r4", ord2}, {"r5", spaced},
+	}
+
+	// Budget: the round-2 request (fixed parts + one full result) plus 80
+	// tokens — slack one elision (~74) recovers but that leaves two full
+	// results over, so rounds 3+ have real walk work and rounds 5+ end in
+	// the pinned steady state.
+	base := []llm.Message{
+		{Role: "system", Content: strings.Repeat("s", 40)},
+		{Role: "user", Content: strings.Repeat("u", 40)},
+		asst("r1", ord1),
+		tool("r1"),
+	}
+	budget := wireEstimate(base) + 80
+
+	msgs := base[:2]
+	turnStart := 2
+	elided := map[int]bool{}
+	pinned := map[string]bool{}
+	newlyElided := map[int][]string{} // round → call ids elided at that round's bound
+	for r := 1; r <= 6; r++ {
+		prev := map[int]bool{}
+		for i := range elided {
+			prev[i] = true
+		}
+		msgs = boundContext(msgs, turnStart, elided, pinned, r, budget)
+		for i := range elided {
+			if !prev[i] {
+				newlyElided[r] = append(newlyElided[r], spellings[(i-turnStart-1)/2].id)
+			}
+		}
+		if r <= len(spellings) {
+			spec := spellings[r-1]
+			msgs = append(msgs, asst(spec.id, spec.args), tool(spec.id))
+		}
+	}
+
+	// THE convergence property: each signature elided exactly once, whole
+	// turn — ord1 on its first spelling (r1), ord2 on its first spelling
+	// (r2), and never again, however the model re-spells the read.
+	wantElided := map[int][]string{3: {"r1"}, 4: {"r2"}}
+	for r := 1; r <= 6; r++ {
+		got := newlyElided[r]
+		if want := wantElided[r]; len(got) != len(want) {
+			t.Errorf("round %d elided %v, want %v", r, got, want)
+		} else {
+			for k := range want {
+				if got[k] != want[k] {
+					t.Errorf("round %d elided %v, want %v", r, got, want)
+				}
+			}
+		}
+	}
+
+	// From round 4 on, r1 and r2 stay placeholders and every later spelling
+	// of the read — the reordered re-request r3, r4, and the whitespace
+	// variant r5 — keeps its full result on the wire.
+	pin := probePlaceholder("wiki.get", len(big))
+	for i, want := range map[int]string{3: pin, 5: pin, 7: big, 9: big, 11: big} {
+		if got := msgs[i].Content; got != want {
+			t.Errorf("final request: message %d = %.60q, want %.60q", i, got, want)
+		}
+	}
+
+	log := readLog(t, logPath)
+	if n := strings.Count(log, `msg="context elided"`); n != 2 {
+		t.Errorf("want exactly 2 elision log lines (r1, r2), got %d:\n%s", n, log)
+	}
+	if n := strings.Count(log, `msg="context over budget"`); n != 2 {
+		t.Errorf("want exactly 2 F.C3 warns (rounds 5 and 6, the pinned steady state), got %d:\n%s", n, log)
+	}
+}
+
+// TestProbeSameSignatureTwiceInOneRoundIsOneRead is probe 7 (A-004-2 review,
+// hunt 2): the pin is keyed by signature, not by message, so a round that
+// issues the SAME read twice in parallel — two call ids, one signature — is
+// one read. The frozen rule states the consequence outright ("two calls with
+// the same signature are the same read: eliding one pins the other") and it
+// is the desirable one: of N twins exactly the oldest is ever elided, every
+// surviving twin keeps the full content on the wire for the rest of the
+// turn, and the wire shape stays valid (every tool call answered exactly
+// once). Sized so that after the oldest twin is elided the request is STILL
+// over budget: the walk provably reaches the twin and skips it by pin — the
+// round-3/4 F.C3 warns are the evidence it was the pin, not an early stop,
+// that protected it.
+func TestProbeSameSignatureTwiceInOneRoundIsOneRead(t *testing.T) {
+	logPath := installFileLog(t)
+
+	rounds := [][]llm.Chunk{
+		{toolCallChunk("call-d1", "wiki_get", bigWikiArgs), toolCallChunk("call-d2", "wiki_get", bigWikiArgs), {Finish: "tool_calls"}},
+		{toolCallChunk("call-d3", "wiki_get", bigWikiArgs), {Finish: "tool_calls"}},
+		{toolCallChunk("call-d4", "wiki_get", bigWikiArgs), {Finish: "tool_calls"}},
+		{{Text: "done"}, {Finish: "stop"}},
+	}
+
+	ctlFake, _, _ := runBigTurn(t, LoopConfig{ContextTokens: 1000000})
+	base := wireEstimate(ctlFake.Requests()[0].Messages)
+	budget := base + 9000 // two full results over; one elision (~4974) cannot reach it
+
+	l, fx, fake, _ := newBudgetLoop(t, rounds, LoopConfig{ContextTokens: budget})
+	out := make(chan Event, 256)
+	if err := l.Send(context.Background(), fx.csID, "read the big page twice at once", out); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	events := drain(out)
+	assertStopTurn(t, events, 4)
+
+	reqs := fake.Requests()
+	if len(reqs) != 4 {
+		t.Fatalf("Stream called %d times, want 4", len(reqs))
+	}
+	originals := map[string]string{}
+	for _, ev := range events {
+		if res, ok := ev.(ToolResEv); ok {
+			originals[res.ID] = res.Content
+		}
+	}
+
+	// Exactly one elision across the whole turn, and it is the OLDEST twin.
+	// An elision is a transition intact→placeholder between consecutive
+	// requests — a placeholder persisting into later requests is F.C2's own
+	// rule (never re-elided, never restored), not a new elision.
+	wasPlaceholder := map[string]bool{}
+	var elidedIDs []string
+	for k, req := range reqs {
+		nowPlaceholder := map[string]bool{}
+		for _, i := range checkWireShape(t, req, k+1, originals) {
+			id := req.Messages[i].ToolCallID
+			nowPlaceholder[id] = true
+			if !wasPlaceholder[id] {
+				elidedIDs = append(elidedIDs, id)
+			}
+		}
+		wasPlaceholder = nowPlaceholder
+	}
+	if len(elidedIDs) != 1 || elidedIDs[0] != "call-d1" {
+		t.Errorf("elided across the turn = %v, want exactly [call-d1] — one read, elided once", elidedIDs)
+	}
+
+	// Every surviving twin keeps its full result in every request that
+	// carries it — d2 (the round-1 twin), and the re-reads d3, d4.
+	for _, id := range []string{"call-d2", "call-d3", "call-d4"} {
+		for k, req := range reqs {
+			for _, m := range req.Messages {
+				if m.Role == "tool" && m.ToolCallID == id && m.Content != originals[id] {
+					t.Errorf("round %d: twin %q is not intact on the wire: %.60q", k+1, id, m.Content)
+				}
+			}
+		}
+	}
+
+	log := readLog(t, logPath)
+	if n := strings.Count(log, `msg="context elided"`); n != 1 {
+		t.Errorf("want exactly 1 elision log line (call-d1), got %d:\n%s", n, log)
+	}
+	// Rounds 2–4 all warn: round 2 has nothing eligible (most-recent
+	// protection), rounds 3 and 4 are skipped past pinned twins — the
+	// walk ran to exhaustion, so d2's intactness above is the pin's work.
+	if n := strings.Count(log, `msg="context over budget"`); n != 3 {
+		t.Errorf("want exactly 3 F.C3 warns (rounds 2, 3, 4), got %d:\n%s", n, log)
+	}
+}
+
 // BenchmarkBoundContextRealisticWorstCase is probe 4: the cost of one
 // boundContext call at the loop's realistic worst case — a full
 // MaxToolRounds turn (24 rounds × two 20 KB results on the wire, 48 tool
