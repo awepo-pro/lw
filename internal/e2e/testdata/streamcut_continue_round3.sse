@@ -1,0 +1,5 @@
+data: {"id":"chatcmpl-035cont3","created":1790240803,"object":"chat.completion.chunk","model":"glm-5.3-flash","choices":[{"index":0,"delta":{"role":"assistant","content":"Proposed wiki/concepts/stream-cut-continue-a.md and wiki/concepts/stream-cut-continue-b.md; both are staged for human review."}}]}
+
+data: {"id":"chatcmpl-035cont3","created":1790240803,"object":"chat.completion.chunk","model":"glm-5.3-flash","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":"stop"}]}
+
+data: [DONE]

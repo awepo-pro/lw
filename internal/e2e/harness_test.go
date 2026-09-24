@@ -240,6 +240,9 @@ func TestHarness(t *testing.T) {
 	t.Run("version", harnessVersion)
 	t.Run("config_isolated", harnessConfigIsolated)
 	t.Run("fakellm_ingest_roundtrip", harnessFakellmIngestRoundtrip)
+	t.Run("streamcut_retry", harnessStreamcutRetry)
+	t.Run("streamcut_continue", harnessStreamcutContinue)
+	t.Run("streamcut_twice", harnessStreamcutTwice)
 }
 
 // harnessVersion runs `lw --version` and expects the stamped version string

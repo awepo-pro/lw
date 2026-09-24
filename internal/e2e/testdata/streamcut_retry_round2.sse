@@ -1,0 +1,5 @@
+data: {"id":"chatcmpl-035retry2","created":1790240803,"object":"chat.completion.chunk","model":"glm-5.3-flash","choices":[{"index":0,"delta":{"role":"assistant","content":"Proposed wiki/concepts/stream-cut-retry.md; it is staged for human review."}}]}
+
+data: {"id":"chatcmpl-035retry2","created":1790240803,"object":"chat.completion.chunk","model":"glm-5.3-flash","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":"stop"}]}
+
+data: [DONE]

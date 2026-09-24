@@ -1,0 +1,7 @@
+data: {"id":"chatcmpl-035retry1b","created":1790240803,"object":"chat.completion.chunk","model":"glm-5.3-flash","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"The round was cut mid-sentence; staging the page cleanly this time."}}]}
+
+data: {"id":"chatcmpl-035retry1b","created":1790240803,"object":"chat.completion.chunk","model":"glm-5.3-flash","choices":[{"index":0,"delta":{"tool_calls":[{"id":"call_035retry","index":0,"type":"function","function":{"name":"stage_create_page","arguments":"{\"path\":\"wiki/concepts/stream-cut-retry.md\",\"title\":\"Stream Cut Retry\",\"type\":\"concept\",\"tags\":[\"inference\",\"memory\"],\"sources\":[\"raw/articles/e2e-round-trip.md\"],\"confidence\":\"high\",\"contested\":false,\"body\":\"A page staged by the 035 T4 streamcut_retry scenario.\\n\\n## Related\\n\\n- [[note-0000]] - a seeded scale note.\\n- [[note-0001]] - another seeded scale note.\\n\",\"rationale\":\"Proves a truncated round with no dispatched call is retried once with the identical request.\"}"}}]}}]}
+
+data: {"id":"chatcmpl-035retry1b","created":1790240803,"object":"chat.completion.chunk","model":"glm-5.3-flash","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":"tool_calls"}]}
+
+data: [DONE]

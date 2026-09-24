@@ -1,0 +1,7 @@
+data: {"id":"chatcmpl-035cont2","created":1790240803,"object":"chat.completion.chunk","model":"glm-5.3-flash","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"The second call was lost to the cut; sending it again."}}]}
+
+data: {"id":"chatcmpl-035cont2","created":1790240803,"object":"chat.completion.chunk","model":"glm-5.3-flash","choices":[{"index":0,"delta":{"tool_calls":[{"id":"call_035c1b","index":0,"type":"function","function":{"name":"stage_create_page","arguments":"{\"path\":\"wiki/concepts/stream-cut-continue-b.md\",\"title\":\"Stream Cut Continue B\",\"type\":\"concept\",\"tags\":[\"inference\",\"memory\"],\"sources\":[\"raw/articles/e2e-round-trip.md\"],\"confidence\":\"high\",\"contested\":false,\"body\":\"Page B of the 035 T4 streamcut_continue scenario.\\n\\n## Related\\n\\n- [[note-0001]] - another seeded scale note.\\n- [[note-0000]] - a seeded scale note.\\n\",\"rationale\":\"The call the provider cut while it was still assembling.\"}"}}]}}]}
+
+data: {"id":"chatcmpl-035cont2","created":1790240803,"object":"chat.completion.chunk","model":"glm-5.3-flash","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
