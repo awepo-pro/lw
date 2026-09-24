@@ -1,10 +1,14 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -73,17 +77,20 @@ func cmdTUI(args []string) error {
 
 	// The web flag reads the config a third time — tuiTheme reads it for
 	// the theme name, tuiAgent for the provider — because each seam loads
-	// its own, and this one has no other field to carry. A load failure is
-	// already reported by tuiTheme's read and degrades the ask pane through
-	// tuiAgent's, so this one discards the error: a config that cannot load
-	// means web lookup is simply not configured, which is exactly what the
-	// ask pane's hint then says (cs-79f2d7).
+	// its own, and this one carries open.pdf too (034 T5), the one [open]
+	// field there is. A load failure is already reported by tuiTheme's read
+	// and degrades the ask pane through tuiAgent's, so this one discards
+	// the error: a config that cannot load means web lookup is simply not
+	// configured (which is exactly what the ask pane's hint then says,
+	// cs-79f2d7) and no viewer is wired (which the citation picker's unset
+	// hint then says).
 	cfg, _ := config.Load()
 
 	deps := ui.Deps{
 		Engine:    engine,
 		Agent:     ag, // nil when tuiAgent failed; the ask pane says so
 		WebSearch: webConfigured(cfg),
+		OpenPDF:   openPDFOpener(cfg, engine),
 		Theme:     theme,
 		Keys:      keys,
 	}
@@ -129,6 +136,53 @@ func webConfigured(cfg *config.Config) bool {
 		return false
 	}
 	return webSearchProvider(cfg) != nil
+}
+
+// openPDFOpener wires ui.Deps.OpenPDF from the loaded [open] config (034
+// T5): the configured viewer is exec'd detached — no stdio, reaped in a
+// goroutine — because a TUI that waited on a PDF viewer would freeze the
+// whole shell, and a viewer inheriting the terminal would scribble over the
+// frame. Every launch is traced in lw.log with the vault-relative file and
+// the page, beside the engine's own launch lines, so "what opened this PDF"
+// stays answerable after the fact. While open.pdf is unset the closure
+// returns ui.OpenPDFUnsetHint, which the citation picker shows verbatim —
+// the fix travels with the failure. The agent never reaches this seam: it
+// is a Deps field, not a tool. Split out of cmdTUI so a test can drive the
+// wiring without tea.Program.Run (C-83). Only the launch is guarded: a
+// viewer that starts and then exits non-zero is reaped silently — its exit
+// code is deliberately dropped, because the TUI has already moved on and a
+// viewer dying a second after opening is the user's viewer to debug, not a
+// picker state to model.
+func openPDFOpener(cfg *config.Config, e *stage.Engine) func(string, int) error {
+	root := ""
+	if e != nil {
+		root = e.Vault().Root()
+	}
+	return func(pdf string, page int) error {
+		if cfg == nil || strings.TrimSpace(cfg.Open.PDF) == "" {
+			return errors.New(ui.OpenPDFUnsetHint)
+		}
+		argv, err := cfg.Open.Argv(pdf, page)
+		if err != nil {
+			return err
+		}
+		// The argv is the user's own configured viewer; only the UI, never
+		// the agent, can reach this exec.
+		cmd := exec.Command(argv[0], argv[1:]...)
+		if err := cmd.Start(); err != nil {
+			return fmt.Errorf("open %s: %w", filepath.Base(pdf), err)
+		}
+		go func() { _ = cmd.Wait() }()
+
+		rel := filepath.ToSlash(pdf)
+		if root != "" {
+			if r, err := filepath.Rel(root, pdf); err == nil {
+				rel = filepath.ToSlash(r)
+			}
+		}
+		slog.Info("open pdf", "file", rel, "page", page)
+		return nil
+	}
 }
 
 // loadTUITheme and loadTUIKeys are the seams tuiTheme goes through, for the

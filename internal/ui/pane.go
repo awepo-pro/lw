@@ -63,9 +63,24 @@ type Deps struct {
 	// changes (cs-79f2d7). Zero value false: every construction site
 	// chooses deliberately.
 	WebSearch bool
-	Theme     Theme
-	Keys      KeyMap
+	// OpenPDF opens a PDF original at a 1-based page (034 T5): pdf is the
+	// file's absolute vault path, page the physical page to land on. The
+	// call must not block — Browse calls it from Update — and the cmd/lw
+	// wiring execs the configured viewer detached, reporting a failed
+	// launch as the returned error, which Browse shows verbatim. nil is a
+	// supported state, not a stub: a shell built without the seam (every
+	// test harness) gets OpenPDFUnsetHint instead of a launch. Never
+	// reachable from the agent — this is a UI seam, not a tool.
+	OpenPDF func(pdf string, page int) error
+	Theme   Theme
+	Keys    KeyMap
 }
+
+// OpenPDFUnsetHint is the message Browse shows when it cannot open a PDF
+// because no opener exists — Deps.OpenPDF nil, or the cmd/lw wiring finding
+// open.pdf unset — so the failure always travels with the exact command
+// that fixes it. One spelling, two paths to it. (034 T5.)
+const OpenPDFUnsetHint = `set open.pdf first: lw config set open.pdf "papers -i {page} {file}"`
 
 // Options configures NewApp. Panes is injected by cmd/lw; the shell never
 // constructs a screen and never imports one (backbone §12).

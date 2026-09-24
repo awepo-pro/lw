@@ -114,6 +114,9 @@ var configFields = []configField{
 	{key: "extract.timeout", get: func(c *config.Config) string { return c.Extract.Timeout },
 		set:     setExtractTimeout,
 		display: displayExtractTimeout},
+	{key: "open.pdf", get: func(c *config.Config) string { return c.Open.PDF },
+		set:     setOpenPDF,
+		display: displayOpenPDF},
 	{key: "theme", get: func(c *config.Config) string { return c.Theme },
 		set:     func(c *config.Config, v string) error { c.Theme = v; return nil },
 		display: displayNotSet},
@@ -198,6 +201,29 @@ func setExtractTimeout(c *config.Config, v string) error {
 func displayExtractTimeout(raw string) string {
 	if raw == "" {
 		return fmt.Sprintf("(default %s)", config.DefaultExtractTimeout)
+	}
+	return raw
+}
+
+// setOpenPDF validates open.pdf before anything is written (034 T5): the
+// PDF viewer template, non-empty after trim. An empty value would leave the
+// Browse citation picker reporting the unset hint forever, so the word the
+// user meant to say is refused with the two template shapes named there.
+func setOpenPDF(c *config.Config, v string) error {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return fmt.Errorf(`open.pdf: want a viewer command, e.g. "papers -i {page} {file}" or "mupdf {file} {page}"`)
+	}
+	c.Open.PDF = v
+	return nil
+}
+
+// displayOpenPDF renders the stored viewer template. An empty value means
+// the key is absent and no viewer is wired — the picker's unset hint names
+// the fix — so the table says that instead of printing a blank.
+func displayOpenPDF(raw string) string {
+	if raw == "" {
+		return "(unset)"
 	}
 	return raw
 }
@@ -384,6 +410,7 @@ keys:
   llm.limits.context_tokens   web.provider
   web.api_key                 web.max_results
   extract.command             extract.timeout
+  open.pdf
   theme
 
 llm.thinking is off|on|default: off sends thinking:{"type":"disabled"} so a
@@ -398,6 +425,10 @@ version with "uvx --from docling==2.130.0 docling").
 extract.timeout is a Go duration bounding one PDF extraction (default 5m0s);
 it must be positive — an extraction that never returns is a defect, so
 there is no "0 disables" form.
+open.pdf is the PDF viewer template the Browse citation picker execs: {file}
+and {page} are substituted inside each field ("papers -i {page} {file}",
+"mupdf {file} {page}"), and the file is appended when the template names no
+{file}.
 llm.api_key and web.api_key are stored as references, never values: export
 the key and set the variable's name, e.g. lw config set llm.api_key env:LW_API_KEY.
 A literal that looks like a key is refused.
