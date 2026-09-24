@@ -1,5 +1,6 @@
-// Package lint runs the fixed set of 11 vault health checks against a
-// vault, index and graph, and reports findings the agent may read but never
-// compute itself. It will hold lint.go, context.go and the 11 check_*.go
-// files, one per check.
+// Package lint runs the fixed set of vault health checks against a vault,
+// index and graph, and reports findings the agent may read but never
+// compute itself. The set is table-ordered in All(): backbone §4's eleven,
+// plus page-abstract (014), duplicate-section (020) and cite-page /
+// cite-source (034) — 18 today, one check_*.go file each.
 package lint

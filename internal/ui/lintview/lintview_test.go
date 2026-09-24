@@ -49,16 +49,18 @@ func TestNewConstructibleWithNilEngine(t *testing.T) {
 	}
 }
 
-// TestDirtyFixtureSixteenRowsTwentySixFindings is the stage file's own
-// verification: lint.All() is 16 checks (C-85/D-V, not the 11 the stage
+// TestDirtyFixtureEighteenRowsTwentySixFindings is the stage file's own
+// verification: lint.All() is 18 checks (C-85/D-V, not the 11 the stage
 // file originally said; 014 added page-abstract as the 15th, 020 added
-// duplicate-section as the 16th) and spec/fixtures/dirty totals 26
+// duplicate-section as the 16th, 034 added cite-page as the 17th and
+// cite-source as the 18th) and spec/fixtures/dirty totals 26
 // findings (EXPECTED-LINT.md — 014 amendment, workflow §9 A6: 16 → 26,
 // the ten dirty wiki pages each gained a page-abstract warn; duplicate-
-// section fires 0 times on the fixtures, so 020 left the total alone).
+// section fires 0 times on the fixtures, so 020 left the total alone, and
+// cite-page/cite-source fire 0 times too, so 034 left it alone as well).
 // Both numbers are read from the model's own state, never hardcoded from
 // a rendered string.
-func TestDirtyFixtureSixteenRowsTwentySixFindings(t *testing.T) {
+func TestDirtyFixtureEighteenRowsTwentySixFindings(t *testing.T) {
 	d, _ := newTestDeps(t, "dirty")
 	p := initModel(t, d)
 	m := p.(*Model)
@@ -66,16 +68,17 @@ func TestDirtyFixtureSixteenRowsTwentySixFindings(t *testing.T) {
 	if !m.hasReport {
 		t.Fatalf("report did not load: %v", m.loadErr)
 	}
-	if got := len(m.checks); got != 16 {
-		t.Fatalf("len(lint.All()) = %d, want 16", got)
+	if got := len(m.checks); got != 18 {
+		t.Fatalf("len(lint.All()) = %d, want 18", got)
 	}
 	if got := len(m.report.Findings); got != 26 {
 		t.Fatalf("len(report.Findings) = %d, want 26", got)
 	}
 
-	// The first 15 checks each fire at least once on dirty
+	// The first 16 checks each fire at least once on dirty
 	// (EXPECTED-LINT.md's own claim) — cross-checked here via ByCheck
-	// rather than trusted blindly.
+	// rather than trusted blindly. cite-page and cite-source, checks 17-18,
+	// fire 0 times on the fixtures (034 A-034-2).
 	var total int
 	for _, c := range m.checks {
 		total += len(m.report.ByCheck[c.ID()])
