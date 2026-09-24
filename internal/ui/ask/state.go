@@ -15,6 +15,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/awepo-pro/lw/internal/agent"
+	"github.com/awepo-pro/lw/internal/llm"
 	"github.com/awepo-pro/lw/internal/ui"
 )
 
@@ -81,6 +82,11 @@ func (m *Model) applyEvent(ev agent.Event) tea.Cmd {
 			m.resetReasoningRound()
 			m.roundToolInFlight = false
 			m.resolveToolCall(e)
+		case agent.RetryEv:
+			// 035: the round's stream ended early with no tool call
+			// dispatched, and the identical request is going out again —
+			// the partial text it streamed must not survive it (retry.go).
+			m.retryRound()
 		case agent.StageEv:
 			// Only the pane's own auto-reject streams an empty StageEv while
 			// its turn is active (stream.go forwardTurn) — the one turn that
@@ -131,6 +137,13 @@ func (m *Model) applyEvent(ev agent.Event) tea.Cmd {
 			// after it was proposed, and llm.max_tokens is the knob.
 			if errors.Is(e.Err, agent.ErrTruncated) {
 				msg = "stopped: output limit reached — nothing after this was proposed; raise llm.max_tokens"
+			}
+			// A round the provider cut twice (035) is not the output cap
+			// and not an ordinary provider failure: the turn already
+			// retried the identical request once, so the one sentence a
+			// curator can act on is "send again".
+			if errors.Is(e.Err, llm.ErrStreamTruncated) {
+				msg = "stopped: the provider cut the stream off twice in one round — send again"
 			}
 			// Before endTurnError: it drops the filing marker (C-907), and
 			// forgetLastAnswer must still see it to keep a filing turn's

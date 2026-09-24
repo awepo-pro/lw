@@ -49,6 +49,13 @@ func isURLSource(src string) bool {
 // the text last written", checked only when the next non-empty TextDelta
 // arrives; deltas within one round (no tool event between them) are still
 // written byte-identical to before.
+//
+// 035: a RetryEv — the round's stream ended early and the identical
+// request is going out again — marks the cut with retryMarker so the
+// partial text the provider abandoned never runs into the retry's own
+// text, and resets the round state so the next TextDelta starts clean. A
+// round that wrote nothing writes nothing: the marker is only ever a
+// witness to text being disowned.
 func runAgentTurn(ctx context.Context, ag agent.Agent, sessionID, msg string, w io.Writer) error {
 	out := make(chan agent.Event)
 	done := make(chan struct{})
@@ -60,6 +67,7 @@ func runAgentTurn(ctx context.Context, ag agent.Agent, sessionID, msg string, w 
 
 	var wrote bool     // some TextDelta has already been written this turn
 	var toolSince bool // a tool event arrived since the last TextDelta write
+	var roundText bool // text has been written since the round's last tool event (035)
 	var trailingNL int // trailing '\n' run at the end of w, capped at 2
 	for ev := range out {
 		switch e := ev.(type) {
@@ -83,13 +91,32 @@ func runAgentTurn(ctx context.Context, ag agent.Agent, sessionID, msg string, w 
 			trailingNL = trailingNewlineRun(trailingNL, e.Text)
 			wrote = true
 			toolSince = false
+			roundText = true
 		case agent.ToolCallEv, agent.ToolResEv:
 			toolSince = true
+			roundText = false
+		case agent.RetryEv:
+			if !roundText {
+				continue
+			}
+			if trailingNL == 0 {
+				fmt.Fprint(w, "\n")
+			}
+			fmt.Fprint(w, retryMarker)
+			trailingNL = 1
+			toolSince = false
+			roundText = false
 		}
 	}
 	<-done
 	return sendErr
 }
+
+// retryMarker is the line runAgentTurn writes where a RetryEv disowned
+// the round's partial text (035): em dash, matching the pane's own retry
+// wording, on a line of its own so the surviving partial text reads as
+// interrupted, not as the retried round's opening words.
+const retryMarker = "[stream cut by the provider — retrying]\n"
 
 // trailingNewlineRun returns, capped at 2, the number of consecutive '\n'
 // bytes ending the text written so far: prev is that same count before s
