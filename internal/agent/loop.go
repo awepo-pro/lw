@@ -50,6 +50,12 @@ const maxConsecutiveBadCalls = 2
 // ends the turn with exactly one ErrorEv wrapping ErrTruncated and no
 // DoneEv, so a caller cannot mistake an output-token cap for success (U1:
 // 000006 committed an ingest of zero pages that way).
+//
+// A provider stream that ends before [DONE] or a finish_reason
+// (llm.ErrStreamTruncated, 035) is recovered inside runRound — the round
+// continues when a tool call was already dispatched, and is retried once
+// otherwise (surfacing as RetryEv) — so only a twice-cut round reaches
+// Send's caller as an ErrorEv wrapping llm.ErrStreamTruncated.
 func (l *Loop) Send(ctx context.Context, sessionID, msg string, out chan<- Event) error {
 	defer close(out)
 	slog.Info("agent turn", "rounds_max", l.cfg.MaxToolRounds)
@@ -103,7 +109,7 @@ func (l *Loop) Send(ctx context.Context, sessionID, msg string, out chan<- Event
 		// is the one checkpoint a round's request passes through.
 		msgs = boundContext(msgs, turnStart, elided, pinned, rounds, l.cfg.ContextTokens)
 
-		newMsgs, toolCalled, finish, err := l.runRound(ctx, sessionID, msgs, &badCalls, out)
+		newMsgs, toolCalled, finish, err := l.runRound(ctx, sessionID, rounds, msgs, &badCalls, out)
 		if err != nil {
 			return err
 		}
@@ -130,9 +136,11 @@ func (l *Loop) Send(ctx context.Context, sessionID, msg string, out chan<- Event
 	}
 }
 
-// runRound streams one Stream call's response to completion: text deltas
-// become TextDelta events, each complete ToolCall is dispatched immediately,
-// and at the round's end (the stream channel closes) everything the round
+// runRound streams the round's response to completion — re-sending the
+// identical request once if the provider cuts the stream before any tool
+// call (035) — with text deltas becoming TextDelta events and each complete
+// ToolCall dispatched immediately. At the round's end (the stream channel
+// closes, or a cut recovers as case (A) below) everything the round
 // produced — its full text, its full reasoning and every tool call, in
 // stream order — is folded into exactly **one** assistant llm.Message,
 // followed by that round's tool-result messages in call order. It returns
@@ -148,6 +156,19 @@ func (l *Loop) Send(ctx context.Context, sessionID, msg string, out chan<- Event
 // before Send's ErrorEv, so the transcript shows what the cap cut off. It
 // is the only path that sets Record.Finish; normal rounds never do.
 //
+// Cut recovery (035): a Chunk.Err wrapping llm.ErrStreamTruncated while ctx
+// is still alive takes one of three plans (streamcut.go planCut). (A) A tool
+// call was already dispatched MID-STREAM, so the round ends as if it had
+// finished — finish "", toolCalled true — because re-sending would run that
+// call a second time. (B) Nothing was dispatched, so the round's text and
+// reasoning are discarded whole, one RetryEv goes out, and the identical
+// request is streamed again, handled as a fresh stream of the same round.
+// (C) The re-send was cut too, and the turn fails wrapping
+// llm.ErrStreamTruncated. Only (B) ever re-calls Stream, so a retry can
+// never re-dispatch a call the cut round already ran. round — the turn's
+// 1-based round number, the same counter DoneEv.Rounds reports — feeds the
+// recovery's log lines and RetryEv only.
+//
 // Contract — one assistant message per round (backbone §9, C-114/C-115/
 // D-CZ; superseded by C-120/D-DG). A round that streamed text then a tool
 // call with no reasoning used to become two assistant messages — a
@@ -159,15 +180,10 @@ func (l *Loop) Send(ctx context.Context, sessionID, msg string, out chan<- Event
 // round's text, reasoning and every tool call into one assistant message —
 // the canonical OpenAI chat-completions shape — rather than repeating
 // reasoning across several messages. That single message is built once,
-// right here, when the channel closes; dispatchToolCall and correctable no
+// right here, when the round ends; dispatchToolCall and correctable no
 // longer build assistant messages at all, only the matching tool-result
 // message.
-func (l *Loop) runRound(ctx context.Context, sessionID string, msgs []llm.Message, badCalls *int, out chan<- Event) ([]llm.Message, bool, string, error) {
-	ch, err := l.client.Stream(ctx, llm.Request{Messages: msgs, Tools: l.tools.Definitions()})
-	if err != nil {
-		return nil, false, "", l.fail(ctx, out, fmt.Errorf("agent: stream: %w", err))
-	}
-
+func (l *Loop) runRound(ctx context.Context, sessionID string, round int, msgs []llm.Message, badCalls *int, out chan<- Event) ([]llm.Message, bool, string, error) {
 	var roundText strings.Builder        // every Text delta this round, in full — becomes the round's one assistant message Content.
 	var pendingText strings.Builder      // text since the last flushRecord; drives session Record order only, not the wire message.
 	var pendingReasoning strings.Builder // reasoning since the last flushRecord; same session-Record view as pendingText (005).
@@ -176,6 +192,11 @@ func (l *Loop) runRound(ctx context.Context, sessionID string, msgs []llm.Messag
 	var roundToolMsgs []llm.Message      // the matching tool-result messages, in call order.
 	toolCalled := false
 	finish := "" // the round's last non-empty Chunk.Finish; "" when the provider sent none
+
+	// cutRetried is this round's one-retry budget for a cut stream (035).
+	// Per round, never per turn: each round's request is a fresh roll of
+	// the provider's dice, and a round that used its retry starts clean.
+	cutRetried := false
 
 	// flushRecord writes any text and/or reasoning accumulated since the
 	// last flush as ONE assistant Record, in the position it arrived —
@@ -207,77 +228,144 @@ func (l *Loop) runRound(ctx context.Context, sessionID string, msgs []llm.Messag
 		return nil
 	}
 
-	for {
-		select {
-		case chunk, ok := <-ch:
-			if !ok {
-				if truncated(finish) && !toolCalled {
-					// Abnormal round end (008, contract §1): write the
-					// round's one assistant Record with its pending text,
-					// pending reasoning AND the finish reason, even when
-					// both buffers are empty — flushRecord skips empty
-					// buffers, and this record is the only trace of what
-					// the cap cut off. Send turns the same condition into
-					// the turn's ErrorEv, so the record lands before it.
-					rec := Record{TS: time.Now().UTC(), Role: "assistant", Content: pendingText.String(), Reasoning: pendingReasoning.String(), Finish: finish}
-					if aerr := l.sessions.Append(sessionID, rec); aerr != nil {
-						return nil, false, "", l.fail(ctx, out, fmt.Errorf("agent: append assistant record: %w", aerr))
-					}
-				} else if err := flushRecord(); err != nil {
-					return nil, false, "", l.fail(ctx, out, err)
-				}
-				content := roundText.String()
-				if content != "" || len(roundToolCalls) > 0 {
-					msgs = append(msgs, llm.Message{
-						Role:             "assistant",
-						Content:          content,
-						ReasoningContent: roundReasoning.String(),
-						ToolCalls:        roundToolCalls,
-					})
-					msgs = append(msgs, roundToolMsgs...)
-				}
-				return msgs, toolCalled, finish, nil
-			}
-			if chunk.Err != nil {
-				return nil, false, "", l.fail(ctx, out, fmt.Errorf("agent: stream: %w", chunk.Err))
-			}
-			if chunk.Finish != "" {
-				finish = chunk.Finish
-			}
-			if chunk.Reasoning != "" {
-				// 022 T2: the thinking streams out live, one ReasoningDelta
-				// per non-empty chunk in stream order — always before the
-				// round's text, which arrives later in the same stream.
-				// Display-only: the accumulation below (and the records it
-				// feeds) is unchanged.
-				if !l.send(ctx, out, ReasoningDelta{Text: chunk.Reasoning}) {
-					return nil, false, "", ctx.Err()
-				}
-				roundReasoning.WriteString(chunk.Reasoning)
-				pendingReasoning.WriteString(chunk.Reasoning)
-			}
-			if chunk.Text != "" {
-				if !l.send(ctx, out, TextDelta{Text: chunk.Text}) {
-					return nil, false, "", ctx.Err()
-				}
-				roundText.WriteString(chunk.Text)
-				pendingText.WriteString(chunk.Text)
-			}
-			if chunk.ToolCall != nil {
-				if err := flushRecord(); err != nil {
-					return nil, false, "", l.fail(ctx, out, err)
-				}
-				toolCalled = true
+	// assemble folds the round into its wire view — the one assistant
+	// message carrying its full text, reasoning and every tool call,
+	// followed by the tool-result messages in call order (C-120/D-DG) —
+	// and is run exactly once, at the round's exit. Both exits, a closed
+	// stream channel and a case-(A) cut (035), must produce the same
+	// shape, which is why the fold lives here once rather than in each.
+	assemble := func(msgs []llm.Message) []llm.Message {
+		content := roundText.String()
+		if content != "" || len(roundToolCalls) > 0 {
+			msgs = append(msgs, llm.Message{
+				Role:             "assistant",
+				Content:          content,
+				ReasoningContent: roundReasoning.String(),
+				ToolCalls:        roundToolCalls,
+			})
+			msgs = append(msgs, roundToolMsgs...)
+		}
+		return msgs
+	}
 
-				toolMsg, stop, tErr := l.dispatchToolCall(ctx, sessionID, *chunk.ToolCall, badCalls, out)
-				if stop {
-					return nil, false, "", tErr
+	// streamLoop runs one Stream attempt per iteration and loops only for a
+	// case-(B) cut retry (035); every other path returns from the consume
+	// loop below. The retried request is deep-equal to the cut one by
+	// construction: nothing was dispatched (that is what made it a retry)
+	// and msgs is only ever appended to by assemble, at the round's exit.
+	// Abandoning the cut attempt's channel is safe (035): the truncation
+	// Err is that stream's terminal emission — every Err path in llm's
+	// consumeStream emits and then returns — so its producer goroutine is
+	// already exiting, its deferred body close releasing the per-stream
+	// stall cancel, and nothing is ever left blocked on an unread send.
+streamLoop:
+	for {
+		ch, err := l.client.Stream(ctx, llm.Request{Messages: msgs, Tools: l.tools.Definitions()})
+		if err != nil {
+			return nil, false, "", l.fail(ctx, out, fmt.Errorf("agent: stream: %w", err))
+		}
+
+		for {
+			select {
+			case chunk, ok := <-ch:
+				if !ok {
+					if truncated(finish) && !toolCalled {
+						// Abnormal round end (008, contract §1): write the
+						// round's one assistant Record with its pending text,
+						// pending reasoning AND the finish reason, even when
+						// both buffers are empty — flushRecord skips empty
+						// buffers, and this record is the only trace of what
+						// the cap cut off. Send turns the same condition into
+						// the turn's ErrorEv, so the record lands before it.
+						rec := Record{TS: time.Now().UTC(), Role: "assistant", Content: pendingText.String(), Reasoning: pendingReasoning.String(), Finish: finish}
+						if aerr := l.sessions.Append(sessionID, rec); aerr != nil {
+							return nil, false, "", l.fail(ctx, out, fmt.Errorf("agent: append assistant record: %w", aerr))
+						}
+					} else if err := flushRecord(); err != nil {
+						return nil, false, "", l.fail(ctx, out, err)
+					}
+					return assemble(msgs), toolCalled, finish, nil
 				}
-				roundToolCalls = append(roundToolCalls, *chunk.ToolCall)
-				roundToolMsgs = append(roundToolMsgs, toolMsg)
+				if chunk.Err != nil {
+					if errors.Is(chunk.Err, llm.ErrStreamTruncated) && ctx.Err() == nil {
+						switch planCut(toolCalled, cutRetried) {
+						case cutContinue:
+							// (A) 035: the stream was cut after this round
+							// dispatched a tool call — that call already ran,
+							// so the round ends exactly as a finished one
+							// would and the turn carries on with it. No
+							// event: nothing is being thrown away, so there
+							// is nothing for a consumer to drop.
+							if ferr := flushRecord(); ferr != nil {
+								return nil, false, "", l.fail(ctx, out, ferr)
+							}
+							slog.Warn("agent round cut", "round", round, "tool_calls", len(roundToolCalls), "action", "continue")
+							return assemble(msgs), true, "", nil
+						case cutRetry:
+							// (B) 035: nothing was dispatched, and nothing
+							// was recorded — flushRecord has not fired — so
+							// the round's partial text and reasoning are
+							// discarded whole and the identical request is
+							// sent again, once. RetryEv lets consumers drop
+							// the text they already rendered.
+							cutRetried = true
+							roundText.Reset()
+							roundReasoning.Reset()
+							pendingText.Reset()
+							pendingReasoning.Reset()
+							if !l.send(ctx, out, RetryEv{Round: round, Attempt: 1, Reason: "stream ended early"}) {
+								return nil, false, "", ctx.Err()
+							}
+							slog.Warn("agent round cut", "round", round, "tool_calls", 0, "action", "retry", "attempt", 1)
+							continue streamLoop
+						case cutFail:
+							// (C) 035: the re-send was cut too — the provider
+							// failed the identical request twice in a row,
+							// and one more silent retry would loop forever.
+							slog.Warn("agent round cut", "round", round, "tool_calls", 0, "action", "fail")
+							return nil, false, "", l.fail(ctx, out, fmt.Errorf("agent: stream: %w", chunk.Err))
+						}
+					}
+					return nil, false, "", l.fail(ctx, out, fmt.Errorf("agent: stream: %w", chunk.Err))
+				}
+				if chunk.Finish != "" {
+					finish = chunk.Finish
+				}
+				if chunk.Reasoning != "" {
+					// 022 T2: the thinking streams out live, one ReasoningDelta
+					// per non-empty chunk in stream order — always before the
+					// round's text, which arrives later in the same stream.
+					// Display-only: the accumulation below (and the records it
+					// feeds) is unchanged.
+					if !l.send(ctx, out, ReasoningDelta{Text: chunk.Reasoning}) {
+						return nil, false, "", ctx.Err()
+					}
+					roundReasoning.WriteString(chunk.Reasoning)
+					pendingReasoning.WriteString(chunk.Reasoning)
+				}
+				if chunk.Text != "" {
+					if !l.send(ctx, out, TextDelta{Text: chunk.Text}) {
+						return nil, false, "", ctx.Err()
+					}
+					roundText.WriteString(chunk.Text)
+					pendingText.WriteString(chunk.Text)
+				}
+				if chunk.ToolCall != nil {
+					if err := flushRecord(); err != nil {
+						return nil, false, "", l.fail(ctx, out, err)
+					}
+					toolCalled = true
+
+					toolMsg, stop, tErr := l.dispatchToolCall(ctx, sessionID, *chunk.ToolCall, badCalls, out)
+					if stop {
+						return nil, false, "", tErr
+					}
+					roundToolCalls = append(roundToolCalls, *chunk.ToolCall)
+					roundToolMsgs = append(roundToolMsgs, toolMsg)
+				}
+			case <-ctx.Done():
+				return nil, false, "", ctx.Err()
 			}
-		case <-ctx.Done():
-			return nil, false, "", ctx.Err()
 		}
 	}
 }
