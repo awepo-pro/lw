@@ -133,7 +133,7 @@ keymap can be planned around them.
 | `enter` | Browse | Toggle a directory open/closed; a page or raw source is already open — the preview follows the cursor |
 | `/` | Browse | Find a page or raw source by name |
 | `esc` | Browse | Close the finder |
-| `o` | Browse | Open the citation picker over the preview: one row per distinct cited PDF (`x.md p.12`, `· no PDF` when the source has no original), or the selected raw source's own PDF at page 1; `enter` opens it at the cited page, `esc`/`o` close, `j`/`k` move |
+| `o` | Browse | Open the citation picker over the preview: one row per distinct cited PDF, label first (`p.12  x.md` — labels padded to the widest, `—` when cited without a page, `no PDF` when the source has no original), or the selected raw source's own PDF at page 1; `enter` opens it at the cited page, `esc`/`o` close, `j`/`k` move |
 | `h` / `left` | Browse | Collapse the selected directory, or move up to its parent |
 | `l` / `right` | Browse | Expand the selected directory |
 | `enter` | Lint | Open the finding's page in Browse |

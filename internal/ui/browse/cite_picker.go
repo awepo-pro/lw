@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/awepo-pro/lw/internal/cite"
 	"github.com/awepo-pro/lw/internal/ui"
@@ -34,18 +35,45 @@ type pickerState struct {
 // Enter. pdf is vault-relative and slash-separated (00-conventions.md §3);
 // the absolute path is built at launch time from the vault root.
 type pickerRow struct {
-	// text is the plain row label: "<base> p.N", "<base> p.N-M" or
-	// "<base>", composed from the Cite's canonical page numbers.
-	text string
+	// label is the row's left column — the one fact that matters, kept
+	// first so no box width can clip it away (A-034-5): "p.N" or "p.N-M"
+	// for a paged cite, "—" for an unpaged cite of a source that has an
+	// original (Enter opens page 1), "no PDF" for a source without one.
+	label string
+	// base is the name after the label: the original's base name when the
+	// source has one, else the source's own base name.
+	base string
 	// source is the vault-relative md source the row stands for — the
-	// "has no original PDF" message names it.
+	// "no original PDF" status names it.
 	source string
 	// pdf is the source's original: path, "" when it has none.
 	pdf string
 	// page is what Enter opens: the cite's From, or 1 when unpaged.
 	page int
-	// noPDF renders the faint " · no PDF" suffix.
+	// noPDF renders the whole row faint.
 	noPDF bool
+}
+
+// pickerTexts lays the rows out: each label left-aligned, padded with
+// spaces to the widest label in the current list, then two spaces, then the
+// base (which the panel clips when the box is narrower than the name).
+// Padding counts display cells (conventions §4 rule 1) — the "—" label is
+// East-Asian-ambiguous width, and a byte or rune count would misalign the
+// base column on a wide-glyph terminal. Label first is the whole point of
+// A-034-5: a 71-character raw base name must never push the page number
+// past the box edge again.
+func pickerTexts(rows []pickerRow) []string {
+	w := 0
+	for _, r := range rows {
+		if n := ansi.StringWidth(r.label); n > w {
+			w = n
+		}
+	}
+	out := make([]string, len(rows))
+	for i, r := range rows {
+		out[i] = r.label + strings.Repeat(" ", w-ansi.StringWidth(r.label)) + "  " + r.base
+	}
+	return out
 }
 
 // openPicker opens the citation picker for the selection, rebuilding the
@@ -99,11 +127,11 @@ func (m *Model) pickerEnter() {
 	}
 	row := m.picker.rows[m.picker.cursor]
 
-	// No original: nothing to launch, and the message names the source —
+	// No original: nothing to launch, and the status names the source —
 	// the md file is what the curator knows the marker by, not the PDF
 	// that was never ingested beside it.
 	if row.pdf == "" {
-		m.picker.status = row.source + " has no original PDF"
+		m.picker.status = "no original PDF: " + row.source
 		return
 	}
 
@@ -117,7 +145,7 @@ func (m *Model) pickerEnter() {
 	// never reachable from the agent, so there is nothing to sandbox.
 	clean := path.Clean(row.pdf)
 	if !strings.HasPrefix(clean, "raw/") || strings.Contains(clean, "..") {
-		m.picker.status = "original " + row.pdf + " is outside raw/"
+		m.picker.status = "outside raw/: " + row.pdf
 		return
 	}
 
@@ -132,7 +160,7 @@ func (m *Model) pickerEnter() {
 		m.picker.status = err.Error()
 		return
 	}
-	m.picker.status = "opened " + filepath.Base(row.pdf) + " at page " + strconv.Itoa(row.page)
+	m.picker.status = "page " + strconv.Itoa(row.page) + " opened: " + filepath.Base(row.pdf)
 }
 
 // citeRows builds the picker's rows for the node under the tree cursor. A
@@ -157,7 +185,10 @@ func (m *Model) citeRows() []pickerRow {
 		if !ok || r.Original == "" {
 			return nil
 		}
-		return []pickerRow{{text: filepath.Base(r.Original), source: r.Path, pdf: r.Original, page: 1}}
+		return []pickerRow{{
+			label: "—", base: filepath.Base(r.Original),
+			source: r.Path, pdf: r.Original, page: 1,
+		}}
 	}
 
 	p, ok := v.Page(n.Path)
@@ -175,25 +206,24 @@ func (m *Model) citeRows() []pickerRow {
 		}
 		seen[c.String()] = true
 
-		row := pickerRow{
-			text:   filepath.Base(c.Source),
-			source: c.Source,
-			page:   c.From,
-		}
-		if row.page < 1 {
-			row.page = 1
-		}
+		row := pickerRow{source: c.Source, base: filepath.Base(c.Source), page: 1}
 		if c.From > 0 {
+			row.page = c.From
 			if c.To > c.From {
-				row.text += " p." + strconv.Itoa(c.From) + "-" + strconv.Itoa(c.To)
+				row.label = "p." + strconv.Itoa(c.From) + "-" + strconv.Itoa(c.To)
 			} else {
-				row.text += " p." + strconv.Itoa(c.From)
+				row.label = "p." + strconv.Itoa(c.From)
 			}
 		}
 		if r, ok := v.RawSource(c.Source); ok && r.Original != "" {
 			row.pdf = r.Original
+			if row.label == "" {
+				row.label = "—" // an unpaged cite of a source with an original
+			}
 		} else {
 			row.noPDF = true
+			row.base = filepath.Base(c.Source)
+			row.label = "no PDF"
 		}
 		rows = append(rows, row)
 	}
@@ -205,13 +235,16 @@ func (m *Model) citeRows() []pickerRow {
 // open — the same Panels-over-region contract View follows, so no row is
 // ever hand-spliced out of a styled render.
 func (m *Model) renderCitePicker(w, h int) []string {
-	rows := make([]string, 0, len(m.picker.rows)+1)
-	for _, r := range m.picker.rows {
-		line := m.deps.Theme.Fg.Render(r.text)
+	texts := pickerTexts(m.picker.rows)
+	rows := make([]string, 0, len(texts)+1)
+	for i, r := range m.picker.rows {
+		// Faint stays the no-PDF row's tell — now the whole row, since the
+		// suffix that used to carry it is gone.
 		if r.noPDF {
-			line += m.deps.Theme.Faint.Render(" · no PDF")
+			rows = append(rows, m.deps.Theme.Faint.Render(texts[i]))
+		} else {
+			rows = append(rows, m.deps.Theme.Fg.Render(texts[i]))
 		}
-		rows = append(rows, line)
 	}
 	if len(rows) == 0 {
 		// Nothing openable — say so rather than draw an empty box.
