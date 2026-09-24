@@ -182,7 +182,7 @@ taxonomy, and page-type conventions instead. What it lays down:
   deleting it loses history, not your notes.
 
 See [vault-schema.md](vault-schema.md) for the full layout, the frontmatter
-fields, and the 16 lint checks.
+fields, and the 18 lint checks.
 
 A freshly scaffolded vault is empty but valid:
 
@@ -360,6 +360,33 @@ the same PDF skips the conversion entirely (a `--dry-run` followed by the
 real ingest converts once), and a sidecar upgrade re-converts cleanly. The
 cache is safe to delete; losing it only costs the time to rebuild it.
 
+### Checking a claim against the PDF
+
+A PDF ingested since v2.21 keeps its original beside the extracted text,
+and the extracted text carries `<!-- page N -->` anchors — so a page's
+provenance markers can name the physical page a claim sits on:
+`^[raw/papers/leviathan-2023.md p.12]`. The number is the PDF's own
+1-based page index — the page whose text follows the anchor in the
+extracted raw, the same number Papers' `-i`, `mupdf` and Obsidian's
+`#page=` take, not the printed page label.
+
+To check a claim, tell lw how to open a PDF at a page:
+
+```bash
+lw config set open.pdf "papers -i {page} {file}"
+```
+
+`{file}` and `{page}` are substituted into the template's whitespace-split
+words (no shell in between), and `{file}` is appended when the template
+names no `{file}` — `mupdf {file} {page}` and
+`evince -i {page} {file}` work as written. Then in the TUI's
+Browse screen, put the cursor on the page (or the raw source) and press
+`o`: the picker lists the PDFs the page cites, `enter` opens the selected
+one at the page its claim cites, and `esc` or `o` closes the picker.
+
+PDFs ingested before v2.21 carry neither the original nor the anchors, so
+they are cited without a page — `^[raw/papers/x.md]`, as before.
+
 ## 6. Review before anything lands
 
 While a changeset is open, `lw status` reports **committed** counts, not
@@ -437,8 +464,8 @@ stage every page `confidence: high`. When it is less sure — a page left at
 confidence set at all — the `fm-quality` check reports one **info**-level
 finding per page, suggesting you corroborate with another source or raise the
 confidence. **Info** never fails `lw lint`'s exit code; only an **error**-level
-finding does. See [vault-schema.md](vault-schema.md#the-16-lint-checks)
-for all 16 checks and their severities.
+finding does. See [vault-schema.md](vault-schema.md#the-18-lint-checks)
+for all 18 checks and their severities.
 
 **If you do not want the changeset at all**, there is no `lw reject` verb —
 discard it instead, either with `X` on the TUI's Review screen, or from the
@@ -810,7 +837,7 @@ opens a page, `/` finds one by name, `h`/`l` collapse or expand a subtree.
 
 Every key above is the shipped default. All of them except a handful of
 screen-local ones (`enter`, the arrow keys and `ctrl+r` on Ask; `enter` on
-Lint; `enter`, `/`, `h`/`l` on Browse) are rebindable from
+Lint; `enter`, `/`, `h`/`l`, `o` on Browse) are rebindable from
 `~/.config/lw/hotkeys.toml` — see
 [hotkeys.md](hotkeys.md) for the full table, the file format, and the
 match-order rule that lets a rebound navigation key shadow an action key on
@@ -928,8 +955,8 @@ Lint is the other health signal, and it is worth re-reading now that you
 have committed pages: **error** fails `lw lint`'s exit code, **warn** and
 **info** do not. A page with one source and `confidence: low` (§7 above) is
 an `info` — normal, not a problem to chase down before you have a second
-source. See [vault-schema.md](vault-schema.md#the-16-lint-checks) for the
-full table of 16 checks and their severities.
+source. See [vault-schema.md](vault-schema.md#the-18-lint-checks) for the
+full table of 18 checks and their severities.
 
 ## 12. Using lw from other agents
 

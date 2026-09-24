@@ -62,7 +62,25 @@ later at lint time:
 - provenance markers back to `raw/` on synthesized claims
 - a `rename`/`merge` computes and stages every inbound backlink rewrite itself
 
-## The 16 lint checks
+### Provenance markers
+
+A synthesized claim carries a `^[…]` marker naming the raw source it came
+from, and since workflow 034 the marker may also name a page:
+
+- `^[raw/papers/x.md]` — the claim comes from the source
+- `^[raw/papers/x.md p.12]` — the claim sits on page 12
+- `^[raw/papers/x.md p.12-13]` — the claim crosses a page break
+
+`N` is the 1-based **physical** page of the PDF original — the page whose
+text follows the `<!-- page N -->` anchor in the extracted raw, the same
+number Papers' `-i`, mupdf and Obsidian's `#page=` take, not the printed
+page label. Only a `raw/` `.md` source takes a page. A source without page
+anchors — any non-PDF source, or a PDF ingested before v2.21 — is cited
+without one. Staging refuses a **new** malformed, out-of-range or
+anchorless page cite with the reason at proposal time; markers a page
+already carries are never re-checked.
+
+## The 18 lint checks
 
 `lw lint [--checks <ids>]` runs all of them; the model can only read what the
 engine reports. Severity is three-level — **error**, **warn**, **info** — and
@@ -82,8 +100,10 @@ command still exits 0. A vault with no findings prints `clean`.
 | `link-orphan` | warn | no inbound links |
 | `page-abstract` | warn | a `wiki/` page has no `## Abstract` section |
 | `path-convention` | warn | filename is not `lowercase-hyphen.md`, or the directory does not match `type` |
-| `src-provenance` | warn | a page with `sources:` carries no `^[raw/...]` provenance marker |
+| `src-provenance` | warn | a source listed in `sources:` has no matching `^[raw/...]` marker in the body (a paged marker counts) |
 | `src-stale` | warn | a page's `updated` is more than 90 days earlier than a cited source's ingested date |
+| `cite-page` | warn | a paged `^[raw/... p.N]` marker is malformed, or names a page the raw source has no anchor for |
+| `cite-source` | warn | the body cites a `raw/` source the page's `sources:` list does not include |
 | `fm-quality` | info | `confidence: low`, `contested: true`, or a single source with no confidence set |
 | `log-rotate` | info | `log.md` exceeds 500 entries |
 | `size-split` | info | body exceeds 200 lines — split candidate |

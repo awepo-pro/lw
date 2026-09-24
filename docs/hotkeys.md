@@ -133,6 +133,7 @@ keymap can be planned around them.
 | `enter` | Browse | Toggle a directory open/closed; a page or raw source is already open — the preview follows the cursor |
 | `/` | Browse | Find a page or raw source by name |
 | `esc` | Browse | Close the finder |
+| `o` | Browse | Open the citation picker over the preview: one row per distinct cited PDF (`x.md p.12`, `· no PDF` when the source has no original), or the selected raw source's own PDF at page 1; `enter` opens it at the cited page, `esc`/`o` close, `j`/`k` move |
 | `h` / `left` | Browse | Collapse the selected directory, or move up to its parent |
 | `l` / `right` | Browse | Expand the selected directory |
 | `enter` | Lint | Open the finding's page in Browse |
@@ -147,6 +148,9 @@ active screen, and Browse's `/` finder types while it is open. While a
 screen is taking text like this, printable keys — `q` and `?` included —
 type into the input instead of triggering a keymap action, so an action
 rebound onto a printable key does not fire while you are typing. The
+citation picker takes no text but works the same way: while it is open it
+consumes the keys it names and ignores the rest, so `q` does not quit
+through it. The
 non-printable globals still work: `ctrl+c` still quits and `tab` still
 switches screens.
 

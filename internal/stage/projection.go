@@ -272,8 +272,9 @@ func (e *Engine) openProjection(tree map[string][]byte, atts map[string]string) 
 	return vault.OpenFS(mfs, vault.WithAttachments(e.resolveAttachments(atts)))
 }
 
-// lintProjection runs the 16 checks (page-abstract added by 014,
-// duplicate-section by 020) over an opened projection.
+// lintProjection runs the 18 checks (page-abstract added by 014,
+// duplicate-section by 020, cite-page + cite-source by 034) over an
+// opened projection.
 func lintProjection(pv *vault.Vault) lint.Report {
 	return lint.Run(&lint.Context{Vault: pv, Index: index.Build(pv), Graph: pv.Graph()}, nil)
 }
