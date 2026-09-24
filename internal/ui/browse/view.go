@@ -23,8 +23,9 @@ const (
 )
 
 // View renders the screen at exactly w columns by h rows: the Pages panel,
-// the preview panel and — at w >= 180 — the Links panel side by side, or the
-// centred finder panel while it is open.
+// the preview panel and — at w >= 180 — the Links panel side by side; the
+// centred finder panel while it is open; or, while the citation picker is
+// open, the picker box standing in the preview panel's place (034 T5).
 func (m *Model) View(w, h int) string {
 	if w < 1 {
 		w = 1
@@ -46,7 +47,15 @@ func (m *Model) View(w, h int) string {
 
 	rows := make([]string, h)
 	pages := ui.Panel(m.deps.Theme, m.pagesSpec(tw, h), tw, h)
-	preview := ui.Panel(m.deps.Theme, m.previewSpec(pw, h), pw, h)
+	// The picker takes the preview panel's region whole while it is open —
+	// region-for-region, never spliced into a styled render — so the row
+	// composition below is unchanged either way.
+	var preview []string
+	if m.picker.open {
+		preview = m.renderCitePicker(pw, h)
+	} else {
+		preview = ui.Panel(m.deps.Theme, m.previewSpec(pw, h), pw, h)
+	}
 	var links []string
 	if lk > 0 {
 		links = ui.Panel(m.deps.Theme, m.linksSpec(lk, h), lk, h)

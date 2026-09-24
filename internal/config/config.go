@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -114,6 +115,52 @@ func (x Extract) TimeoutDuration() time.Duration {
 	return d
 }
 
+// Open configures how lw's UI opens a PDF original at a page (034 T5). PDF
+// is a viewer template — split on whitespace, {file} and {page} substituted
+// inside each field, the file appended when no field names {file} — so one
+// line covers every common viewer: "papers -i {page} {file}", "mupdf {file}
+// {page}", or a bare "zathura". It configures the TUI's citation picker
+// only; nothing the agent runs ever execs a viewer.
+type Open struct {
+	PDF string `toml:"pdf"` // viewer template; "" → no viewer wired
+}
+
+// ErrNoPDFViewer is what Open.Argv returns for a template that names no
+// viewer: there is nothing to compile, and inventing a default would exec
+// a program the user never chose. (034 T5.)
+var ErrNoPDFViewer = errors.New("config: open.pdf: no PDF viewer configured")
+
+// Argv compiles the template into the argv the viewer is exec'd with (034
+// T5): fields split on whitespace, {file} and {page} replaced inside each
+// field — a viewer that spells the page as an option value
+// (--page-label=12) is exactly the one-line config this exists for — and
+// the file appended when no field names {file}. A page below 1 becomes 1:
+// unpaged markers reach the picker as 0, and every viewer needs a real
+// page. An empty or whitespace-only template is ErrNoPDFViewer.
+func (o Open) Argv(file string, page int) ([]string, error) {
+	fields := strings.Fields(o.PDF)
+	if len(fields) == 0 {
+		return nil, ErrNoPDFViewer
+	}
+	if page < 1 {
+		page = 1
+	}
+	argv := make([]string, 0, len(fields)+1)
+	sawFile := false
+	for _, f := range fields {
+		if strings.Contains(f, "{file}") {
+			sawFile = true
+		}
+		f = strings.ReplaceAll(f, "{file}", file)
+		f = strings.ReplaceAll(f, "{page}", strconv.Itoa(page))
+		argv = append(argv, f)
+	}
+	if !sawFile {
+		argv = append(argv, file)
+	}
+	return argv, nil
+}
+
 // Limits bounds the agent loop's resource usage.
 type Limits struct {
 	MaxToolRounds int `toml:"max_tool_rounds"`
@@ -149,6 +196,7 @@ type Config struct {
 	Limits  Limits  `toml:"llm.limits"`
 	Web     Web     `toml:"web"`
 	Extract Extract `toml:"extract"`
+	Open    Open    `toml:"open"`
 	Theme   string  `toml:"theme"`
 }
 
@@ -187,7 +235,13 @@ type shadowConfig struct {
 	LLM     shadowLLM     `toml:"llm"`
 	Web     Web           `toml:"web"`
 	Extract shadowExtract `toml:"extract"`
-	Theme   string        `toml:"theme"`
+	// omitempty keeps a viewerless config viewerless on Save (034 T5): the
+	// whole [open] table is skipped while Open is the zero value —
+	// BurntSushi's isEmpty treats a comparable struct like a scalar — so a
+	// file that never named the key round-trips byte-identically, the same
+	// rule stall_timeout's omitempty follows one level down.
+	Open  Open   `toml:"open,omitempty"`
+	Theme string `toml:"theme"`
 }
 
 // toShadow converts a Config to its on-disk shape, for Save.
@@ -205,6 +259,7 @@ func toShadow(c *Config) shadowConfig {
 		},
 		Web:     c.Web,
 		Extract: shadowExtract{Command: c.Extract.Command, Timeout: c.Extract.Timeout},
+		Open:    c.Open,
 		Theme:   c.Theme,
 	}
 }
@@ -225,6 +280,7 @@ func fromShadow(s shadowConfig) *Config {
 		Limits:  s.LLM.Limits,
 		Web:     s.Web,
 		Extract: Extract{Command: s.Extract.Command, Timeout: s.Extract.Timeout},
+		Open:    s.Open,
 		Theme:   s.Theme,
 	}
 }
@@ -361,6 +417,9 @@ func mergeOverDefault(def, file *Config, md toml.MetaData) *Config {
 	if md.IsDefined("extract", "timeout") {
 		def.Extract.Timeout = file.Extract.Timeout
 	}
+	if md.IsDefined("open", "pdf") {
+		def.Open = file.Open
+	}
 	if md.IsDefined("theme") {
 		def.Theme = file.Theme
 	}
@@ -449,5 +508,8 @@ func Default() *Config {
 			Command: "docling",
 			Timeout: "",
 		},
+		// Open ships unset (034 T5): no viewer is chosen for the user, and
+		// the citation picker reports the unset hint until one is.
+		Open: Open{},
 	}
 }

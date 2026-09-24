@@ -28,6 +28,11 @@ type Model struct {
 
 	finder finderState
 
+	// picker is the `o` citation picker's transient state (034 T5,
+	// cite_picker.go): open, it replaces the preview area with the
+	// selection's openable citations.
+	picker pickerState
+
 	// Preview scroll state (W5 F2/C36, scroll.go): off is the number of
 	// rendered preview lines hidden above the panel, clamped at every
 	// render (previewSpec) and every key against the last render's
@@ -86,6 +91,7 @@ func (m *Model) FooterHelp() []key.Binding {
 	return []key.Binding{
 		m.deps.Keys.MoveDown, // help "j/k", "move"
 		key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "open")),
+		key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "cited PDF")),
 		key.NewBinding(key.WithKeys("h", "l"), key.WithHelp("h/l", "collapse/expand")),
 		key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "find")),
 		m.deps.Keys.Top, // help "g/G", "top/bottom"
@@ -98,6 +104,7 @@ func (m *Model) OverlayHelp() (string, []ui.HelpEntry) {
 	return "Browse", []ui.HelpEntry{
 		{Key: "j/k", Desc: "down / up"},
 		{Key: "enter", Desc: "open / toggle"},
+		{Key: "o", Desc: "cited PDF"},
 		{Key: "h/l", Desc: "collapse / expand"},
 		{Key: "/", Desc: "find"},
 		{Key: "g/G", Desc: "top / bottom"},
@@ -110,12 +117,14 @@ func (m *Model) Status() (string, ui.StatusLevel) {
 	return m.status, m.statusLevel
 }
 
-// CapturesText reports whether the finder is taking text input (contract §5
-// TextCapturer, C27): while it is open, the shell delivers every printable
-// key — `q` and `?` included — straight here instead of matching them
-// against the global quit/help bindings.
+// CapturesText reports whether the finder or the citation picker is taking
+// over the keyboard (contract §5 TextCapturer, C27): while either is open,
+// the shell delivers every printable key — `q` and `?` included — straight
+// here instead of matching them against the global quit/help bindings. The
+// picker ignores what it does not name, but a stray `q` must not quit the
+// shell out from under an open modal.
 func (m *Model) CapturesText() bool {
-	return m.finder.open
+	return m.finder.open || m.picker.open
 }
 
 // Update handles the shell's broadcast messages and key presses.
@@ -139,9 +148,10 @@ func (m *Model) Update(msg tea.Msg) (ui.Pane, tea.Cmd) {
 
 	case ui.WheelMsg:
 		// One wheel notch, pane-local (contract §5 frame note 7): hit-test
-		// it against the layout View draws. While the finder is open every
-		// notch is ignored (s2-screens.md T07).
-		if !m.finder.open {
+		// it against the layout View draws. While the finder or the
+		// citation picker is open every notch is ignored (s2-screens.md
+		// T07; 034 T5).
+		if !m.finder.open && !m.picker.open {
 			m.handleWheel(msg)
 		}
 		return m, nil
@@ -171,12 +181,18 @@ func (m *Model) setStatus(msg string, level ui.StatusLevel) {
 
 // handleKey dispatches one key press. Any key clears the transient status
 // message first; the handlers below may set a new one. The finder, when
-// open, consumes every key that reaches the pane itself.
+// open, consumes every key that reaches the pane itself; the citation
+// picker, likewise, consumes every key it names and ignores the rest.
 func (m *Model) handleKey(msg tea.KeyPressMsg) (ui.Pane, tea.Cmd) {
 	m.status, m.statusLevel = "", ui.StatusInfo
 
 	if m.finder.open {
 		m.handleFinderKey(msg)
+		return m, nil
+	}
+
+	if m.picker.open {
+		m.handlePickerKey(msg)
 		return m, nil
 	}
 
@@ -214,6 +230,8 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (ui.Pane, tea.Cmd) {
 			m.toggleOrOpen()
 		case "/":
 			m.openFinder()
+		case "o":
+			m.openPicker()
 		}
 	}
 	m.clampCursor()
