@@ -13,6 +13,12 @@ import (
 	"time"
 )
 
+// ErrStreamTruncated is wrapped by every error for a stream that ended
+// before [DONE] or a finish_reason (035): a clean EOF, a cut last line or a
+// read failure. A stall (ErrStalled), a cancelled context and an over-long
+// line are not truncation. The agent loop recovers the round on it.
+var ErrStreamTruncated = errors.New("llm: provider stream ended early")
+
 // Stream POSTs req to {BaseURL}/chat/completions with "stream": true and
 // returns a channel of incremental Chunks (backbone §8).
 //

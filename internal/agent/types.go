@@ -63,6 +63,14 @@ type DoneEv struct {
 // ErrorEv fires when a turn ends in an error.
 type ErrorEv struct{ Err error }
 
+// RetryEv reports that round Round's stream ended early with no tool call
+// dispatched, and the identical request is being sent again (035).
+// Consumers drop the text streamed since the round began.
+type RetryEv struct {
+	Round, Attempt int
+	Reason         string // "stream ended early"
+}
+
 func (TextDelta) isEvent()      {}
 func (ReasoningDelta) isEvent() {}
 func (ToolCallEv) isEvent()     {}
@@ -70,6 +78,7 @@ func (ToolResEv) isEvent()      {}
 func (StageEv) isEvent()        {}
 func (DoneEv) isEvent()         {}
 func (ErrorEv) isEvent()        {}
+func (RetryEv) isEvent()        {}
 
 // Agent drives one curator turn, streaming Events to out and persisting the
 // turn through its SessionStore. Loop (S5-T3) is the only implementation in
