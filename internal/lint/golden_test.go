@@ -31,8 +31,9 @@ func openFixtureContext(t *testing.T, name string) *lint.Context {
 // TestMinimalIsClean asserts lint.Run finds nothing at all over
 // spec/fixtures/minimal, which was independently re-verified at S1 stage
 // entry against the then-14-check set (s1-vault-engine.md's cross-check
-// note). The set is 16 checks today (page-abstract joined in 014,
-// duplicate-section in 020) and minimal still carries zero findings. A
+// note). The set is 18 checks today (page-abstract joined in 014,
+// duplicate-section in 020, cite-page and cite-source in 034) and minimal
+// still carries zero findings. A
 // finding here is this subtask's bug, not a fixture problem.
 func TestMinimalIsClean(t *testing.T) {
 	ctx := openFixtureContext(t, "minimal")

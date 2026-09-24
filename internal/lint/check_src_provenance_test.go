@@ -57,6 +57,23 @@ Only the first citation carries a marker.^[raw/papers/a.md]
 	}
 }
 
+// TestSrcProvenanceAcceptsPage proves a paged marker marks its source for
+// src-provenance (034 T2): ^[raw/papers/a.md p.3] satisfies the source the
+// way ^[raw/papers/a.md] always did, instead of drawing a false "no marker"
+// warn the old substring match produced.
+func TestSrcProvenanceAcceptsPage(t *testing.T) {
+	ctx := buildVault(t, map[string]string{
+		"raw/papers/a.md": pagedRawSource(1, 2, 3),
+		"wiki/concepts/paged-cite.md": citePageBody([]string{"raw/papers/a.md"},
+			"# Paged Cite\n\nOne claim, on page 3.^[raw/papers/a.md p.3]\n"),
+	})
+
+	report := lint.Run(ctx, []string{"src-provenance"})
+	if len(report.Findings) != 0 {
+		t.Fatalf("got %d findings, want 0: %+v", len(report.Findings), report.Findings)
+	}
+}
+
 // TestSrcProvenanceNoSourcesIsClean proves a page with no sources: at all
 // never fires, regardless of body content.
 func TestSrcProvenanceNoSourcesIsClean(t *testing.T) {

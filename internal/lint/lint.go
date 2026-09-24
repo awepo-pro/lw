@@ -39,9 +39,9 @@ type Report struct {
 	Warns    int
 }
 
-// All returns the fixed set of 16 checks (backbone §4, MASTER §9 D-V, 014,
-// 020),
-// in the order they appear in that table. A fresh instance is constructed on
+// All returns the fixed set of 18 checks (backbone §4, MASTER §9 D-V, 014,
+// 020, 034), in the order they appear in that table. A fresh instance is
+// constructed on
 // every call — checks hold no state, so this costs nothing and keeps the
 // package free of mutable package-level vars (00-conventions.md §2).
 func All() []Check {
@@ -62,6 +62,8 @@ func All() []Check {
 		newLogRotate(),
 		newPageAbstract(),
 		newDuplicateSection(),
+		newCitePage(),
+		newCiteSource(),
 	}
 }
 
