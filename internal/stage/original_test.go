@@ -8,7 +8,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -424,7 +423,7 @@ func TestOriginalFieldsRoundTripJSON(t *testing.T) {
 }
 
 // TestOpDiffShowsOriginal pins the review-display line: OpDiff attaches
-// "original: <path> (<N> bytes, sha256 <12 hex>)" to the ingest's own
+// "original (<size>, sha256 <12 hex>): <path>" to the ingest's own
 // file entry — display-only, never a hunk — and leaves every other entry
 // and every original-less op untouched.
 func TestOpDiffShowsOriginal(t *testing.T) {
@@ -436,7 +435,9 @@ func TestOpDiffShowsOriginal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpDiff: %v", err)
 	}
-	want := "original: " + originalPDFPath + " (" + strconv.Itoa(len(blob)) + " bytes, sha256 " + blobSHA(blob)[:12] + ")"
+	// originalBlob is a fixed 3 KiB: humanSize renders it "3.0 KB"
+	// (TestHumanSize pins the rendering itself).
+	want := "original (3.0 KB, sha256 " + blobSHA(blob)[:12] + "): " + originalPDFPath
 
 	var found int
 	for _, fd := range diffs {
@@ -451,5 +452,27 @@ func TestOpDiffShowsOriginal(t *testing.T) {
 	}
 	if found != 1 {
 		t.Fatalf("OpDiff listed %d entries for %s, want 1", found, originalRawPath)
+	}
+}
+
+// TestHumanSize pins the size rendering the original line leads with
+// (034 T3, A-034-1): binary units — 1 KB is 1024 B, so the number agrees
+// with what ls and stat print for the same file — one decimal once the
+// byte count stops being readable on its own.
+func TestHumanSize(t *testing.T) {
+	rows := []struct {
+		n    int
+		want string
+	}{
+		{900, "900 B"},
+		{1024, "1.0 KB"},
+		{3072, "3.0 KB"},
+		{1048576, "1.0 MB"},
+		{1153434, "1.1 MB"},
+	}
+	for _, row := range rows {
+		if got := humanSize(row.n); got != row.want {
+			t.Errorf("humanSize(%d) = %q; want %q", row.n, got, row.want)
+		}
 	}
 }

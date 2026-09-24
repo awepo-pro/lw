@@ -1,6 +1,6 @@
 // original_line_test.go is 033 T3's review-side evidence: an ingest_source
 // op that travels with its original shows the OpDiff's one-line original
-// description (`original: raw/…/<name>.pdf (N bytes, sha256 <12 hex>)`)
+// description (`original (<size>, sha256 <12 hex>): raw/…/<name>.pdf`)
 // directly under the op's header in the Diff panel — display-only: no
 // cursor stop of its own, and no line at all when the op carries no
 // original. Every assertion renders the loaded pane's real Detail content
@@ -87,7 +87,7 @@ func origLineWant(blob []byte) string {
 	if len(sha) > 12 {
 		sha = sha[:12]
 	}
-	return fmt.Sprintf("original: %s (%d bytes, sha256 %s)", origLinePdfPath, len(blob), sha)
+	return fmt.Sprintf("original (%d B, sha256 %s): %s", len(blob), sha, origLinePdfPath)
 }
 
 // origLineHeader finds the index of the ingest op's header row in the
@@ -154,8 +154,9 @@ func TestReviewShowsOriginalLineClipped(t *testing.T) {
 	if len([]rune(got)) > cw {
 		t.Errorf("original line is %d cells at content width %d: %q", len([]rune(got)), cw, got)
 	}
-	if !strings.HasPrefix(got, "original: raw/papers/attention-is-bor") || !strings.HasSuffix(got, "…") {
-		t.Errorf("clipped original line lost its shape: %q", got)
+	wantHead := "original (512 B, sha256 " + origLineSha(origLineBlob())[:12] + "):"
+	if !strings.HasPrefix(got, wantHead) || !strings.HasSuffix(got, "…") {
+		t.Errorf("clipped original line lost its shape: %q (want head %q, trailing …)", got, wantHead)
 	}
 }
 
@@ -225,7 +226,7 @@ func TestReviewDroppedIngestShowsNoOriginalLine(t *testing.T) {
 	delete(m.opDiffs, id)
 
 	for i, l := range m.opDiffLines(m.ops[idx], 200, true) {
-		if i > 0 && strings.Contains(ansi.Strip(l.text), "original:") {
+		if i > 0 && strings.Contains(ansi.Strip(l.text), "original (") {
 			t.Fatalf("dropped ingest renders an original line: %q", ansi.Strip(l.text))
 		}
 	}

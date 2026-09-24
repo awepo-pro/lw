@@ -76,12 +76,12 @@ type FileOpDiff struct {
 	// OriginalLine is the review display's one-line description of the
 	// original binary an ingest_source op travels with (033) —
 	//
-	//	original: raw/papers/x.pdf (2411073 bytes, sha256 3af19c02e8d1)
+	//	original (2.3 MB, sha256 3af19c02e8d1): raw/papers/x.pdf
 	//
 	// — and "" for every entry whose op carries no original. It is
 	// display-only, with no hunk and no window of its own: the renderer
 	// shows it beside the op's header, and nothing in Diff or Commit reads
-	// it. The byte count comes from the CAS blob at Op.Original; when that
+	// it. The size comes from the CAS blob at Op.Original; when that
 	// blob cannot be read the line is left off rather than guessed at.
 	OriginalLine string
 }
@@ -156,10 +156,15 @@ func (e *Engine) OpDiff(opID string) ([]FileOpDiff, error) {
 }
 
 // originalDisplayLine renders the ingest window's header line for op's
-// original — "original: <path> (<N> bytes, sha256 <first 12 hex>)" — or
-// "" when the CAS blob cannot be read, so the count shown is always the
-// count committed. The sha prefix is defensive: ValidateOp requires a full
+// original — "original (<size>, sha256 <first 12 hex>): <path>" — or ""
+// when the CAS blob cannot be read, so the size shown is always the size
+// committed. The sha prefix is defensive: ValidateOp requires a full
 // 64-hex Original, so the truncation never fires for a staged op.
+//
+// The size leads the line (034 T3, A-034-1): a reviewer scanning a diff
+// panel wants the attachment's shape before its name — a 2.3 MB scan
+// beside a 40 KB text extract are different review decisions — and a raw
+// byte count made every line lead with an opaque number.
 func (e *Engine) originalDisplayLine(op Op) string {
 	b, err := e.store.Get(op.Original)
 	if err != nil {
@@ -169,7 +174,25 @@ func (e *Engine) originalDisplayLine(op Op) string {
 	if len(sha) > 12 {
 		sha = sha[:12]
 	}
-	return fmt.Sprintf("original: %s (%d bytes, sha256 %s)", op.OriginalPath, len(b), sha)
+	return fmt.Sprintf("original (%s, sha256 %s): %s", humanSize(len(b)), sha, op.OriginalPath)
+}
+
+// humanSize renders n as a reviewer-readable size — "900 B", "3.0 KB",
+// "1.1 MB" (034 T3, A-034-1). Binary divisors (1 KB = 1024 B), so the
+// figure agrees with what ls and stat print for the same file and can be
+// checked against the working tree without mental conversion. The unit
+// switches on the byte count, not on the rendered value: 1048575 — one
+// byte short of the MB range — shows as "1024.0 KB" rather than rounding
+// into "1.0 MB" a step early.
+func humanSize(n int) string {
+	switch {
+	case n < 1024:
+		return fmt.Sprintf("%d B", n)
+	case n < 1048576:
+		return fmt.Sprintf("%.1f KB", float64(n)/1024)
+	default:
+		return fmt.Sprintf("%.1f MB", float64(n)/1048576)
+	}
 }
 
 // opDiffFileDiffs returns the FileDiff entries op (top-level or cascade)
