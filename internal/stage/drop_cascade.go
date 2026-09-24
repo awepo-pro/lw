@@ -19,8 +19,9 @@
 //	    brings into existence — a wiki/ path it writes that the committed
 //	    vault does not hold, so the link only resolves once the op lands.
 //	D3  a live op whose post-image cites a raw path the op ingests — via
-//	    a frontmatter sources: entry, a "^[<path>]" body marker (the two
-//	    channels lint's src-provenance check reads), or Op.Provenance.
+//	    a frontmatter sources: entry, a "^[<path> …]" body marker (the
+//	    shapes cite.Scan owns, paged or not since 034 T3), or
+//	    Op.Provenance.
 //
 // D2 and D3 carry no direction, exactly as the frozen contract's "a live
 // op" wording says: the model routinely patches a hub page to add
@@ -43,6 +44,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/awepo-pro/lw/internal/cite"
 	"github.com/awepo-pro/lw/internal/vault"
 )
 
@@ -52,8 +54,9 @@ import (
 // post-image newly links [[s]] to a page that only a dependency op of this
 // changeset brings into existence) and D3 (a live op whose post-image cites
 // a raw path that only a dependency op ingests — via frontmatter sources:,
-// a "^[<path>]" body marker, or Op.Provenance). D1 is later-only; D2 and D3
-// fire in both changeset directions (file comment). Unknown id → error.
+// a "^[<path> …]" body marker cite.Scan finds, or Op.Provenance). D1 is
+// later-only; D2 and D3 fire in both changeset directions (file comment).
+// Unknown id → error.
 //
 // Read-only: it enters through currentOpen like OpDiff and never takes
 // writeMu, persists or journals. An op that is already dropped or rejected
@@ -125,13 +128,13 @@ type depNode struct {
 	// D3 facts: the raw paths this op ingests, and the three channels an op
 	// can cite a raw path through — its own or a cascade sub-op's
 	// Provenance, a frontmatter sources: entry in its post-image, a
-	// "^[<path>]" body marker in its post-image text.
+	// "^[<path> …]" body marker (any page form) cite.Scan finds in its
+	// post-image text (034 T3).
 	ingested  map[string]bool
 	prov      map[string]bool
 	citedSrcs map[string]bool
-	newLinks  []string // D2: deduped wikilink targets newly linked by the post-image
-	post      string   // the post-image text the marker scan reads
-	hasPost   bool     // false when no post-image is readable (rename, merge, split)
+	cited     map[string]bool // D3: sources of the post-image's body markers, cite.Scan's
+	newLinks  []string        // D2: deduped wikilink targets newly linked by the post-image
 }
 
 // seedDepNode builds the walk's starting node. idx is the changeset index
@@ -167,7 +170,7 @@ func (e *Engine) depNodes(c *Changeset, keep func(Op) bool) []depNode {
 // depFacts fills n's derived fact sets, reading each CAS blob exactly once —
 // the per-node half of the no-per-pair-re-reads rule. Facts that need no
 // blob (brings, ingested, prov) come from the op fields; newLinks, citedSrcs
-// and post come from opPostImageText's single post-image walk.
+// and cited come from opPostImageText's single post-image walk.
 func (e *Engine) depFacts(n *depNode) {
 	n.brings = e.broughtIntoExistence(n.op)
 
@@ -187,17 +190,27 @@ func (e *Engine) depFacts(n *depNode) {
 	}
 	walk(n.op)
 
-	n.post, n.hasPost = e.opPostImageText(n.op)
-	if !n.hasPost {
+	post, hasPost := e.opPostImageText(n.op)
+	if !hasPost {
 		return
 	}
-	if pg, err := vault.ParsePage(n.op.Path, []byte(n.post)); err == nil {
+	if pg, err := vault.ParsePage(n.op.Path, []byte(post)); err == nil {
 		n.citedSrcs = make(map[string]bool, len(pg.FM.Sources))
 		for _, src := range pg.FM.Sources {
 			n.citedSrcs[src] = true
 		}
 	}
-	n.newLinks = e.newlyLinkedTargets(n.op, n.post)
+	n.newLinks = e.newlyLinkedTargets(n.op, post)
+
+	// The marker channel goes through cite.Scan (034 T3), not a literal
+	// "^["+r+"]" substring: a paged marker — ^[raw/papers/x.md p.12] —
+	// cites its source exactly as much as the legacy unpaged shape, and a
+	// marker inside a code fence is an example, not a claim, so dropping
+	// the ingest must not drag an op that only shows one in sample text.
+	n.cited = make(map[string]bool)
+	for _, c := range cite.Scan(post) {
+		n.cited[c.Source] = true
+	}
 }
 
 // depClosure walks the transitive closure from seed: every candidate that
@@ -252,7 +265,7 @@ func opDependsOn(b, node depNode) bool {
 		}
 	}
 	for r := range node.ingested {
-		if b.prov[r] || b.citedSrcs[r] || strings.Contains(b.post, "^["+r+"]") {
+		if b.prov[r] || b.citedSrcs[r] || b.cited[r] {
 			return true // D3
 		}
 	}

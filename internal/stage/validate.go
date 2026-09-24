@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"path"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
+	"github.com/awepo-pro/lw/internal/cite"
 	"github.com/awepo-pro/lw/internal/vault"
 )
 
@@ -103,6 +105,22 @@ func ValidateOp(op Op, v *vault.Vault, s *vault.Schema) error {
 // in a loop. committed must be non-nil; for every ValidateOp caller v IS
 // the committed vault, and ValidateOp simply passes it twice.
 func validateOpForAppend(op Op, v, committed *vault.Vault, s *vault.Schema) error {
+	// A Cascade is honored only where Append builds one — rename_page and
+	// merge_pages, whose caller-supplied Cascade is replaced by
+	// buildCascade's before this switch runs (D-AM/D-Y). Every other
+	// kind's edits travel as sibling TOP-LEVEL ops (D-AZ/D-AK), so a
+	// Cascade arriving on one is not a shape any producer can make through
+	// the tools — and Commit would materialize it anyway: storeOpContent
+	// stores every sub-op's Content and planOp recurses into Cascade for
+	// every kind, so an unvalidated patch_page riding a create_page lands
+	// in the vault past every per-kind check this switch runs, including
+	// 034's new-cite refusal. Confirmed by probe before this guard existed
+	// (a create_page carrying ^[raw/nope.md p.9] in a cascade sub-op
+	// appended cleanly and its sub-op content was CAS-stored).
+	if len(op.Cascade) > 0 && op.Kind != OpRenamePage && op.Kind != OpMergePages {
+		return fmt.Errorf("%w: %s: cascade is not accepted; only rename_page and merge_pages carry one, and Append builds it itself", ErrValidation, op.Kind)
+	}
+
 	if op.Kind == OpPatchPage && isKnownRootFile(op.Path) {
 		if err := validateHunks(op.Hunks); err != nil {
 			return err
@@ -286,6 +304,9 @@ func validateCreatePage(op Op, v, committed *vault.Vault, s *vault.Schema) error
 	// this never fires end-to-end yet — it is unit-tested directly
 	// (TestOneWriterGuardReverseOrderCreateDerivation) so S4-T7 only has
 	// to add "index.md" to patchableRootFiles.
+	if err := validateNewCites("create_page", op.Path, "", string(op.Content), v); err != nil {
+		return err
+	}
 	return checkNewWriterOneWriter(v, op)
 }
 
@@ -362,6 +383,83 @@ func validatePatchPage(op Op, v *vault.Vault, s *vault.Schema) error {
 			if err := newPage.FM.Validate(s); err != nil {
 				return fmt.Errorf("%w: patch_page: %v", ErrValidation, err)
 			}
+		}
+	}
+	// op.Content IS the post-image Commit writes (planOp reads postImage,
+	// which is Store.Get(After) — the CAS key Put(op.Content) lands under,
+	// set later in the same Append). A patch without one carries no bytes
+	// to scan. The pre-image is page.Serialize() — byte-for-byte the bytes
+	// op.Before was just validated against (page.SHA256() hashes the same
+	// serialization), so "does not occur in pre" is judged on exactly what
+	// the patch is anchored to; Serialize re-renders frontmatter
+	// canonically but preserves body text, so a marker already on a page
+	// whose raw bytes are not canonical (spec/fixtures/noncanonical) is
+	// still found in pre.
+	return validateNewCites("patch_page", op.Path, string(page.Serialize()), string(op.Content), v)
+}
+
+// validateNewCites refuses a page post-image whose NEW citations the
+// engine could not honor at ask time (034 T3): every marker cite.Scan
+// finds outside code fences whose Raw the pre-image does not already
+// carry must be well-formed and — when it names a page — point at a raw
+// source in the projection (committed or staged) whose page anchors cover
+// it. A paged marker the engine accepts but ask cannot resolve is a
+// provenance claim that silently dangles; refusing it here costs the
+// proposing agent one round trip instead of costing a reader a wrong page
+// later.
+//
+// The pre-image carve-out is the legacy tolerance: 034 only ever ADDS the
+// page suffix, so a page already carrying a marker written before it —
+// including one no source could ever satisfy — stays patchable, and a
+// patch is judged only on what it introduces. The test is a plain
+// substring match on the marker's exact text, so a marker byte-identical
+// to one the page already carries — elsewhere in the body, even inside a
+// code fence, even a bad one — counts as pre-existing and is not
+// re-checked: identical bytes are the identical claim wherever they sit,
+// and telling "moved" from "added twice" would buy no refusal the ask
+// side cannot already make. create_page passes "" so the whole
+// post-image counts as new.
+//
+// Only kinds whose Commit writes MODEL-authored page bytes are wired
+// here. rename_page's and merge_pages' cascade rewrites are engine-built
+// (buildCascadeOp retargets [[…]] links over the existing body, and
+// Append replaces any caller-supplied Cascade before validating); a
+// merge/split's products and add_link's edits are sibling
+// patch_page/create_page ops checked in their own right; retract and
+// split_page write engine-worded tombstones whose only model text is the
+// rationale — prose, not a citation claim, and scanning it would refuse
+// a rationale that merely QUOTES a marker; ingest_source post-images are
+// extracted source text preserved verbatim from the original document —
+// anchors, never citation markers.
+func validateNewCites(kind, p, pre, post string, v *vault.Vault) error {
+	// Anchor pages per cited source, memoized for this one validation: a
+	// page citing one paper N times walks that raw body once, not once per
+	// marker (a PDF extract is hundreds of kilobytes of lines to split).
+	pages := map[string][]int{}
+	for _, c := range cite.Scan(post) {
+		if strings.Contains(pre, c.Raw) {
+			continue
+		}
+		if c.Err != "" {
+			return fmt.Errorf("%w: %s: %s: %s: %s", ErrValidation, kind, p, c.Raw, c.Err)
+		}
+		if c.From == 0 {
+			continue // legacy unpaged marker: nothing to resolve
+		}
+		pg, cached := pages[c.Source]
+		if !cached {
+			src, ok := v.RawSource(c.Source)
+			if !ok {
+				return fmt.Errorf("%w: %s: %s: %s: %s does not exist", ErrValidation, kind, p, c.Raw, c.Source)
+			}
+			pg = cite.Pages(src.Body)
+			pages[c.Source] = pg
+		}
+		if len(pg) == 0 {
+			return fmt.Errorf("%w: %s: %s: %s: %s has no page anchors; cite it without a page", ErrValidation, kind, p, c.Raw, c.Source)
+		}
+		if hi := slices.Max(pg); c.To > hi {
+			return fmt.Errorf("%w: %s: %s: %s: %s has pages 1-%d", ErrValidation, kind, p, c.Raw, c.Source, hi)
 		}
 	}
 	return nil
