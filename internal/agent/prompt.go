@@ -12,7 +12,9 @@ package agent
 // have. systemPromptFor does the assembling; ContextBuilder.Build derives
 // the flag from its own registry. 017 §5 (TS-17A) later amended the search
 // rule's bytes; the injection rule's bytes are unchanged. Only the assembly
-// is conditional.
+// is conditional. 034 T4 added the page-citation paragraph to the base, so
+// a paged raw.get header and the prompt's citation rule are taught
+// together.
 
 // The opening half of the curator's system prompt: everything through the
 // "Not from your vault:" rule — including the blank line that joined it to
@@ -47,6 +49,14 @@ carries a marker naming that source, e.g. "^[raw/papers/x.md]". An
 unmarked claim is indistinguishable from something invented, and a
 reviewer cannot tell the difference from the diff alone — mark as you
 write, not as an afterthought.
+
+When raw.get's header names pages, the source has a PDF original and its
+text carries "<!-- page N -->" lines: cite the page the claim comes from,
+e.g. "^[raw/papers/x.md p.12]", or "p.12-13" for a claim that crosses a
+page break. A claim's page is the nearest "<!-- page N -->" line above it;
+text before the chunk's first such line is on the header's first page.
+Write the page exactly as "p.N" — one space after the path, no "pp.", no
+"page". A source whose header names no pages is cited without a page.
 
 A raw source you were asked to ingest is the only source for that ingest: never read, cite or patch from a different raw file in its place. If stage.ingest_source fails, stop and report the error instead of working around it; use raw.list to find a raw source whose path you do not know.
 index.md is derived by the engine: every stage.create_page adds its index line automatically, so never patch or create index.md.

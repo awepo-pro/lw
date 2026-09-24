@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/awepo-pro/lw/internal/cite"
 	"github.com/awepo-pro/lw/internal/stage"
 	"github.com/awepo-pro/lw/internal/vault"
 )
@@ -75,7 +76,44 @@ func rawGetHandler(ctx context.Context, d Deps, args json.RawMessage) (Result, e
 		)}, nil
 	}
 
-	return Result{Content: fmt.Sprintf("%schunk %d of %d\n\n%s", marker, chunk, n, chunks[chunk-1])}, nil
+	return Result{Content: fmt.Sprintf("%s%s\n\n%s", marker, chunkHeader(body, chunks, chunk, n), chunks[chunk-1])}, nil
+}
+
+// chunkHeader builds the "chunk i of n" header line for the requested
+// chunk. When the body carries PDF page anchors (034 T4), the header names
+// the physical pages the chunk's bytes sit on — "· pages a-b", or
+// "· page N" when both ends agree — so a model reading the chunk can cite
+// "^[src p.N]" without guessing which anchor its claim sits under. Page
+// ends come from cite.PageAt over the chunk's byte offsets; a first end of
+// 0 means the chunk starts before the body's first anchor, and the header's
+// first page is then the body's first anchor page (Pages[0]) — the prompt's
+// page rule states the same convention, so header and prompt cannot
+// disagree. A last end of 0 (the chunk lies wholly before the first anchor)
+// falls back to the first page for the same reason. An anchorless body
+// keeps the pre-034 header byte for byte.
+func chunkHeader(body string, chunks []string, chunk, n int) string {
+	header := fmt.Sprintf("chunk %d of %d", chunk, n)
+	pages := cite.Pages(body)
+	if len(pages) == 0 {
+		return header
+	}
+	start := 0
+	for _, c := range chunks[:chunk-1] {
+		start += len(c)
+	}
+	end := start + len(chunks[chunk-1])
+	first := cite.PageAt(body, start)
+	if first == 0 {
+		first = pages[0]
+	}
+	last := cite.PageAt(body, end-1)
+	if last == 0 {
+		last = first
+	}
+	if first == last {
+		return fmt.Sprintf("%s · page %d", header, first)
+	}
+	return fmt.Sprintf("%s · pages %d-%d", header, first, last)
 }
 
 // rawSourceBody resolves source to the raw body raw.get should chunk, and
