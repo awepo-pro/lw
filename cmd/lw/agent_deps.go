@@ -336,9 +336,20 @@ func slugFile(s string) string {
 // provider stopped at the output-token cap) names the configured budget
 // and the fix, and the ingest form alone adds the rejection sentence,
 // because ingest rolls its changeset back while query and lint --fix have
-// no changeset of their own to reject (008 contract §6, C-808). Any other
-// Send error keeps the pre-008 "agent turn: ..." wording untouched.
+// no changeset of their own to reject (008 contract §6, C-808). A stream
+// the provider cut twice in one round (035 — the error wraps
+// llm.ErrStreamTruncated) gets its own sentence — the retry already ran,
+// so the output-limit advice would be a lie — and keeps the wrap, so
+// callers can still errors.Is the sentinel. Any other Send error keeps
+// the pre-008 "agent turn: ..." wording untouched.
 func agentErrorHint(sendErr error, maxTokens int, rejected bool) error {
+	if errors.Is(sendErr, llm.ErrStreamTruncated) {
+		err := fmt.Errorf("agent turn: %w; the round was retried once", sendErr)
+		if rejected {
+			err = fmt.Errorf("%w; the changeset was rejected", err)
+		}
+		return err
+	}
 	if !errors.Is(sendErr, agent.ErrTruncated) {
 		return fmt.Errorf("agent turn: %w", sendErr)
 	}
