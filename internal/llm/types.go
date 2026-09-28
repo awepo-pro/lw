@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"context"
 	"encoding/json"
 	"time"
 )
@@ -29,6 +30,34 @@ type Config struct {
 	// nothing arrives at all — a stream that keeps sending bytes is never
 	// cut, however long it runs. 0 = no bound (today's behaviour).
 	StallTimeout time.Duration
+	// Observer, when non-nil, is handed the exact bytes of every request
+	// body just before it is POSTed (038). nil — the default — changes
+	// nothing; a non-nil Observer only watches and can never alter what is
+	// sent.
+	Observer Observer
+}
+
+// Observer watches a Client's traffic without taking part in it (038, turn
+// trace). OnRequest receives the exact body bytes the Client is about to
+// POST — the same slice handed to the HTTP request, so a trace of it is
+// byte-identical to the wire by construction. It is called once per Stream
+// or Probe call (a transport-level replay in do resends the same bytes and
+// is not reported again). body must be treated as read-only and must not
+// be retained past the call without copying.
+type Observer interface {
+	OnRequest(ctx context.Context, body []byte)
+}
+
+// Usage is the provider's token accounting for one streamed response
+// (038), decoded from the OpenAI-compatible "usage" object whichever chunk
+// carries it — z.ai puts it on the finish_reason chunk, others on a
+// trailing chunk with empty choices. Field names follow the wire; the
+// trace records them under OpenTelemetry GenAI attribute names.
+type Usage struct {
+	InputTokens     int // usage.prompt_tokens
+	OutputTokens    int // usage.completion_tokens
+	CachedTokens    int // usage.prompt_tokens_details.cached_tokens (0 when absent)
+	ReasoningTokens int // usage.completion_tokens_details.reasoning_tokens (0 when absent)
 }
 
 // Message is one chat-completions message, tagged exactly as the
@@ -91,5 +120,8 @@ type Chunk struct {
 	Reasoning string
 	ToolCall  *ToolCall // emitted once, complete, when a tool call finishes assembling
 	Finish    string    // "stop" | "tool_calls" | "length" | ""
-	Err       error
+	// Usage is the stream's token accounting (038): set on exactly one
+	// Chunk per stream, and only when the provider sent a usage object.
+	Usage *Usage
+	Err   error
 }

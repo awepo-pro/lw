@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"time"
+
+	"github.com/awepo-pro/lw/internal/trace"
 )
 
 // This file declares backbone §9's event vocabulary and interfaces only:
@@ -93,6 +95,18 @@ type Agent interface {
 type LoopConfig struct {
 	MaxToolRounds int // default 24 (/docs/design.md §11.2)
 	ContextTokens int // default 96000
+
+	// TraceDir is where each turn's trace directory is written (038):
+	// <vault>/.llmwiki/traces. "" turns tracing off; the turn id is still
+	// minted and still tags lw.log and the session records.
+	TraceDir string
+	// TraceKeepBytes caps TraceDir's total size; the oldest turns are
+	// pruned at each turn start. <= 0 means no cap.
+	TraceKeepBytes int64
+	// TraceMeta is the part of the turn event only cmd/lw knows; Send fills
+	// Session, MaxRounds and ContextTokens, and a verb set on the ctx with
+	// trace.WithVerb wins over TraceMeta.Verb.
+	TraceMeta trace.Meta
 }
 
 // Record is one entry in a Session's append-only log.
@@ -124,6 +138,13 @@ type Record struct {
 	// reads it as history, but it happened in an earlier changeset. Added
 	// 2026-09-19 (009).
 	Carried bool `json:"carried,omitempty"`
+
+	// Turn is the id of the agent turn that wrote this record (038): the
+	// same id that tags the turn's lw.log records and names its trace
+	// directory. Never rendered into a prompt — ContextBuilder and Compact
+	// read Records field by field. omitempty keeps pre-038 files readable
+	// and byte-identical on re-marshal.
+	Turn string `json:"turn,omitempty"`
 }
 
 // Session is one curator conversation, bound to a changeset.
