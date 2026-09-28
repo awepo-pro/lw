@@ -18,8 +18,10 @@
 package logging
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -87,13 +89,52 @@ func Init(dir string, level slog.Level) error {
 
 // newHandler wraps w in the package's one handler shape: slog text
 // records, filtered to level, with secret attributes redacted on the way
-// to the file. There is deliberately no second handler and no fallback
-// writer — the file is the only destination.
-func newHandler(w *rotWriter, level slog.Level) slog.Handler {
-	return slog.NewTextHandler(w, &slog.HandlerOptions{
+// to the file, and the ctx's turn id (038 T3) stamped onto every record
+// that carries one. There is deliberately no second handler and no
+// fallback writer — the file is the only destination.
+func newHandler(w io.Writer, level slog.Level) slog.Handler {
+	return turnHandler{inner: slog.NewTextHandler(w, &slog.HandlerOptions{
 		Level:       level,
 		ReplaceAttr: redact,
-	})
+	})}
+}
+
+// turnHandler stamps the agent turn id (WithTurn, 038 T3) onto every
+// record as turn=<id>, which is what joins a lw.log line to the turn's
+// trace. The inner TextHandler writes WithAttrs values after the logger's
+// own preformatted attrs but before the record's, so re-entering Handle
+// through inner.WithAttrs places turn exactly there — first attr after
+// msg — without a second formatter, and redaction still sees the record
+// through the inner handler's ReplaceAttr. Records whose ctx carries no
+// turn go through untouched, byte-identical to the pre-038 handler. The
+// inner/outer split is also what keeps With/WithGroup loggers working:
+// the outer handlers just carry state down to the inner one.
+type turnHandler struct {
+	inner slog.Handler
+}
+
+// Enabled reports the inner handler's level decision.
+func (h turnHandler) Enabled(ctx context.Context, l slog.Level) bool {
+	return h.inner.Enabled(ctx, l)
+}
+
+// Handle writes r through the inner handler, adding turn=<id> when ctx
+// carries one.
+func (h turnHandler) Handle(ctx context.Context, r slog.Record) error {
+	if id := TurnFrom(ctx); id != "" {
+		return h.inner.WithAttrs([]slog.Attr{slog.String("turn", id)}).Handle(ctx, r)
+	}
+	return h.inner.Handle(ctx, r)
+}
+
+// WithAttrs returns a turn handler whose inner handler carries attrs.
+func (h turnHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return turnHandler{inner: h.inner.WithAttrs(attrs)}
+}
+
+// WithGroup returns a turn handler whose inner handler opens name.
+func (h turnHandler) WithGroup(name string) slog.Handler {
+	return turnHandler{inner: h.inner.WithGroup(name)}
 }
 
 // redact is the handler's ReplaceAttr: any attribute whose key is on the
