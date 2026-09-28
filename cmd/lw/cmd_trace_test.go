@@ -700,8 +700,9 @@ func TestTraceListRobustness(t *testing.T) {
 		}
 	}
 
-	// An unreadable turn dir: the failure is clean — an error, not a
-	// panic. (Skipped as root, where the permission bit does not bite.)
+	// An unreadable turn dir is skipped, not fatal (038 T2b): the readable
+	// turns still list, exit 0, and the blocked id is absent. (Skipped as
+	// root, where the permission bit does not bite.)
 	if os.Geteuid() != 0 {
 		blocked := filepath.Join(dir, "20260928T101504Z-0004")
 		if err := os.MkdirAll(blocked, 0o700); err != nil {
@@ -714,8 +715,14 @@ func TestTraceListRobustness(t *testing.T) {
 		stdout, stderr, code = captureRun(t, func() int {
 			return run([]string{"trace", "--vault", root})
 		})
-		if code == 0 {
-			t.Errorf("unreadable turn: exit code = 0, want a clean failure; stdout=%q", stdout)
+		if code != 0 {
+			t.Errorf("unreadable turn: exit code = %d, want 0 (skipped); stderr=%q", code, stderr)
+		}
+		if strings.Contains(stdout, "20260928T101504Z-0004") {
+			t.Errorf("unreadable turn listed:\n%s", stdout)
+		}
+		if !strings.Contains(stdout, "20260928T101501Z-0001") {
+			t.Errorf("readable turns missing after an unreadable one:\n%s", stdout)
 		}
 		if code == 2 {
 			t.Errorf("unreadable turn: exit code = 2 (usage), want 1; stderr=%q", stderr)
