@@ -15,8 +15,10 @@ import (
 	"time"
 
 	"github.com/awepo-pro/lw/internal/llm"
+	"github.com/awepo-pro/lw/internal/logging"
 	"github.com/awepo-pro/lw/internal/stage"
 	"github.com/awepo-pro/lw/internal/tools"
+	"github.com/awepo-pro/lw/internal/trace"
 )
 
 // maxConsecutiveBadCalls is the one-retry budget backbone §9 gives a
@@ -56,9 +58,58 @@ const maxConsecutiveBadCalls = 2
 // continues when a tool call was already dispatched, and is retried once
 // otherwise (surfacing as RetryEv) — so only a twice-cut round reaches
 // Send's caller as an ErrorEv wrapping llm.ErrStreamTruncated.
-func (l *Loop) Send(ctx context.Context, sessionID, msg string, out chan<- Event) error {
+//
+// Turn trace (038 T4): Send mints the turn id (or keeps the one the caller
+// put on the ctx with logging.WithTurn) before any log line or session
+// access, and stamps it on the ctx — every *Context log call below then
+// carries it as turn=<id>, the same id on every Record this turn appends
+// and on the trace's own events when cfg.TraceDir is set. The trace itself
+// is observation only: Start's failure path warns once and hands back a nil
+// Recorder, every Recorder call is nil-safe, and nothing here changes what
+// runs. Exactly one done event closes the trace, whatever the exit — the
+// deferred Done below is what makes "exactly one" true; cancellation wins
+// over an error, since a turn that died because its ctx died is a canceled
+// turn even when a later step also produced an error value.
+func (l *Loop) Send(ctx context.Context, sessionID, msg string, out chan<- Event) (err error) {
 	defer close(out)
-	slog.Info("agent turn", "rounds_max", l.cfg.MaxToolRounds)
+
+	id := logging.TurnFrom(ctx)
+	if id == "" {
+		id = trace.NewID(time.Now())
+	}
+	ctx = logging.WithTurn(ctx, id)
+
+	var rec *trace.Recorder
+	started := time.Now()
+	if l.cfg.TraceDir != "" {
+		meta := l.cfg.TraceMeta
+		meta.Session = sessionID
+		meta.MaxRounds = l.cfg.MaxToolRounds
+		meta.ContextTokens = l.cfg.ContextTokens
+		if v := trace.VerbFrom(ctx); v != "" {
+			meta.Verb = v
+		}
+		ctx, rec = trace.Start(ctx, l.cfg.TraceDir, id, meta, l.cfg.TraceKeepBytes)
+	}
+
+	rounds := 0
+	// doneReason is set only by the two clean exits; every other exit is
+	// classified in the defer above it.
+	var doneReason string
+	defer func() {
+		d := trace.Done{Rounds: rounds, WallMS: time.Since(started).Milliseconds()}
+		switch {
+		case ctx.Err() != nil:
+			d.Reason = "canceled"
+		case err != nil:
+			d.Reason, d.Error = "error", err.Error()
+		default:
+			d.Reason = doneReason
+		}
+		rec.Done(d)
+	}()
+
+	slog.InfoContext(ctx, "agent turn", "rounds_max", l.cfg.MaxToolRounds)
 
 	sess, err := l.sessions.Get(sessionID)
 	if err != nil {
@@ -72,7 +123,7 @@ func (l *Loop) Send(ctx context.Context, sessionID, msg string, out chan<- Event
 	// the turn's own message (part 5). sess.Records here is "history
 	// before this turn"; mutating it first made parts 4 and 5 the same
 	// message (repair-1, orchestrator probe 2026-09-06).
-	userRec := Record{TS: time.Now().UTC(), Role: "user", Content: msg}
+	userRec := Record{TS: time.Now().UTC(), Role: "user", Content: msg, Turn: id}
 	if err := l.sessions.Append(sessionID, userRec); err != nil {
 		return l.fail(ctx, out, fmt.Errorf("agent: append user record: %w", err))
 	}
@@ -99,7 +150,6 @@ func (l *Loop) Send(ctx context.Context, sessionID, msg string, out chan<- Event
 	pinned := make(map[string]bool)
 
 	badCalls := 0
-	rounds := 0
 
 	for {
 		rounds++
@@ -107,7 +157,7 @@ func (l *Loop) Send(ctx context.Context, sessionID, msg string, out chan<- Event
 		// 004 T0a (F.C1): estimate the request before every Stream call,
 		// round 1 included; runRound is the only Stream caller, so this
 		// is the one checkpoint a round's request passes through.
-		msgs = boundContext(msgs, turnStart, elided, pinned, rounds, l.cfg.ContextTokens)
+		msgs = boundContext(ctx, msgs, turnStart, elided, pinned, rounds, l.cfg.ContextTokens)
 
 		newMsgs, toolCalled, finish, err := l.runRound(ctx, sessionID, rounds, msgs, &badCalls, out)
 		if err != nil {
@@ -119,7 +169,8 @@ func (l *Loop) Send(ctx context.Context, sessionID, msg string, out chan<- Event
 			if truncated(finish) {
 				return l.fail(ctx, out, fmt.Errorf("%w (finish_reason %q in round %d)", ErrTruncated, finish, rounds))
 			}
-			slog.Info("agent done", "reason", "stop", "rounds", rounds)
+			doneReason = "stop"
+			slog.InfoContext(ctx, "agent done", "reason", "stop", "rounds", rounds)
 			if !l.send(ctx, out, DoneEv{Reason: "stop", Rounds: rounds}) {
 				return ctx.Err()
 			}
@@ -127,7 +178,8 @@ func (l *Loop) Send(ctx context.Context, sessionID, msg string, out chan<- Event
 		}
 
 		if rounds >= l.cfg.MaxToolRounds {
-			slog.Info("agent done", "reason", "max_rounds", "rounds", rounds)
+			doneReason = "max_rounds"
+			slog.InfoContext(ctx, "agent done", "reason", "max_rounds", "rounds", rounds)
 			if !l.send(ctx, out, DoneEv{Reason: "max_rounds", Rounds: rounds}) {
 				return ctx.Err()
 			}
@@ -197,6 +249,16 @@ func (l *Loop) runRound(ctx context.Context, sessionID string, round int, msgs [
 	// Per round, never per turn: each round's request is a fresh roll of
 	// the provider's dice, and a round that used its retry starts clean.
 	cutRetried := false
+	// attempt is the round's 1-based attempt number: 1, then 2 after a
+	// 035 (B) cut retry — the number the trace names each request file by
+	// (038 T4, C-5).
+	attempt := 1
+
+	// tr is the turn's Recorder, nil for every untraced turn (TraceDir ""
+	// or a failed Start); every call on it below is nil-safe. It is named
+	// tr, not rec, because rec is this function's name for a session
+	// Record.
+	tr := trace.FromContext(ctx)
 
 	// flushRecord writes any text and/or reasoning accumulated since the
 	// last flush as ONE assistant Record, in the position it arrived —
@@ -221,7 +283,7 @@ func (l *Loop) runRound(ctx context.Context, sessionID string, round int, msgs [
 		reasoning := pendingReasoning.String()
 		pendingText.Reset()
 		pendingReasoning.Reset()
-		rec := Record{TS: time.Now().UTC(), Role: "assistant", Content: text, Reasoning: reasoning}
+		rec := Record{TS: time.Now().UTC(), Role: "assistant", Content: text, Reasoning: reasoning, Turn: logging.TurnFrom(ctx)}
 		if err := l.sessions.Append(sessionID, rec); err != nil {
 			return fmt.Errorf("agent: append assistant record: %w", err)
 		}
@@ -260,8 +322,40 @@ func (l *Loop) runRound(ctx context.Context, sessionID string, round int, msgs [
 	// stall cancel, and nothing is ever left blocked on an unread send.
 streamLoop:
 	for {
-		ch, err := l.client.Stream(ctx, llm.Request{Messages: msgs, Tools: l.tools.Definitions()})
+		// One attempt, traced (038 T4, A5): BeginRequest names the round,
+		// attempt and request shape the Observer is about to record, then
+		// t0 anchors the three timings — first_byte_ms off Stream's return,
+		// first_delta_ms off the first content chunk, stream_ms off the
+		// attempt's end, which is wherever this attempt's response is
+		// recorded.
+		defs := l.tools.Definitions()
+		tr.BeginRequest(round, attempt, len(msgs), len(defs))
+		t0 := time.Now()
+		ch, err := l.client.Stream(ctx, llm.Request{Messages: msgs, Tools: defs})
+		firstByteMS := time.Since(t0).Milliseconds()
+		firstDeltaMS := int64(-1)
+		var usage *llm.Usage
+
+		// recordResponse writes this attempt's ONE response event (038 T4,
+		// A6): the attempt's own reasoning, text and tool calls, its t0-
+		// anchored timings, and — on the paths that end abnormally — the
+		// cut flag and/or the terminal error. Every exit path below calls
+		// it exactly once; usage rides whichever chunk carried it.
+		recordResponse := func(cut bool, errText string) {
+			tr.Response(trace.Response{
+				Round: round, Attempt: attempt, Finish: finish,
+				FirstByteMS: firstByteMS, FirstDeltaMS: firstDeltaMS,
+				StreamMS:  time.Since(t0).Milliseconds(),
+				Reasoning: roundReasoning.String(), Text: roundText.String(),
+				ToolCalls: traceToolCalls(roundToolCalls),
+				Usage:     usage, Cut: cut, Error: errText,
+			})
+		}
+
 		if err != nil {
+			// The stream never opened: the attempt's response is the error,
+			// with no content (038 T4, A6).
+			recordResponse(false, err.Error())
 			return nil, false, "", l.fail(ctx, out, fmt.Errorf("agent: stream: %w", err))
 		}
 
@@ -269,6 +363,18 @@ streamLoop:
 			select {
 			case chunk, ok := <-ch:
 				if !ok {
+					// A channel that closes with ctx already dead is a
+					// canceled turn, not a finished round (038 T4): the
+					// provider's close and the cancel are simultaneous as
+					// this select sees them, and Go's select picks freely
+					// between two ready cases — reading the close as a clean
+					// round would tell the trace the model stopped when the
+					// caller had already hung up.
+					if cerr := ctx.Err(); cerr != nil {
+						recordResponse(false, cerr.Error())
+						return nil, false, "", cerr
+					}
+					recordResponse(false, "")
 					if truncated(finish) && !toolCalled {
 						// Abnormal round end (008, contract §1): write the
 						// round's one assistant Record with its pending text,
@@ -277,7 +383,7 @@ streamLoop:
 						// buffers, and this record is the only trace of what
 						// the cap cut off. Send turns the same condition into
 						// the turn's ErrorEv, so the record lands before it.
-						rec := Record{TS: time.Now().UTC(), Role: "assistant", Content: pendingText.String(), Reasoning: pendingReasoning.String(), Finish: finish}
+						rec := Record{TS: time.Now().UTC(), Role: "assistant", Content: pendingText.String(), Reasoning: pendingReasoning.String(), Finish: finish, Turn: logging.TurnFrom(ctx)}
 						if aerr := l.sessions.Append(sessionID, rec); aerr != nil {
 							return nil, false, "", l.fail(ctx, out, fmt.Errorf("agent: append assistant record: %w", aerr))
 						}
@@ -297,9 +403,13 @@ streamLoop:
 							// event: nothing is being thrown away, so there
 							// is nothing for a consumer to drop.
 							if ferr := flushRecord(); ferr != nil {
+								recordResponse(false, ferr.Error())
 								return nil, false, "", l.fail(ctx, out, ferr)
 							}
-							slog.Warn("agent round cut", "round", round, "tool_calls", len(roundToolCalls), "action", "continue")
+							slog.WarnContext(ctx, "agent round cut", "round", round, "tool_calls", len(roundToolCalls), "action", "continue")
+							// The round reads as finished but the stream did
+							// not end cleanly — cut:true says so (A6).
+							recordResponse(true, "")
 							return assemble(msgs), true, "", nil
 						case cutRetry:
 							// (B) 035: nothing was dispatched, and nothing
@@ -307,8 +417,15 @@ streamLoop:
 							// the round's partial text and reasoning are
 							// discarded whole and the identical request is
 							// sent again, once. RetryEv lets consumers drop
-							// the text they already rendered.
+							// the text they already rendered. The trace keeps
+							// what the loop throws away: the partial attempt
+							// is recorded BEFORE the buffers reset, and the
+							// retry event names the attempt that will be
+							// sent (038 T4 A6, C-5).
+							recordResponse(true, "")
+							tr.Retry(round, attempt+1, "stream ended early")
 							cutRetried = true
+							attempt = 2
 							roundText.Reset()
 							roundReasoning.Reset()
 							pendingText.Reset()
@@ -316,20 +433,28 @@ streamLoop:
 							if !l.send(ctx, out, RetryEv{Round: round, Attempt: 1, Reason: "stream ended early"}) {
 								return nil, false, "", ctx.Err()
 							}
-							slog.Warn("agent round cut", "round", round, "tool_calls", 0, "action", "retry", "attempt", 1)
+							slog.WarnContext(ctx, "agent round cut", "round", round, "tool_calls", 0, "action", "retry", "attempt", 1)
 							continue streamLoop
 						case cutFail:
 							// (C) 035: the re-send was cut too — the provider
 							// failed the identical request twice in a row,
 							// and one more silent retry would loop forever.
-							slog.Warn("agent round cut", "round", round, "tool_calls", 0, "action", "fail")
+							slog.WarnContext(ctx, "agent round cut", "round", round, "tool_calls", 0, "action", "fail")
+							recordResponse(true, chunk.Err.Error())
 							return nil, false, "", l.fail(ctx, out, fmt.Errorf("agent: stream: %w", chunk.Err))
 						}
 					}
+					recordResponse(false, chunk.Err.Error())
 					return nil, false, "", l.fail(ctx, out, fmt.Errorf("agent: stream: %w", chunk.Err))
 				}
 				if chunk.Finish != "" {
 					finish = chunk.Finish
+				}
+				if chunk.Usage != nil {
+					usage = chunk.Usage // last one wins, as on the wire (038 T1)
+				}
+				if firstDeltaMS < 0 && (chunk.Reasoning != "" || chunk.Text != "" || chunk.ToolCall != nil) {
+					firstDeltaMS = time.Since(t0).Milliseconds()
 				}
 				if chunk.Reasoning != "" {
 					// 022 T2: the thinking streams out live, one ReasoningDelta
@@ -338,6 +463,7 @@ streamLoop:
 					// Display-only: the accumulation below (and the records it
 					// feeds) is unchanged.
 					if !l.send(ctx, out, ReasoningDelta{Text: chunk.Reasoning}) {
+						recordResponse(false, ctx.Err().Error())
 						return nil, false, "", ctx.Err()
 					}
 					roundReasoning.WriteString(chunk.Reasoning)
@@ -345,6 +471,7 @@ streamLoop:
 				}
 				if chunk.Text != "" {
 					if !l.send(ctx, out, TextDelta{Text: chunk.Text}) {
+						recordResponse(false, ctx.Err().Error())
 						return nil, false, "", ctx.Err()
 					}
 					roundText.WriteString(chunk.Text)
@@ -352,22 +479,40 @@ streamLoop:
 				}
 				if chunk.ToolCall != nil {
 					if err := flushRecord(); err != nil {
+						recordResponse(false, err.Error())
 						return nil, false, "", l.fail(ctx, out, err)
 					}
 					toolCalled = true
 
-					toolMsg, stop, tErr := l.dispatchToolCall(ctx, sessionID, *chunk.ToolCall, badCalls, out)
+					toolMsg, stop, tErr := l.dispatchToolCall(ctx, sessionID, round, *chunk.ToolCall, badCalls, out)
 					if stop {
+						recordResponse(false, tErr.Error())
 						return nil, false, "", tErr
 					}
 					roundToolCalls = append(roundToolCalls, *chunk.ToolCall)
 					roundToolMsgs = append(roundToolMsgs, toolMsg)
 				}
 			case <-ctx.Done():
+				recordResponse(false, ctx.Err().Error())
 				return nil, false, "", ctx.Err()
 			}
 		}
 	}
+}
+
+// traceToolCalls converts a round's llm.ToolCalls to their trace shape: the
+// id, the wire-spelled name the provider echoed (the same spelling
+// dispatchToolCall canonicalizes), and the raw arguments JSON — what the
+// model said, not what lw decoded it into (038 T4, A6).
+func traceToolCalls(tcs []llm.ToolCall) []trace.ToolCall {
+	if len(tcs) == 0 {
+		return nil
+	}
+	out := make([]trace.ToolCall, len(tcs))
+	for i, tc := range tcs {
+		out[i] = trace.ToolCall{ID: tc.ID, Name: tc.Function.Name, Arguments: tc.Function.Arguments}
+	}
+	return out
 }
 
 // dispatchToolCall handles one complete llm.ToolCall: it always emits
@@ -383,7 +528,7 @@ streamLoop:
 // It no longer builds an assistant message (C-120/D-DG): the round's one
 // assistant message — carrying every tool call and the round's shared text
 // and reasoning — is assembled once, by runRound, when the round ends.
-func (l *Loop) dispatchToolCall(ctx context.Context, sessionID string, tc llm.ToolCall, badCalls *int, out chan<- Event) (msg llm.Message, stop bool, err error) {
+func (l *Loop) dispatchToolCall(ctx context.Context, sessionID string, round int, tc llm.ToolCall, badCalls *int, out chan<- Event) (msg llm.Message, stop bool, err error) {
 	// The provider echoes tc.Function.Name back to us in wire spelling —
 	// underscores, never dots (backbone §6/§7's amendment, D-CY/C-112),
 	// since Registry.Definitions advertised it that way. Canonicalize once,
@@ -393,7 +538,11 @@ func (l *Loop) dispatchToolCall(ctx context.Context, sessionID string, tc llm.To
 	canonical := tools.CanonicalName(tc.Function.Name)
 	// The file log's per-dispatch line (010 contract §0): the wire-spelled
 	// name and the raw argument payload's byte count — never its content.
-	slog.Info("agent tool call", "name", tc.Function.Name, "args_bytes", len(tc.Function.Arguments))
+	slog.InfoContext(ctx, "agent tool call", "name", tc.Function.Name, "args_bytes", len(tc.Function.Arguments))
+
+	// 038 T4 (A7): the tool event's ms runs from this send to the result —
+	// the dispatch the model asked for, however it ends.
+	t0 := time.Now()
 
 	if !l.send(ctx, out, ToolCallEv{ID: tc.ID, Name: canonical, Args: tc.Function.Arguments}) {
 		return llm.Message{}, true, ctx.Err()
@@ -404,19 +553,37 @@ func (l *Loop) dispatchToolCall(ctx context.Context, sessionID string, tc llm.To
 		args = "{}" // legal for a no-argument tool (backbone §9 item 7)
 	}
 	if perr := json.Unmarshal([]byte(args), &map[string]any{}); perr != nil {
-		return l.correctable(ctx, sessionID, tc, canonical, fmt.Errorf("malformed tool arguments: %w", perr), badCalls, out)
+		return l.correctable(ctx, sessionID, round, tc, canonical, fmt.Errorf("malformed tool arguments: %w", perr), badCalls, out, t0)
 	}
 
 	res, callErr := l.tools.Call(ctx, canonical, json.RawMessage(args))
 	if callErr != nil {
 		if errors.Is(callErr, tools.ErrUnknownTool) {
-			return l.correctable(ctx, sessionID, tc, canonical, callErr, badCalls, out)
+			return l.correctable(ctx, sessionID, round, tc, canonical, callErr, badCalls, out, t0)
 		}
+		// 038 T4 (A7): the turn aborts here, but the call was dispatched —
+		// its ToolCallEv is already out — so the trace still gets its one
+		// tool row: IsError, timed from the dispatch, with no result bytes
+		// because no result ever existed. Without it the one dispatch that
+		// kills a turn is the one the trace cannot see.
+		trace.FromContext(ctx).Tool(trace.Tool{
+			Round: round, ID: tc.ID, Name: canonical, IsError: true,
+			MS: time.Since(t0).Milliseconds(),
+		})
 		return llm.Message{}, true, l.fail(ctx, out, fmt.Errorf("agent: call %s: %w", canonical, callErr))
 	}
 	*badCalls = 0 // a dispatched call, whatever its result, resets the retry budget
 
-	slog.Info("agent tool result", "name", canonical, "is_error", res.IsError)
+	// 038 T4 (A7): one tool event per dispatched call, written the moment
+	// the result exists — before the events and records below, so a turn
+	// that dies mid-dispatch still shows the tool ran.
+	trace.FromContext(ctx).Tool(trace.Tool{
+		Round: round, ID: tc.ID, Name: canonical,
+		IsError: res.IsError, MS: time.Since(t0).Milliseconds(),
+		ResultBytes: len(res.Content),
+	})
+
+	slog.InfoContext(ctx, "agent tool result", "name", canonical, "is_error", res.IsError)
 
 	if !l.send(ctx, out, ToolResEv{ID: tc.ID, Name: canonical, Content: res.Content, IsError: res.IsError}) {
 		return llm.Message{}, true, ctx.Err()
@@ -434,7 +601,7 @@ func (l *Loop) dispatchToolCall(ctx context.Context, sessionID string, tc llm.To
 		staged = true
 	}
 
-	rec := Record{TS: time.Now().UTC(), Role: "tool", Tool: canonical, Args: args, Result: res.Content, Staged: staged}
+	rec := Record{TS: time.Now().UTC(), Role: "tool", Tool: canonical, Args: args, Result: res.Content, Staged: staged, Turn: logging.TurnFrom(ctx)}
 	if aerr := l.sessions.Append(sessionID, rec); aerr != nil {
 		return llm.Message{}, true, l.fail(ctx, out, fmt.Errorf("agent: append tool record: %w", aerr))
 	}
@@ -448,21 +615,33 @@ func (l *Loop) dispatchToolCall(ctx context.Context, sessionID string, tc llm.To
 // maxConsecutiveBadCalls in a row. canonical is dispatchToolCall's
 // already-canonicalized tc.Function.Name (D-CY), passed through rather than
 // recomputed so both call sites — before and after the registry lookup —
-// agree on one spelling for the ToolResEv this emits. Like dispatchToolCall,
+// agree on one spelling for the ToolResEv this emits. round and t0 ride
+// from dispatchToolCall's dispatch: round is the turn's 1-based round
+// number the trace's tool event records under, and t0 is the moment the
+// ToolCallEv send began, so the tool event's ms covers the whole attempted
+// dispatch (038 T4, A7). Like dispatchToolCall,
 // it returns only the tool-result message: the call still counts toward the
 // round's one assistant message (runRound appends tc to roundToolCalls
 // regardless of which branch produced its result), but no separate
 // assistant message is built here (C-120/D-DG).
-func (l *Loop) correctable(ctx context.Context, sessionID string, tc llm.ToolCall, canonical string, cause error, badCalls *int, out chan<- Event) (llm.Message, bool, error) {
+func (l *Loop) correctable(ctx context.Context, sessionID string, round int, tc llm.ToolCall, canonical string, cause error, badCalls *int, out chan<- Event, t0 time.Time) (llm.Message, bool, error) {
 	*badCalls++
 	content := cause.Error()
 
-	slog.Info("agent tool result", "name", canonical, "is_error", true)
+	// 038 T4 (A7): a correctable call is still a dispatched call — its
+	// error result is what the model reads next, so the trace shows it like
+	// any other tool, timed from the same t0 dispatchToolCall started.
+	trace.FromContext(ctx).Tool(trace.Tool{
+		Round: round, ID: tc.ID, Name: canonical, IsError: true,
+		MS: time.Since(t0).Milliseconds(), ResultBytes: len(content),
+	})
+
+	slog.InfoContext(ctx, "agent tool result", "name", canonical, "is_error", true)
 	if !l.send(ctx, out, ToolResEv{ID: tc.ID, Name: canonical, Content: content, IsError: true}) {
 		return llm.Message{}, true, ctx.Err()
 	}
 
-	rec := Record{TS: time.Now().UTC(), Role: "tool", Tool: canonical, Args: tc.Function.Arguments, Result: content}
+	rec := Record{TS: time.Now().UTC(), Role: "tool", Tool: canonical, Args: tc.Function.Arguments, Result: content, Turn: logging.TurnFrom(ctx)}
 	if aerr := l.sessions.Append(sessionID, rec); aerr != nil {
 		return llm.Message{}, true, l.fail(ctx, out, fmt.Errorf("agent: append tool record: %w", aerr))
 	}

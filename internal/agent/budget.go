@@ -20,6 +20,7 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -27,6 +28,7 @@ import (
 
 	"github.com/awepo-pro/lw/internal/llm"
 	"github.com/awepo-pro/lw/internal/tools"
+	"github.com/awepo-pro/lw/internal/trace"
 )
 
 // callSignature is A-004-2's identity of one distinct read: the canonical
@@ -98,7 +100,7 @@ func requestTokens(msgs []llm.Message) int {
 // (and tests via fakeStreamer.Requests) keep slices from earlier rounds'
 // requests, and mutating those in place would rewrite requests that were
 // already sent. Under-budget and warn-only paths return msgs itself.
-func boundContext(msgs []llm.Message, turnStart int, elided map[int]bool, pinned map[string]bool, round, budget int) []llm.Message {
+func boundContext(ctx context.Context, msgs []llm.Message, turnStart int, elided map[int]bool, pinned map[string]bool, round, budget int) []llm.Message {
 	est := requestTokens(msgs)
 	if est <= budget {
 		return msgs
@@ -176,10 +178,14 @@ func boundContext(msgs []llm.Message, turnStart int, elided map[int]bool, pinned
 	}
 
 	if elidedCount > 0 {
-		slog.Info("context elided", "round", round, "messages", elidedCount, "bytes", elidedBytes, "estimate", est, "budget", budget)
+		slog.InfoContext(ctx, "context elided", "round", round, "messages", elidedCount, "bytes", elidedBytes, "estimate", est, "budget", budget)
+		// 038 T4 (A8): the same facts the log line carries, as an elide
+		// event on the turn's trace. Elide is a no-op at count 0, so this
+		// reports only when something was dropped.
+		trace.FromContext(ctx).Elide(round, elidedCount, elidedBytes)
 	}
 	if est > budget {
-		slog.Warn("context over budget", "estimate", est, "budget", budget, "round", round)
+		slog.WarnContext(ctx, "context over budget", "estimate", est, "budget", budget, "round", round)
 	}
 	if out == nil {
 		return msgs
