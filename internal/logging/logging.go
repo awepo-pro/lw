@@ -18,8 +18,10 @@
 package logging
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -87,13 +89,95 @@ func Init(dir string, level slog.Level) error {
 
 // newHandler wraps w in the package's one handler shape: slog text
 // records, filtered to level, with secret attributes redacted on the way
-// to the file. There is deliberately no second handler and no fallback
-// writer — the file is the only destination.
-func newHandler(w *rotWriter, level slog.Level) slog.Handler {
-	return slog.NewTextHandler(w, &slog.HandlerOptions{
+// to the file, and the ctx's turn id (038 T3) stamped onto every record
+// that carries one. There is deliberately no second handler and no
+// fallback writer — the file is the only destination.
+func newHandler(w io.Writer, level slog.Level) slog.Handler {
+	text := slog.NewTextHandler(w, &slog.HandlerOptions{
 		Level:       level,
 		ReplaceAttr: redact,
 	})
+	return turnHandler{inner: text, base: text}
+}
+
+// turnHandler stamps the agent turn id (WithTurn, 038 T3) onto every
+// record as turn=<id>, which is what joins a lw.log line to the turn's
+// trace. The inner TextHandler writes WithAttrs values after the logger's
+// own preformatted attrs but before the record's, so re-entering Handle
+// through inner.WithAttrs places turn exactly there — first attr after
+// msg — without a second formatter, and redaction still sees the record
+// through the inner handler's ReplaceAttr. Records whose ctx carries no
+// turn go through untouched, byte-identical to the pre-038 handler.
+//
+// Groups are the one wrinkle: attrs layered onto a grouped handler land
+// inside the group, and turn must stay top-level — `turn=`, not `g.turn=`
+// — whatever the logger's group state. So the handler remembers the
+// WithAttrs values that came before the first WithGroup (pre) and the
+// state layered after it (post), and for a grouped logger rebuilds the
+// chain at Handle time with turn spliced into the top level. That path is
+// the cold one; the common ungrouped case is the single WithAttrs above.
+// The wrapped handlers are immutable, so sharing base across copies is
+// safe and every derived handler sees the same redaction.
+type turnHandler struct {
+	inner slog.Handler // the logger's full state, as slog built it
+	base  slog.Handler // the bare text handler, no With/WithGroup state
+	pre   []slog.Attr  // WithAttrs values before the first WithGroup
+	post  []turnState  // everything from the first WithGroup on
+}
+
+// turnState is one WithAttrs/WithGroup step recorded after the first
+// WithGroup, so a grouped chain can be rebuilt with turn at the top.
+type turnState struct {
+	group string
+	attrs []slog.Attr
+}
+
+// Enabled reports the inner handler's level decision.
+func (h turnHandler) Enabled(ctx context.Context, l slog.Level) bool {
+	return h.inner.Enabled(ctx, l)
+}
+
+// Handle writes r through the inner handler, adding turn=<id> when ctx
+// carries one — top-level even when the logger has groups open.
+func (h turnHandler) Handle(ctx context.Context, r slog.Record) error {
+	id := TurnFrom(ctx)
+	if id == "" {
+		return h.inner.Handle(ctx, r)
+	}
+	turn := []slog.Attr{slog.String("turn", id)}
+	if len(h.post) == 0 {
+		return h.inner.WithAttrs(turn).Handle(ctx, r)
+	}
+	top := h.base.WithAttrs(append(append([]slog.Attr{}, h.pre...), turn...))
+	for _, s := range h.post {
+		if s.group != "" {
+			top = top.WithGroup(s.group)
+		} else {
+			top = top.WithAttrs(s.attrs)
+		}
+	}
+	return top.Handle(ctx, r)
+}
+
+// WithAttrs returns a turn handler whose inner handler carries attrs.
+func (h turnHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	copied := append([]slog.Attr{}, attrs...)
+	n := h
+	n.inner = h.inner.WithAttrs(attrs)
+	if len(n.post) == 0 {
+		n.pre = append(n.pre, copied...)
+	} else {
+		n.post = append(n.post, turnState{attrs: copied})
+	}
+	return n
+}
+
+// WithGroup returns a turn handler whose inner handler opens name.
+func (h turnHandler) WithGroup(name string) slog.Handler {
+	n := h
+	n.inner = h.inner.WithGroup(name)
+	n.post = append(n.post, turnState{group: name})
+	return n
 }
 
 // redact is the handler's ReplaceAttr: any attribute whose key is on the
