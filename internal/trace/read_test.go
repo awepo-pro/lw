@@ -3,6 +3,8 @@ package trace
 import (
 	"compress/gzip"
 	"context"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -10,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/awepo-pro/lw/internal/llm"
+	"github.com/awepo-pro/lw/internal/logging"
 )
 
 // TestListLoadRoundTrip scripts one full turn — a cut stream retried once,
@@ -204,6 +207,67 @@ func TestListIncompleteTurn(t *testing.T) {
 	}
 	if !strings.HasPrefix(sums[0].ID, "2026") {
 		t.Errorf("Summary.ID = %q", sums[0].ID)
+	}
+}
+
+// TestListSkipsUnreadableTurn pins the resilient listing (038 T2b): of
+// three turns with the middle one chmod 000, List returns the other two,
+// newest first, without error, and logs exactly one `trace unreadable`
+// WARN for the skipped turn. Size likewise survives. Skipped as root, where
+// chmod 000 cannot make a dir unreadable.
+func TestListSkipsUnreadableTurn(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads through chmod 000")
+	}
+	logDir := t.TempDir()
+	if err := logging.Init(logDir, slog.LevelInfo); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil))) })
+
+	dir := t.TempDir()
+	id1, id2, id3 := testID(1), testID(2), testID(3)
+	for _, id := range []string{id1, id2, id3} {
+		_, rec := Start(context.Background(), dir, id, Meta{}, 0)
+		rec.BeginRequest(1, 1, 1, 0)
+		rec.Request([]byte(`{}`))
+		rec.Response(Response{Round: 1, Attempt: 1, Finish: "stop"})
+		if err := rec.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dead := filepath.Join(dir, id2)
+	if err := os.Chmod(dead, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(dead, 0o755) }) // let TempDir's RemoveAll back in
+
+	sums, err := List(dir)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(sums) != 2 {
+		t.Fatalf("List = %d summaries, want 2", len(sums))
+	}
+	if sums[0].ID != id3 || sums[1].ID != id1 {
+		t.Errorf("List = [%s, %s], want [%s, %s] (newest first, unreadable skipped)",
+			sums[0].ID, sums[1].ID, id3, id1)
+	}
+	b, err := os.ReadFile(filepath.Join(logDir, "lw.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// One WARN from List; Size's own skip warns again and is not counted here.
+	if n := strings.Count(string(b), "trace unreadable"); n != 1 {
+		t.Fatalf("lw.log has %d `trace unreadable` records after List, want 1:\n%s", n, b)
+	}
+
+	turns, _, err := Size(dir)
+	if err != nil {
+		t.Fatalf("Size: %v", err)
+	}
+	if turns != 2 {
+		t.Errorf("Size = %d turns, want 2", turns)
 	}
 }
 

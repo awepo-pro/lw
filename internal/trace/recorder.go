@@ -77,7 +77,7 @@ type Tool struct {
 // Done closes the turn's story: why the loop stopped, how many rounds it
 // ran, the terminal error if it failed, and the wall time from Start.
 type Done struct {
-	Reason string `json:"reason"` // max_rounds | no_tool_calls | error | ...
+	Reason string `json:"reason"` // stop | max_rounds | error | canceled
 	Rounds int    `json:"rounds"`
 	Error  string `json:"error,omitempty"`
 	WallMS int64  `json:"wall_ms"`
@@ -304,10 +304,10 @@ func (r *Recorder) BeginRequest(round, attempt, messages, toolDefs int) {
 	r.messages, r.toolDefs = messages, toolDefs
 }
 
-// Request stores the exact bytes about to be POSTed — a gzip under
-// req-RR.json.gz (attempt 1) or req-RR-A.json.gz (a retry) — then writes the
-// request event. The gzip is written first: an event without its file would
-// point at nothing.
+// Request stores the exact bytes about to be POSTed — a gzip named
+// req-%02d.json.gz (e.g. req-01.json.gz, attempt 1) or req-%02d-%d.json.gz
+// (e.g. req-01-2.json.gz, a retry) — then writes the request event. The gzip
+// is written first: an event without its file would point at nothing.
 func (r *Recorder) Request(body []byte) {
 	if r == nil {
 		return

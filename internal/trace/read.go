@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -224,7 +225,11 @@ func parseEvents(turnDir string) ([]rawEvent, error) {
 }
 
 // List summarizes dir's turns, newest first — the order a human (and `lw
-// trace list`) looks at them.
+// trace list`) looks at them. A turn whose events cannot be read — a chmod
+// 000 dir, a lost events.ndjson — is skipped with one WARN, not dropped from
+// the whole listing: one bad turn must not blind `lw trace` to the rest
+// (038 T2b). An error comes back only when dir itself cannot be read; a
+// missing dir lists zero turns.
 func List(dir string) ([]Summary, error) {
 	ids, err := turnIDs(dir)
 	if err != nil {
@@ -234,7 +239,8 @@ func List(dir string) ([]Summary, error) {
 	for i := len(ids) - 1; i >= 0; i-- {
 		s, err := summarize(filepath.Join(dir, ids[i]), ids[i])
 		if err != nil {
-			return nil, err
+			slog.Warn("trace unreadable", "turn", ids[i], "err", err)
+			continue
 		}
 		out = append(out, s)
 	}
@@ -434,7 +440,9 @@ func Resolve(dir, ref string) (string, error) {
 }
 
 // Size reports how much the traces dir holds: how many turns, how many
-// bytes — the fact `lw trace`'s footer shows next to the keep budget.
+// bytes — the fact `lw trace`'s footer shows next to the keep budget. Like
+// List it skips a turn it cannot read, with the same one-line WARN (038
+// T2b), and errs only when dir itself cannot be read.
 func Size(dir string) (turns int, bytes int64, err error) {
 	ids, err := turnIDs(dir)
 	if err != nil {
@@ -443,7 +451,8 @@ func Size(dir string) (turns int, bytes int64, err error) {
 	for _, id := range ids {
 		n, err := dirSize(filepath.Join(dir, id))
 		if err != nil {
-			return 0, 0, err
+			slog.Warn("trace unreadable", "turn", id, "err", err)
+			continue
 		}
 		turns++
 		bytes += n
