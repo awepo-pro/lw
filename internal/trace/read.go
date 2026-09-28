@@ -172,11 +172,17 @@ func turnIDs(dir string) ([]string, error) {
 	return ids, nil
 }
 
-// dirSize sums the sizes of the regular files under dir.
+// dirSize sums the sizes of the regular files under dir. An entry (or dir
+// itself) that vanished mid-walk is not an error: another lw process's prune
+// may remove a turn while we size it, and losing this turn's trace to a
+// peer's cleanup race would break tracing being observation only.
 func dirSize(dir string) (int64, error) {
 	var n int64
 	err := filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
 		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				return nil
+			}
 			return err
 		}
 		if d.IsDir() {
@@ -369,6 +375,12 @@ func Body(dir, id string, round, attempt int) ([]byte, error) {
 	for i := range t.Attempts {
 		a := &t.Attempts[i]
 		if a.Round == round && a.Attempt == attempt {
+			// The file name comes from the trace itself, not from lw: a
+			// hand-edited or damaged trace must not steer an open outside
+			// the turn's dir the way the id's own regexp check does.
+			if a.File == "" || a.File == "." || a.File == ".." || filepath.Base(a.File) != a.File {
+				return nil, fmt.Errorf("trace: turn %s names a bad request file %q", id, a.File)
+			}
 			f, err := os.Open(filepath.Join(dir, id, a.File))
 			if err != nil {
 				return nil, err

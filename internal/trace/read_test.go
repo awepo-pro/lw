@@ -1,9 +1,11 @@
 package trace
 
 import (
+	"compress/gzip"
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -237,5 +239,66 @@ func TestResolve(t *testing.T) {
 	_, err = Resolve(t.TempDir(), "last")
 	if want := "no traces yet"; err == nil || err.Error() != want {
 		t.Errorf("Resolve(last, empty dir) = %v, want %q", err, want)
+	}
+}
+
+// TestBodyRejectsBadFileName pins Body's own path hygiene: the file field a
+// trace names is data from disk, not from lw, so a hand-edited trace cannot
+// steer the open outside the turn's dir the way the id regexp check does.
+func TestBodyRejectsBadFileName(t *testing.T) {
+	dir := t.TempDir()
+	id := testID(3)
+	turnDir := filepath.Join(dir, id)
+	if err := os.Mkdir(turnDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// A valid gzip one level up: without the guard, Body would happily
+	// return its contents, so the test pins the guard, not gzip's own
+	// refusal of non-gzip targets.
+	secret := filepath.Join(dir, "secret.json.gz")
+	sf, err := os.Create(secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	z := gzip.NewWriter(sf)
+	if _, err := z.Write([]byte("stolen")); err != nil {
+		t.Fatal(err)
+	}
+	if err := z.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := sf.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range []string{"../secret.json.gz", "../../secret.json.gz", "..", "", "/etc/passwd"} {
+		line := `{"turn":"` + id + `","kind":"request","round":1,"attempt":1,"file":` +
+			strconv.Quote(file) + `,"bytes":8}`
+		if err := os.WriteFile(filepath.Join(turnDir, "events.ndjson"), []byte(line+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Body(dir, id, 1, 1); err == nil {
+			t.Errorf("Body with file %q returned no error", file)
+		}
+	}
+	if _, err := os.Stat(secret); err != nil {
+		t.Errorf("the neighbour file was disturbed: %v", err)
+	}
+}
+
+// TestDirSizeToleratesVanishedTurn pins the concurrent-prune read: a turn
+// dir removed by another lw process while we size it — the dir is gone
+// before the walk starts — sizes to zero instead of erroring, so the peer's
+// cleanup race cannot fail List, Size, Prune, or (through Prune) Start.
+func TestDirSizeToleratesVanishedTurn(t *testing.T) {
+	n, err := dirSize(filepath.Join(t.TempDir(), "gone-mid-prune"))
+	if err != nil {
+		t.Fatalf("dirSize on a vanished dir = %v, want nil", err)
+	}
+	if n != 0 {
+		t.Errorf("dirSize on a vanished dir = %d, want 0", n)
+	}
+	_, err = List(t.TempDir()) // a dir holding no turns is an empty list, not an error
+	if err != nil {
+		t.Fatalf("List on an empty dir = %v", err)
 	}
 }
