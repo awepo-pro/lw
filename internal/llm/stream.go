@@ -52,7 +52,7 @@ func (c *Client) Stream(ctx context.Context, req Request) (<-chan Chunk, error) 
 	resp, headersAt, err := c.do(httpReq)
 	if err != nil {
 		cancel()
-		slog.Warn("llm error", "err", err)
+		slog.WarnContext(ctx, "llm error", "err", err)
 		return nil, fmt.Errorf("llm: request: %w", err)
 	}
 
@@ -89,6 +89,25 @@ func (c *Client) Stream(ctx context.Context, req Request) (<-chan Chunk, error) 
 // chat-completions stream.
 type wireStreamChunk struct {
 	Choices []wireChoice `json:"choices"`
+	// Usage is the provider's token accounting, which rides whichever chunk
+	// the provider puts it on (038 T1): the finish_reason chunk (z.ai) or a
+	// trailing chunk with an empty choices array (DeepSeek/OpenAI). nil when
+	// the chunk carries none.
+	Usage *wireUsage `json:"usage"`
+}
+
+// wireUsage is the OpenAI-compatible usage object as it rides the wire
+// (038 T1): flat prompt/completion counts plus two optional details
+// objects, whose absence decodes as zero.
+type wireUsage struct {
+	PromptTokens        int `json:"prompt_tokens"`
+	CompletionTokens    int `json:"completion_tokens"`
+	PromptTokensDetails struct {
+		CachedTokens int `json:"cached_tokens"`
+	} `json:"prompt_tokens_details"`
+	CompletionTokensDetails struct {
+		ReasoningTokens int `json:"reasoning_tokens"`
+	} `json:"completion_tokens_details"`
 }
 
 type wireChoice struct {
@@ -270,6 +289,10 @@ func consumeStreamTimed(ctx context.Context, body io.ReadCloser, out chan<- Chun
 		emittedCalls int  // completed tool calls delivered to the consumer
 		finished     bool // a non-empty finish_reason was seen
 	)
+	// usage holds the last usage object seen (038 T1: if several chunks
+	// carry one, the LAST wins), held back from the channel until a clean
+	// end so it can land after every other chunk. nil until one is seen.
+	var usage *Usage
 
 	// truncated is the one exit for every 035 T1 truncation: the error
 	// wraps ErrStreamTruncated so the agent loop can recover the round with
@@ -285,7 +308,7 @@ func consumeStreamTimed(ctx context.Context, body io.ReadCloser, out chan<- Chun
 		if scanErr != nil {
 			se = scanErr.Error()
 		}
-		slog.Warn("llm stream truncated",
+		slog.WarnContext(ctx, "llm stream truncated",
 			"bytes", counter.n,
 			"data_lines", dataLines,
 			"chunks", parsedChunks,
@@ -308,7 +331,7 @@ func consumeStreamTimed(ctx context.Context, body io.ReadCloser, out chan<- Chun
 		if !t0.IsZero() {
 			elapsed = time.Since(t0).Milliseconds()
 		}
-		slog.Warn("llm stream tail lost",
+		slog.WarnContext(ctx, "llm stream tail lost",
 			"bytes", counter.n,
 			"scan_err", scanErr.Error(),
 			"elapsed_ms", elapsed,
@@ -324,6 +347,28 @@ func consumeStreamTimed(ctx context.Context, body io.ReadCloser, out chan<- Chun
 		}
 	}
 
+	// emitUsage delivers the held-back usage chunk on a CLEAN end (038 T1
+	// U2): R1's [DONE], R2's finish-then-EOF, or A-035-1's tail lost. Every
+	// other exit — a truncation, a stall, a cancellation — never emits
+	// Usage, so a consumer retrying on the Err never mistakes a cut round
+	// for an accounted one. When the chunk is actually delivered it writes
+	// the one "llm usage" record (U3), after delivery exactly as the "llm
+	// finish" line does.
+	emitUsage := func() {
+		if usage == nil {
+			return
+		}
+		if !emit(Chunk{Usage: usage}) {
+			return
+		}
+		slog.InfoContext(ctx, "llm usage",
+			"input_tokens", usage.InputTokens,
+			"output_tokens", usage.OutputTokens,
+			"cached_tokens", usage.CachedTokens,
+			"reasoning_tokens", usage.ReasoningTokens,
+		)
+	}
+
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
@@ -337,6 +382,7 @@ func consumeStreamTimed(ctx context.Context, body io.ReadCloser, out chan<- Chun
 		}
 		dataLines++
 		if payload == "[DONE]" {
+			emitUsage()
 			return
 		}
 
@@ -366,7 +412,7 @@ func consumeStreamTimed(ctx context.Context, body io.ReadCloser, out chan<- Chun
 			}
 			if moreBody {
 				perr := fmt.Errorf("llm: parse stream chunk: %w", err)
-				slog.Warn("llm error", "err", perr)
+				slog.WarnContext(ctx, "llm error", "err", perr)
 				emit(Chunk{Err: perr})
 				return
 			}
@@ -376,6 +422,7 @@ func consumeStreamTimed(ctx context.Context, body io.ReadCloser, out chan<- Chun
 					// finish already arrived: complete, clean tail loss
 					// (035 T1, A-035-1), not a truncation.
 					tailLost(serr)
+					emitUsage()
 					return
 				}
 				// The read died right behind the bad line: the read
@@ -387,6 +434,18 @@ func consumeStreamTimed(ctx context.Context, body io.ReadCloser, out chan<- Chun
 			return
 		}
 		parsedChunks++
+		// 038 T1 U1: a usage object is decoded from ANY data chunk — the
+		// finish_reason chunk (z.ai) or a choices-less trailing chunk
+		// (DeepSeek/OpenAI) — so it must be read BEFORE the empty-choices
+		// skip below, which is exactly the trailing shape's whole payload.
+		if wc.Usage != nil {
+			usage = &Usage{
+				InputTokens:     wc.Usage.PromptTokens,
+				OutputTokens:    wc.Usage.CompletionTokens,
+				CachedTokens:    wc.Usage.PromptTokensDetails.CachedTokens,
+				ReasoningTokens: wc.Usage.CompletionTokensDetails.ReasoningTokens,
+			}
+		}
 		if len(wc.Choices) == 0 {
 			continue
 		}
@@ -456,7 +515,7 @@ func consumeStreamTimed(ctx context.Context, body io.ReadCloser, out chan<- Chun
 					finishAttrs = append(finishAttrs, "first_delta_ms", firstDeltaAt.Sub(t0).Milliseconds())
 				}
 			}
-			slog.Info("llm finish", finishAttrs...)
+			slog.InfoContext(ctx, "llm finish", finishAttrs...)
 		}
 	}
 
@@ -471,7 +530,7 @@ func consumeStreamTimed(ctx context.Context, body io.ReadCloser, out chan<- Chun
 			// the timeout machinery reported, an over-long line, or the
 			// caller's own cancellation. None of these is the provider's
 			// stream dying early (R6's untouched branch).
-			slog.Warn("llm error", "err", err)
+			slog.WarnContext(ctx, "llm error", "err", err)
 			emit(Chunk{Err: fmt.Errorf("llm: read stream: %w", err)})
 			return
 		}
@@ -482,6 +541,7 @@ func consumeStreamTimed(ctx context.Context, body io.ReadCloser, out chan<- Chun
 			// record. A stall, an over-long line or a cancelled context
 			// after a finish keeps the bounded-end branch above, unchanged.
 			tailLost(err)
+			emitUsage()
 			return
 		}
 		// Any other read failure is the stream dying mid-flight (R6): the
@@ -500,5 +560,10 @@ func consumeStreamTimed(ctx context.Context, body io.ReadCloser, out chan<- Chun
 	}
 	if !finished {
 		truncated(fmt.Errorf("%w: no [DONE] or finish_reason after %d bytes", ErrStreamTruncated, counter.n), 0, nil)
+		return
 	}
+	// R2's clean end: a finish_reason seen, the body's bytes then just ran
+	// out — no [DONE]. The held-back usage lands here, after the finish
+	// chunk that is already delivered.
+	emitUsage()
 }

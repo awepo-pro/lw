@@ -165,6 +165,14 @@ func (c *Client) newHTTPRequest(ctx context.Context, req Request) (*http.Request
 	if err != nil {
 		return nil, err
 	}
+	// 038 T1: the Observer sees the exact body bytes, the same slice handed
+	// to bytes.NewReader below, after the body is built and before the Do —
+	// once per Stream/Probe call, since a transport-level replay in do
+	// resends the same bytes without coming back through here. nil (the
+	// default) changes nothing.
+	if c.cfg.Observer != nil {
+		c.cfg.Observer.OnRequest(ctx, body)
+	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint(), bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("llm: build request: %w", err)
@@ -190,11 +198,11 @@ func (c *Client) do(httpReq *http.Request) (*http.Response, time.Time, error) {
 	// The file log's request line (010 contract §0): model, endpoint and
 	// the body's byte count — never the body, which carries the prompt and
 	// the API key's Authorization header stays out of it entirely.
-	slog.Info("llm request", "model", c.cfg.Model, "url", httpReq.URL.String(), "prompt_bytes", httpReq.ContentLength)
+	slog.InfoContext(httpReq.Context(), "llm request", "model", c.cfg.Model, "url", httpReq.URL.String(), "prompt_bytes", httpReq.ContentLength)
 	resp, err := c.httpClient.Do(httpReq)
 	if err == nil {
 		headersAt := time.Now()
-		slog.Info("llm response", "status", resp.StatusCode)
+		slog.InfoContext(httpReq.Context(), "llm response", "status", resp.StatusCode)
 		return resp, headersAt, nil
 	}
 	if httpReq.Context().Err() != nil || httpReq.GetBody == nil {
@@ -210,6 +218,6 @@ func (c *Client) do(httpReq *http.Request) (*http.Response, time.Time, error) {
 		return nil, time.Time{}, c.asStalled(err)
 	}
 	headersAt := time.Now()
-	slog.Info("llm response", "status", resp.StatusCode)
+	slog.InfoContext(httpReq.Context(), "llm response", "status", resp.StatusCode)
 	return resp, headersAt, nil
 }
