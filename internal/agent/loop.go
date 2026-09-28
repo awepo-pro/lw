@@ -561,6 +561,15 @@ func (l *Loop) dispatchToolCall(ctx context.Context, sessionID string, round int
 		if errors.Is(callErr, tools.ErrUnknownTool) {
 			return l.correctable(ctx, sessionID, round, tc, canonical, callErr, badCalls, out, t0)
 		}
+		// 038 T4 (A7): the turn aborts here, but the call was dispatched —
+		// its ToolCallEv is already out — so the trace still gets its one
+		// tool row: IsError, timed from the dispatch, with no result bytes
+		// because no result ever existed. Without it the one dispatch that
+		// kills a turn is the one the trace cannot see.
+		trace.FromContext(ctx).Tool(trace.Tool{
+			Round: round, ID: tc.ID, Name: canonical, IsError: true,
+			MS: time.Since(t0).Milliseconds(),
+		})
 		return llm.Message{}, true, l.fail(ctx, out, fmt.Errorf("agent: call %s: %w", canonical, callErr))
 	}
 	*badCalls = 0 // a dispatched call, whatever its result, resets the retry budget

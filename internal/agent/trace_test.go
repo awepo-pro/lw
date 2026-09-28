@@ -23,8 +23,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/awepo-pro/lw/internal/extract"
 	"github.com/awepo-pro/lw/internal/llm"
 	"github.com/awepo-pro/lw/internal/logging"
+	"github.com/awepo-pro/lw/internal/stage"
+	"github.com/awepo-pro/lw/internal/tools"
 	"github.com/awepo-pro/lw/internal/trace"
 )
 
@@ -523,6 +526,67 @@ func scanAttr(t *testing.T, line, key string) int {
 		t.Fatalf("scan %s from %s: %v", key, line, err)
 	}
 	return n
+}
+
+// nilDocExtractor hands stage.ingest_source a nil document — the one
+// dispatch this suite can reach that makes Registry.Call fail with a HARD
+// error (the turn aborts) rather than an IsError result the model could
+// correct: an extractor returning no document is an internal fault, not
+// model-visible feedback (tools stage_source.go).
+type nilDocExtractor struct{}
+
+func (nilDocExtractor) CanHandle(string) bool { return true }
+
+func (nilDocExtractor) Extract(context.Context, string) (*extract.Doc, error) {
+	return nil, nil
+}
+
+// TestTraceToolHardError: a dispatched call whose registry Call fails with
+// a non-correctable error aborts the turn done {error} — but its one tool
+// row still lands, IsError under the canonical name, so the dispatch that
+// killed the turn is not the one missing from the trace (038 T4, A7: one
+// rec.Tool per dispatched call, however it ends).
+func TestTraceToolHardError(t *testing.T) {
+	fx := newTestLoopFixture(t)
+	// The fixture's own registry has no extractor, so its stage.ingest_source
+	// answers IsError; this twin carries the nil-document extractor that
+	// makes the Call itself fail. Everything else is the fixture's.
+	reg := tools.NewRegistry(tools.Deps{
+		Vault:   fx.engine.Vault(),
+		Index:   fx.engine.Index(),
+		Engine:  fx.engine,
+		Author:  stage.Author{Kind: "agent", Model: "test-model"},
+		Extract: nilDocExtractor{},
+	})
+	fake := &fakeStreamer{rounds: [][]llm.Chunk{
+		// The wire-spelled name, as a provider echoes it back — the trace's
+		// tool row must carry the canonical form (038 T4, A7).
+		{toolCallChunk("call-1", "stage_ingest_source", `{"uri":"/tmp/no-such-source.html","kind":"paper"}`)},
+	}}
+	dir := filepath.Join(t.TempDir(), "traces")
+	l := newLoop(&observingStreamer{fake: fake}, reg, fx.store, fx.engine, LoopConfig{TraceDir: dir})
+
+	out := make(chan Event, 64)
+	err := l.Send(context.Background(), fx.csID, "break a tool", out)
+	if err == nil {
+		t.Fatalf("Send: want the hard Call error")
+	}
+	drain(out)
+
+	turn, lerr := trace.Load(dir, turnID(t, fx))
+	if lerr != nil {
+		t.Fatalf("Load: %v", lerr)
+	}
+	if turn.Done == nil || turn.Done.Reason != "error" {
+		t.Fatalf("done = %+v, want reason error", turn.Done)
+	}
+	if len(turn.Attempts) != 1 || len(turn.Attempts[0].Calls) != 1 {
+		t.Fatalf("attempts = %+v, want one attempt carrying the failed call", turn.Attempts)
+	}
+	call := turn.Attempts[0].Calls[0]
+	if call.ID != "call-1" || call.Name != "stage.ingest_source" || !call.IsError {
+		t.Errorf("tool row = %+v, want {ID call-1, Name stage.ingest_source, IsError true}", call)
+	}
 }
 
 // TestTraceStartFailureTurnSucceeds: a traces dir lw cannot create costs
