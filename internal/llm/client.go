@@ -169,7 +169,9 @@ func (c *Client) newHTTPRequest(ctx context.Context, req Request) (*http.Request
 	// to bytes.NewReader below, after the body is built and before the Do —
 	// once per Stream/Probe call, since a transport-level replay in do
 	// resends the same bytes without coming back through here. nil (the
-	// default) changes nothing.
+	// default) changes nothing. The body is read-only for the Observer: no
+	// copy is made (U4 pins the SAME slice reaching bytes.NewReader), so an
+	// Observer that writes into it would corrupt what goes on the wire.
 	if c.cfg.Observer != nil {
 		c.cfg.Observer.OnRequest(ctx, body)
 	}

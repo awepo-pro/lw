@@ -155,6 +155,44 @@ func TestUsageNeverOnTruncation(t *testing.T) {
 	}
 }
 
+// TestUsageDecodeTolerance pins U1's decode edges: a usage object with null
+// detail objects, missing fields and unknown extra fields (total_tokens on
+// real GLM bodies) still decodes, absent pieces as zero; `"usage": null` is
+// no usage object at all; and when several chunks carry usage the LAST one
+// wins — an earlier count never survives a later correction.
+func TestUsageDecodeTolerance(t *testing.T) {
+	body := []byte(
+		// First usage rides a normal delta chunk and must be superseded.
+		`data: {"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}],"usage":{"prompt_tokens":1,"completion_tokens":1}}` + "\n\n" +
+			// A finish chunk whose usage is explicitly null carries nothing.
+			`data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":null}` + "\n\n" +
+			// The trailing shape with every tolerance at once: extra
+			// total_tokens ignored, null details decode as zero, a present
+			// reasoning_tokens kept.
+			`data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12,"prompt_tokens_details":null,"completion_tokens_details":{"reasoning_tokens":7}}}` + "\n\n" +
+			"data: [DONE]\n\n")
+
+	chunks := streamChunks(t, body)
+
+	if len(chunks) != 3 {
+		t.Fatalf("got %d chunks, want text + finish + usage: %+v", len(chunks), chunks)
+	}
+	if chunks[0].Text != "hi" || chunks[1].Finish != "stop" {
+		t.Fatalf("chunks = %+v, want the text delta then the finish", chunks)
+	}
+	if chunks[1].Usage != nil {
+		t.Errorf(`chunks[1] carries Usage %+v; "usage": null is not a usage object`, *chunks[1].Usage)
+	}
+	want := Usage{InputTokens: 10, OutputTokens: 2, CachedTokens: 0, ReasoningTokens: 7}
+	if chunks[2].Usage == nil {
+		t.Fatalf("chunks[2] = %+v, want the last-wins Usage chunk", chunks[2])
+	}
+	if *chunks[2].Usage != want {
+		t.Errorf("usage = %+v, want %+v (LAST chunk's usage wins; null details decode as zero, "+
+			"unknown fields ignored)", *chunks[2].Usage, want)
+	}
+}
+
 // copyObserver is the observing side of TestObserverSeesExactBody: it
 // counts its calls and clones the body it is handed — the trace's own
 // obligation, since the slice is only valid for the call.
