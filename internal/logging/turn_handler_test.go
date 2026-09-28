@@ -99,6 +99,20 @@ func TestTurnWithAttrsLogger(t *testing.T) {
 	}
 }
 
+func TestTurnWithGroupTopLevel(t *testing.T) {
+	ctx := WithTurn(context.Background(), "20260928T101502Z-3f9a")
+
+	var buf bytes.Buffer
+	logger := slog.New(newHandler(&buf, slog.LevelInfo)).WithGroup("g")
+	logger.InfoContext(ctx, "x", "a", "b")
+
+	line := strings.TrimRight(buf.String(), "\n")
+	want := `level=INFO msg=x turn=20260928T101502Z-3f9a g.a=b`
+	if got := lineBody(line); got != want {
+		t.Fatalf("grouped record =\n  %s\nwant\n  %s (turn stays top-level, not g.turn)", got, want)
+	}
+}
+
 func TestTurnRedactionKept(t *testing.T) {
 	ctx := WithTurn(context.Background(), "20260928T101502Z-3f9a")
 
