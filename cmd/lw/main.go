@@ -33,6 +33,7 @@ var verbs = []verb{
 	{"commit", cmdCommit},
 	{"log", cmdLog},
 	{"session", cmdSession},
+	{"trace", cmdTrace},
 	{"revert", cmdRevert},
 	{"query", cmdQuery},
 	{"lint", cmdLint},
@@ -126,6 +127,7 @@ commands:
   session list [--json]        list recorded agent sessions
   session show [<id>] [--plain] [--json] [--thinking]
                                print one session's transcript
+  trace [-n N]                 list agent turn traces; trace show <ref> inspects one
   revert <commit-id>           open a reverse changeset for review
   query "..."                  ask the curator agent a question
   lint [--fix]                 run the lint checks

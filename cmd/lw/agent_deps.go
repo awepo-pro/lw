@@ -17,6 +17,7 @@ import (
 	"github.com/awepo-pro/lw/internal/slug"
 	"github.com/awepo-pro/lw/internal/stage"
 	"github.com/awepo-pro/lw/internal/tools"
+	"github.com/awepo-pro/lw/internal/trace"
 	"github.com/awepo-pro/lw/internal/web"
 )
 
@@ -205,11 +206,48 @@ var newIngestAgent = func(e *stage.Engine, cfg *config.Config, sessions agent.Se
 	}
 	client := llm.New(ingestLLMConfig(cfg, apiKey))
 	reg := tools.NewRegistry(agentToolDeps(e, cfg, ex))
+	traceDir, traceKeep, traceMeta := traceLoopConfig(e.Vault().Root(), cfg)
 	loopCfg := agent.LoopConfig{
-		MaxToolRounds: cfg.Limits.MaxToolRounds,
-		ContextTokens: cfg.Limits.ContextTokens,
+		MaxToolRounds:  cfg.Limits.MaxToolRounds,
+		ContextTokens:  cfg.Limits.ContextTokens,
+		TraceDir:       traceDir,
+		TraceKeepBytes: traceKeep,
+		TraceMeta:      traceMeta,
 	}
 	return agent.NewLoop(client, reg, sessions, e, loopCfg), nil
+}
+
+// traceLoopConfig maps the config onto the three trace fields of
+// agent.LoopConfig (038 T5): where turns are written, the byte bound the
+// pruner enforces, and the part of the turn event only cmd/lw knows. The
+// verb is deliberately absent from the meta — it rides the ctx
+// (trace.WithVerb at the four Send call sites), because newAgent is shared
+// by query, lint and the TUI and no constructor argument can tell them
+// apart (038 C-3). dir is "" exactly when keep is 0: tracing is off, and a
+// LoopConfig with no directory writes nothing.
+func traceLoopConfig(root string, cfg *config.Config) (dir string, keep int64, meta trace.Meta) {
+	keep = cfg.TraceKeepBytes()
+	meta = trace.Meta{
+		Version:  version,
+		Model:    cfg.LLM.Model,
+		Server:   serverHost(cfg.LLM.BaseURL),
+		Thinking: cfg.LLM.Thinking,
+	}
+	if keep == 0 {
+		return "", 0, meta
+	}
+	return filepath.Join(root, stateDirName, "traces"), keep, meta
+}
+
+// serverHost returns the host of a base_url — the host only, never the path
+// and never anything that could carry a credential (trace.Meta.Server's
+// contract). A base_url that does not parse yields "", not the raw string.
+func serverHost(baseURL string) string {
+	u, err := url.Parse(baseURL)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	return u.Host
 }
 
 // ingestLLMConfig maps the [llm] config onto the llm.Config the agent client
@@ -218,6 +256,8 @@ var newIngestAgent = func(e *stage.Engine, cfg *config.Config, sessions agent.Se
 // network. StallTimeout goes through cfg.LLM.StallTimeoutDuration, which
 // applies DefaultStallTimeout when the key is absent; cmd_doctor.go's probe
 // keeps its own doctorProbeTimeout and is deliberately not wired to this.
+// Observer (038 T5) is the tracing half of the client: it hands each exact
+// request body to the turn's Recorder, and a turn with none ignores it.
 func ingestLLMConfig(cfg *config.Config, apiKey string) llm.Config {
 	return llm.Config{
 		BaseURL:      cfg.LLM.BaseURL,
@@ -227,6 +267,7 @@ func ingestLLMConfig(cfg *config.Config, apiKey string) llm.Config {
 		MaxTokens:    cfg.LLM.MaxTokens,
 		Thinking:     cfg.LLM.Thinking,
 		StallTimeout: cfg.LLM.StallTimeoutDuration(),
+		Observer:     trace.Observer{},
 	}
 }
 

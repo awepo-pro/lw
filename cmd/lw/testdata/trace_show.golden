@@ -1,0 +1,12 @@
+turn 20260928T101502Z-3f9a · query · query · glm-4.7 @ api.z.ai · thinking off · lw v0.12.0
+round 1  sent 900 B (3 msgs, 5 tools)  first byte 0.2s  stream 0.9s  no usage
+  said: partial thought from the cut stream
+  cut: the stream ended early
+round 1 (attempt 2)  sent 944 B (3 msgs, 5 tools)  first byte 0.2s  stream 3.1s  in 1.2k (25% cached)  out 210 (thinking 40)
+  thought: 69 chars (--thinking to show)
+  said: Let me look that up.
+  called: raw.get {"path":"raw/articles/kv-cache.md","quote":"PagedAttention stores the KV cache in fixed-size blocks, so long sequences s… → 89 B error
+  elided 3 earlier result(s) (12.2 KB) to fit context_tokens
+round 2  sent 2.0 KB (7 msgs, 5 tools)  first byte 0.2s  stream 2.0s  in 71.0k (81% cached)  out 2.7k (thinking 1.8k)
+  said: The page defines kv caching as storing attention keys and values between tokens.
+done: stop after 2 round(s), 58.7s
