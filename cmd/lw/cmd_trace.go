@@ -77,7 +77,13 @@ func writeTraceList(w io.Writer, dir string, cfg *config.Config, n int) error {
 	if len(sums) == 0 {
 		fmt.Fprintln(w, "no traces yet — every agent turn (ingest, ask, query, lint --fix) records one under .llmwiki/traces")
 	} else {
-		if n > 0 && len(sums) > n {
+		// -n is a count of rows, so 0 — and any negative, clamped to it —
+		// lists nothing while the footer keeps the dir-level facts, the
+		// same reading head -n 0 gives.
+		if n < 0 {
+			n = 0
+		}
+		if len(sums) > n {
 			sums = sums[:n]
 		}
 		for _, s := range sums {
@@ -238,17 +244,11 @@ func cmdTraceShow(args []string) error {
 	return writeTraceShow(os.Stdout, t, *thinking)
 }
 
-// traceShowUsage prints show's own usage — on stderr, with exit 2.
-func traceShowUsage(w io.Writer) {
-	fmt.Fprint(w, `usage: lw trace show [<ref>] [--thinking] [--body R[.A]] [--json]
-
-  ref is a turn id from lw trace, a unique prefix of one, or "last";
-  omitted it names the newest turn.
-`)
-}
-
 // parseBodyRef parses --body's value: "1" is round 1's first attempt,
-// "1.2" names the attempt. Anything else is a usage error.
+// "1.2" names the attempt. Anything else — a word, a zero round or
+// attempt, more than two parts — is a usage error: rounds and attempts
+// count from 1, so "1.0" or "0" would only fail at trace.Body, a turn
+// later and with a resolver-shaped error a mistyped flag never earns.
 func parseBodyRef(v string) (round, attempt int, err error) {
 	round, attempt = 0, 1
 	parts := strings.Split(v, ".")
@@ -264,6 +264,9 @@ func parseBodyRef(v string) (round, attempt int, err error) {
 		if err != nil {
 			return 0, 0, fmt.Errorf("--body wants round[.attempt], got %q", v)
 		}
+	}
+	if round < 1 || attempt < 1 {
+		return 0, 0, fmt.Errorf("--body wants round[.attempt], got %q", v)
 	}
 	return round, attempt, nil
 }
@@ -324,14 +327,16 @@ func writeTraceShow(w io.Writer, t *trace.Turn, thinking bool) error {
 // and the cut/error marks. Every line is indented under its attempt line.
 func writeResponseDetail(w io.Writer, a *trace.Attempt, thinking bool) {
 	r := a.Response
-	if r.Reasoning != "" {
+	// Emptiness is judged on content, not length: a stream that died after
+	// only newlines has nothing to fold, count, or label.
+	if strings.TrimSpace(r.Reasoning) != "" {
 		if thinking {
 			writeIndented(w, "thought: ", r.Reasoning)
 		} else {
 			fmt.Fprintf(w, "  thought: %d chars (--thinking to show)\n", len(r.Reasoning))
 		}
 	}
-	if r.Text != "" {
+	if strings.TrimSpace(r.Text) != "" {
 		writeIndented(w, "said: ", r.Text)
 	}
 	for _, c := range r.ToolCalls {
@@ -357,9 +362,14 @@ func writeResponseDetail(w io.Writer, a *trace.Attempt, thinking bool) {
 }
 
 // writeIndented writes a labelled field whose text may be multi-line: the
-// label and the first line on one line, each further line indented under it.
+// label and the first line on one line, each further line indented under
+// it. A field holding only newlines — a stream that died before it said
+// anything — has no line to label, so the whole line is omitted (038 T5).
 func writeIndented(w io.Writer, label, text string) {
 	lines := contentLines(text)
+	if len(lines) == 0 {
+		return
+	}
 	fmt.Fprintf(w, "  %s%s\n", label, lines[0])
 	for _, line := range lines[1:] {
 		fmt.Fprintf(w, "    %s\n", line)

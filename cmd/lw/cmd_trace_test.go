@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/awepo-pro/lw/internal/config"
 	"github.com/awepo-pro/lw/internal/llm"
@@ -465,5 +466,259 @@ func TestConfigTraceKeepRow(t *testing.T) {
 	}
 	if got.Trace.KeepMB == nil || *got.Trace.KeepMB != 0 {
 		t.Errorf("Trace.KeepMB = %v, want the refused set to have changed nothing", got.Trace.KeepMB)
+	}
+}
+
+// TestTraceShowBadBodyRef pins --body's own parse: a spec that is not
+// round[.attempt] — a word, an attempt of 0, a round of 0 — is a usage
+// error (exit 2) before any file is opened, the same shape a mistyped
+// flag gets, not a resolver miss a turn later.
+func TestTraceShowBadBodyRef(t *testing.T) {
+	root := traceFixtureVault(t)
+	recordShowFixture(t, root)
+
+	for _, bad := range []string{"x", "1.0", "0", "1.2.3"} {
+		_, stderr, code := captureRun(t, func() int {
+			return run([]string{"trace", "show", "--vault", root, "--body", bad})
+		})
+		if code != 2 {
+			t.Errorf("--body %q: exit code = %d, want 2; stderr=%q", bad, code, stderr)
+		}
+		if !strings.Contains(stderr, "--body wants round[.attempt]") {
+			t.Errorf("--body %q: stderr = %q, want the usage sentence", bad, stderr)
+		}
+	}
+}
+
+// TestTraceShowWhitespaceFields renders a response whose reasoning and
+// text are newlines only — a stream that died before it said anything
+// still records those fields — and must omit both labelled lines, not
+// index into the zero lines contentLines hands back for them.
+func TestTraceShowWhitespaceFields(t *testing.T) {
+	turn := &trace.Turn{
+		ID:   "20260928T101502Z-3f9a",
+		Meta: showFixtureMeta(),
+		Attempts: []trace.Attempt{{
+			Round: 1, Attempt: 1, Bytes: 64, Messages: 2, ToolDefs: 5,
+			Response: &trace.Response{
+				Round: 1, Attempt: 1, Finish: "stop",
+				Reasoning: "\n\n", Text: "\n",
+			},
+		}},
+		Done: &trace.Done{Reason: "stop", Rounds: 1, WallMS: 100},
+	}
+	var buf bytes.Buffer
+	if err := writeTraceShow(&buf, turn, false); err != nil {
+		t.Fatalf("writeTraceShow: %v", err)
+	}
+	out := buf.String()
+	for _, unwanted := range []string{"thought:", "said:", "--thinking to show"} {
+		if strings.Contains(out, unwanted) {
+			t.Errorf("whitespace-only fields rendered a %q line:\n%s", unwanted, out)
+		}
+	}
+}
+
+// TestTraceShowCutRunesCJK pins the cut on multi-byte text: a tool
+// argument of 130 CJK runes (and one of emoji) renders as exactly 120
+// runes plus the ellipsis — never a broken half-rune, never the whole
+// argument. Everything here goes through writeTraceShow, so the golden's
+// byte-shaped rule is exercised the way show really runs.
+func TestTraceShowCutRunesCJK(t *testing.T) {
+	for name, args := range map[string]string{
+		"cjk":   strings.Repeat("页", 130),
+		"emoji": strings.Repeat("🔥", 130),
+	} {
+		t.Run(name, func(t *testing.T) {
+			turn := &trace.Turn{
+				ID:   "20260928T101502Z-3f9a",
+				Meta: showFixtureMeta(),
+				Attempts: []trace.Attempt{{
+					Round: 1, Attempt: 1, Bytes: 64, Messages: 2, ToolDefs: 5,
+					Response: &trace.Response{
+						Round: 1, Attempt: 1, Finish: "tool_calls",
+						ToolCalls: []trace.ToolCall{{ID: "call_01", Name: "raw.get", Arguments: args}},
+					},
+				}},
+				Done: &trace.Done{Reason: "stop", Rounds: 1, WallMS: 100},
+			}
+			var buf bytes.Buffer
+			if err := writeTraceShow(&buf, turn, false); err != nil {
+				t.Fatalf("writeTraceShow: %v", err)
+			}
+			out := buf.String()
+			if !utf8.ValidString(out) {
+				t.Fatalf("output is not valid UTF-8:\n%q", out)
+			}
+			want := strings.Repeat(string([]rune(args)[0]), 120) + "…"
+			if !strings.Contains(out, want) {
+				t.Errorf("cut output lacks %d runes + ellipsis:\n%s", 120, out)
+			}
+			if strings.Contains(out, strings.Repeat(string([]rune(args)[0]), 121)) {
+				t.Errorf("cut kept more than 120 runes:\n%s", out)
+			}
+			if strings.Contains(out, args) {
+				t.Errorf("the whole %d-rune argument survived the cut", 130)
+			}
+		})
+	}
+	// cutRunes itself: the result is max runes plus the ellipsis, and a
+	// string at exactly max comes back untouched.
+	s := strings.Repeat("页", 120)
+	if got := cutRunes(s, 120); got != s {
+		t.Errorf("cutRunes(%d runes, 120) altered it", 120)
+	}
+	got := cutRunes(s+"页", 120)
+	if n := utf8.RuneCountInString(got); n != 121 {
+		t.Errorf("cutRunes kept %d runes, want 120 + ellipsis", n)
+	}
+}
+
+// TestServerHostNeverLeaksCredentials pins trace.Meta.Server's contract at
+// the cmd/lw seam: a base_url that carries userinfo or a query still names
+// only its host in the trace meta — never the credentials, path, or query,
+// and a base_url that does not parse names nothing at all.
+func TestServerHostNeverLeaksCredentials(t *testing.T) {
+	root := traceFixtureVault(t)
+	cfg := config.Default()
+	cfg.LLM.BaseURL = "https://user:secret@api.z.ai/api/coding/paas/v4?key=abc"
+
+	_, _, meta := traceLoopConfig(root, cfg)
+	if meta.Server != "api.z.ai" {
+		t.Errorf("Server = %q, want the bare host api.z.ai", meta.Server)
+	}
+	for _, secret := range []string{"user:secret", "secret", "key=abc", "paas"} {
+		if strings.Contains(meta.Server, secret) {
+			t.Errorf("Server %q leaks %q", meta.Server, secret)
+		}
+	}
+	for _, in := range []string{"not a url at all", "http://", ""} {
+		if got := serverHost(in); got != "" {
+			t.Errorf("serverHost(%q) = %q, want %q", in, got, "")
+		}
+	}
+}
+
+// TestTraceListNegativeN pins -n's count semantics: 0 — and anything
+// negative, clamped to it — lists no rows, while the footer keeps its
+// dir-level facts, the same head -n 0 reading every other count flag
+// gives.
+func TestTraceListNegativeN(t *testing.T) {
+	root := traceFixtureVault(t)
+	dir := traceTestDir(root)
+	for i, id := range []string{"20260928T101501Z-0001", "20260928T101502Z-0002"} {
+		_, rec := trace.Start(context.Background(), dir, id, trace.Meta{Verb: "query"}, 0)
+		rec.BeginRequest(1, 1, 2, 1)
+		rec.Request(bodyN("neg-n ", 32))
+		rec.Response(trace.Response{Round: 1, Attempt: 1, Finish: "stop",
+			Usage: &llm.Usage{InputTokens: 10 + i, OutputTokens: 1}})
+		rec.Done(trace.Done{Reason: "stop", Rounds: 1, WallMS: 10})
+	}
+	_, sizeBytes, err := trace.Size(dir)
+	if err != nil {
+		t.Fatalf("Size: %v", err)
+	}
+
+	for _, n := range []string{"0", "-1"} {
+		stdout, stderr, code := captureRun(t, func() int {
+			return run([]string{"trace", "--vault", root, "-n", n})
+		})
+		if code != 0 {
+			t.Fatalf("-n %s: exit code = %d, want 0; stderr=%q", n, code, stderr)
+		}
+		if strings.Contains(stdout, "20260928") {
+			t.Errorf("-n %s listed rows:\n%s", n, stdout)
+		}
+		want := "2 turn(s) · " + fmtMB(sizeBytes) + " MB of 256 MB cap · .llmwiki/traces\n"
+		if stdout != want {
+			t.Errorf("-n %s: stdout =\n%q\nwant\n%q", n, stdout, want)
+		}
+	}
+}
+
+// TestTraceListRobustness lists a traces dir holding the shapes a crash
+// leaves behind: a turn with a torn final event line and no done event, a
+// stray file and a non-turn directory a human dropped there, and an empty
+// turn directory. The list still prints the turns it can read and never
+// panics.
+func TestTraceListRobustness(t *testing.T) {
+	root := traceFixtureVault(t)
+	dir := traceTestDir(root)
+
+	// A good turn, so there is something to read besides the wreckage.
+	_, rec := trace.Start(context.Background(), dir, "20260928T101501Z-0001",
+		trace.Meta{Verb: "query"}, 0)
+	rec.BeginRequest(1, 1, 2, 1)
+	rec.Request(bodyN("robust ", 32))
+	rec.Response(trace.Response{Round: 1, Attempt: 1, Finish: "stop"})
+	rec.Done(trace.Done{Reason: "stop", Rounds: 1, WallMS: 10})
+
+	// A turn killed mid-write: a torn final line, no done event.
+	_, rec = trace.Start(context.Background(), dir, "20260928T101502Z-0002",
+		trace.Meta{Verb: "ingest"}, 0)
+	rec.BeginRequest(1, 1, 2, 1)
+	rec.Request(bodyN("robust ", 32))
+	rec.Close()
+	f, err := os.OpenFile(filepath.Join(dir, "20260928T101502Z-0002", "events.ndjson"), os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatalf("open events.ndjson: %v", err)
+	}
+	if _, err := f.WriteString(`{"kind":"resp`); err != nil {
+		t.Fatalf("append torn line: %v", err)
+	}
+	f.Close()
+
+	// Non-turn entries and an empty turn directory.
+	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("mine"), 0o644); err != nil {
+		t.Fatalf("write notes.txt: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "not-a-turn"), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "20260928T101503Z-0003"), 0o700); err != nil {
+		t.Fatalf("mkdir empty turn: %v", err)
+	}
+
+	stdout, stderr, code := captureRun(t, func() int {
+		return run([]string{"trace", "--vault", root})
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	for _, want := range []string{
+		"20260928T101503Z-0003",
+		"20260928T101502Z-0002  ingest  1 round  incomplete  no usage",
+		"20260928T101501Z-0001  query   1 round  stop",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("stdout lacks the turn row %q:\n%s", want, stdout)
+		}
+	}
+	for _, junk := range []string{"notes.txt", "not-a-turn"} {
+		if strings.Contains(stdout, junk) {
+			t.Errorf("stdout listed the non-turn entry %q:\n%s", junk, stdout)
+		}
+	}
+
+	// An unreadable turn dir: the failure is clean — an error, not a
+	// panic. (Skipped as root, where the permission bit does not bite.)
+	if os.Geteuid() != 0 {
+		blocked := filepath.Join(dir, "20260928T101504Z-0004")
+		if err := os.MkdirAll(blocked, 0o700); err != nil {
+			t.Fatalf("mkdir blocked: %v", err)
+		}
+		if err := os.Chmod(blocked, 0o000); err != nil {
+			t.Fatalf("chmod blocked: %v", err)
+		}
+		t.Cleanup(func() { os.Chmod(blocked, 0o700) })
+		stdout, stderr, code = captureRun(t, func() int {
+			return run([]string{"trace", "--vault", root})
+		})
+		if code == 0 {
+			t.Errorf("unreadable turn: exit code = 0, want a clean failure; stdout=%q", stdout)
+		}
+		if code == 2 {
+			t.Errorf("unreadable turn: exit code = 2 (usage), want 1; stderr=%q", stderr)
+		}
 	}
 }
