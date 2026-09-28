@@ -15,6 +15,7 @@ import (
 	"github.com/awepo-pro/lw/internal/index"
 	"github.com/awepo-pro/lw/internal/lint"
 	"github.com/awepo-pro/lw/internal/stage"
+	"github.com/awepo-pro/lw/internal/trace"
 	"github.com/awepo-pro/lw/internal/vault"
 )
 
@@ -172,7 +173,9 @@ func runLintFix(vaultPath, checksFlag string) error {
 	for i, r := range rounds {
 		fmt.Printf("%s (%d/%d)\n", lintFixRoundLabel(r), i+1, len(rounds))
 		msg := buildLintFixRoundMessage(r, i, len(rounds))
-		if err := runAgentTurn(context.Background(), ag, sess.ID, msg, os.Stdout); err != nil {
+		// 038: the turn's verb rides the ctx (038 C-3) — lint here, the same
+		// one-word tag ingest and query set around their own Send.
+		if err := runAgentTurn(trace.WithVerb(context.Background(), "lint"), ag, sess.ID, msg, os.Stdout); err != nil {
 			failures = append(failures, lintFixFailure{page: lintFixRoundLabel(r), err: err})
 		}
 	}

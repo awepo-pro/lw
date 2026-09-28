@@ -12,6 +12,7 @@ import (
 	"github.com/awepo-pro/lw/internal/agent"
 	"github.com/awepo-pro/lw/internal/config"
 	"github.com/awepo-pro/lw/internal/stage"
+	"github.com/awepo-pro/lw/internal/trace"
 )
 
 // queryPromptPrefix frames the user's question so the model treats the turn as
@@ -91,7 +92,9 @@ func cmdQuery(args []string) error {
 		priorID, priorOpen, priorOps = cs.ID, true, len(cs.Ops)
 	}
 
-	sendErr := runAgentTurn(context.Background(), ag, sess.ID, queryPromptPrefix+question, os.Stdout)
+	// 038: the turn's verb rides the ctx (038 C-3) — query here, as ingest
+	// and lint --fix set theirs around their own Send.
+	sendErr := runAgentTurn(trace.WithVerb(context.Background(), "query"), ag, sess.ID, queryPromptPrefix+question, os.Stdout)
 	fmt.Println()
 
 	// Enforce "no changes" structurally, whatever the model attempted:
