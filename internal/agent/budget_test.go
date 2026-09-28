@@ -544,6 +544,12 @@ func TestBudgetLeavesRecordsByteIdentical(t *testing.T) {
 	for i := range ctlSess.Records {
 		a, b := ctlSess.Records[i], sizedSess.Records[i]
 		a.TS, b.TS = time.Time{}, time.Time{} // wall-clock, not content
+		// A-038-2: each Send mints its own turn id (038 A1/A3), so the id is
+		// per-turn identity like TS — present on both, then not compared.
+		if a.Turn == "" || b.Turn == "" {
+			t.Errorf("record %d: missing turn id (control %q, sized %q)", i, a.Turn, b.Turn)
+		}
+		a.Turn, b.Turn = "", ""
 		if a != b {
 			t.Errorf("record %d differs after elision:\n control %+v\n sized  %+v", i, a, b)
 		}
@@ -1213,8 +1219,8 @@ func TestProbeElidedMapTracksIndicesAcrossGrowth(t *testing.T) {
 
 	turnStart := 2
 	elided := map[int]bool{}
-	pinned := map[string]bool{}                                  // the same maps Send passes across rounds
-	out1 := boundContext(msgs, turnStart, elided, pinned, 2, 10) // budget 10: far over
+	pinned := map[string]bool{}                                                        // the same maps Send passes across rounds
+	out1 := boundContext(context.Background(), msgs, turnStart, elided, pinned, 2, 10) // budget 10: far over
 
 	// Round 2's result (index 5) is the most recent round — only index 3
 	// (round 1's result) may be elided.
@@ -1239,7 +1245,7 @@ func TestProbeElidedMapTracksIndicesAcrossGrowth(t *testing.T) {
 		t.Fatalf("append did not reallocate — the test no longer exercises index stability across a new backing array")
 	}
 
-	out2 := boundContext(msgs2, turnStart, elided, pinned, 3, 10)
+	out2 := boundContext(context.Background(), msgs2, turnStart, elided, pinned, 3, 10)
 
 	// Index 3 still holds round-1's placeholder — NOT a re-elision of it
 	// (which would name len(placeholder), ~95 bytes, not 400).
@@ -1294,6 +1300,12 @@ func TestProbeSessionNDJSONByteIdenticalOnDisk(t *testing.T) {
 				t.Fatalf("parse ndjson line: %v", err)
 			}
 			delete(m, "ts") // wall clock, not content
+			// A-038-2: the turn id is per-turn identity (038 A1/A3), not
+			// content — it must be present, and is then not compared.
+			if id, _ := m["turn"].(string); id == "" {
+				t.Fatalf("ndjson line without a turn id: %s", line)
+			}
+			delete(m, "turn")
 			norm, err := json.Marshal(m)
 			if err != nil {
 				t.Fatalf("re-marshal ndjson line: %v", err)
@@ -1387,7 +1399,7 @@ func TestProbeReorderedKeysCannotSustainTheCycle(t *testing.T) {
 		for i := range elided {
 			prev[i] = true
 		}
-		msgs = boundContext(msgs, turnStart, elided, pinned, r, budget)
+		msgs = boundContext(context.Background(), msgs, turnStart, elided, pinned, r, budget)
 		for i := range elided {
 			if !prev[i] {
 				newlyElided[r] = append(newlyElided[r], spellings[(i-turnStart-1)/2].id)
@@ -1571,6 +1583,6 @@ func BenchmarkBoundContextRealisticWorstCase(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		boundContext(msgs, 4, make(map[int]bool), make(map[string]bool), 24, budget)
+		boundContext(context.Background(), msgs, 4, make(map[int]bool), make(map[string]bool), 24, budget)
 	}
 }
