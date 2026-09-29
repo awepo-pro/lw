@@ -18,6 +18,7 @@ import (
 	"github.com/awepo-pro/lw/internal/extract"
 	"github.com/awepo-pro/lw/internal/stage"
 	"github.com/awepo-pro/lw/internal/tools"
+	"github.com/awepo-pro/lw/internal/trace"
 )
 
 // httpTimeout bounds every fetch the CLI's HTML extractor makes —
@@ -251,7 +252,10 @@ func cmdIngest(args []string) error {
 	// backends: HTML over the house client (010 contract §1), local
 	// files, and the cached PDF sidecar.
 	ex := ingestExtractors(root, cfg)
-	ctx := context.Background()
+	// 038: the turn's verb rides the ctx — the agent loop reads it with
+	// trace.VerbFrom to name the turn event, and no constructor argument
+	// could tell the shared newAgent which verb is driving (038 C-3).
+	ctx := trace.WithVerb(context.Background(), "ingest")
 
 	// 004 F.I1: an argument that stats as a directory is replaced, in
 	// place, by extract.Walk's eligible files — the same chain extracts

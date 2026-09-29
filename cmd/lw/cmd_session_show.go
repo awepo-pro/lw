@@ -154,12 +154,18 @@ func plural(n int, one, many string) string {
 // the bare role string for any other role a future writer may record.
 // A record the Ask pane copied forward from the earlier conversation of
 // the same pane (Carried, 009 contract §1) is named "· carried", so a
-// transcript tells carried history from the turn's own records.
+// transcript tells carried history from the turn's own records. A user
+// record that carries a turn id (038 T5) is titled "you · turn <id>", the
+// same id that names the turn's trace directory, so a line in a transcript
+// can be followed into `lw trace show <id>`.
 func sessionRuleTitle(r *agent.Record) string {
 	var title string
 	switch r.Role {
 	case "user":
 		title = "you"
+		if r.Turn != "" {
+			title += " · turn " + r.Turn
+		}
 	case "assistant":
 		title = "assistant"
 	case "tool":

@@ -25,6 +25,7 @@ import (
 
 	"github.com/awepo-pro/lw/internal/agent"
 	"github.com/awepo-pro/lw/internal/stage"
+	"github.com/awepo-pro/lw/internal/trace"
 	"github.com/awepo-pro/lw/internal/ui"
 )
 
@@ -223,7 +224,8 @@ func runTurn(ctx context.Context, ag agent.Agent, e *stage.Engine, sessionID, ca
 		// The returned error is deliberately dropped: when Send fails it has
 		// already delivered that same error as the turn's ErrorEv (backbone
 		// §9, C-105), and forwardTurn relays events, not return values.
-		_ = ag.Send(ctx, sessionID, msg, sendCh)
+		// 038: the pane's turn is verb "ask" — the tag rides the ctx (038 C-3).
+		_ = ag.Send(trace.WithVerb(ctx, "ask"), sessionID, msg, sendCh)
 	}()
 
 	forwardTurn(ctx, e, sessionID, openedHere, sendCh, out)

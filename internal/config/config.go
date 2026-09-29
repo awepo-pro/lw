@@ -39,6 +39,12 @@ const DefaultStallTimeout = 120 * time.Second
 // (~30 s) on top of ~0.7 s CPU per page.
 const DefaultExtractTimeout = 300 * time.Second
 
+// DefaultTraceKeepMB is the trace.keep_mb bound a config that omits the key
+// gets (038 T3): how many MiB of turn traces <vault>/.llmwiki/traces may
+// hold before `lw trace` prunes the oldest. 0 means tracing is off; the
+// ceiling Load enforces is 10240.
+const DefaultTraceKeepMB = 256
+
 // LLM is the language-model endpoint lw talks to.
 type LLM struct {
 	BaseURL     string  `toml:"base_url"`
@@ -125,6 +131,28 @@ type Open struct {
 	PDF string `toml:"pdf"` // viewer template; "" → no viewer wired
 }
 
+// Trace configures turn tracing (038 T3): whether the agent records the
+// exact request bytes and stream per turn under <vault>/.llmwiki/traces/.
+// KeepMB is a pointer so "the key is absent" and "the key is 0" stay
+// distinct — absent means the DefaultTraceKeepMB default, 0 means tracing
+// is off — which is why the whole table is omitted on Save while KeepMB is
+// nil, the same rule stall_timeout's omitempty follows in shadowLLM.
+type Trace struct {
+	KeepMB *int `toml:"keep_mb,omitempty"`
+}
+
+// TraceKeepBytes maps the user's keep_mb onto the byte bound the trace
+// pruner consumes (038 T3). A nil KeepMB — the key absent, which is how
+// Default ships — is DefaultTraceKeepMB << 20; 0 maps to 0, which reads as
+// tracing off. Load rejects anything outside 0..10240 (ValidateTraceKeepMB),
+// so the value is always in range by the time it reaches this method.
+func (c *Config) TraceKeepBytes() int64 {
+	if c.Trace.KeepMB == nil {
+		return DefaultTraceKeepMB << 20
+	}
+	return int64(*c.Trace.KeepMB) << 20
+}
+
 // ErrNoPDFViewer is what Open.Argv returns for a template that names no
 // viewer: there is nothing to compile, and inventing a default would exec
 // a program the user never chose. (034 T5.)
@@ -198,6 +226,7 @@ type Config struct {
 	Extract Extract `toml:"extract"`
 	Open    Open    `toml:"open"`
 	Theme   string  `toml:"theme"`
+	Trace   Trace   `toml:"trace"`
 }
 
 // shadowLLM is LLM with Limits nested inside it as "limits", so encoding
@@ -242,6 +271,11 @@ type shadowConfig struct {
 	// rule stall_timeout's omitempty follows one level down.
 	Open  Open   `toml:"open,omitempty"`
 	Theme string `toml:"theme"`
+	// omitempty keeps a traceless config traceless on Save (038 T3): with
+	// KeepMB nil the whole [trace] table is skipped — BurntSushi's isEmpty
+	// reads a nil pointer as empty — so a file that never named the key
+	// round-trips byte-identically.
+	Trace Trace `toml:"trace,omitempty"`
 }
 
 // toShadow converts a Config to its on-disk shape, for Save.
@@ -261,6 +295,7 @@ func toShadow(c *Config) shadowConfig {
 		Extract: shadowExtract{Command: c.Extract.Command, Timeout: c.Extract.Timeout},
 		Open:    c.Open,
 		Theme:   c.Theme,
+		Trace:   c.Trace,
 	}
 }
 
@@ -282,6 +317,7 @@ func fromShadow(s shadowConfig) *Config {
 		Extract: Extract{Command: s.Extract.Command, Timeout: s.Extract.Timeout},
 		Open:    s.Open,
 		Theme:   s.Theme,
+		Trace:   s.Trace,
 	}
 }
 
@@ -326,7 +362,25 @@ func Load() (*Config, error) {
 	if err := ValidateExtractTimeout(cfg.Extract.Timeout); err != nil {
 		return nil, err
 	}
+	if err := ValidateTraceKeepMB(cfg.Trace.KeepMB); err != nil {
+		return nil, err
+	}
 	return cfg, nil
+}
+
+// ValidateTraceKeepMB rejects a trace.keep_mb value Load cannot honour (038
+// T3, L3): negative, or past 10240 MiB — a cap the pruner could never
+// outpace is not a cap. nil is the key absent and always valid;
+// TraceKeepBytes owns the default. Exported so writers of the key (lw
+// config set) apply the same rule before saving.
+func ValidateTraceKeepMB(mb *int) error {
+	if mb == nil {
+		return nil
+	}
+	if *mb < 0 || *mb > 10240 {
+		return fmt.Errorf("config: trace.keep_mb must be between 0 and 10240, got %d", *mb)
+	}
+	return nil
 }
 
 // ValidateStallTimeout rejects an llm.stall_timeout value Load cannot honour
@@ -422,6 +476,9 @@ func mergeOverDefault(def, file *Config, md toml.MetaData) *Config {
 	}
 	if md.IsDefined("theme") {
 		def.Theme = file.Theme
+	}
+	if md.IsDefined("trace", "keep_mb") {
+		def.Trace.KeepMB = file.Trace.KeepMB
 	}
 	return def
 }

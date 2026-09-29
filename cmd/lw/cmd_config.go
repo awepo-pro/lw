@@ -117,6 +117,14 @@ var configFields = []configField{
 	{key: "open.pdf", get: func(c *config.Config) string { return c.Open.PDF },
 		set:     setOpenPDF,
 		display: displayOpenPDF},
+	{key: "trace.keep_mb", get: func(c *config.Config) string {
+		if c.Trace.KeepMB == nil {
+			return strconv.Itoa(config.DefaultTraceKeepMB)
+		}
+		return strconv.Itoa(*c.Trace.KeepMB)
+	},
+		set:     setTraceKeepMB,
+		display: displayPlain},
 	{key: "theme", get: func(c *config.Config) string { return c.Theme },
 		set:     func(c *config.Config, v string) error { c.Theme = v; return nil },
 		display: displayNotSet},
@@ -226,6 +234,24 @@ func displayOpenPDF(raw string) string {
 		return "(unset)"
 	}
 	return raw
+}
+
+// setTraceKeepMB validates trace.keep_mb before anything is written (038
+// T5): the single source of truth, config.ValidateTraceKeepMB — the same
+// rule Load enforces when the saved file is read back — restated in
+// setIntBounded's message style, so every bounded key refuses the same way.
+// 0 is a legal value here, unlike web.max_results' 1: it is how tracing is
+// switched off.
+func setTraceKeepMB(c *config.Config, v string) error {
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return fmt.Errorf("trace.keep_mb: want an integer, got %q", v)
+	}
+	if err := config.ValidateTraceKeepMB(&n); err != nil {
+		return fmt.Errorf("trace.keep_mb: want 0..10240, got %d", n)
+	}
+	c.Trace.KeepMB = &n
+	return nil
 }
 
 // setInt returns a setter for an integer field, so the three integer keys
@@ -410,7 +436,7 @@ keys:
   llm.limits.context_tokens   web.provider
   web.api_key                 web.max_results
   extract.command             extract.timeout
-  open.pdf
+  open.pdf                    trace.keep_mb
   theme
 
 llm.thinking is off|on|default: off sends thinking:{"type":"disabled"} so a
@@ -429,6 +455,9 @@ open.pdf is the PDF viewer template the Browse citation picker execs: {file}
 and {page} are substituted inside each field ("papers -i {page} {file}",
 "mupdf {file} {page}"), and the file is appended when the template names no
 {file}.
+trace.keep_mb caps how much <vault>/.llmwiki/traces may hold before the
+oldest turns are pruned (default 256, ceiling 10240); 0 turns tracing off —
+sessions and lw.log keep working, no request or stream bytes are written.
 llm.api_key and web.api_key are stored as references, never values: export
 the key and set the variable's name, e.g. lw config set llm.api_key env:LW_API_KEY.
 A literal that looks like a key is refused.
