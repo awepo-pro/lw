@@ -12,7 +12,9 @@ package tools
 // replace_text escape hatch pointed at. Since 043 T2, allow_shrink counts
 // only as a confirmation after a shrink refusal of the same path+section: a
 // refusal arms the key, a flagged repeat applies and disarms it — so a model
-// that sets the flag reflexively still gets shown the guard once.
+// that sets the flag reflexively still gets shown the guard once. Since
+// 043 T3, any staged edit on the section disarms the key — a confirmation
+// must directly follow its refusal, not a stale one.
 
 import (
 	"context"
@@ -379,12 +381,54 @@ func TestPatchAllowShrinkArmsAcrossOps(t *testing.T) {
 	}
 }
 
-// TestPatchAllowShrinkSurvivesFlaggedSmallEdit pins that an armed key is
-// consumed only by an applied shrink (043 T2): a flagged call that turns
-// out NOT to shrink — a small replace_text — stages normally and leaves
-// the arm intact, so the flagged shrink it was confirming still applies
-// afterwards instead of demanding a fresh refusal.
-func TestPatchAllowShrinkSurvivesFlaggedSmallEdit(t *testing.T) {
+// TestPatchAllowShrinkDisarmedByOtherEdit pins A-043-3: any stage.patch_page
+// call on the key that STAGES disarms it — not only an applied shrink. After
+// the op8 refusal arms "## GPU programming model", a small unflagged
+// replace_text of the same section lands, and the pre-emptive allow_shrink
+// that follows is refused with the confirmation line: keeping the arm across
+// a successful edit would let a much later flagged call through on a stale
+// refusal. The confirmation-line refusal arms the key again, so the
+// identical repeat applies.
+func TestPatchAllowShrinkDisarmedByOtherEdit(t *testing.T) {
+	reg, _, _ := tilelangRegistry(t)
+	if r := callTool(t, reg, "stage.open", `{"intent":"add an nvitop link"}`); r.IsError {
+		t.Fatal(r.Content)
+	}
+	if r := callTool(t, reg, "stage.patch_page", op8Args(t, false)); !r.IsError {
+		t.Fatalf("op8 accepted without allow_shrink:\n%s", r.Content)
+	}
+	const find = "recur in [[batch-invariant-deterministic-kernels]]."
+	content := find + " Tools like [[nvitop]] make the resulting utilization observable."
+	args, err := json.Marshal(map[string]any{
+		"path":      "wiki/entities/tilelang.md",
+		"section":   "## GPU programming model",
+		"op":        "replace_text",
+		"find":      find,
+		"content":   content,
+		"rationale": "link nvitop where utilization is watched",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := callTool(t, reg, "stage.patch_page", string(args)); r.IsError {
+		t.Fatalf("small unflagged replace_text refused: %s", r.Content)
+	}
+	r := callTool(t, reg, "stage.patch_page", op8Args(t, true))
+	if !r.IsError {
+		t.Fatalf("stale arm survived a staged edit of the same section:\n%s", r.Content)
+	}
+	assertLastLine(t, r.Content, shrinkConfirmLastLine)
+	if r := callTool(t, reg, "stage.patch_page", op8Args(t, true)); r.IsError {
+		t.Fatalf("confirmed repeat refused: %s", r.Content)
+	}
+}
+
+// TestPatchAllowShrinkFlaggedSmallEditDisarms is A-043-3's inversion of
+// T2r's TestPatchAllowShrinkSurvivesFlaggedSmallEdit: a flagged call that
+// turns out NOT to shrink still STAGES, and staging is what disarms — the
+// arm does not wait for a shrink the call has already replaced with a small
+// edit. The next flagged shrink therefore gets its own refusal first.
+func TestPatchAllowShrinkFlaggedSmallEditDisarms(t *testing.T) {
 	reg, e, _ := tilelangRegistry(t)
 	if r := callTool(t, reg, "stage.open", `{"intent":"add an nvitop link"}`); r.IsError {
 		t.Fatal(r.Content)
@@ -396,8 +440,13 @@ func TestPatchAllowShrinkSurvivesFlaggedSmallEdit(t *testing.T) {
 	if r := callTool(t, reg, "stage.patch_page", small); r.IsError {
 		t.Fatalf("flagged small edit refused: %s", r.Content)
 	}
+	r := callTool(t, reg, "stage.patch_page", op8Args(t, true))
+	if !r.IsError {
+		t.Fatalf("flagged small edit left the arm alive:\n%s", r.Content)
+	}
+	assertLastLine(t, r.Content, shrinkConfirmLastLine)
 	if r := callTool(t, reg, "stage.patch_page", op8Args(t, true)); r.IsError {
-		t.Fatalf("arm did not survive the flagged small edit: %s", r.Content)
+		t.Fatalf("confirmed repeat refused: %s", r.Content)
 	}
 	cs, err := e.Current()
 	if err != nil {
