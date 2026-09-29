@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/awepo-pro/lw/internal/stage"
@@ -27,7 +28,10 @@ const stageCreatePageSchema = `{
 // the schema text is what tells the model which op to use — replace_text for
 // a small edit, replace_section for a whole-body rewrite — and what
 // allow_shrink licenses, so the wording is part of the contract, not
-// documentation.
+// documentation. Since 043 T2 the allow_shrink text says the flag confirms
+// a refusal rather than licensing one up front — the live model in R4 set
+// it on the first call, which is exactly the reflexive use the two-step
+// flow exists to surface.
 const stagePatchPageSchema = `{
   "type":"object",
   "properties":{
@@ -36,7 +40,7 @@ const stagePatchPageSchema = `{
     "op":{"type":"string","enum":["replace_text","replace_section","append_section","insert_after","insert_before","remove_section"],"description":"replace_text: replace the find text, which must occur exactly once inside the section. replace_section: replace the WHOLE section body below its heading, subsections included. append_section: add content at the end of the section. insert_after / insert_before: add content as a new section next to this one. remove_section: delete the section."},
     "find":{"type":"string","description":"replace_text only: the exact text to replace, copied from the page. It must occur exactly once inside the section."},
     "content":{"type":"string","description":"replace_text: the replacement for find. replace_section: the new body WITHOUT the heading line. append_section: the text to add. insert_after / insert_before: the new section, heading line included. remove_section: send \"\"."},
-    "allow_shrink":{"type":"boolean","description":"Set true only when you mean to delete most of a section. Without it, a replace_section or replace_text that drops more than half of a section of 400 bytes or more is refused."},
+    "allow_shrink":{"type":"boolean","description":"Confirms a deletion the shrink rule refused. A replace_section or replace_text that drops more than half of a section of 400 bytes or more is refused first; repeating the call with allow_shrink true then applies it. Setting it before a refusal has no effect."},
     "rationale":{"type":"string","description":"One sentence: why this change."}
   },
   "required":["path","section","op","content","rationale"],
@@ -98,6 +102,16 @@ type stagePatchPageArgs struct {
 }
 
 func stagePatchPageTool(d Deps) Tool {
+	// 043 T2: the pending shrink confirmations, keyed path+"\n"+section.
+	// They live on the tool instance — one per registry — because a
+	// confirmation is conversational state, not changeset state: it must not
+	// survive a restart (a fresh process re-asks, costing one round), and it
+	// must not be visible to another changeset. The mutex covers MCP, where
+	// calls arrive on many goroutines.
+	var (
+		armMu      sync.Mutex
+		shrinkArms = map[string]bool{}
+	)
 	return Tool{Name: "stage.patch_page", Description: "Propose a section-level page patch. For a small edit — add a link, fix a sentence — use op replace_text: it changes only the text you quote. replace_section rewrites the whole section body, subsections included. When the open changeset already stages the page, the patch composes against that staged state, not the committed bytes.", Schema: json.RawMessage(stagePatchPageSchema), Handler: func(ctx context.Context, args json.RawMessage) (Result, error) {
 		var a stagePatchPageArgs
 		if err := decodeArgs(args, &a); err != nil {
@@ -120,9 +134,31 @@ func stagePatchPageTool(d Deps) Tool {
 		var body string
 		switch a.Op {
 		case "replace_section", "replace_text":
-			newBody, refuse := guardedReplace(page, sec, a)
+			armMu.Lock()
+			confirmed := a.AllowShrink && shrinkArms[shrinkArmKey(a.Path, a.Section)]
+			armMu.Unlock()
+			newBody, refuse, shrinkFired := guardedReplace(page, sec, a, confirmed)
 			if refuse != nil {
+				if shrinkFired {
+					armMu.Lock()
+					shrinkArms[shrinkArmKey(a.Path, a.Section)] = true
+					armMu.Unlock()
+					// The call set the flag but no refusal of this
+					// path+section had armed the key (043 T2), so the last
+					// line — which would have it repeat blindly — is swapped
+					// for the one that says the flag only counts now.
+					if a.AllowShrink {
+						if i := strings.LastIndexByte(refuse.Content, '\n'); i >= 0 {
+							refuse.Content = refuse.Content[:i+1] + shrinkConfirmLine
+						}
+					}
+				}
 				return *refuse, nil
+			}
+			if shrinkFired {
+				armMu.Lock()
+				delete(shrinkArms, shrinkArmKey(a.Path, a.Section))
+				armMu.Unlock()
 			}
 			body = newBody
 		case "append_section":
@@ -157,14 +193,37 @@ const (
 	paraCutRunes     = 80
 )
 
+// shrinkConfirmLine replaces a shrink refusal's last line when the
+// refused call itself carried allow_shrink (043 T2): the model answered the
+// schema's invitation before any refusal existed, so the reply must not
+// tell it to repeat as if the flag had been missing — it must say the flag
+// only counts as a confirmation after THIS refusal. The test file pins the
+// same text byte for byte.
+const shrinkConfirmLine = `"allow_shrink" counts only as a confirmation after this refusal. If deleting this text is intended, repeat the same call now.`
+
+// shrinkArmKey keys a pending shrink confirmation by path and section
+// (043 T2): a confirmation licenses deleting most of THAT section and
+// nothing else, and the op — replace_section or replace_text — is beside
+// the point, since both run the same shrink measurement.
+func shrinkArmKey(path, section string) string {
+	return path + "\n" + section
+}
+
 // guardedReplace computes the new page body for a replace_section or
 // replace_text op behind 043 T1's two guards, returning a refusal Result
-// instead of a body when one fires.
+// instead of a body when one fires. confirmed is the caller's resolved
+// allow_shrink (043 T2): true only when the call set the flag AND a prior
+// shrink refusal of the same path+section armed the key. The third return
+// reports whether the shrink guard measured a shrink at all, refusal or
+// not — the caller arms the key on a fired refusal and disarms it when such
+// a shrink is applied, while every other refusal (nested loss, find
+// problems) leaves the key untouched.
 //
 // replace_section refuses first through the nested-section guard
 // (refuseNestedLoss): rewriting a section that contains subsections without
-// repeating their heading lines deletes them, and allow_shrink does not
-// override that — deleting a subsection has its own op, remove_section.
+// repeating their heading lines deletes them, and neither allow_shrink nor
+// an armed key overrides that — deleting a subsection has its own op,
+// remove_section.
 //
 // Both ops then run the shrink guard (refuseShrink): a replacement keeping
 // under half of a 400+-byte section is the op8 failure shape this subtask
@@ -172,33 +231,46 @@ const (
 // four-paragraph section and silently erased the rest — so it is refused
 // with the deleted text named, and the model either redoes the edit as
 // replace_text, quoting only the text it means to change, or repeats the
-// call with allow_shrink when the deletion is meant.
+// call with allow_shrink, which counts once the refusal armed the key
+// (043 T2).
 //
 // replace_text replaces find — which must occur exactly once inside the
 // section — byte for byte, with no newline normalization: the whole point
 // of the quoted-edit shape is that nothing the model did not quote moves.
-func guardedReplace(page *vault.Page, sec vault.Section, a stagePatchPageArgs) (string, *Result) {
+func guardedReplace(page *vault.Page, sec vault.Section, a stagePatchPageArgs, confirmed bool) (newBody string, refuse *Result, shrinkFired bool) {
 	if a.Op == "replace_text" {
 		if a.Find == "" {
-			return "", &Result{IsError: true, Content: "replace_text needs find: the exact text to replace, copied from the page"}
+			return "", &Result{IsError: true, Content: "replace_text needs find: the exact text to replace, copied from the page"}, false
 		}
 		if a.Find == a.Content {
-			return "", &Result{IsError: true, Content: "find and content are identical; nothing to change"}
+			return "", &Result{IsError: true, Content: "find and content are identical; nothing to change"}, false
 		}
 		switch n := strings.Count(page.Body[sec.Body:sec.End], a.Find); {
 		case n == 0:
-			return "", &Result{IsError: true, Content: fmt.Sprintf("find text was not found in section %q of %s; copy it exactly from wiki.get (whitespace and punctuation included)", a.Section, a.Path)}
+			return "", &Result{IsError: true, Content: fmt.Sprintf("find text was not found in section %q of %s; copy it exactly from wiki.get (whitespace and punctuation included)", a.Section, a.Path)}, false
 		case n > 1:
-			return "", &Result{IsError: true, Content: fmt.Sprintf("find text occurs %d times in section %q of %s; include more surrounding text so it matches exactly once", n, a.Section, a.Path)}
+			return "", &Result{IsError: true, Content: fmt.Sprintf("find text occurs %d times in section %q of %s; include more surrounding text so it matches exactly once", n, a.Section, a.Path)}, false
 		}
 		newBody, _ := vault.ReplaceTextInSection(page.Body, sec, a.Find, a.Content)
-		return newBody, refuseShrink(page.Body, sec, strings.Replace(page.Body[sec.Body:sec.End], a.Find, a.Content, 1), a)
+		if res := refuseShrink(page.Body, sec, strings.Replace(page.Body[sec.Body:sec.End], a.Find, a.Content, 1), a); res != nil {
+			if confirmed {
+				return newBody, nil, true
+			}
+			return "", res, true
+		}
+		return newBody, nil, false
 	}
 	if res := refuseNestedLoss(page, sec, normalizeToolBody(a.Content)); res != nil {
-		return "", res
+		return "", res, false
 	}
 	newRegion := normalizeToolBody(a.Content)
-	return vault.ReplaceSection(page.Body, sec, newRegion), refuseShrink(page.Body, sec, newRegion, a)
+	if res := refuseShrink(page.Body, sec, newRegion, a); res != nil {
+		if confirmed {
+			return vault.ReplaceSection(page.Body, sec, newRegion), nil, true
+		}
+		return "", res, true
+	}
+	return vault.ReplaceSection(page.Body, sec, newRegion), nil, false
 }
 
 // refuseNestedLoss is replace_section's nested-section guard (043 T1): a
@@ -244,19 +316,18 @@ func hasTrimmedLine(s, line string) bool {
 
 // refuseShrink is 043 T1's shrink guard, shared by replace_section and
 // replace_text: when the section body before is 400+ bytes and the body
-// after would keep under half of it — op8 kept 19% — the call is refused
-// unless allow_shrink is set. A legitimate condense seldom halves a section
-// without meaning to, so the refusal names the ratio and lists every old
-// paragraph (a blank-line-separated block, trimmed) the new body no longer
-// contains, at most maxDeletedParas of them, each cut to paraCutRunes
-// runes: the model sees exactly what it was about to erase. newRegion is
-// the section body after the edit — the replacement content for
-// replace_section, the section with find swapped for content for
-// replace_text.
+// after would keep under half of it — op8 kept 19% — the replacement is
+// returned as a refusal. Since 043 T2 this is a pure measurement: whether
+// the shrink may land is the caller's call, resolved from the armed
+// confirmation, so an allow_shrink that arrives before any refusal changes
+// nothing here. A legitimate condense seldom halves a section without
+// meaning to, so the refusal names the ratio and lists every old paragraph
+// (a blank-line-separated block, trimmed) the new body no longer contains,
+// at most maxDeletedParas of them, each cut to paraCutRunes runes: the
+// model sees exactly what it was about to erase. newRegion is the section
+// body after the edit — the replacement content for replace_section, the
+// section with find swapped for content for replace_text.
 func refuseShrink(body string, sec vault.Section, newRegion string, a stagePatchPageArgs) *Result {
-	if a.AllowShrink {
-		return nil
-	}
 	old := strings.TrimSpace(body[sec.Body:sec.End])
 	new := strings.TrimSpace(newRegion)
 	if len(old) < shrinkFloorBytes || 2*len(new) >= len(old) {

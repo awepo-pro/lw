@@ -9,8 +9,10 @@ package tools
 // op8's exact tool arguments — and these tests replay op8 against them.
 // replace_section that would keep under half of a 400+-byte section, or
 // drop a subsection heading, is refused with the deleted text named and the
-// replace_text escape hatch pointed at; allow_shrink restores the old
-// byte-for-byte behaviour for rewrites that mean it.
+// replace_text escape hatch pointed at. Since 043 T2, allow_shrink counts
+// only as a confirmation after a shrink refusal of the same path+section: a
+// refusal arms the key, a flagged repeat applies and disarms it — so a model
+// that sets the flag reflexively still gets shown the guard once.
 
 import (
 	"encoding/json"
@@ -33,6 +35,32 @@ var op8DeletedLines = []string{
 	"- \"TileLang treats tiles — shaped chunks of data owned by a warp or thread block — …\"",
 	"- \"Dataflow is expressed with tile operators (`T.copy`, `T.gemm`, `T.reduce`, `T.at…\"",
 	"- \"Two compiler abstractions carry the thread mapping: a composable **Layout** (bui…\"",
+}
+
+// op8RefusalHead is the first four lines of the op8 shrink refusal, shared
+// byte-for-byte by the unflagged refusal (T1) and the pre-emptive-flag
+// refusal whose last line the T2 confirmation replaces.
+var op8RefusalHead = []string{
+	`replace_section "## GPU programming model" keeps 618 of 3161 bytes (19%) of the section; it would delete:`,
+	op8DeletedLines[0],
+	op8DeletedLines[1],
+	op8DeletedLines[2],
+}
+
+// shrinkConfirmLastLine is the last line a shrink refusal carries when the
+// refused call itself set allow_shrink (043 T2): the model tried to confirm
+// before any refusal, so the reply must say the flag only counts after THIS
+// refusal — a pre-emptive flag never bypasses the guard.
+const shrinkConfirmLastLine = `"allow_shrink" counts only as a confirmation after this refusal. If deleting this text is intended, repeat the same call now.`
+
+// assertLastLine fails the test unless want is exactly the final line of
+// content — the shape every pre-emptive-flag refusal is pinned by.
+func assertLastLine(t *testing.T, content, want string) {
+	t.Helper()
+	lines := strings.Split(content, "\n")
+	if lines[len(lines)-1] != want {
+		t.Fatalf("last line =\n%s\nwant =\n%s\nfull refusal:\n%s", lines[len(lines)-1], want, content)
+	}
 }
 
 // tilelangRegistry is engineRegistry with the session-36 ground page added:
@@ -143,15 +171,20 @@ func TestPatchReplaceSectionRefusesRealOp8(t *testing.T) {
 	assertNothingStaged(t, e)
 }
 
-// TestPatchReplaceSectionAllowShrink replays op8 with the override the
-// refusal asks for: the staged op's content must be byte-identical to the
-// tilelang-after-op8.md ground — exactly what lw produced live — proving
-// allow_shrink restores the pre-043 behaviour rather than a normalized
-// variant of it.
+// TestPatchReplaceSectionAllowShrink replays op8 the way T2's confirmation
+// flow demands it: refused once unflagged — which arms the key — then
+// repeated with allow_shrink, whose staged op's content must be
+// byte-identical to the tilelang-after-op8.md ground — exactly what lw
+// produced live — proving the confirmed shrink restores the pre-043
+// behaviour rather than a normalized variant of it. (A-043-2: the first,
+// pre-emptive-flagged call of T1 became this refusal-then-repeat pair.)
 func TestPatchReplaceSectionAllowShrink(t *testing.T) {
 	reg, e, _ := tilelangRegistry(t)
 	if r := callTool(t, reg, "stage.open", `{"intent":"add an nvitop link"}`); r.IsError {
 		t.Fatal(r.Content)
+	}
+	if r := callTool(t, reg, "stage.patch_page", op8Args(t, false)); !r.IsError {
+		t.Fatalf("op8 accepted without allow_shrink:\n%s", r.Content)
 	}
 	r := callTool(t, reg, "stage.patch_page", op8Args(t, true))
 	if r.IsError {
@@ -180,6 +213,167 @@ func TestPatchReplaceSectionAllowShrink(t *testing.T) {
 	}
 	if string(got) != string(want) {
 		t.Fatalf("staged op content differs from the live op8 output")
+	}
+}
+
+// TestPatchAllowShrinkNeedsPriorRefusal pins T2's core: a pre-emptive
+// allow_shrink on an unrefused call does not bypass the guard — the refusal
+// is T1's text with only its last line swapped for the confirmation line —
+// and the flagged repeat of the identical call then applies, byte-identical
+// to the live op8 output.
+func TestPatchAllowShrinkNeedsPriorRefusal(t *testing.T) {
+	reg, e, _ := tilelangRegistry(t)
+	if r := callTool(t, reg, "stage.open", `{"intent":"add an nvitop link"}`); r.IsError {
+		t.Fatal(r.Content)
+	}
+	r := callTool(t, reg, "stage.patch_page", op8Args(t, true))
+	if !r.IsError {
+		t.Fatalf("pre-emptive allow_shrink bypassed the guard:\n%s", r.Content)
+	}
+	want := strings.Join(append(append([]string{}, op8RefusalHead...), shrinkConfirmLastLine), "\n")
+	if r.Content != want {
+		t.Fatalf("refusal =\n%s\nwant =\n%s", r.Content, want)
+	}
+	assertNothingStaged(t, e)
+
+	if r := callTool(t, reg, "stage.patch_page", op8Args(t, true)); r.IsError {
+		t.Fatalf("confirmed repeat refused: %s", r.Content)
+	}
+	got, staged, err := e.StagedFile("wiki/entities/tilelang.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !staged {
+		t.Fatal("op8 page is not staged after the confirmed repeat")
+	}
+	wantBytes, err := os.ReadFile("testdata/section-edit/tilelang-after-op8.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(wantBytes) {
+		t.Fatal("confirmed repeat is not byte-identical to the live op8 output")
+	}
+}
+
+// TestPatchAllowShrinkIsOneShot pins the disarm: the first confirmed apply
+// consumes the arm, so the NEXT shrink on the same section is refused again
+// — with the confirmation line, since it too carries a pre-emptive flag —
+// and only its own repeat applies.
+func TestPatchAllowShrinkIsOneShot(t *testing.T) {
+	reg, e, _ := tilelangRegistry(t)
+	if r := callTool(t, reg, "stage.open", `{"intent":"add an nvitop link"}`); r.IsError {
+		t.Fatal(r.Content)
+	}
+	// The NeedsPriorRefusal sequence: refusal arms, flagged repeat applies
+	// and disarms.
+	if r := callTool(t, reg, "stage.patch_page", op8Args(t, false)); !r.IsError {
+		t.Fatalf("op8 accepted without allow_shrink:\n%s", r.Content)
+	}
+	if r := callTool(t, reg, "stage.patch_page", op8Args(t, true)); r.IsError {
+		t.Fatalf("op8 with allow_shrink: %s", r.Content)
+	}
+	const condense = `{"path":"wiki/entities/tilelang.md","section":"## GPU programming model","op":"replace_section","content":"Utilization is observable via [[nvitop]].","allow_shrink":true,"rationale":"condense to one line"}`
+	r := callTool(t, reg, "stage.patch_page", condense)
+	if !r.IsError {
+		t.Fatalf("second shrink applied without a fresh refusal — arm was not consumed:\n%s", r.Content)
+	}
+	assertLastLine(t, r.Content, shrinkConfirmLastLine)
+	if r := callTool(t, reg, "stage.patch_page", condense); r.IsError {
+		t.Fatalf("confirmed condense refused: %s", r.Content)
+	}
+	cs, err := e.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cs.Ops) != 2 {
+		t.Fatalf("len(cs.Ops) = %d, want 2 (op8 + the confirmed condense)", len(cs.Ops))
+	}
+}
+
+// TestPatchAllowShrinkScopedToSection pins the key: a refusal of
+// "## GPU programming model" must not confirm a shrink of "## Abstract" —
+// the arm is path+section, so the Abstract shrink carrying a pre-emptive
+// flag still gets its own refusal first.
+func TestPatchAllowShrinkScopedToSection(t *testing.T) {
+	reg, e, _ := tilelangRegistry(t)
+	if r := callTool(t, reg, "stage.open", `{"intent":"add an nvitop link"}`); r.IsError {
+		t.Fatal(r.Content)
+	}
+	if r := callTool(t, reg, "stage.patch_page", op8Args(t, false)); !r.IsError {
+		t.Fatalf("op8 accepted without allow_shrink:\n%s", r.Content)
+	}
+	r := callTool(t, reg, "stage.patch_page", `{"path":"wiki/entities/tilelang.md","section":"## Abstract","op":"replace_section","content":"x","allow_shrink":true,"rationale":"condense the abstract"}`)
+	if !r.IsError {
+		t.Fatalf("shrink of another section confirmed by the first section's arm:\n%s", r.Content)
+	}
+	assertLastLine(t, r.Content, shrinkConfirmLastLine)
+	assertNothingStaged(t, e)
+}
+
+// TestPatchAllowShrinkNotArmedByOtherRefusals pins which refusals arm: a
+// replace_text not-found refusal is not a shrink refusal, so the op8 call
+// that follows it — pre-emptive flag set — is still refused unconfirmed.
+func TestPatchAllowShrinkNotArmedByOtherRefusals(t *testing.T) {
+	reg, e, _ := tilelangRegistry(t)
+	if r := callTool(t, reg, "stage.open", `{"intent":"probe arming"}`); r.IsError {
+		t.Fatal(r.Content)
+	}
+	r := callTool(t, reg, "stage.patch_page", `{"path":"wiki/entities/tilelang.md","section":"## GPU programming model","op":"replace_text","find":"[[dcgm]]","content":"x","rationale":"probe"}`)
+	if !r.IsError || r.Content != `find text was not found in section "## GPU programming model" of wiki/entities/tilelang.md; copy it exactly from wiki.get (whitespace and punctuation included)` {
+		t.Fatalf("expected the not-found refusal, got isErr=%v:\n%s", r.IsError, r.Content)
+	}
+	r = callTool(t, reg, "stage.patch_page", op8Args(t, true))
+	if !r.IsError {
+		t.Fatalf("op8 applied without a prior shrink refusal:\n%s", r.Content)
+	}
+	assertLastLine(t, r.Content, shrinkConfirmLastLine)
+	assertNothingStaged(t, e)
+}
+
+// TestPatchAllowShrinkArmsAcrossOps pins that the arm belongs to the
+// path+section, not the op: a replace_text shrink refusal arms the key, and
+// the op8 replace_section repeat — flag set — then applies.
+func TestPatchAllowShrinkArmsAcrossOps(t *testing.T) {
+	reg, e, op3 := tilelangRegistry(t)
+	page, err := vault.ParsePage("wiki/entities/tilelang.md", op3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sec, ok := page.Section("## GPU programming model")
+	if !ok {
+		t.Fatal(`section "## GPU programming model" not found in the ground page`)
+	}
+	paras := strings.Split(strings.TrimSpace(page.Body[sec.Body:sec.End]), "\n\n")
+	if len(paras) != 4 {
+		t.Fatalf("ground section has %d paragraphs, want 4", len(paras))
+	}
+	find := paras[0] + "\n\n" + paras[1] + "\n\n" + paras[2]
+	if r := callTool(t, reg, "stage.open", `{"intent":"delete most of a section"}`); r.IsError {
+		t.Fatal(r.Content)
+	}
+	args, err := json.Marshal(map[string]any{
+		"path":      "wiki/entities/tilelang.md",
+		"section":   "## GPU programming model",
+		"op":        "replace_text",
+		"find":      find,
+		"content":   "",
+		"rationale": "drop the first three paragraphs",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := callTool(t, reg, "stage.patch_page", string(args)); !r.IsError {
+		t.Fatalf("three-paragraph replace_text deletion accepted:\n%s", r.Content)
+	}
+	if r := callTool(t, reg, "stage.patch_page", op8Args(t, true)); r.IsError {
+		t.Fatalf("op8 not confirmed by the replace_text refusal of the same section: %s", r.Content)
+	}
+	cs, err := e.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cs.Ops) != 1 {
+		t.Fatalf("len(cs.Ops) = %d, want 1 (op8, applied)", len(cs.Ops))
 	}
 }
 
@@ -491,7 +685,7 @@ func TestPatchPageSchemaDescribesOps(t *testing.T) {
 		"op":           `replace_text: replace the find text, which must occur exactly once inside the section. replace_section: replace the WHOLE section body below its heading, subsections included. append_section: add content at the end of the section. insert_after / insert_before: add content as a new section next to this one. remove_section: delete the section.`,
 		"find":         `replace_text only: the exact text to replace, copied from the page. It must occur exactly once inside the section.`,
 		"content":      `replace_text: the replacement for find. replace_section: the new body WITHOUT the heading line. append_section: the text to add. insert_after / insert_before: the new section, heading line included. remove_section: send "".`,
-		"allow_shrink": `Set true only when you mean to delete most of a section. Without it, a replace_section or replace_text that drops more than half of a section of 400 bytes or more is refused.`,
+		"allow_shrink": `Confirms a deletion the shrink rule refused. A replace_section or replace_text that drops more than half of a section of 400 bytes or more is refused first; repeating the call with allow_shrink true then applies it. Setting it before a refusal has no effect.`,
 		"rationale":    `One sentence: why this change.`,
 	}
 	for prop, want := range wantDescriptions {
@@ -522,6 +716,11 @@ func TestPatchGuardChainedMeasuresStagedBase(t *testing.T) {
 	reg, e, _ := tilelangRegistry(t)
 	if r := callTool(t, reg, "stage.open", `{"intent":"chained condense"}`); r.IsError {
 		t.Fatal(r.Content)
+	}
+	// A-043-2: arm the key first — the unflagged op8 is refused, the flagged
+	// repeat applies — since a pre-emptive allow_shrink no longer counts.
+	if r := callTool(t, reg, "stage.patch_page", op8Args(t, false)); !r.IsError {
+		t.Fatalf("op8 accepted without allow_shrink:\n%s", r.Content)
 	}
 	if r := callTool(t, reg, "stage.patch_page", op8Args(t, true)); r.IsError {
 		t.Fatalf("op8 with allow_shrink: %s", r.Content)
