@@ -229,7 +229,10 @@ func refuseNestedLoss(page *vault.Page, sec vault.Section, newBody string) *Resu
 }
 
 // hasTrimmedLine reports whether line appears in s as a line of its own,
-// with trailing spaces and tabs trimmed on both sides.
+// with trailing spaces and tabs trimmed — the only normalization
+// buildSection applies to a heading line, so the only one the comparison
+// may apply. It is a whole-line comparison: a heading that occurs only as
+// the substring of a longer line does not count as kept.
 func hasTrimmedLine(s, line string) bool {
 	for _, l := range strings.Split(s, "\n") {
 		if strings.TrimRight(l, " \t") == line {
@@ -283,14 +286,16 @@ func refuseShrink(body string, sec vault.Section, newRegion string, a stagePatch
 
 // sectionParagraphs splits s into its blank-line-separated blocks, each the
 // paragraph unit the shrink refusal lists deleted text in. s arrives
-// TrimSpace'd, so no block is empty.
+// TrimSpace'd, so no block is empty; each block is trimmed itself — the
+// contract's "blank-line-separated block of old, trimmed" — so an indented
+// first or last line is compared by the block's text, not its indentation.
 func sectionParagraphs(s string) []string {
 	var paras []string
 	var cur []string
 	for _, line := range strings.Split(s, "\n") {
 		if strings.TrimSpace(line) == "" {
 			if len(cur) > 0 {
-				paras = append(paras, strings.Join(cur, "\n"))
+				paras = append(paras, strings.TrimSpace(strings.Join(cur, "\n")))
 				cur = nil
 			}
 			continue
@@ -298,7 +303,7 @@ func sectionParagraphs(s string) []string {
 		cur = append(cur, line)
 	}
 	if len(cur) > 0 {
-		paras = append(paras, strings.Join(cur, "\n"))
+		paras = append(paras, strings.TrimSpace(strings.Join(cur, "\n")))
 	}
 	return paras
 }

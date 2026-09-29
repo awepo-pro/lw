@@ -510,3 +510,148 @@ func TestPatchPageSchemaDescribesOps(t *testing.T) {
 		t.Fatalf("allow_shrink type = %q, want boolean", got)
 	}
 }
+
+// TestPatchGuardChainedMeasuresStagedBase pins which bytes the shrink
+// guard's "old" comes from on a chained patch (043 T1): the second
+// patch_page on a staged path composes against the staged bytes
+// (stagedPatchBase, 020 T-B), so the guard must measure the staged section
+// body — 618 bytes after op8 — not the committed one (3161). Measuring the
+// committed base would both quote the wrong ratio and list paragraphs that
+// are already gone from the staged state.
+func TestPatchGuardChainedMeasuresStagedBase(t *testing.T) {
+	reg, e, _ := tilelangRegistry(t)
+	if r := callTool(t, reg, "stage.open", `{"intent":"chained condense"}`); r.IsError {
+		t.Fatal(r.Content)
+	}
+	if r := callTool(t, reg, "stage.patch_page", op8Args(t, true)); r.IsError {
+		t.Fatalf("op8 with allow_shrink: %s", r.Content)
+	}
+	r := callTool(t, reg, "stage.patch_page", `{"path":"wiki/entities/tilelang.md","section":"## GPU programming model","op":"replace_section","content":"Utilization is observable via [[nvitop]].","rationale":"condense to one line"}`)
+	if !r.IsError {
+		t.Fatalf("chained condense accepted without allow_shrink:\n%s", r.Content)
+	}
+	if !strings.Contains(r.Content, "of 618 bytes") {
+		t.Fatalf("shrink guard measured the committed base, not the staged one:\n%s", r.Content)
+	}
+	cs, err := e.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cs.Ops) != 1 {
+		t.Fatalf("refused chained patch changed the changeset: %d ops, want 1", len(cs.Ops))
+	}
+	args := `{"path":"wiki/entities/tilelang.md","section":"## GPU programming model","op":"replace_section","content":"Utilization is observable via [[nvitop]].","allow_shrink":true,"rationale":"condense to one line"}`
+	if r := callTool(t, reg, "stage.patch_page", args); r.IsError {
+		t.Fatalf("chained condense refused with allow_shrink: %s", r.Content)
+	}
+	got, staged, err := e.StagedFile("wiki/entities/tilelang.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !staged {
+		t.Fatal("tilelang.md is not staged after the chained patch")
+	}
+	if !strings.Contains(string(got), "Utilization is observable via [[nvitop]].") || strings.Contains(string(got), "This fine-grained GPU control") {
+		t.Fatal("staged page is not the staged base with the condense composed onto it")
+	}
+}
+
+// TestRefuseNestedLossLineSemantics pins the heading-line comparison behind
+// the nested guard (043 T1) at the unit level, where the registry path
+// cannot reach: a heading inside a fenced code block is not a section
+// (ParseSections walks the AST), so it is never demanded; a heading text
+// that occurs only as the substring of a longer content line does not count
+// as kept; and a kept heading line may carry trailing spaces or tabs, the
+// only normalization buildSection itself applies.
+func TestRefuseNestedLossLineSemantics(t *testing.T) {
+	body := "---\ntitle: Doc\ntype: concept\ntags: [x]\n---\n\n# Doc\n\nintro paragraph.\n\n## Real\n\n```text\n## Fake\n```\n\ntail paragraph.\n"
+	page, err := vault.ParsePage("wiki/x.md", []byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := page.Section("## Fake"); ok {
+		t.Fatal(`"## Fake" inside the fenced block parsed as a section`)
+	}
+	sec, ok := page.Section("# Doc")
+	if !ok {
+		t.Fatal(`section "# Doc" not found`)
+	}
+	res := refuseNestedLoss(page, sec, "intro only")
+	if res == nil || !strings.Contains(res.Content, `"## Real"`) || strings.Contains(res.Content, "## Fake") {
+		t.Fatalf("fenced pseudo-heading demanded or real heading missed:\n%v", res)
+	}
+	if res := refuseNestedLoss(page, sec, "intro, and we discuss ## Real below"); res == nil || !strings.Contains(res.Content, `"## Real"`) {
+		t.Fatalf("substring occurrence counted as keeping the heading:\n%v", res)
+	}
+	for _, content := range []string{"## Real\n\nkept body", "## Real  \n\nkept body", "## Real\t\nkept body"} {
+		if res := refuseNestedLoss(page, sec, content); res != nil {
+			t.Fatalf("exact heading line refused: %q →\n%s", content, res.Content)
+		}
+	}
+}
+
+// TestRefuseShrinkListCaps pins the deleted-text list's presentation
+// contract (043 T1) at the unit level: at most 5 paragraph entries (then
+// "- … and N more"), the 80-rune cut never splits a UTF-8 rune, "…"
+// appears only on paragraphs that were actually cut, and a block with an
+// indented first line is compared by its trimmed text — kept text stays out
+// of the deletion list.
+func TestRefuseShrinkListCaps(t *testing.T) {
+	kept := "kept paragraph survives verbatim in the new body."
+	old := strings.Join([]string{
+		strings.Repeat("a", 79) + "ééééé", // 84 runes; rune 80 is multibyte
+		"    " + kept + "\nsecond line",   // indented block: compared trimmed
+		"gone paragraph",
+		strings.Repeat("x", 100),
+		strings.Repeat("y", 100),
+		strings.Repeat("z", 100),
+	}, "\n\n")
+	body := "## S\n" + old
+	sec := vault.Section{Level: 2, Heading: "## S", Start: 0, Body: 5, End: len(body)}
+	newRegion := "intro\n" + kept + "\nsecond line\nend"
+	res := refuseShrink(body, sec, newRegion, stagePatchPageArgs{Op: "replace_section", Section: "## S"})
+	if res == nil || !res.IsError {
+		t.Fatalf("six-paragraph deletion not refused: %v", res)
+	}
+	if !strings.HasPrefix(res.Content, `replace_section "## S" keeps `) {
+		t.Fatalf("refusal does not name the op and section:\n%s", res.Content)
+	}
+	// The 80-rune cut lands on "é", not inside it: 79 a's + one intact
+	// "é" + "…".
+	wantCut := `- "` + strings.Repeat("a", 79) + "é…" + `"`
+	if !strings.Contains(res.Content, wantCut) {
+		t.Fatalf("multibyte rune cut badly:\n%s", res.Content)
+	}
+	if !strings.Contains(res.Content, `- "gone paragraph"`) || strings.Contains(res.Content, "gone paragraph…") {
+		t.Fatalf("uncut paragraph must not carry …:\n%s", res.Content)
+	}
+	if n := strings.Count(res.Content, `…"`); n != 4 { // p1 + the three 100-rune paragraphs
+		t.Fatalf("… on %d entries, want 4:\n%s", n, res.Content)
+	}
+	if strings.Contains(res.Content, "- … and") {
+		t.Fatalf("… and N more without a sixth deleted paragraph:\n%s", res.Content)
+	}
+	if strings.Contains(res.Content, "kept paragraph") {
+		t.Fatalf("kept indented block listed as deleted:\n%s", res.Content)
+	}
+
+	// Past 5 deleted paragraphs the list caps and names the remainder.
+	more := strings.Join([]string{
+		strings.Repeat("a", 79) + "ééééé",
+		"gone paragraph",
+		strings.Repeat("x", 100),
+		strings.Repeat("y", 100),
+		strings.Repeat("z", 100),
+		strings.Repeat("w", 100),
+		strings.Repeat("v", 100),
+	}, "\n\n")
+	body = "## S\n" + more
+	sec.End = len(body)
+	res = refuseShrink(body, sec, "tiny", stagePatchPageArgs{Op: "replace_section", Section: "## S"})
+	if res == nil || !strings.Contains(res.Content, "- … and 2 more") {
+		t.Fatalf("cap at 5 + remainder not applied:\n%v", res)
+	}
+	if strings.Contains(res.Content, `"`+strings.Repeat("w", 20)) {
+		t.Fatalf("seventh paragraph listed past the cap:\n%s", res.Content)
+	}
+}
