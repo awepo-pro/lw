@@ -1,0 +1,7 @@
+{
+ "content": "This fine-grained GPU control is what the [[deepseek-v4]] team exploited for bit-identical validation against hand-written CUDA baselines, and the same hardware concerns — SM placement, wave quantization, distributed shared memory in thread-block clusters, split-K pitfalls — recur in [[batch-invariant-deterministic-kernels]]. ^[raw/papers/tilelang-a-composable-tiled-programming-model-for-ai-systemsthanks-mathsection-equal-contributions.md]^[raw/papers/deepseek-v4.md] Tools like [[nvitop]] make the resulting utilization and memory behavior observable on a live system. ^[raw/articles/guide-to-using-nvitop.md]",
+ "op": "replace_section",
+ "path": "wiki/entities/tilelang.md",
+ "rationale": "Fix broken link (the section referenced [[dcgm]]... actually it didn't; this patch replaces [[batch-invariant-deterministic-kernels]] context unchanged except adding a link to the new nvitop page, keeping the GPU section's outbound links healthy after the earlier batch-invariant link target check).",
+ "section": "## GPU programming model"
+}

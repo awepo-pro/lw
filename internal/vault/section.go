@@ -190,6 +190,26 @@ func ReplaceSection(body string, sec Section, newBody string) string {
 	return normalizeTrailingNewline(full)
 }
 
+// ReplaceTextInSection replaces find with replacement inside sec's range —
+// [sec.Body, sec.End), subsections included — and returns the new body
+// together with the count of non-overlapping occurrences of find in that
+// range. The replacement happens only when the count is exactly 1; any
+// other count returns the body unchanged, leaving an absent or ambiguous
+// match for the caller to refuse (043 T1's replace_text op). Bytes outside
+// the range are never touched, even where find occurs there too, and the
+// replacement is byte-for-byte: unlike ReplaceSection there is no newline
+// normalization, because the whole point of a quoted small edit is that
+// nothing the model did not quote moves.
+func ReplaceTextInSection(body string, sec Section, find, replacement string) (string, int) {
+	region := body[sec.Body:sec.End]
+	n := strings.Count(region, find)
+	if n != 1 {
+		return body, n
+	}
+	i := sec.Body + strings.Index(region, find)
+	return body[:i] + replacement + body[i+len(find):], n
+}
+
 // AppendToSection appends add to the end of sec's existing content —
 // immediately before sec.End — leaving the heading line and everything
 // outside the section untouched. It is a byte-offset operation: add is used
