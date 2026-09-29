@@ -132,35 +132,53 @@ func stagePatchPageTool(d Deps) Tool {
 			return Result{IsError: true, Content: fmt.Sprintf("section %q was not found on %s", a.Section, a.Path)}, nil
 		}
 		var body string
+		var appliedConfirmedShrink bool // 043 T2: a confirmed shrink that passed the guard…
 		switch a.Op {
 		case "replace_section", "replace_text":
 			armMu.Lock()
-			confirmed := a.AllowShrink && shrinkArms[shrinkArmKey(a.Path, a.Section)]
+			armKey := shrinkArmKey(a.Path, a.Section)
+			confirmed := a.AllowShrink && shrinkArms[armKey]
+			if confirmed {
+				// The arm is consumed atomically with the check (043 T2):
+				// check-then-act across the mutex would let two concurrent
+				// flagged calls both read the one arm and both apply.
+				delete(shrinkArms, armKey)
+			}
 			armMu.Unlock()
 			newBody, refuse, shrinkFired := guardedReplace(page, sec, a, confirmed)
 			if refuse != nil {
-				if shrinkFired {
-					armMu.Lock()
-					shrinkArms[shrinkArmKey(a.Path, a.Section)] = true
-					armMu.Unlock()
-					// The call set the flag but no refusal of this
-					// path+section had armed the key (043 T2), so the last
-					// line — which would have it repeat blindly — is swapped
-					// for the one that says the flag only counts now.
-					if a.AllowShrink {
-						if i := strings.LastIndexByte(refuse.Content, '\n'); i >= 0 {
-							refuse.Content = refuse.Content[:i+1] + shrinkConfirmLine
-						}
+				armMu.Lock()
+				if confirmed || shrinkFired {
+					// confirmed: the arm was consumed above but this
+					// refusal means the shrink never landed, so it goes
+					// back; shrinkFired: the refusal arms the key for its
+					// repeat. A non-shrink refusal (nested loss, find
+					// problems) without the flag touches nothing.
+					shrinkArms[armKey] = true
+				}
+				armMu.Unlock()
+				// The call set the flag but no refusal of this
+				// path+section had armed the key (043 T2), so the last
+				// line — which would have it repeat blindly — is swapped
+				// for the one that says the flag only counts now.
+				if shrinkFired && a.AllowShrink {
+					if i := strings.LastIndexByte(refuse.Content, '\n'); i >= 0 {
+						refuse.Content = refuse.Content[:i+1] + shrinkConfirmLine
 					}
 				}
 				return *refuse, nil
 			}
-			if shrinkFired {
+			if confirmed && !shrinkFired {
+				// A flagged call that turns out not to shrink (the page
+				// moved on to a small edit) used no confirmation, so the
+				// consumed arm goes back and still waits for its shrink
+				// (043 T2: disarm happens when the shrink is applied).
 				armMu.Lock()
-				delete(shrinkArms, shrinkArmKey(a.Path, a.Section))
+				shrinkArms[armKey] = true
 				armMu.Unlock()
 			}
 			body = newBody
+			appliedConfirmedShrink = confirmed && shrinkFired // …and is about to be staged; the arm stays consumed only if staging succeeds
 		case "append_section":
 			body = vault.AppendToSection(page.Body, sec, sectionAppendText(a.Content))
 		case "insert_after":
@@ -178,7 +196,16 @@ func stagePatchPageTool(d Deps) Tool {
 			hunks[i].Path = a.Path
 			hunks[i].Section = a.Section
 		}
-		return appendStageOp(d, "stage.patch_page", stage.Op{Kind: stage.OpPatchPage, Path: a.Path, Section: a.Section, Before: page.SHA256(), Content: updated.Serialize(), Hunks: hunks, Rationale: a.Rationale})
+		res, err := appendStageOp(d, "stage.patch_page", stage.Op{Kind: stage.OpPatchPage, Path: a.Path, Section: a.Section, Before: page.SHA256(), Content: updated.Serialize(), Hunks: hunks, Rationale: a.Rationale})
+		if (err != nil || res.IsError) && appliedConfirmedShrink {
+			// The confirmed shrink never landed (043 T2: the arm is
+			// consumed only by an applied shrink), so the arm goes back —
+			// a staging refusal must not silently eat the confirmation.
+			armMu.Lock()
+			shrinkArms[shrinkArmKey(a.Path, a.Section)] = true
+			armMu.Unlock()
+		}
+		return res, err
 	}}
 }
 

@@ -15,11 +15,13 @@ package tools
 // that sets the flag reflexively still gets shown the guard once.
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/awepo-pro/lw/internal/index"
@@ -374,6 +376,119 @@ func TestPatchAllowShrinkArmsAcrossOps(t *testing.T) {
 	}
 	if len(cs.Ops) != 1 {
 		t.Fatalf("len(cs.Ops) = %d, want 1 (op8, applied)", len(cs.Ops))
+	}
+}
+
+// TestPatchAllowShrinkSurvivesFlaggedSmallEdit pins that an armed key is
+// consumed only by an applied shrink (043 T2): a flagged call that turns
+// out NOT to shrink — a small replace_text — stages normally and leaves
+// the arm intact, so the flagged shrink it was confirming still applies
+// afterwards instead of demanding a fresh refusal.
+func TestPatchAllowShrinkSurvivesFlaggedSmallEdit(t *testing.T) {
+	reg, e, _ := tilelangRegistry(t)
+	if r := callTool(t, reg, "stage.open", `{"intent":"add an nvitop link"}`); r.IsError {
+		t.Fatal(r.Content)
+	}
+	if r := callTool(t, reg, "stage.patch_page", op8Args(t, false)); !r.IsError {
+		t.Fatalf("op8 accepted without allow_shrink:\n%s", r.Content)
+	}
+	small := `{"path":"wiki/entities/tilelang.md","section":"## GPU programming model","op":"replace_text","find":"recur in [[batch-invariant-deterministic-kernels]].","content":"recur in [[batch-invariant-deterministic-kernels]]. Tools like [[nvitop]] make the resulting utilization observable.","allow_shrink":true,"rationale":"add the nvitop link"}`
+	if r := callTool(t, reg, "stage.patch_page", small); r.IsError {
+		t.Fatalf("flagged small edit refused: %s", r.Content)
+	}
+	if r := callTool(t, reg, "stage.patch_page", op8Args(t, true)); r.IsError {
+		t.Fatalf("arm did not survive the flagged small edit: %s", r.Content)
+	}
+	cs, err := e.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cs.Ops) != 2 {
+		t.Fatalf("len(cs.Ops) = %d, want 2 (small edit + op8)", len(cs.Ops))
+	}
+}
+
+// TestPatchAllowShrinkOneConsumerPerArm pins that the arm is consumed
+// atomically with the check (043 T2 review): concurrent flagged calls —
+// MCP serves each tool call on its own goroutine — must not all read the
+// one arm and all apply. Exactly one of the racing calls is confirmed;
+// the rest get the confirmation-line refusal, and only one op lands.
+func TestPatchAllowShrinkOneConsumerPerArm(t *testing.T) {
+	reg, e, _ := tilelangRegistry(t)
+	if r := callTool(t, reg, "stage.open", `{"intent":"race the arm"}`); r.IsError {
+		t.Fatal(r.Content)
+	}
+	if r := callTool(t, reg, "stage.patch_page", op8Args(t, false)); !r.IsError {
+		t.Fatalf("op8 accepted without allow_shrink:\n%s", r.Content)
+	}
+	const n = 8
+	var wg sync.WaitGroup
+	applied := make([]Result, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			r, err := reg.Call(context.Background(), "stage.patch_page", json.RawMessage(op8Args(t, true)))
+			if err != nil {
+				t.Error(err) // t.Fatalf is illegal off the test goroutine
+			}
+			applied[i] = r
+		}(i)
+	}
+	wg.Wait()
+	ok := 0
+	for i := range applied {
+		if !applied[i].IsError {
+			ok++
+		}
+		// A loser's refusal re-arms the key (the spec's arm-on-refusal), so
+		// another racer can be confirmed and then die on a stale Before —
+		// what is pinned here is the count, not the loser's wording.
+	}
+	if ok != 1 {
+		t.Fatalf("%d of %d racing flagged calls applied off one arm, want exactly 1", ok, n)
+	}
+	cs, err := e.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cs.Ops) != 1 {
+		t.Fatalf("len(cs.Ops) = %d, want 1", len(cs.Ops))
+	}
+}
+
+// TestPatchAllowShrinkArmSurvivesStagingRefusal pins where the arm is
+// consumed (043 T2 review): only by an APPLIED shrink. With no changeset
+// open, the armed flagged call passes the guard but is refused by staging
+// — and the arm must come back, so the flagged repeat after stage.open
+// still applies instead of demanding a fresh refusal.
+func TestPatchAllowShrinkArmSurvivesStagingRefusal(t *testing.T) {
+	reg, e, _ := tilelangRegistry(t)
+	// No stage.open: the shrink guard still refuses-and-arms, but the
+	// confirmed apply falls over at Engine.Append.
+	if r := callTool(t, reg, "stage.patch_page", op8Args(t, false)); !r.IsError {
+		t.Fatalf("op8 accepted without allow_shrink:\n%s", r.Content)
+	}
+	if r := callTool(t, reg, "stage.patch_page", op8Args(t, true)); !r.IsError {
+		t.Fatal("flagged op8 staged without an open changeset")
+	}
+	if r := callTool(t, reg, "stage.open", `{"intent":"apply after the staging refusal"}`); r.IsError {
+		t.Fatal(r.Content)
+	}
+	r := callTool(t, reg, "stage.patch_page", op8Args(t, true))
+	if r.IsError {
+		t.Fatalf("arm did not survive the staging refusal: %s", r.Content)
+	}
+	got, staged, err := e.StagedFile("wiki/entities/tilelang.md")
+	if err != nil || !staged {
+		t.Fatalf("staged: %v %v", staged, err)
+	}
+	wantBytes, err := os.ReadFile("testdata/section-edit/tilelang-after-op8.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(wantBytes) {
+		t.Fatal("not byte-identical to the live op8 output")
 	}
 }
 
