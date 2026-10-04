@@ -21,10 +21,11 @@ import (
 	"github.com/awepo-pro/lw/internal/tools"
 )
 
-// histNameRE mirrors the pattern every OpenAI-compatible endpoint enforces on
-// function names (internal/tools/names.go), so a history pair whose name
-// would be rejected fails here and not on the provider.
-var histNameRE = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+// histNameRE mirrors the pattern and the 64-character limit every
+// OpenAI-compatible endpoint enforces on function names
+// (internal/tools/names.go), so a history pair whose name would be rejected
+// fails here and not on the provider.
+var histNameRE = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 
 // validChat reports the first way msgs breaks the OpenAI chat-completions
 // tool-calling contract, or nil. It is the regression net 046 hangs on: a
@@ -603,6 +604,8 @@ func TestValidChatRejectsBadShapes(t *testing.T) {
 		}, false},
 		{"empty id", []llm.Message{wireCall("", "wiki_get", `{}`), wireResult("", "r")}, false},
 		{"dotted name", []llm.Message{wireCall("a", "wiki.get", `{}`), wireResult("a", "r")}, false},
+		{"name of 64 characters", []llm.Message{wireCall("a", strings.Repeat("n", 64), `{}`), wireResult("a", "r")}, true},
+		{"name of 65 characters", []llm.Message{wireCall("a", strings.Repeat("n", 65), `{}`), wireResult("a", "r")}, false},
 		{"arguments not an object", []llm.Message{wireCall("a", "wiki_get", `op-1`), wireResult("a", "r")}, false},
 		{"empty arguments", []llm.Message{wireCall("a", "wiki_get", ``), wireResult("a", "r")}, false},
 		{"tool_calls on a user message", []llm.Message{{Role: "user", ToolCalls: wireCall("a", "wiki_get", `{}`).ToolCalls}}, false},
@@ -786,13 +789,14 @@ func TestResumedSessionRequestsAreValidChats(t *testing.T) {
 	}
 }
 
-// TestBuildSanitizesIllegalToolNames pins A-046-3. The unknown-tool path
-// records the model's own spelling of a tool it invented, and WireName only
-// maps dots, so a name like "Bad Name!" would reach the wire as written and
-// every strict provider would refuse the replayed tool_calls entry — on this
-// turn and on every later one that resumes the session, since the record is
-// permanent. The name a pair carries is therefore made legal
-// ([a-zA-Z0-9_-]+, internal/tools/names.go) rune by rune, after WireName.
+// TestBuildSanitizesIllegalToolNames pins A-046-3 and A-046-4. The unknown-tool
+// path records the model's own spelling of a tool it invented, and WireName
+// only maps dots, so a name like "Bad Name!" — or one past the 64-character
+// function-name limit — would reach the wire as written and every strict
+// provider would refuse the replayed tool_calls entry, on this turn and on
+// every later one that resumes the session, since the record is permanent.
+// The name a pair carries is therefore made legal ([a-zA-Z0-9_-]{1,64},
+// internal/tools/names.go) after WireName: rune by rune, then cut to 64.
 func TestBuildSanitizesIllegalToolNames(t *testing.T) {
 	ts := histTS
 	cases := []struct {
@@ -804,6 +808,12 @@ func TestBuildSanitizesIllegalToolNames(t *testing.T) {
 		{"é-x", "_-x"},    // one multi-byte rune is one underscore
 		{"x\xffy", "x_y"}, // so is one invalid UTF-8 byte
 		{"A-b_9", "A-b_9"},
+		// A-046-4: the OpenAI function-name limit is 64 characters, and a
+		// longer one is refused on every later resume.
+		{strings.Repeat("0123456789", 10), strings.Repeat("0123456789", 6) + "0123"},
+		{strings.Repeat("n", 64), strings.Repeat("n", 64)},
+		{strings.Repeat("n", 65), strings.Repeat("n", 64)},
+		{strings.Repeat("é", 100), strings.Repeat("_", 64)}, // mapped first, then cut
 		{"wiki.get", "wiki_get"},
 		{"stage.create_page", "stage_create_page"},
 	}

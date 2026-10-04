@@ -270,18 +270,25 @@ func historyArgs(args string) string {
 	return string(raw)
 }
 
+// maxWireNameLen is the longest function name an OpenAI-compatible endpoint
+// accepts in tools[*].function.name and in a tool_calls entry.
+const maxWireNameLen = 64
+
 // sanitizeWireName makes name legal in a function-name field: every rune
 // outside [a-zA-Z0-9_-] — the pattern every OpenAI-compatible endpoint
 // enforces (internal/tools/names.go) — becomes '_', one underscore per rune
-// (an invalid UTF-8 byte counts as one), and an empty result becomes
-// "unknown_tool".
+// (an invalid UTF-8 byte counts as one); the result is then cut to
+// maxWireNameLen characters, the OpenAI function-name limit (A-046-4); and an
+// empty result becomes "unknown_tool". After the mapping every rune is ASCII,
+// so cutting by bytes cuts by characters.
 //
 // Why it exists (A-046-3): tools.WireName only maps the registry's dots. A
 // tool the model invented is recorded by the unknown-tool path under its own
 // spelling, so "Bad Name!" would be replayed verbatim, and a strict provider
 // would refuse the history on this turn and on every later turn that resumes
-// the session — the record is permanent. A name a registry tool carries is
-// already legal and passes through unchanged. An empty name cannot reach here
+// the session — the record is permanent. A name that is merely too long is
+// refused the same way. A name a registry tool carries is already legal and
+// passes through unchanged. An empty name cannot reach here
 // from Build (a pair needs Tool != ""); the fallback keeps the function total.
 func sanitizeWireName(name string) string {
 	clean := strings.Map(func(r rune) rune {
@@ -291,6 +298,9 @@ func sanitizeWireName(name string) string {
 		}
 		return '_'
 	}, name)
+	if len(clean) > maxWireNameLen {
+		clean = clean[:maxWireNameLen]
+	}
 	if clean == "" {
 		return "unknown_tool"
 	}
