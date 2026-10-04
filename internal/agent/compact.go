@@ -15,13 +15,22 @@ func EstimateTokens(s string) int {
 	return len(s) / 4
 }
 
-// recordText is the text Compact and EstimateTokens measure a Record by —
-// the same fields recordToMessage (context.go) turns into an llm.Message.
-// Reasoning is deliberately absent (005, D-5G): recordToMessage never
-// sends it, so budgeting it would compact real conversation history to
-// pay for bytes the provider never sees. A reasoning-only record therefore
-// measures as zero tokens — which is fine, because it is also skipped by
-// Build and never reaches a request.
+// recordText is the text Compact and EstimateTokens measure a Record by:
+// Content, Tool, Args and Result — the payload strings Build puts on the
+// wire for it. For a prose record that is its Content (recordToMessage); for
+// a tool record it is the name, arguments and result that become the
+// assistant tool_calls entry and the tool message of the pair Build replays
+// (046, appendHistoryPair in context.go). What the estimate leaves out is the
+// pair's JSON envelope — keys, "type":"function", escaping, the hist_<k> id —
+// so a tool record is measured slightly low and Compact collapses slightly
+// less prose than an exact count would. That is accepted: the budget is an
+// estimate to begin with, and Compact never alters a tool record itself.
+//
+// Reasoning is deliberately absent (005, D-5G): Build never sends it, so
+// budgeting it would compact real conversation history to pay for bytes the
+// provider never sees. A reasoning-only record therefore measures as zero
+// tokens — which is fine, because it is also skipped by Build and never
+// reaches a request.
 func recordText(r Record) string {
 	return r.Content + r.Tool + r.Args + r.Result
 }
