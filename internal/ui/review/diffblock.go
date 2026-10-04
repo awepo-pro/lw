@@ -70,7 +70,8 @@ func (m *Model) diffLines(cw int) []panelLine {
 }
 
 // opDiffLines builds one op's Diff-mode lines (mockgen.diff_block): the
-// op head (`opN · K hunk(s)`, or `opN · dropped`), the rationale wrapped
+// op head (`opN · K hunk(s)`, or `opN · dropped`), the delete mark when the
+// op takes text out and does not put it back (047 S3), the rationale wrapped
 // to cw and cut at four lines with "…", the provenance hung at 9, then
 // one blank line, header and body per OpDiff window. When current is
 // set, the window matching the cursor stop's hunk id — and every line of
@@ -88,6 +89,18 @@ func (m *Model) opDiffLines(op stage.Op, cw int, current bool) []panelLine {
 	}
 
 	out := []panelLine{{text: opHead(m.theme, op, cw, note, dropped)}}
+
+	// 047 S3: a patch_page that deletes text it does not re-add says so in
+	// one Bad line directly under the header — the slot an ingest's original
+	// line takes, and the two never meet (that one belongs to ingest_source,
+	// this one to patch_page). Clipped to the content width with the count
+	// first, so a narrow panel loses the explanation and keeps the fact.
+	// Display-only like the original line: not a cursor stop, no window of
+	// its own, Diff mode only, and absent on a dropped op or when the
+	// reviewer has dropped the deleting hunk (deletedText skips those).
+	if n, bytes, marked := deletedText(op, files); marked {
+		out = append(out, panelLine{text: ui.Clip(m.theme.Bad.Render(deleteMarkText(n, bytes)), cw)})
+	}
 
 	// 033: an ingest_source that travels with its original shows the
 	// OpDiff's one-line description of that original directly under the
