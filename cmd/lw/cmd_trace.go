@@ -75,7 +75,7 @@ func writeTraceList(w io.Writer, dir string, cfg *config.Config, n int) error {
 		return err
 	}
 	if len(sums) == 0 {
-		fmt.Fprintln(w, "no traces yet — every agent turn (ingest, ask, query, lint --fix) records one under .llmwiki/traces")
+		fmt.Fprintln(w, "no traces yet — every agent turn (ingest, ask, file, query, lint --fix) records one under .llmwiki/traces")
 	} else {
 		// -n is a count of rows, so 0 — and any negative, clamped to it —
 		// lists nothing while the footer keeps the dir-level facts, the

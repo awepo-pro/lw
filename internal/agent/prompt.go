@@ -15,6 +15,30 @@ package agent
 // is conditional. 034 T4 added the page-citation paragraph to the base, so
 // a paged raw.get header and the prompt's citation rule are taught
 // together.
+//
+// Since 039 there are two prompts, chosen by the turn's mode (modeFromVerb):
+// the curator prompt above for every verb that may stage a change, and a
+// short ask prompt (askPromptFor) for the two verbs that only answer a
+// question — ask and query. The curator prompt is about 70 % ingest policy
+// (page thresholds, abstracts, retraction, lint ownership), none of which an
+// answering turn can act on, and its "Never narrate your sources" sentence
+// contradicted the old query prefix's "citing the wiki pages you draw from by
+// path". The ask prompt keeps the two sentences both prompts must agree on —
+// the "Not from your vault:" rule and the answer-voice rule — as the shared
+// consts below, so they cannot drift apart.
+
+// The two sentences the curator prompt and the ask prompt both carry, byte for
+// byte: the outside-vault rule (the "Not from your vault:" label a turn writes
+// when neither the wiki nor the raw sources answer) and the answer-voice rule
+// (027: no narrating of sources; the label stands alone as the first line).
+// They sit on adjacent lines — joined by exactly one newline — in promptBase,
+// and 039 lifted them into named consts so askPromptTail reuses the same
+// bytes. TestCuratorPromptUnchanged pins that the lift changed nothing the
+// curator sends.
+const (
+	promptOutsideVault = `If neither the wiki nor the raw sources answer a question, answer from your own knowledge under a first line that reads exactly "Not from your vault:"; carry no provenance marker on those claims, and say plainly when the topic may be newer than your training data.`
+	promptAnswerVoice  = `Answer the question itself, in the answer's own voice. Never narrate your sources or your process: do not say which notes, pages, wiki entries or searches you used, do not recommend "the wiki page on X", and do not state whether the vault covers the topic — the provenance markers carry that record. The one exception is the exact line "Not from your vault:", which, when it applies, must stand alone as the answer's first line with nothing else on it.`
+)
 
 // The opening half of the curator's system prompt: everything through the
 // "Not from your vault:" rule — including the blank line that joined it to
@@ -60,10 +84,7 @@ Write the page exactly as "p.N" — one space after the path, no "pp.", no
 
 A raw source you were asked to ingest is the only source for that ingest: never read, cite or patch from a different raw file in its place. If stage.ingest_source fails, stop and report the error instead of working around it; use raw.list to find a raw source whose path you do not know.
 index.md is derived by the engine: every stage.create_page adds its index line automatically, so never patch or create index.md.
-If neither the wiki nor the raw sources answer a question, answer from your own knowledge under a first line that reads exactly "Not from your vault:"; carry no provenance marker on those claims, and say plainly when the topic may be newer than your training data.
-Answer the question itself, in the answer's own voice. Never narrate your sources or your process: do not say which notes, pages, wiki entries or searches you used, do not recommend "the wiki page on X", and do not state whether the vault covers the topic — the provenance markers carry that record. The one exception is the exact line "Not from your vault:", which, when it applies, must stand alone as the answer's first line with nothing else on it.
-
-`
+` + promptOutsideVault + "\n" + promptAnswerVoice + "\n\n"
 
 // The two 010 §5 web-lookup paragraphs: the search rule carries 017 §5's
 // auto-search + quota-fallback bytes (amendment TS-17A), the injection rule
@@ -119,4 +140,127 @@ func systemPromptFor(hasSearch bool) string {
 		web = webSearchRule + "\n\n" + webInjectionRule + "\n\n"
 	}
 	return promptBase + web + promptTail
+}
+
+// askPromptBase is the opening of the ask prompt (039): who the model is, what
+// it may reach for, how to ground an answer and how to cite it. It ends with
+// the blank line that joins it to whatever follows — the web paragraphs on an
+// ask turn over a registry that offers web.search, askPromptTail otherwise —
+// the same convention promptBase uses.
+//
+// The citation paragraph is the point of the prompt. A wiki page is a
+// summary, and the old prompt let a model cite it as if it were evidence; this
+// one makes the raw source the evidence — copy the provenance marker from the
+// page, or write it from the raw passage read with raw.get — and forbids
+// citing a wiki page path or a marker the model never saw. The page-citation
+// grammar ("p.N") is the one 034 taught for curator turns, stated again here
+// because an ask turn never sees the curator prompt.
+//
+// A-039-3: the paragraph states WHEN a page may be cited — only when raw.get's
+// header for that source names pages — and ends that rule with the curator
+// prompt's own sentence, "A source whose header names no pages is cited
+// without a page." The first cut said only "when the source has pages", left
+// out the negative, and a live eval caught the model citing p.19, p.21 on a
+// source with no page anchors (fabricated provenance, cite_valid 1.00 → 0.85
+// in 6 of 48 runs).
+const askPromptBase = `You are the llmwiki curator answering a question about this vault. You have no filesystem verbs — no write, edit,
+delete or shell access, not denied but simply never offered.
+
+Ground the answer in the vault. Find the relevant pages with wiki.search and read them with wiki.get. A wiki page
+is a summary: each of its claims carries a provenance marker naming the raw source it came from. When a page is
+thin, ambiguous, or lacks the detail the question needs, read the cited source with raw.get.
+
+Cite evidence, not summaries. End every claim you draw from the vault with the provenance marker of the raw source
+that supports it, e.g. "^[raw/papers/x.md]": copy it from the page you read, or write it from the raw passage you
+read. Cite a page only when raw.get's header for that source names pages: then cite the page the claim comes from,
+e.g. "^[raw/papers/x.md p.12]", or "p.12-13" for a claim that crosses a page break; the claim's page is the nearest
+"<!-- page N -->" line above it. A source whose header names no pages is cited without a page. Never cite a wiki
+page path as evidence, and never write a marker for a source you did not see cited or read.
+
+`
+
+// askPromptTail closes the ask prompt: the outside-vault rule and the
+// answer-voice rule — the curator prompt's own consts, joined by one newline as
+// promptBase joins them — and a final newline.
+const askPromptTail = promptOutsideVault + "\n" + promptAnswerVoice + "\n"
+
+// askPromptFor assembles the ask turn's system prompt: askPromptBase, then —
+// only when the turn may look things up on the web — the two 010/017 web
+// paragraphs, unchanged and joined by one blank line, then askPromptTail.
+//
+// hasSearch here is not the registry's bare answer the way systemPromptFor's
+// is: ContextBuilder passes registry-offers-web.search AND the turn's verb
+// allowing web (askOffersWeb), because the prompt must promise web.search
+// only to a turn that is actually offered it. query never is, so its prompt
+// never mentions it even over a registry that has the verb.
+func askPromptFor(hasSearch bool) string {
+	web := ""
+	if hasSearch {
+		web = webSearchRule + "\n\n" + webInjectionRule + "\n\n"
+	}
+	return askPromptBase + web + askPromptTail
+}
+
+// Verbs the agent recognises on a turn's ctx (trace.WithVerb), the one
+// channel every entry point already tags its turn on (038). Any other verb —
+// ingest, lint, the pane's "file" for a ctrl+s filing turn, or none at all —
+// is a curator turn.
+const (
+	verbAsk   = "ask"   // the TUI ask pane's question
+	verbQuery = "query" // `lw query`
+)
+
+// turnMode is how a turn is run: which system prompt it sends and which tools
+// it advertises and may call.
+type turnMode int
+
+const (
+	// modeCurator is every turn that may stage a change. Its prompt, tools and
+	// dispatch are exactly what they were before 039, byte for byte.
+	modeCurator turnMode = iota
+	// modeAsk is a turn that only answers a question: the ask prompt, and the
+	// read-only tool set (plus the web-ingest verbs on a TUI ask turn).
+	modeAsk
+)
+
+func (m turnMode) String() string {
+	if m == modeAsk {
+		return "ask"
+	}
+	return "curator"
+}
+
+// modeFromVerb maps a turn's ctx verb to its mode — the single source of
+// truth for it (039). ask and query are ask mode; everything else, including
+// a verb nobody has heard of, is curator mode: a new entry point defaults to
+// the full behaviour it has always had, never to a silently read-only turn.
+// A ctrl+s filing turn runs under "file" precisely so it lands here: it must
+// stage a query page, which an ask turn cannot do.
+func modeFromVerb(verb string) turnMode {
+	switch verb {
+	case verbAsk, verbQuery:
+		return modeAsk
+	}
+	return modeCurator
+}
+
+// askOffersWeb reports whether an ask-mode turn under verb may use web
+// lookup. Only the TUI's ask pane may: its web flow ingests the best result
+// as a raw source (010/017), which is a write, and `lw query` is a one-shot
+// read-only command whose structural guard (cmd_query.go) exists to undo
+// exactly that.
+func askOffersWeb(verb string) bool { return verb == verbAsk }
+
+// turnPlan is everything a turn's verb decides, resolved once at the top of
+// Send: the mode, and — for an ask-mode turn — whether web lookup is allowed.
+// web is meaningless in curator mode, which offers whatever the registry has.
+type turnPlan struct {
+	mode turnMode
+	web  bool
+}
+
+// planFor resolves verb to its turnPlan. The zero turnPlan is the curator
+// turn, which is what ContextBuilder.Build — the pre-039 entry point — uses.
+func planFor(verb string) turnPlan {
+	return turnPlan{mode: modeFromVerb(verb), web: askOffersWeb(verb)}
 }

@@ -3,6 +3,7 @@
   "steps": [
     {"tool": "stage.open", "args": {"intent": "ingest a source and add two concept pages"}},
     {"tool": "stage.ingest_source", "args": {"uri": "conformance.md", "kind": "article"}},
+    {"tool": "raw.get", "args": {"source": "raw/articles/conformance-source.md"}},
     {"tool": "stage.create_page", "args": {"path": "wiki/concepts/conformance-alpha.md", "title": "Conformance Alpha", "type": "concept", "tags": ["inference"], "sources": ["raw/articles/conformance-source.md"], "confidence": "medium", "contested": false, "body": "# Conformance Alpha\n\nSee [[kv-cache]] and [[gpt-4]].", "rationale": "exercise create"}},
     {"tool": "stage.create_page", "args": {"path": "wiki/concepts/conformance-beta.md", "title": "Conformance Beta", "type": "concept", "tags": ["decoding"], "sources": ["raw/articles/conformance-source.md"], "confidence": "medium", "contested": false, "body": "# Conformance Beta\n\nSee [[kv-cache]] and [[gpt-4]].", "rationale": "exercise create"}},
     {"tool": "stage.add_link", "args": {"from": "wiki/concepts/kv-cache.md", "to": "wiki/entities/gpt-4.md", "context": "cross-check"}},
@@ -11,6 +12,7 @@
   "golden": [
     "opened changeset <id> for \"ingest a source and add two concept pages\"",
     "proposed <id> (ingest_source) at raw/articles/conformance-source.md — 1 chunk(s); read it with raw.get {\"source\":\"raw/articles/conformance-source.md\",\"chunk\":1}",
+    "(staged in the open changeset, not yet committed)\n\nchunk 1 of 1\n\n# Conformance Source\n\nA deterministic source for the tool transcript.\n",
     "proposed <id> (create_page)",
     "proposed <id> (create_page)",
     "proposed bidirectional link between wiki/concepts/kv-cache.md and wiki/entities/gpt-4.md (2 page patches)",

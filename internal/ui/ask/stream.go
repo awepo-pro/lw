@@ -104,6 +104,18 @@ type turnStartedMsg struct {
 	err       error
 }
 
+// The verbs this pane tags its turns with (trace.WithVerb, 038). The agent
+// reads the verb to decide how the turn is run (039): "ask" is a question —
+// the ask prompt, the read tools, no staging — and "file" is a ctrl+s filing
+// turn, which must stage a query page and so runs as a curator turn. A filing
+// turn used to ride "ask" with every other turn; 039 split them because the
+// same tag now chooses the prompt and the tool set, and a filing turn under
+// "ask" would have been refused the very stage.* tools it exists to call.
+const (
+	verbAsk  = "ask"
+	verbFile = "file"
+)
+
 // startTurn launches one agent turn (backbone §9, C-105). sessionID is the
 // changeset id already known at submit time, or "" when none was open —
 // C-124/D-DH: runTurn resolves it, opening one itself when it must, because
@@ -117,7 +129,11 @@ type turnStartedMsg struct {
 // whose changeset was committed or rejected underneath it (see
 // changesetGone); Send closes its channel promptly on cancellation and
 // delivers no terminal event of its own (backbone §9, C-105).
-func (m *Model) startTurn(sessionID, carryFrom, msg string) tea.Cmd {
+//
+// verb is the turn's ctx verb — verbAsk or verbFile (039): a plain value, like
+// every other input the goroutine takes, so what the turn is called is decided
+// on the Update thread by whoever began it.
+func (m *Model) startTurn(sessionID, carryFrom, msg, verb string) tea.Cmd {
 	ag := m.deps.Agent
 	e := m.deps.Engine
 	ctx, cancel := context.WithCancel(context.Background())
@@ -125,7 +141,7 @@ func (m *Model) startTurn(sessionID, carryFrom, msg string) tea.Cmd {
 
 	started := make(chan turnStartedMsg, 1)
 	out := make(chan agent.Event, turnEventBuffer)
-	go runTurn(ctx, ag, e, sessionID, carryFrom, msg, started, out)
+	go runTurn(ctx, ag, e, sessionID, carryFrom, msg, verb, started, out)
 
 	return func() tea.Msg { return <-started }
 }
@@ -139,7 +155,7 @@ func (m *Model) startTurn(sessionID, carryFrom, msg string) tea.Cmd {
 // self-opened changeset that ends up with nothing staged. runTurn never
 // touches Update or m: everything it needs is a parameter, and everything
 // it produces goes out through started or out.
-func runTurn(ctx context.Context, ag agent.Agent, e *stage.Engine, sessionID, carryFrom, msg string, started chan<- turnStartedMsg, out chan agent.Event) {
+func runTurn(ctx context.Context, ag agent.Agent, e *stage.Engine, sessionID, carryFrom, msg, verb string, started chan<- turnStartedMsg, out chan agent.Event) {
 	fail := func(err error) {
 		started <- turnStartedMsg{err: err}
 		close(started)
@@ -224,8 +240,10 @@ func runTurn(ctx context.Context, ag agent.Agent, e *stage.Engine, sessionID, ca
 		// The returned error is deliberately dropped: when Send fails it has
 		// already delivered that same error as the turn's ErrorEv (backbone
 		// §9, C-105), and forwardTurn relays events, not return values.
-		// 038: the pane's turn is verb "ask" — the tag rides the ctx (038 C-3).
-		_ = ag.Send(trace.WithVerb(ctx, "ask"), sessionID, msg, sendCh)
+		// 038: the pane's turn is tagged with its verb — "ask" for a
+		// question, "file" for a ctrl+s filing turn (039) — and the tag rides
+		// the ctx (038 C-3).
+		_ = ag.Send(trace.WithVerb(ctx, verb), sessionID, msg, sendCh)
 	}()
 
 	forwardTurn(ctx, e, sessionID, openedHere, sendCh, out)

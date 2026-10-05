@@ -43,19 +43,24 @@ func stageAddLinkTool(d Deps) Tool {
 		// does the committed vault answer, keeping every changeset
 		// without a prior op on the endpoint byte-for-byte its pre-fix
 		// path.
+		//
+		// A missing endpoint's refusal (036 D1) names the pages that
+		// resemble it, then the staged-state clause: the closest pages are
+		// advice about where the page is, the staged-state clause a fact
+		// about the path itself, and the advice reads first.
 		from, _, ok, err := stagedPatchBase(d, a.From)
 		if err != nil {
 			return Result{}, fmt.Errorf("tools: stage.add_link: %w", err)
 		}
 		if !ok {
-			return Result{IsError: true, Content: fmt.Sprintf("from page %q was not found%s", a.From, stagedStateClause(d, a.From))}, nil
+			return Result{IsError: true, Content: fmt.Sprintf("from page %q was not found%s%s", a.From, closestPagesClause(d, a.From), stagedStateClause(d, a.From))}, nil
 		}
 		to, _, ok, err := stagedPatchBase(d, a.To)
 		if err != nil {
 			return Result{}, fmt.Errorf("tools: stage.add_link: %w", err)
 		}
 		if !ok {
-			return Result{IsError: true, Content: fmt.Sprintf("to page %q was not found%s", a.To, stagedStateClause(d, a.To))}, nil
+			return Result{IsError: true, Content: fmt.Sprintf("to page %q was not found%s%s", a.To, closestPagesClause(d, a.To), stagedStateClause(d, a.To))}, nil
 		}
 		if a.From == a.To {
 			return Result{IsError: true, Content: "from and to must be different pages"}, nil

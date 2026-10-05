@@ -112,9 +112,10 @@ func runConformanceScript(t *testing.T, name string) {
 		t.Fatalf("transcript length = %d, want %d\n got: %q", len(transcript), len(script.Golden), transcript)
 	}
 	for i := range transcript {
-		if transcript[i] != script.Golden[i] {
+		want := conformanceLead(name, i) + script.Golden[i]
+		if transcript[i] != want {
 			j := 0
-			for j < len(transcript[i]) && j < len(script.Golden[i]) && transcript[i][j] == script.Golden[i][j] {
+			for j < len(transcript[i]) && j < len(want) && transcript[i][j] == want[j] {
 				j++
 			}
 			lo := j - 30
@@ -125,7 +126,7 @@ func runConformanceScript(t *testing.T, name string) {
 			if hi > len(transcript[i]) {
 				hi = len(transcript[i])
 			}
-			t.Fatalf("transcript[%d] differs at byte %d (len got=%d want=%d): got around=%q want around=%q", i, j, len(transcript[i]), len(script.Golden[i]), transcript[i][lo:hi], script.Golden[i][lo:minInt(hi, len(script.Golden[i]))])
+			t.Fatalf("transcript[%d] differs at byte %d (len got=%d want=%d): got around=%q want around=%q", i, j, len(transcript[i]), len(want), transcript[i][lo:hi], want[lo:minInt(hi, len(want))])
 		}
 	}
 
@@ -175,6 +176,22 @@ func runConformanceScript(t *testing.T, name string) {
 			t.Errorf("expected committed path %s is a directory", path)
 		}
 	}
+}
+
+// conformanceLead is the text a transcript step carries ahead of its golden
+// entry — empty for every step but one.
+//
+// A-036-9 (036 D3): orient-search-get reads kv-cache by bare name, so the
+// wiki.get result (step index 3) now leads with the resolved-path line. The
+// golden transcript lives in spec/fixtures/conformance/orient-search-get.json,
+// which is ground truth outside 036 T1's ownership, so it stays as authored
+// and the harness expects the line in front of it: the full message is still
+// compared byte for byte, line included.
+func conformanceLead(name string, step int) string {
+	if name == "orient-search-get" && step == 3 {
+		return resolvedLine("kv-cache", "wiki/concepts/kv-cache.md")
+	}
+	return ""
 }
 
 func minInt(a, b int) int {

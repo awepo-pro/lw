@@ -54,15 +54,29 @@ func NewContextBuilder(v *vault.Vault, r *tools.Registry, budget int) *ContextBu
 // in backbone §9's exact order (/docs/design.md §11.3):
 //
 //  1. the system prompt (prompt.go — its web-lookup paragraphs only when
-//     this builder's registry offers web.search, 012 D-12B);
+//     this builder's registry offers web.search, 012 D-12B). Build is the
+//     curator turn: Send, which knows the turn's verb, calls buildFor with
+//     the plan that verb decides (039);
 //  2. curator-memory.md, verbatim;
 //  3. the orientation digest — vault.orient's Result.Content, injected once
 //     per session and refreshed only when index.md's content changes;
 //  4. session history, compacted (Compact) to fit whatever budget remains —
 //     prose records as plain messages, tool records as assistant tool_calls +
-//     tool result pairs (046, appendHistoryPair);
+//     tool result pairs (046, appendHistoryPair), a staged page's text in a
+//     replayed stage.create_page / stage.patch_page replaced by a stub (041);
 //  5. the user message.
 func (b *ContextBuilder) Build(s *Session, userMsg string) ([]llm.Message, error) {
+	return b.buildFor(s, userMsg, turnPlan{})
+}
+
+// buildFor is Build for the turn plan its verb decided (039): identical in
+// every part but the first. A curator plan sends systemPromptFor, exactly as
+// before 039; an ask plan sends askPromptFor, so a question is answered under
+// a prompt written for answering rather than under the ingest policy. The
+// other four parts — memory, digest, history, user message — are the same for
+// both: a question still reads the curator's memory and the vault's
+// orientation, and replays the session's history.
+func (b *ContextBuilder) buildFor(s *Session, userMsg string, plan turnPlan) ([]llm.Message, error) {
 	memory, err := b.v.Read("curator-memory.md")
 	if err != nil {
 		return nil, fmt.Errorf("agent: build context: read curator-memory.md: %w", err)
@@ -78,8 +92,14 @@ func (b *ContextBuilder) Build(s *Session, userMsg string) ([]llm.Message, error
 	// (012 contract §1) — never a constructor parameter, never a stored
 	// field.
 	_, hasSearch := b.r.Get("web.search")
+	system := systemPromptFor(hasSearch)
+	if plan.mode == modeAsk {
+		// 039: the ask prompt promises web.search only to a turn that is
+		// offered it — the registry has the verb AND the verb allows it.
+		system = askPromptFor(hasSearch && plan.web)
+	}
 	msgs := []llm.Message{
-		{Role: "system", Content: systemPromptFor(hasSearch)},
+		{Role: "system", Content: system},
 		{Role: "system", Content: string(memory)},
 		{Role: "system", Content: digest},
 	}
@@ -215,6 +235,23 @@ const noResultRecorded = "(no result recorded)"
 //
 // RESULT is the record's Result, or noResultRecorded when that is empty.
 //
+// ARGS is historyArgs(Args), except that a staged page's text is replaced by
+// stubStagedContent's stub (041). A stage.create_page / stage.patch_page record
+// carries the whole page it staged — 4.5 to 9 KB — and Staged records are never
+// compacted, so without the stub every later turn of a changeset replays every
+// page it ever staged. The page is in the open changeset and wiki.get reads it
+// back, so the history keeps the call (which path, which section, what was
+// said about it) and drops the text. Only a call that staged is stubbed
+// (A-041-3): the record's Staged flag, or for the split shape the paired
+// result record's. A refused call — a validation error, a 043 shrink refusal —
+// staged nothing, so its text is in no changeset for wiki.get to return, and
+// the record keeps it for the model to correct and resend. The stub is a pure function of the
+// arguments, so the same history yields the same bytes on every Build and the
+// provider's prefix cache is as stable as before. Compact still sizes a
+// record by its full Args (compact.go recordText), so it budgets history
+// conservatively: never short of room, at worst compacting prose a little
+// earlier than the bytes sent would need.
+//
 // The split shape — an assistant-role tool record with an empty Result,
 // immediately followed in recs by a tool-role record with the same Tool and
 // empty Args — is one call logged as two records (the call, then its result).
@@ -224,10 +261,12 @@ const noResultRecorded = "(no result recorded)"
 func appendHistoryPair(msgs []llm.Message, recs []Record, i, k int) ([]llm.Message, int) {
 	r := recs[i]
 	result := r.Result
+	staged := r.Staged
 	used := 1
 	if r.Role == "assistant" && r.Result == "" && i+1 < len(recs) {
 		if next := recs[i+1]; next.Role == "tool" && next.Tool == r.Tool && next.Args == "" {
 			result = next.Result
+			staged = next.Staged // the outcome lives on the result record
 			used = 2
 		}
 	}
@@ -239,6 +278,15 @@ func appendHistoryPair(msgs []llm.Message, recs []Record, i, k int) ([]llm.Messa
 	call := llm.ToolCall{ID: id, Type: "function"}
 	call.Function.Name = sanitizeWireName(tools.WireName(r.Tool))
 	call.Function.Arguments = historyArgs(r.Args)
+	// 041: a staged call's page text is already in the open changeset, so the
+	// replay carries a stub, not the page — but only for a call that staged
+	// (A-041-3). Wire copy only: r is a copy of the record and the session's
+	// own Records are never written to.
+	if staged {
+		if stubbed, _, ok := stubStagedContent(r.Tool, call.Function.Arguments); ok {
+			call.Function.Arguments = stubbed
+		}
+	}
 	return append(msgs,
 		llm.Message{Role: "assistant", ToolCalls: []llm.ToolCall{call}},
 		llm.Message{Role: "tool", ToolCallID: id, Content: result},

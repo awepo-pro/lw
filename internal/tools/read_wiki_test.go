@@ -181,7 +181,10 @@ func TestWikiGetExactly16000RunesUntouched(t *testing.T) {
 	if err != nil || res.IsError {
 		t.Fatalf("Call(wiki.get) = %+v, err = %v", res, err)
 	}
-	if want := string(p.Serialize()); res.Content != want {
+	// A-036-1 (036 D3): the page was read by bare name, so the result leads
+	// with the resolved-path line; the 16000-rune cap bounds the page, not
+	// the line, so the page itself must still come back byte-identical.
+	if want := resolvedLine("padded-exact", p.Path) + string(p.Serialize()); res.Content != want {
 		t.Fatalf("exactly-16000-rune page was not byte-identical (got %d runes, want %d, notice present: %v)",
 			utf8.RuneCountInString(res.Content), utf8.RuneCountInString(want), strings.Contains(res.Content, "[truncated"))
 	}
@@ -203,7 +206,9 @@ func TestWikiGetTruncatesWholePageAt16001(t *testing.T) {
 		t.Fatalf("Call(wiki.get) = %+v, err = %v", res, err)
 	}
 	full := string(p.Serialize())
-	want := firstNRunes(full, 16000) + wikiGetTruncationNoticeHead(p.Path, utf8.RuneCountInString(full), sectionHeadings(p))
+	// A-036-2 (036 D3): bare-name read, so the resolved-path line leads and
+	// is not counted toward the cap.
+	want := resolvedLine("padded-over", p.Path) + firstNRunes(full, 16000) + wikiGetTruncationNoticeHead(p.Path, utf8.RuneCountInString(full), sectionHeadings(p))
 	if res.Content != want {
 		t.Fatalf("truncated whole page = %d runes, want byte-exact %d-rune prefix + notice",
 			utf8.RuneCountInString(res.Content), utf8.RuneCountInString(want))
@@ -235,7 +240,8 @@ func TestWikiGetTruncationCutIsRuneSafe(t *testing.T) {
 		t.Fatal("truncated result is not valid UTF-8 — the cap split a rune")
 	}
 	full := string(p.Serialize())
-	want := firstNRunes(full, 16000) + wikiGetTruncationNoticeHead(p.Path, utf8.RuneCountInString(full), sectionHeadings(p))
+	// A-036-3 (036 D3): bare-name read, so the resolved-path line leads.
+	want := resolvedLine("multibyte-big", p.Path) + firstNRunes(full, 16000) + wikiGetTruncationNoticeHead(p.Path, utf8.RuneCountInString(full), sectionHeadings(p))
 	if res.Content != want {
 		t.Fatalf("multibyte cut diverged from the rune-wise prefix")
 	}
@@ -267,7 +273,8 @@ func TestWikiGetTruncatesOversizedSection(t *testing.T) {
 		t.Fatalf("Call(wiki.get, section) = %+v, err = %v", res, err)
 	}
 	body := p.Body[sec.Start:sec.End]
-	want := firstNRunes(body, 16000) + wikiGetTruncationNoticeSection("## Big", p.Path, utf8.RuneCountInString(body))
+	// A-036-4 (036 D3): bare-name read, so the resolved-path line leads.
+	want := resolvedLine("big-section", p.Path) + firstNRunes(body, 16000) + wikiGetTruncationNoticeSection("## Big", p.Path, utf8.RuneCountInString(body))
 	if res.Content != want {
 		t.Fatalf("truncated section = %d runes, want byte-exact %d-rune prefix + notice",
 			utf8.RuneCountInString(res.Content), utf8.RuneCountInString(want))
@@ -302,10 +309,13 @@ func TestWikiGetStagedTruncationKeepsMarkerPrefix(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("staged wiki.get: %s", res.Content)
 	}
-	if !strings.HasPrefix(res.Content, stagedSourceMarker) {
-		t.Fatalf("truncated staged result lost the marker prefix:\n%.120s", res.Content)
+	// A-036-5 (036 D3): bare-name read, so the resolved-path line comes
+	// first, then the staged marker, then the page.
+	lead := resolvedLine("kv-cache", "wiki/concepts/kv-cache.md") + stagedSourceMarker
+	if !strings.HasPrefix(res.Content, lead) {
+		t.Fatalf("truncated staged result lost the resolved line + marker prefix:\n%.200s", res.Content)
 	}
-	rest := strings.TrimPrefix(res.Content, stagedSourceMarker)
+	rest := strings.TrimPrefix(res.Content, lead)
 	full := string(p.Serialize())
 	want := firstNRunes(full, 16000) + wikiGetTruncationNoticeHead(p.Path, utf8.RuneCountInString(full), sectionHeadings(p))
 	if rest != want {
@@ -352,7 +362,9 @@ func TestWikiGetNoticeHeadingsRoundTrip(t *testing.T) {
 	if list != "# Roundtrip, ## Big, ## Deep" {
 		t.Fatalf("notice list = %q, want the full heading list", list)
 	}
-	if prefix := strings.SplitN(res.Content, "\n\n[truncated:", 2)[0]; utf8.RuneCountInString(prefix) > 16000 {
+	// A-036-6 (036 D3): the bare-name read leads with the resolved-path line,
+	// which is outside the cap, so it comes off before the prefix is counted.
+	if prefix := strings.TrimPrefix(strings.SplitN(res.Content, "\n\n[truncated:", 2)[0], resolvedLine("roundtrip", rel)); utf8.RuneCountInString(prefix) > 16000 {
 		t.Fatal("shown prefix exceeds the cap")
 	}
 	for _, h := range strings.Split(list, ", ") {
@@ -450,8 +462,10 @@ func TestWikiGetWholePageAndSection(t *testing.T) {
 	if err != nil || section.IsError {
 		t.Fatalf("Call(wiki.get, section) = %+v, err = %v", section, err)
 	}
-	if !strings.HasPrefix(section.Content, "## Related") {
-		t.Errorf("section Content = %q, want it to start with the heading", section.Content)
+	// A-036-7 (036 D3): read by bare name, so the heading follows the
+	// resolved-path line.
+	if !strings.HasPrefix(section.Content, resolvedLine("kv-cache", "wiki/concepts/kv-cache.md")+"## Related") {
+		t.Errorf("section Content = %q, want it to start with the resolved line, then the heading", section.Content)
 	}
 	if strings.Contains(section.Content, "## Example") {
 		t.Errorf("section Content leaked a different section: %q", section.Content)
@@ -478,8 +492,10 @@ func TestWikiGetResolvesByBareName(t *testing.T) {
 	if err != nil || byPath.IsError {
 		t.Fatalf("Call(wiki.get, full path) = %+v, err = %v", byPath, err)
 	}
-	if byName.Content != byPath.Content {
-		t.Errorf("bare-name and full-path lookups returned different content")
+	// A-036-8 (036 D3): the bare-name read is the full-path read behind the
+	// resolved-path line — nothing else differs.
+	if want := resolvedLine("kv-cache", "wiki/concepts/kv-cache.md") + byPath.Content; byName.Content != want {
+		t.Errorf("bare-name lookup is not the resolved line + the full-path content")
 	}
 }
 

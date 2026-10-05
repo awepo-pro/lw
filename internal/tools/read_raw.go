@@ -76,6 +76,12 @@ func rawGetHandler(ctx context.Context, d Deps, args json.RawMessage) (Result, e
 		)}, nil
 	}
 
+	// 040: the chunk is served — only now does it count as read. A refused
+	// call (missing source, chunk out of range) returned above and leaves
+	// the log alone, and so does a source no stage.ingest_source of this
+	// registry staged (the log drops it): stage.close guards only what it
+	// can know was skipped.
+	d.reads.noteRead(source, chunk)
 	return Result{Content: fmt.Sprintf("%s%s\n\n%s", marker, chunkHeader(body, chunks, chunk, n), chunks[chunk-1])}, nil
 }
 
@@ -159,11 +165,18 @@ func rawSourceBody(d Deps, source string) (body, marker string, ok bool, err err
 // ops, the message lists their paths — "staged raw sources in the open
 // changeset: <path>[, <path>...]" — so a model whose guessed path missed
 // can self-correct in one step rather than guessing again blind.
+//
+// 036 D1: when raw sources resemble the guess — committed ones and ones the
+// open changeset stages — the message names up to three of them, in
+// "; closest raw sources: a, b" right before the raw.list pointer. The vault
+// held the real path through thirteen guessed ones in a live session; a
+// source nothing resembles keeps the message below byte for byte.
 func rawNotFoundMessage(d Deps, source string) string {
 	msg := fmt.Sprintf(
 		"raw source %q was not found; provide the exact vault-relative path under raw/ — check a citing page's ^[raw/...] provenance marker",
 		source,
 	)
+	msg += closestClause("raw sources", closestRawSources(d, source))
 	// 008 §4.2: point at raw.list before the staged-paths suffix, so a
 	// model that knows no path has a first move that is not a guess.
 	msg += "; call raw.list to see every raw source"

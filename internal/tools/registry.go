@@ -51,6 +51,13 @@ type Deps struct {
 	// §3). nil — no provider configured — means the verb is not offered at
 	// all, never offered-and-failing.
 	Search web.SearchProvider
+	// reads is the 040 read log shared by raw.get, stage.ingest_source and
+	// stage.close. It is not caller-supplied: NewRegistry makes a fresh one
+	// on its own copy of Deps, so a registry's reads belong to that registry
+	// and a Deps value handed to two registries gives each its own log. nil
+	// (a Deps used without NewRegistry) disables the guard — every method of
+	// a nil *readLog is a no-op.
+	reads *readLog
 }
 
 // ErrUnknownTool is returned by Registry.Call for a name with no
@@ -68,7 +75,14 @@ type Registry struct {
 // bringing the total to the backbone's 17; 008 adds the read-only
 // discovery tool raw.list as the 18th; 010 adds web.search as the 19th,
 // registered only when d.Search is non-nil.
+//
+// 040: NewRegistry also makes the registry's one read log and puts it on
+// its copy of d before any tool is built, so raw.get, stage.ingest_source
+// and stage.close — which close over d — all see the same log. Each call
+// makes a fresh one: a second registry over the same engine (another
+// process, in 019's join) must not inherit what this one has read.
 func NewRegistry(d Deps) *Registry {
+	d.reads = newReadLog()
 	r := &Registry{
 		deps:  d,
 		tools: make(map[string]Tool),
@@ -150,13 +164,55 @@ func (r *Registry) Definitions() []llm.ToolDef {
 	list := r.List()
 	out := make([]llm.ToolDef, 0, len(list))
 	for _, t := range list {
-		out = append(out, llm.ToolDef{
-			Name:        WireName(t.Name),
-			Description: t.Description,
-			Parameters:  t.Schema,
-		})
+		out = append(out, toolDef(t))
 	}
 	return out
+}
+
+// DefinitionsOf is Definitions restricted to the tools named in names —
+// canonical dotted spellings, the registry's own keys (039).
+//
+// Why it exists: the model reads every schema it is offered on every round,
+// and a read-only question — `lw query`, a TUI ask turn — has no use for the
+// ten stage.* schemas a curator turn needs. Advertising only the tools a turn
+// may use shrinks the request and takes the stage.* verbs out of the model's
+// sight, which the system prompt alone cannot do: a prompt asks, a definitions
+// list decides what the model can name. This is a filter over the one
+// registry, not a second registry — nothing is removed from it, and Call still
+// dispatches every registered tool; deciding which a turn may call is the
+// agent loop's job.
+//
+// The result keeps Definitions' order (sorted by canonical Name, via List)
+// and its wire spelling and schemas — the entries are the very values
+// Definitions returns — regardless of the order names arrives in. A name
+// listed twice yields one entry; a name no tool is registered under is
+// skipped, so an unbacked verb such as web.search without a provider is
+// never offered. A nil or empty names yields no definitions, never all of
+// them: "everything" is Definitions, and a filter that silently widened on an
+// empty argument would offer the stage.* verbs to the very turn that asked to
+// have them withheld. names is not modified.
+func (r *Registry) DefinitionsOf(names []string) []llm.ToolDef {
+	want := make(map[string]bool, len(names))
+	for _, n := range names {
+		want[n] = true
+	}
+	out := make([]llm.ToolDef, 0, len(want))
+	for _, t := range r.List() {
+		if want[t.Name] {
+			out = append(out, toolDef(t))
+		}
+	}
+	return out
+}
+
+// toolDef is t's wire shape: the one conversion Definitions and DefinitionsOf
+// share, so a tool is advertised identically whichever of them lists it.
+func toolDef(t Tool) llm.ToolDef {
+	return llm.ToolDef{
+		Name:        WireName(t.Name),
+		Description: t.Description,
+		Parameters:  t.Schema,
+	}
 }
 
 // decodeArgs unmarshals args into out, treating a missing/empty args
