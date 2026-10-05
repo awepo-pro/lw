@@ -358,6 +358,48 @@ func TestDeleteMarkClip(t *testing.T) {
 	}
 }
 
+// TestDeleteMarkNoTabs is A-047-1's regression test. tmux 3.6 `capture-pane`
+// showed three literal TAB bytes between the mark and the panel border in
+// the live TUI. Those tabs are not in anything this package builds: the
+// bubbletea renderer erases a run of blank cells (ECH) and moves the cursor
+// past it with hard tabs (HT), and tmux 3.6 records the cells it crossed as
+// tab cells — the same `…\t\t\t│` shows on Ask and Browse lines that have
+// nothing to do with the mark (wire capture: `\x1b[19X\t\t\t\t│`). What
+// this package owns is the string View hands the renderer, and that must
+// pad with spaces and never carry a tab: asserted on the real pane at the
+// three widths the acceptance run uses, styled and plain, and on the Detail
+// lines themselves. The marked line must be present at every size, or the
+// absence of tabs proves nothing.
+func TestDeleteMarkNoTabs(t *testing.T) {
+	d, e, _ := newTestDeps(t, "minimal")
+	appendDeletingKvPatch(t, e, "")
+	m, ok := initModel(t, d).(*Model)
+	if !ok {
+		t.Fatalf("pane is %T, want *review.Model", m)
+	}
+
+	for _, sz := range [][2]int{{80, 22}, {120, 30}, {200, 58}} {
+		w, h := sz[0], sz[1]
+		styled, plain := uitest.PaneScreen(m, w, h)
+		if !strings.Contains(plain, "deletes 3 lines, 218 B"+dmTail) {
+			t.Fatalf("%dx%d: pane carries no full delete mark:\n%s", w, h, plain)
+		}
+		uitest.AssertGrid(t, plain, w, h)
+		for _, view := range []struct{ name, text string }{{"styled", styled}, {"plain", plain}} {
+			if i := strings.IndexByte(view.text, '\t'); i >= 0 {
+				t.Errorf("%dx%d %s pane carries a TAB at byte %d: %q", w, h, view.name, i, view.text[max(0, i-40):min(len(view.text), i+8)])
+			}
+		}
+
+		_, _, lines := m.detailContent(w - 4)
+		for i, l := range lines {
+			if strings.ContainsRune(l.text, '\t') {
+				t.Errorf("%dx%d: Detail line %d carries a TAB: %q", w, h, i, l.text)
+			}
+		}
+	}
+}
+
 // TestDeleteMarkChainedOp is the op8 case end to end: a second patch on a
 // page the changeset already patched chains on the first's staged After, its
 // windows exist but carry no hunk id (the 030 debt), and the mark still
