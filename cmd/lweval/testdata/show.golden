@@ -1,0 +1,23 @@
+run:   20261005T120000Z-v2.26.0-test
+lw:    lw v2.26.0-test
+n:     2 per case · parallel 2
+note:  thinking=on
+
+ask · 3 cases · 6 runs · 1 failed
+metric          value     ±SE  cases  runs
+fact_recall     0.667  ±0.167      2     3
+abstain_ok      0.500  ±0.500      1     2
+cite_valid      0.500       —      1     1
+cite_expected   0.500  ±0.153      2     3
+rounds          5.167  ±0.373      3     5
+wall_s         12.833  ±0.745      3     5
+
+ingest · 1 case · 2 runs · 0 failed
+metric           value      ±SE  cases  runs
+fact_recall      0.750   ±0.342      1     2
+chunk_coverage   0.750   ±0.342      1     2
+rounds          10.000   ±1.000      1     2
+wall_s          70.000  ±10.000      1     2
+ops              6.000   ±1.000      1     2
+pages_staged     3.500   ±0.500      1     2
+lint_warns       1.000   ±1.000      1     2

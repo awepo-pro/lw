@@ -1,0 +1,126 @@
+{
+  "run": {
+    "id": "20261005T120000Z-v2.26.0-test",
+    "lw": "/usr/local/bin/lw",
+    "lw_version": "lw v2.26.0-test",
+    "set_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "snapshot_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+    "n": 2,
+    "parallel": 2,
+    "only": "",
+    "holdout": false,
+    "note": "thinking=on",
+    "env_keys": [
+      "XDG_CONFIG_HOME"
+    ],
+    "started": "2026-10-05T12:00:00Z",
+    "finished": "2026-10-05T12:30:00Z"
+  },
+  "set_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+  "results": [
+    {
+      "case": "dcgm-deploy",
+      "index": 1,
+      "verb": "query",
+      "kind": "covered",
+      "failed": false,
+      "metrics": {
+        "cite_expected": 1,
+        "fact_recall": 1,
+        "rounds": 4,
+        "wall_s": 10.5
+      }
+    },
+    {
+      "case": "dcgm-deploy",
+      "index": 2,
+      "verb": "query",
+      "kind": "covered",
+      "failed": false,
+      "metrics": {
+        "cite_expected": 1,
+        "fact_recall": 0.6666666666666666,
+        "rounds": 6,
+        "wall_s": 14.5
+      }
+    },
+    {
+      "case": "kv-multi",
+      "index": 1,
+      "verb": "query",
+      "kind": "multi-hop",
+      "failed": false,
+      "metrics": {
+        "cite_expected": 0,
+        "cite_valid": 0.5,
+        "fact_recall": 0.5,
+        "rounds": 8,
+        "wall_s": 20
+      }
+    },
+    {
+      "case": "kv-multi",
+      "index": 2,
+      "verb": "query",
+      "kind": "multi-hop",
+      "failed": true,
+      "metrics": {}
+    },
+    {
+      "case": "pdf-pages",
+      "index": 1,
+      "verb": "ingest",
+      "kind": "ingest",
+      "failed": false,
+      "metrics": {
+        "chunk_coverage": 0.5,
+        "fact_recall": 1,
+        "lint_warns": 2,
+        "ops": 5,
+        "pages_staged": 3,
+        "rounds": 9,
+        "wall_s": 60
+      }
+    },
+    {
+      "case": "pdf-pages",
+      "index": 2,
+      "verb": "ingest",
+      "kind": "ingest",
+      "failed": false,
+      "metrics": {
+        "chunk_coverage": 1,
+        "fact_recall": 0.5,
+        "lint_warns": 0,
+        "ops": 7,
+        "pages_staged": 4,
+        "rounds": 11,
+        "wall_s": 80
+      }
+    },
+    {
+      "case": "tpu-v7",
+      "index": 1,
+      "verb": "query",
+      "kind": "absent",
+      "failed": false,
+      "metrics": {
+        "abstain_ok": 1,
+        "rounds": 2,
+        "wall_s": 5
+      }
+    },
+    {
+      "case": "tpu-v7",
+      "index": 2,
+      "verb": "query",
+      "kind": "absent",
+      "failed": false,
+      "metrics": {
+        "abstain_ok": 0,
+        "rounds": 3,
+        "wall_s": 7
+      }
+    }
+  ]
+}
