@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/awepo-pro/lw/internal/agent"
@@ -348,11 +349,31 @@ func printLintReport(w io.Writer, report lint.Report) {
 	fmt.Fprintf(w, "%d errors, %d warnings, %d info\n", report.Errors, report.Warns, info)
 }
 
+// remoteVaultForm matches the ssh-style host:path an explicit --vault must
+// not be (047 S2, 042 gap #1): a host name — letters, digits, dot, dash and
+// underscore, starting with a letter or digit — then a colon. The class after
+// the first character is "+", not "*", so a host is two or more characters:
+// a single-letter prefix is a Windows drive (C:\x), which is a local path
+// and must stay one.
+var remoteVaultForm = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]+:`)
+
 // findVaultRoot resolves the vault root shared by lw lint and lw status: an
 // explicit --vault value is used as given; otherwise the current directory
 // is walked upward until an ancestor containing SCHEMA.md is found.
+//
+// The one explicit value it refuses is host:path that names nothing on this
+// machine (047 S2): lw has no remote vaults, so `--vault home:~/ai-vault`
+// would otherwise fail verbs later on a "home:~" directory that does not
+// exist. It answers with the command that does work. A colon in a path that
+// exists is just a colon — the refusal needs os.Stat to fail.
 func findVaultRoot(explicit string) (string, error) {
 	if explicit != "" {
+		if remoteVaultForm.MatchString(explicit) {
+			if _, err := os.Stat(explicit); err != nil {
+				host, path, _ := strings.Cut(explicit, ":")
+				return "", fmt.Errorf("--vault %q looks like host:path, but lw has no remote vaults; run lw on that host instead: ssh %s -t lw tui --vault %s", explicit, host, path)
+			}
+		}
 		return explicit, nil
 	}
 
