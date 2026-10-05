@@ -90,6 +90,16 @@ func echoNote(line, op string) string {
 	return `note: dropped the leading "` + line + `" from content; ` + op + ` content is the section body without its heading.`
 }
 
+// echoOnlyRefusal is the frozen refusal of append_section or replace_section
+// content that is nothing but the echoed heading (050 D1, review L1): after
+// the echo is dropped there is no body left to append or to write. It points
+// at the two ways out — the section body itself, or remove_section for the
+// deletion a bare heading might have meant. line goes in verbatim between
+// plain quotes, as in echoNote.
+func echoOnlyRefusal(line string) string {
+	return `stage.patch_page refused: content is only the "` + line + `" heading; send the section body without its heading, or use op remove_section to delete the section.`
+}
+
 // citedSources returns listed with every raw/ source the body cites that
 // listed lacks and that resolves appended, in first-citation order, and
 // the sources it appended (050 D2). cite.Scan decides what the body cites —

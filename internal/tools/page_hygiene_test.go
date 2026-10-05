@@ -611,3 +611,196 @@ func TestPatchNoSourcesKeyLeftAlone(t *testing.T) {
 		}
 	}
 }
+
+// hygieneOnlyOp returns the single live patch_page op of the open changeset.
+func hygieneOnlyOp(t *testing.T, e *stage.Engine) stage.Op {
+	t.Helper()
+	cs, err := e.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ops []stage.Op
+	for _, o := range cs.Live() {
+		if o.Kind == stage.OpPatchPage {
+			ops = append(ops, o)
+		}
+	}
+	if len(ops) != 1 {
+		t.Fatalf("want 1 live patch_page op, have %d", len(ops))
+	}
+	return ops[0]
+}
+
+// hygieneAssertSound fails unless the staged page at hygienePage parses and
+// the changeset's lint verdict is not "fail" — the two things a corrupted
+// frontmatter breaks first.
+func hygieneAssertSound(t *testing.T, e *stage.Engine, step string) []byte {
+	t.Helper()
+	b, ok, err := e.StagedFile(hygienePage)
+	if err != nil || !ok {
+		t.Fatalf("%s: StagedFile = ok %v, err %v", step, ok, err)
+	}
+	if _, err := vault.ParsePage(hygienePage, b); err != nil {
+		t.Fatalf("%s: the staged page does not parse: %v\n%s", step, err, b)
+	}
+	cs, err := e.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cs.Checks.Lint == "fail" {
+		t.Fatalf("%s: Checks.Lint = fail\n%s", step, b)
+	}
+	return b
+}
+
+// hygieneSyncShape stages the review's shape: replace_text on "# KV Cache"
+// whose content repeats the find line (the first line of the intro
+// paragraph, six lines below the sources: line) and adds a second line that
+// cites a freshly staged source. The two changes sit close enough that one
+// ComputeHunks over the whole file merges them into a single hunk.
+func hygieneSyncShape(t *testing.T) (*stage.Engine, stage.Op) {
+	t.Helper()
+	reg, e := hygieneSetup(t)
+	hygieneIngest(t, reg, "new.md")
+	find := "The key/value cache stores per-layer attention projections from previous"
+	r := hygieneCall(t, reg, "stage.patch_page", map[string]any{
+		"path": hygienePage, "section": "# KV Cache", "op": "replace_text",
+		"find": find, "content": find + "\nA second claim from a fresh source.^[raw/articles/new.md]",
+		"rationale": "test",
+	})
+	if r.IsError {
+		t.Fatalf("patch refused: %s", r.Content)
+	}
+	return e, hygieneOnlyOp(t, e)
+}
+
+// hygieneHasSourcesLine reports whether h touches the frontmatter's sources:
+// line, on either side of the hunk.
+func hygieneHasSourcesLine(h stage.Hunk) bool {
+	for _, l := range append(append([]string(nil), h.Del...), h.Add...) {
+		if strings.HasPrefix(l, "sources:") {
+			return true
+		}
+	}
+	return false
+}
+
+// TestPatchSyncHunksSurviveDropUndrop: when the sources: sync changes the
+// frontmatter, Review's n then y on any hunk of the op keeps the staged page
+// intact. 050 S1 diffed the whole file at once, so a body edit within three
+// lines of the sources: change merged with it into one hunk (Del the old
+// sources: line, Add the new one plus the body line); re-applying that hunk
+// pairs its lines, which puts the BODY line after sources: inside the
+// frontmatter and leaves a page that does not parse (review M1). The root
+// cause is stage's flattened Hunk, which loses the interior context of a
+// merged window, so it is fixed there (052, hunks persist ordered diff lines
+// and a start position), not by splitting the diff here — and this test
+// waits for it.
+//
+// Each subtest runs the review's shape: replace_text on "# KV Cache" whose
+// content repeats the find line (the first line of the intro paragraph, six
+// lines below the sources: line) and adds a second line citing a freshly
+// staged source.
+func TestPatchSyncHunksSurviveDropUndrop(t *testing.T) {
+	t.Skip("needs 052 hunk positions (TD-15)")
+
+	t.Run("every_hunk_n_then_y", func(t *testing.T) {
+		e, op := hygieneSyncShape(t)
+		if len(op.Hunks) == 0 {
+			t.Fatal("the patch staged no hunks")
+		}
+		for _, h := range op.Hunks {
+			before := hygieneAssertSound(t, e, "before "+h.ID)
+			if err := e.DropHunk(op.ID, h.ID); err != nil {
+				t.Fatalf("DropHunk %s: %v", h.ID, err)
+			}
+			hygieneAssertSound(t, e, "after n on "+h.ID)
+			if err := e.UndropHunk(op.ID, h.ID); err != nil {
+				t.Fatalf("UndropHunk %s: %v", h.ID, err)
+			}
+			after := hygieneAssertSound(t, e, "after n then y on "+h.ID)
+			if string(after) != string(before) {
+				t.Errorf("n then y on %s changed the staged bytes:\n--- before\n%s\n--- after\n%s", h.ID, before, after)
+			}
+		}
+	})
+
+	t.Run("frontmatter_hunk_dropped_alone", func(t *testing.T) {
+		e, op := hygieneSyncShape(t)
+		var fm []stage.Hunk
+		for _, h := range op.Hunks {
+			if hygieneHasSourcesLine(h) {
+				fm = append(fm, h)
+			}
+		}
+		if len(fm) != 1 {
+			t.Fatalf("%d hunks touch sources:, want exactly 1", len(fm))
+		}
+		for _, l := range append(append([]string(nil), fm[0].Del...), fm[0].Add...) {
+			if !strings.HasPrefix(l, "sources:") {
+				t.Fatalf("the frontmatter hunk %s also carries a body line %q: dropping it alone is impossible", fm[0].ID, l)
+			}
+		}
+		if err := e.DropHunk(op.ID, fm[0].ID); err != nil {
+			t.Fatalf("DropHunk %s: %v", fm[0].ID, err)
+		}
+		b := hygieneAssertSound(t, e, "after dropping the frontmatter hunk")
+		p, err := vault.ParsePage(hygienePage, b)
+		if err != nil {
+			t.Fatal(err)
+		}
+		hygieneSourcesEqual(t, p.FM.Sources, hygieneOldSources)
+		if !strings.Contains(p.Body, "A second claim from a fresh source.^[raw/articles/new.md]") {
+			t.Errorf("the body edit was lost with the frontmatter hunk:\n%s", p.Body)
+		}
+	})
+}
+
+// TestPatchEchoOnlyRefused: content that is nothing but the echoed heading
+// leaves an empty body once stripped — an append that adds nothing, or a
+// replace_section that would blank the section. Both are refused with the
+// frozen text and stage nothing, instead of staging a silent no-op or an
+// erase (review L1). remove_section is the op for deleting a section.
+func TestPatchEchoOnlyRefused(t *testing.T) {
+	want := `stage.patch_page refused: content is only the "## Related" heading; send the section body without its heading, or use op remove_section to delete the section.`
+	for _, op := range []string{"append_section", "replace_section"} {
+		for _, content := range []string{"## Related", "## Related\n", "\n## Related\n\n  \n"} {
+			t.Run(op+"/"+strings.TrimSpace(strings.ReplaceAll(content, "\n", "|")), func(t *testing.T) {
+				reg, e := hygieneSetup(t)
+				r := hygienePatch(t, reg, "## Related", op, content)
+				if !r.IsError {
+					t.Fatalf("an echo-only %s was accepted: %q", op, r.Content)
+				}
+				if r.Content != want {
+					t.Errorf("refusal =\n%s\nwant =\n%s", r.Content, want)
+				}
+				assertNothingStaged(t, e)
+			})
+		}
+	}
+}
+
+// TestPatchEchoOnlyBeatsShrink: a bare heading sent to replace_section on a
+// section the shrink guard would measure (3161 bytes) gets the echo-only
+// refusal, not the shrink refusal — whose "repeat with allow_shrink" advice
+// would invite the very erase the model did not mean — whether or not the
+// call sets allow_shrink. A section WITH subsections keeps 043's nested-loss
+// refusal, pinned by TestPatchReplaceSectionRefusesNestedLoss, which sends
+// exactly this bare heading.
+func TestPatchEchoOnlyBeatsShrink(t *testing.T) {
+	reg, e, _ := tilelangRegistry(t)
+	if r := callTool(t, reg, "stage.open", `{"intent":"bare heading under the shrink guard"}`); r.IsError {
+		t.Fatal(r.Content)
+	}
+	want := `stage.patch_page refused: content is only the "## GPU programming model" heading; send the section body without its heading, or use op remove_section to delete the section.`
+	for _, flag := range []bool{false, true} {
+		r := hygieneCall(t, reg, "stage.patch_page", map[string]any{
+			"path": "wiki/entities/tilelang.md", "section": "## GPU programming model", "op": "replace_section",
+			"content": "## GPU programming model", "allow_shrink": flag, "rationale": "test",
+		})
+		if !r.IsError || r.Content != want {
+			t.Errorf("allow_shrink=%v: result = %v %q, want the echo-only refusal", flag, r.IsError, r.Content)
+		}
+		assertNothingStaged(t, e)
+	}
+}

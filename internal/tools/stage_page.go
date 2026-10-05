@@ -181,12 +181,30 @@ func stagePatchPageTool(d Deps) Tool {
 		// second "## Related"). The echo is dropped here, before the 043
 		// guards, so they measure what will be written; a is rebound with the
 		// stripped content and every later read of a.Content sees it. The
-		// note rides on the result of a call that stages. insert_after,
-		// insert_before and replace_text are never stripped: the first two
-		// take a heading by contract, the last quotes text.
+		// note rides on the result of a call that stages; content that is ONLY
+		// the echo is refused. insert_after, insert_before and replace_text
+		// are never stripped: the first two take a heading by contract, the
+		// last quotes text.
 		var notes []string
 		if a.Op == "append_section" || a.Op == "replace_section" {
 			if stripped, line, ok := stripEchoedHeading(sec, a.Content); ok {
+				if strings.TrimSpace(stripped) == "" {
+					// Nothing is left once the echo goes: an append that adds
+					// nothing, or a replace_section that would blank the
+					// section. Neither is what the model asked for, so the call
+					// is refused rather than staged as a no-op or an erase. A
+					// replace_section whose section has subsections keeps its
+					// 043 refusal, which names them (the nested-loss test sends
+					// the bare heading too): the structural loss outranks the
+					// echo, and this check outranks the shrink guard, whose
+					// "repeat with allow_shrink" advice would invite the erase.
+					if a.Op == "replace_section" {
+						if res := refuseNestedLoss(page, sec, ""); res != nil {
+							return *res, nil
+						}
+					}
+					return Result{IsError: true, Content: echoOnlyRefusal(line)}, nil
+				}
 				a.Content = stripped
 				notes = append(notes, echoNote(line, a.Op))
 			}
