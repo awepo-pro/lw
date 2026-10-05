@@ -374,6 +374,54 @@ func TestScoreIngestDupPagesCountedOnce(t *testing.T) {
 	})
 }
 
+// TestScoreIngestPatchedLosslessAppendedLine pins A-049-4 and A-049-6 through
+// the scorer: a patch that only INSERTS into an existing line (a sentence
+// that gained a link at its end or in its middle, an item that gained a note)
+// lost nothing and is lossless, while one that shortens the line, rewrites it,
+// or edits it in two places is not. Run 1 appends on both staged pages, run 2
+// shortens one of two, run 3 rewrites one of two, run 4 inserts mid-line on
+// one page, run 5 inserts at two points of one line (049).
+func TestScoreIngestPatchedLosslessAppendedLine(t *testing.T) {
+	set := newPagesSet(t)
+	run := scNewRun(t, set, "r1")
+	tilelang := func(kernels string) string {
+		return scPage("TileLang", "# TileLang\n\n"+kernels+"\n\n## Notes\n\nFirst note.\nFirst note.\n")
+	}
+	scWriteCase(t, run, scAnsweredMeta("paper-text", "ingest", "ingest", 1), map[string]string{
+		"staged/wiki/entities/tilelang.md":     tilelang("TileLang compiles kernels. See [[http-version]]."),
+		"staged/wiki/concepts/http-version.md": scPage("HTTP Version", "x\ny, and [[tilelang]]\n"),
+	})
+	scWriteCase(t, run, scAnsweredMeta("paper-text", "ingest", "ingest", 2), map[string]string{
+		"staged/wiki/entities/tilelang.md":     tilelang("TileLang compiles."),
+		"staged/wiki/concepts/http-version.md": scPage("HTTP Version", "x\ny, and more\n"),
+	})
+	scWriteCase(t, run, scAnsweredMeta("paper-text", "ingest", "ingest", 3), map[string]string{
+		"staged/wiki/entities/tilelang.md":     tilelang("Kernels are compiled by TileLang."),
+		"staged/wiki/concepts/http-version.md": scPage("HTTP Version", "x\ny\n"),
+	})
+	scWriteCase(t, run, scAnsweredMeta("paper-text", "ingest", "ingest", 4), map[string]string{
+		"staged/wiki/entities/tilelang.md":     tilelang("TileLang compiles [[http-version]] kernels."),
+		"staged/wiki/concepts/http-version.md": scPage("HTTP Version", "x\ny\n"),
+	})
+	scWriteCase(t, run, scAnsweredMeta("paper-text", "ingest", "ingest", 5), map[string]string{
+		"staged/wiki/entities/tilelang.md":     tilelang("TileLang really compiles fast kernels."),
+		"staged/wiki/concepts/http-version.md": scPage("HTTP Version", "x\ny\n"),
+	})
+
+	res, err := Score(run)
+	if err != nil {
+		t.Fatalf("Score: %v", err)
+	}
+	for _, want := range []struct {
+		index    int
+		lossless float64
+	}{{1, 1}, {2, 0.5}, {3, 0.5}, {4, 1}, {5, 0.5}} {
+		scMetrics(t, fmt.Sprintf("paper-text/%d", want.index), scOnly(scResult(t, res, "paper-text", want.index).Metrics), map[string]float64{
+			MetricPagesNew: 0, MetricDupPages: 0, MetricPatchedLossless: want.lossless,
+		})
+	}
+}
+
 // TestIngestMetricNames pins the new metric names and their place at the
 // end of the metric order, after lint_warns, in the order the table prints
 // them; and that the two that are shares of one are bounded for the

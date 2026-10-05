@@ -436,15 +436,11 @@ func ingestTraceMetrics(m map[string]float64, tracesDir string, turns []*trace.T
 		if t == nil {
 			continue
 		}
-		errs, err := score.ToolErrors(tracesDir, t.ID, t)
+		n, err := score.ReadRefusals(tracesDir, t.ID, t)
 		if err != nil {
 			return err
 		}
-		for _, e := range errs {
-			if score.IsReadTool(e.Name) && score.IsReadRefusal(e.Text) {
-				refusals++
-			}
-		}
+		refusals += n
 	}
 	m[MetricReadsBeforeFirstStage] = float64(score.ReadsBeforeFirstStage(turns))
 	m[MetricReadRefusals] = float64(refusals)
@@ -461,9 +457,10 @@ func ingestTraceMetrics(m map[string]float64, tracesDir string, turns []*trace.T
 // those whose slug is a near-duplicate of any snapshot page's (the model made
 // a second page for a topic the wiki already covered). For the edited ones,
 // patched_lossless is the share whose staged body still has every non-blank
-// line of the snapshot's: a patch that rewrites a page and drops its facts
-// fails here though it scores well on fact_recall. It is absent when no
-// existing page was staged — there was nothing to lose. (049.)
+// line of the snapshot's, a line a patch only added to included
+// (score.LinesKept): a patch that rewrites a page and drops its facts fails
+// here though it scores well on fact_recall. It is absent when no existing
+// page was staged — there was nothing to lose. (049.)
 func (s *scorer) stagedPageMetrics(m map[string]float64, pages []stagedPage) (map[string]bool, error) {
 	newPages := map[string]bool{}
 	existing, kept := 0, 0

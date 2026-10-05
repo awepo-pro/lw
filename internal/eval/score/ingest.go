@@ -1,6 +1,7 @@
 package score
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/awepo-pro/lw/internal/tools"
@@ -15,6 +16,13 @@ import (
 // TestReadRefusalNeedleTracksAgentSource reads that file as text and fails
 // when the wording or the budget moves (049).
 const readRefusalNeedle = "refused: this ingest has read 6 wiki pages"
+
+// readRefusalFmt is the whole refusal with the budget filled in and the tool
+// name still a verb — a COPY of internal/agent.readBudgetRefusalFmt, pinned
+// byte for byte by the same test as the needle. Only its LENGTH is used: a
+// refusal whose text was never recovered is recognised by its tool event's
+// result_bytes (ReadRefusals, A-049-5).
+const readRefusalFmt = "%s refused: this ingest has read 6 wiki pages since it last staged a change. Stage the pages for the source now (stage.create_page / stage.patch_page) from what you have read; wiki reads are allowed again after a change is staged."
 
 // readTools are the tools that read a wiki page and so spend 048's budget,
 // by canonical name (agent.budgetedReads). wiki.search returns snippets and
@@ -131,4 +139,35 @@ func CallCount(turns []*trace.Turn, canonical string) int {
 // cut text still matches.
 func IsReadRefusal(text string) bool {
 	return strings.Contains(text, readRefusalNeedle)
+}
+
+// ReadRefusals counts the wiki reads of turn t that 048's budget refused: the
+// failed calls to a read tool whose result is the refusal. The result text is
+// recovered by ToolErrors from the next round's request, and a refusal that
+// ended the turn — max_rounds hit on the very round that was refused, the
+// commonest way a crawl ends — has no next request, so its Text is "". For
+// that case, and only that case, the tool event's result_bytes decides: it is
+// len() of the refusal formatted for the call's own tool name (the name is in
+// the text, and wiki.get's refusal is shorter than wiki.neighbors'). A call
+// whose text WAS recovered is judged by the text alone, however many bytes it
+// returned. dir and id name the turn on disk, as for ToolErrors. (049, A-049-5.)
+func ReadRefusals(dir, id string, t *trace.Turn) (int, error) {
+	failed, err := failedCalls(dir, id, t)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, f := range failed {
+		name := canonicalTool(f.Name)
+		switch {
+		case !IsReadTool(name):
+		case f.Text != "":
+			if IsReadRefusal(f.Text) {
+				n++
+			}
+		case f.ResultBytes == len(fmt.Sprintf(readRefusalFmt, name)):
+			n++
+		}
+	}
+	return n, nil
 }

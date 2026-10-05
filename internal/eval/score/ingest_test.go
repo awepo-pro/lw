@@ -272,4 +272,119 @@ func TestReadRefusalNeedleTracksAgentSource(t *testing.T) {
 	if real != refusalText {
 		t.Errorf("this file's refusalText is stale\n got  %q\n want %q", refusalText, real)
 	}
+	// A-049-5: readRefusalFmt is the same text with the budget filled in and
+	// the tool name still a verb; its length for a tool name is what a refusal
+	// whose text was lost is recognised by, so it must match byte for byte.
+	if want := strings.Replace(format, "%d", strconv.Itoa(budget), 1); readRefusalFmt != want {
+		t.Errorf("readRefusalFmt drifted from internal/agent/readbudget.go\n got  %q\n want %q", readRefusalFmt, want)
+	}
+	if got := fmt.Sprintf(readRefusalFmt, "wiki.get"); got != real {
+		t.Errorf("readRefusalFmt for wiki.get = %q, want the agent's %q", got, real)
+	}
+}
+
+// refCall is one tool call of a fixture turn for TestReadRefusals: what the
+// loop records for it (name, failure, result_bytes), and the text the model
+// got back — which lands in the NEXT round's request, so a turn that has no
+// next round never shows it (049, A-049-5).
+type refCall struct {
+	name   string
+	fail   bool
+	bytes  int
+	result string
+}
+
+// writeRefusalTurn records turn 1 under dir: round 1 makes calls (their
+// events carry bytes, their results are in round 2's request when withNext),
+// then the turn ends at max_rounds. It returns the loaded turn and its id.
+func writeRefusalTurn(t *testing.T, dir string, withNext bool, calls ...refCall) *trace.Turn {
+	t.Helper()
+	rec := startTurn(t, dir, 1)
+	user := llm.Message{Role: "user", Content: "ingest"}
+	send(rec, 1, 1, request(t, user))
+	var asked []llm.ToolCall
+	var results []llm.Message
+	for i, c := range calls {
+		id := fmt.Sprintf("c%d", i+1)
+		rec.Tool(trace.Tool{Round: 1, ID: id, Name: c.name, IsError: c.fail, ResultBytes: c.bytes})
+		asked = append(asked, call(id, tools.WireName(c.name), `{}`))
+		results = append(results, llm.Message{Role: "tool", ToolCallID: id, Content: c.result})
+	}
+	rec.Response(trace.Response{Round: 1, Attempt: 1, Finish: "tool_calls", ToolCalls: toolCalls(asked...)})
+	if withNext {
+		send(rec, 2, 1, request(t, append([]llm.Message{user, {Role: "assistant", ToolCalls: asked}}, results...)...))
+		rec.Response(trace.Response{Round: 2, Attempt: 1, Finish: "stop", Text: "done"})
+		rec.Done(trace.Done{Reason: "stop", Rounds: 2})
+	} else {
+		rec.Done(trace.Done{Reason: "max_rounds", Rounds: 1})
+	}
+	return loadTurn(t, dir, 1)
+}
+
+// TestReadRefusals pins how a refused read is recognised. The text is the
+// proof when ToolErrors can recover it; when the refused call was its turn's
+// last round there is no next request, the text is "", and the only trace of
+// it is the tool event's result_bytes — which equals the length of 048's
+// refusal for that tool name. A-049-5: without that fallback a turn that hit
+// max_rounds on the refusal reports 0 refusals exactly when it had one.
+func TestReadRefusals(t *testing.T) {
+	get := len(fmt.Sprintf(readRefusalFmt, "wiki.get"))
+	neighbors := len(fmt.Sprintf(readRefusalFmt, "wiki.neighbors"))
+	if get == neighbors {
+		t.Fatalf("the refusal for wiki.get and wiki.neighbors is %d bytes both; the per-tool rows below prove nothing", get)
+	}
+	refusal := func(name string) string { return fmt.Sprintf(readRefusalFmt, name) }
+
+	tests := []struct {
+		name     string
+		withNext bool
+		calls    []refCall
+		want     int
+	}{
+		{"text recovered from the next request", true, []refCall{
+			{"wiki.get", true, get, refusal("wiki.get")},
+			{"wiki.get", true, 24, "wiki.get: page not found"},
+		}, 1},
+		{"no next request, bytes are the refusal's", false, []refCall{{"wiki.get", true, get, ""}}, 1},
+		{"no next request, bytes are something else", false, []refCall{{"wiki.get", true, 17, ""}}, 0},
+		{"no next request, the refusal's length for ANOTHER tool", false, []refCall{{"wiki.get", true, neighbors, ""}}, 0},
+		{"no next request, each read tool by its own length", false, []refCall{
+			{"wiki.get", true, get, ""},
+			{"wiki.neighbors", true, neighbors, ""},
+			{"wiki.backlinks", true, len(refusal("wiki.backlinks")), ""},
+			{"wiki.neighbors", true, get, ""},
+		}, 3},
+		{"no next request, a wire-spelled name", false, []refCall{{"wiki_get", true, get, ""}}, 1},
+		{"no next request, not a read tool", false, []refCall{
+			{"stage.create_page", true, len(refusal("stage.create_page")), ""},
+			{"wiki.search", true, len(refusal("wiki.search")), ""},
+		}, 0},
+		{"no next request, the call did not fail", false, []refCall{{"wiki.get", false, get, ""}}, 0},
+		{"text known and not a refusal outranks the bytes", true, []refCall{
+			{"wiki.get", true, get, "wiki.get: page not found"},
+		}, 0},
+		{"text known: a successful read quoting the refusal", true, []refCall{
+			{"wiki.get", false, get, refusal("wiki.get")},
+		}, 0},
+		{"no calls", false, nil, 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			turn := writeRefusalTurn(t, dir, tc.withNext, tc.calls...)
+			got, err := ReadRefusals(dir, turnID(1), turn)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Errorf("ReadRefusals = %d, want %d", got, tc.want)
+			}
+		})
+	}
+
+	t.Run("a nil turn", func(t *testing.T) {
+		if got, err := ReadRefusals(t.TempDir(), turnID(1), nil); err != nil || got != 0 {
+			t.Errorf("ReadRefusals(nil) = %d, %v, want 0, nil", got, err)
+		}
+	})
 }
