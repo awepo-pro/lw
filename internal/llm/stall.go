@@ -64,6 +64,9 @@ func (c *Client) asStalled(err error) error {
 type stallBody struct {
 	rc      io.ReadCloser
 	timeout time.Duration
+	// window is the silence bound the next arm uses. It equals timeout
+	// except while drain shortens it; timeout stays what stallError reports.
+	window time.Duration
 	// cancel aborts the stream request's context. It is the child cancel
 	// Stream created: firing it closes the connection, which is what
 	// actually unblocks a Read parked in the provider's silence.
@@ -79,7 +82,7 @@ type stallBody struct {
 // newStallBody arms the first expiry window immediately, so the gap between
 // the headers arriving and the first body read is bounded too.
 func newStallBody(rc io.ReadCloser, timeout time.Duration, cancel context.CancelFunc) *stallBody {
-	b := &stallBody{rc: rc, timeout: timeout, cancel: cancel}
+	b := &stallBody{rc: rc, timeout: timeout, window: timeout, cancel: cancel}
 	b.arm()
 	return b
 }
@@ -97,7 +100,7 @@ func (b *stallBody) arm() {
 func (b *stallBody) armLocked() {
 	b.gen++
 	g := b.gen
-	b.timer = time.AfterFunc(b.timeout, func() {
+	b.timer = time.AfterFunc(b.window, func() {
 		b.mu.Lock()
 		if b.closed || g != b.gen {
 			// A newer Read re-armed, or the stream already ended: this
@@ -155,11 +158,20 @@ func (b *stallBody) Read(p []byte) (int, error) {
 // context, releasing the child context WithCancel created: without this a
 // normally-finished stream leaks that child, registered on the caller's
 // context until the caller's own context dies. Order matters here: the
-// wrapped body is closed FIRST, so net/http can drain the (already fully
-// read) response and return the connection to the idle pool, and only then
-// does the cancel fire — by which time the round trip is done and pooling
-// is unaffected (verified against Go 1.27). Cancelling first closes the
-// connection out from under that drain and every turn re-dials.
+// wrapped body is closed FIRST, so net/http can finish the response and
+// return the connection to the idle pool, and only then does the cancel
+// fire — by which time the round trip is done and pooling is unaffected
+// (verified against Go 1.27). Cancelling first closes the connection out
+// from under that drain and every turn re-dials.
+//
+// Close is not what makes the pooling DETERMINISTIC. A body closed before
+// its EOF has been read is pooled by net/http asynchronously — its read
+// loop drains the tail in its own goroutine after Close has already
+// returned — so a request issued right after Close can dial a second
+// connection while the first is still on its way back to the pool. A
+// stream that ended cleanly therefore calls drain first (consumeStreamTimed,
+// at [DONE]); Close's order then only matters for an exit that never saw
+// the end of the body.
 func (b *stallBody) Close() error {
 	b.mu.Lock()
 	b.closed = true
@@ -172,6 +184,55 @@ func (b *stallBody) Close() error {
 	err := b.rc.Close()
 	b.cancel()
 	return err
+}
+
+// tailWindow and tailMax bound drain: they are net/http's own limits for
+// draining an early-closed body (maxPostCloseReadTime, maxPostCloseReadBytes),
+// so reading the tail here costs a turn no more than the transport's own
+// asynchronous drain would, and a provider that never ends the response
+// after [DONE] still releases the turn after at most tailWindow.
+const (
+	tailWindow = 50 * time.Millisecond
+	tailMax    = 256 << 10
+)
+
+// drain reads the response behind a cleanly ended stream to its EOF. SSE
+// ends at [DONE] while the HTTP response ends a few bytes later (a chunked
+// body's terminating chunk, an h1 body's close), and net/http only knows
+// the connection is reusable once a Read has returned EOF: that Read blocks
+// until the connection is back in the idle pool, which is what makes the
+// pooling complete before the stream's channel closes instead of racing the
+// next request. The wait is a fresh silence window of min(timeout,
+// tailWindow), armed through the same expiry machinery as any other read,
+// so a provider that holds the response open after [DONE] is cut by the
+// request cancel — the connection is then not reused, exactly as an
+// un-drained Close would have left it. Whatever drain reads or fails on is
+// irrelevant: the stream's answer was already delivered.
+func (b *stallBody) drain() {
+	b.mu.Lock()
+	if b.closed || b.stalled {
+		b.mu.Unlock()
+		return
+	}
+	if b.timeout > tailWindow {
+		b.window = tailWindow
+	}
+	if b.timer != nil {
+		b.timer.Stop()
+	}
+	b.armLocked()
+	b.mu.Unlock()
+	_, _ = io.Copy(io.Discard, io.LimitReader(b, tailMax))
+}
+
+// drainTail is the stream-end entry to drain: only a stallBody has the
+// expiry machinery that bounds the wait, so a body left unwrapped (stall
+// bound off, or a test's fake) is untouched — it is read no further than
+// before.
+func drainTail(body io.ReadCloser) {
+	if sb, ok := body.(*stallBody); ok {
+		sb.drain()
+	}
 }
 
 // wrapStallBody is the single decision point for wrapping a stream body
