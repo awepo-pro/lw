@@ -187,6 +187,14 @@ func rawNotFoundMessage(d Deps, source string) string {
 	return fmt.Sprintf("%s; staged raw sources in the open changeset: %s", msg, strings.Join(staged, ", "))
 }
 
+// RawChunkCount reports how many chunks raw.get serves body in — the "n" of
+// its "chunk i of n" header. It is chunkText's own count over rawChunkRunes,
+// not a re-derivation, so it cannot drift from what raw.get does: the eval
+// harness (037 T2) scores how much of a source a model read against this
+// total, and a different denominator would grade coverage on a source the
+// model never saw sliced that way. An empty body is one empty chunk.
+func RawChunkCount(body string) int { return len(chunkText(body, rawChunkRunes)) }
+
 // chunkText splits s into chunks of at most maxRunes runes each, never
 // splitting a UTF-8 rune. An empty s still yields one empty chunk, so
 // raw.get always has a "chunk 1 of 1" to report rather than a division by
