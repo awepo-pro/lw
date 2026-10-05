@@ -115,6 +115,20 @@ func wikiGetHandler(ctx context.Context, d Deps, args json.RawMessage) (Result, 
 		return res, nil
 	}
 
+	// 036 D3: a page argument that is not byte-equal to the resolved path
+	// (a bare name, a missing ".md", a case difference) gets one leading
+	// line saying where the page really is. wiki.get resolves by basename
+	// but every stage.* tool takes an exact path, so a model that read
+	// "tilelang" and then patched "wiki/concepts/tilelang.md" was acting on a
+	// path it had invented — the page lives under wiki/entities/. The line
+	// sits before the staged marker and the content; an exact-path call, and
+	// every error result (the section error already names the resolved
+	// path), is unchanged byte for byte.
+	var resolvedNote string
+	if arg := strings.TrimSpace(a.Page); arg != resolved {
+		resolvedNote = fmt.Sprintf("resolved %q → %s (use this path in stage.* calls)\n\n", arg, resolved)
+	}
+
 	if a.Section == "" {
 		content := string(p.Serialize())
 		if n := utf8.RuneCountInString(content); n > wikiGetMaxRunes {
@@ -133,7 +147,7 @@ func wikiGetHandler(ctx context.Context, d Deps, args json.RawMessage) (Result, 
 		if staged {
 			content = stagedSourceMarker + content
 		}
-		return Result{Content: content}, nil
+		return Result{Content: resolvedNote + content}, nil
 	}
 
 	sec, ok := p.Section(a.Section)
@@ -153,7 +167,7 @@ func wikiGetHandler(ctx context.Context, d Deps, args json.RawMessage) (Result, 
 	if staged {
 		body = stagedSourceMarker + body
 	}
-	return Result{Content: body}, nil
+	return Result{Content: resolvedNote + body}, nil
 }
 
 // firstRunes cuts s to at most max runes without splitting a UTF-8 rune —

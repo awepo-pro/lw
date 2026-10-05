@@ -129,7 +129,7 @@ func stagePatchPageTool(d Deps) Tool {
 		}
 		sec, ok := page.Section(a.Section)
 		if !ok {
-			return Result{IsError: true, Content: fmt.Sprintf("section %q was not found on %s", a.Section, a.Path)}, nil
+			return Result{IsError: true, Content: patchSectionNotFound(a.Section, a.Path, page)}, nil
 		}
 		var body string
 		var armConsumed bool // 043 T2: the check consumed the key's arm…
@@ -417,6 +417,37 @@ func cutRunes(s string, n int) string {
 	return string(r[:n]) + "…"
 }
 
+// frontmatterSectionClause follows a patch refusal's heading list when the
+// section asked for was the frontmatter or the text above the first heading.
+// Neither is a section — buildSection opens one at each heading line — so
+// no spelling of the argument can ever reach them, and listing the headings
+// alone sends the model round the same loop (live: "frontmatter", "---",
+// "preamble" and "" were each tried). The clause names the two ways out: a
+// replace_text on the title heading for text under the page title, and
+// stage.create_page or the user for frontmatter, which no patch op writes.
+const frontmatterSectionClause = `. Frontmatter and the text above the first heading are not sections: to change text under the page title use op replace_text on the title heading (e.g. "# Title"); frontmatter changes go through stage.create_page on a new page or the user`
+
+// patchSectionNotFound is stage.patch_page's refusal for a section its page
+// does not have (036 D2). It is wiki.get's message — the section as given,
+// then the page's real headings — computed from the same page the patch
+// would have run against, so a page whose staged state dropped a section
+// lists the staged headings, not the committed ones. A page without any
+// heading says "(none)" rather than ending on a bare "are: ". A section
+// argument that is, trimmed and lowercased, "frontmatter", "---",
+// "preamble" or empty gains frontmatterSectionClause.
+func patchSectionNotFound(section, pagePath string, p *vault.Page) string {
+	list := "(none)"
+	if heads := sectionHeadings(p); len(heads) > 0 {
+		list = strings.Join(heads, ", ")
+	}
+	msg := fmt.Sprintf("section %q was not found on %s; valid headings are: %s", section, pagePath, list)
+	switch strings.ToLower(strings.TrimSpace(section)) {
+	case "frontmatter", "---", "preamble", "":
+		msg += frontmatterSectionClause
+	}
+	return msg
+}
+
 // stagedPatchBase resolves the base page stage.patch_page computes against
 // (020 T-B): when the currently open changeset already holds a live
 // content op for path, its staged bytes are the base — the section lookup,
@@ -439,8 +470,14 @@ func cutRunes(s string, n int) string {
 // page-structured (op.go's buildCascadeOp raw branch): for such a path —
 // or any path the committed vault does not carry as a Page — the staged
 // bytes are not consumed, and the committed lookup below answers, whose
-// miss is the plain not-found IsError. ok is false with onFail set when
+// miss is the not-found IsError. ok is false with onFail set when
 // path resolves through neither the changeset nor the vault.
+//
+// 036 D1: that not-found message names up to three pages that resemble path
+// ("; closest pages: a, b") — committed ones and ones the open changeset
+// creates — because the live miss was the right name under the wrong
+// directory (wiki/concepts/tilelang.md for wiki/entities/tilelang.md). A path
+// nothing resembles keeps the bare message.
 func stagedPatchBase(d Deps, path string) (page *vault.Page, onFail Result, ok bool, err error) {
 	if d.Engine != nil {
 		b, staged, err := d.Engine.StagedFile(path)
@@ -463,7 +500,7 @@ func stagedPatchBase(d Deps, path string) (page *vault.Page, onFail Result, ok b
 	}
 	p, found := d.Vault.Page(path)
 	if !found {
-		return nil, Result{IsError: true, Content: fmt.Sprintf("page %q was not found", path)}, false, nil
+		return nil, Result{IsError: true, Content: fmt.Sprintf("page %q was not found%s", path, closestPagesClause(d, path))}, false, nil
 	}
 	return p, Result{}, true, nil
 }
