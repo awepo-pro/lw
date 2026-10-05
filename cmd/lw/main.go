@@ -28,6 +28,7 @@ var verbs = []verb{
 	{"init", cmdInit},
 	{"config", cmdConfig},
 	{"ingest", cmdIngest},
+	{"note", cmdNote},
 	{"status", cmdStatus},
 	{"diff", cmdDiff},
 	{"commit", cmdCommit},
@@ -120,6 +121,8 @@ commands:
   init [--schema <domain>]     initialize a new vault
   config                       view or edit configuration
   ingest <url|path|dir>...     ingest one or more sources
+  note [-m "..."]              capture a quick raw note outside the wiki (no LLM, no review)
+  note list [-n N]             list captured notes, newest first
   status                       show the open changeset, if any
   diff [--op <id>]             show the projected diff of the open changeset
   commit -m "..." [--force]    commit the open changeset
