@@ -65,6 +65,13 @@ type Runner struct {
 	Exec     ExecFunc      // nil = os/exec, parent env inherited
 	Backoff  time.Duration // before the one retry; 0 = 30s
 
+	// JobTimeout bounds ONE attempt of one lw command; 0 = no bound. An
+	// attempt that outlives it is cancelled and counts as a failed attempt —
+	// it gets the one retry like any other — so a provider that hangs costs a
+	// case 2×JobTimeout instead of the whole run. lweval defaults to 20
+	// minutes (A-037-9).
+	JobTimeout time.Duration
+
 	// now is the clock behind every timestamp and wall time; nil is
 	// time.Now. Unexported: only this package's tests inject one.
 	now func() time.Time
@@ -74,13 +81,17 @@ type Runner struct {
 // Started and WallMS describe the last attempt, like ExitCode, so a retried
 // case's numbers are those of the attempt whose output the other files hold.
 type RunMeta struct {
-	Case     string    `json:"case"`
-	Verb     string    `json:"verb"`      // "query" | "ingest"
-	Kind     string    `json:"kind"`      // ask kind, or "ingest"
-	Index    int       `json:"index"`     // 1..N
-	Attempts int       `json:"attempts"`  // 1 or 2
-	ExitCode int       `json:"exit_code"` // of the last attempt
-	Failed   bool      `json:"failed"`    // last attempt exited non-zero
+	Case     string `json:"case"`
+	Verb     string `json:"verb"`      // "query" | "ingest"
+	Kind     string `json:"kind"`      // ask kind, or "ingest"
+	Index    int    `json:"index"`     // 1..N
+	Attempts int    `json:"attempts"`  // 1 or 2
+	ExitCode int    `json:"exit_code"` // of the last attempt
+	Failed   bool   `json:"failed"`    // last attempt exited non-zero
+	// TimedOut marks a last attempt that was cut off by Runner.JobTimeout
+	// (its ExitCode is then non-zero, -1 for a killed process). Absent for
+	// every other case, so a meta.json written before A-037-9 reads the same.
+	TimedOut bool      `json:"timed_out,omitempty"`
 	Started  time.Time `json:"started"`
 	WallMS   int64     `json:"wall_ms"` // of the last attempt
 	Traces   []string  `json:"traces"`  // turn ids copied, sorted
@@ -176,11 +187,12 @@ type job struct {
 
 // runState is what every job of one Run shares.
 type runState struct {
-	out     string
-	env     []string
-	exec    ExecFunc
-	backoff time.Duration
-	now     func() time.Time
+	out        string
+	env        []string
+	exec       ExecFunc
+	backoff    time.Duration
+	jobTimeout time.Duration
+	now        func() time.Time
 }
 
 // Run runs the selected cases N times each, at most Parallel at a time, and
@@ -255,7 +267,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		return err
 	}
 
-	st := &runState{out: out, env: env, exec: runExec, backoff: r.Backoff, now: now}
+	st := &runState{out: out, env: env, exec: runExec, backoff: r.Backoff, jobTimeout: r.JobTimeout, now: now}
 	if st.backoff == 0 {
 		st.backoff = defaultBackoff
 	}
@@ -297,6 +309,8 @@ func (r *Runner) check() (parallel int, err error) {
 		return 0, fmt.Errorf("parallel %d: at most %d (z.ai 429s at %d concurrent sessions)", parallel, maxParallel, maxParallel+1)
 	}
 	switch {
+	case r.JobTimeout < 0:
+		return 0, fmt.Errorf("job timeout %v: must not be negative", r.JobTimeout)
 	case r.N < 1:
 		return 0, fmt.Errorf("n %d: at least 1", r.N)
 	case r.Set == nil:
@@ -421,6 +435,7 @@ func (r *Runner) runJob(ctx context.Context, st *runState, j job) error {
 		started  time.Time
 		wall     time.Duration
 		attempts int
+		timedOut bool
 	)
 	for attempts < 2 {
 		attempts++
@@ -435,10 +450,27 @@ func (r *Runner) runJob(ctx context.Context, st *runState, j job) error {
 		t0 := st.now()
 		started = t0.UTC()
 		var err error
-		res, err = st.exec(ctx, Cmd{Path: r.LW, Args: []string{j.verb, "--vault", scratch, j.arg}, Env: st.env})
+		actx, cancel := ctx, context.CancelFunc(func() {})
+		if st.jobTimeout > 0 {
+			actx, cancel = context.WithTimeout(ctx, st.jobTimeout)
+		}
+		res, err = st.exec(actx, Cmd{Path: r.LW, Args: []string{j.verb, "--vault", scratch, j.arg}, Env: st.env})
+		// A cut-off attempt is the job timeout, not a run error: the deadline
+		// fired on the attempt's own context while the run's was still live,
+		// and the command did not finish cleanly. One that exited 0 just as
+		// the deadline passed did its work and keeps it.
+		timedOut = st.jobTimeout > 0 && ctx.Err() == nil &&
+			errors.Is(actx.Err(), context.DeadlineExceeded) && (err != nil || res.ExitCode != 0)
+		cancel()
 		wall = st.now().Sub(t0)
 		if cerr := ctx.Err(); cerr != nil {
 			return cerr
+		}
+		if timedOut {
+			err = nil
+			if res.ExitCode == 0 {
+				res.ExitCode = -1
+			}
 		}
 		if err != nil {
 			return err
@@ -470,7 +502,7 @@ func (r *Runner) runJob(ctx context.Context, st *runState, j job) error {
 	}
 	return writeJSON(filepath.Join(caseDir, "meta.json"), RunMeta{
 		Case: j.id, Verb: j.verb, Kind: j.kind, Index: j.index,
-		Attempts: attempts, ExitCode: res.ExitCode, Failed: res.ExitCode != 0,
+		Attempts: attempts, ExitCode: res.ExitCode, Failed: res.ExitCode != 0, TimedOut: timedOut,
 		Started: started, WallMS: wall.Milliseconds(), Traces: traces,
 	})
 }

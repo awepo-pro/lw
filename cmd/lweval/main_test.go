@@ -8,10 +8,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -62,6 +64,14 @@ type fakeLW struct {
 	mu    sync.Mutex
 	calls []eval.Cmd
 	seen  []seenConfig
+	// limits is, per query command, the time left on its context when it
+	// started — 0 with ok false when the context carried no deadline.
+	limits []deadline
+}
+
+type deadline struct {
+	left time.Duration
+	ok   bool
 }
 
 func lastEnv(env []string, key string) (string, bool) {
@@ -81,6 +91,10 @@ func (f *fakeLW) exec(ctx context.Context, c eval.Cmd) (eval.Output, error) {
 	if len(c.Args) == 1 && c.Args[0] == "version" {
 		return eval.Output{Stdout: []byte("lw v9.9.9-test\n")}, nil
 	}
+	dl, hasDL := ctx.Deadline()
+	f.mu.Lock()
+	f.limits = append(f.limits, deadline{time.Until(dl), hasDL})
+	f.mu.Unlock()
 	if xdg, ok := lastEnv(c.Env, "XDG_CONFIG_HOME"); ok {
 		s := seenConfig{xdg: xdg}
 		file := filepath.Join(xdg, "lw", "config.toml")
@@ -107,6 +121,9 @@ func newApp(f *fakeLW, env map[string]string) (*app, *bytes.Buffer, *bytes.Buffe
 		getenv:   func(k string) string { return env[k] },
 		now:      func() time.Time { return time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC) },
 		lookPath: func(s string) (string, error) { return s, nil },
+		// The real sweep reads the real $TMPDIR against a fixed test clock;
+		// only the tests that mean to sweep turn it on.
+		sweep: func(time.Time) ([]string, error) { return nil, nil },
 	}
 	if f != nil {
 		a.exec = f.exec
@@ -171,8 +188,9 @@ func TestLwevalUsage(t *testing.T) {
 			{"snapshot"}, {"snapshot", "only-one"}, {"snapshot", "a", "b", "c"},
 			{"score"}, {"score", "a", "b"}, {"show"}, {"show", "a", "b"},
 			{"compare"}, {"compare", "a"}, {"compare", "a", "b", "c"},
-			{"run", "--bogus"}, {"run", "--n", "x"}, {"run", "stray-arg"},
+			{"run", "--bogus"}, {"run", "--n", "x"}, {"run", "stray-arg"}, {"run", "--job-timeout", "soon"},
 			{"run", "--set-config", "no-equals", "--set", "x"},
+			{"run", "--set-config", "=value-only", "--set", "x"},
 		} {
 			a, _, errb := newApp(nil, map[string]string{"LW_EVAL_SET": "/x"})
 			if code := a.run(ctx, args); code != 2 {
@@ -180,6 +198,23 @@ func TestLwevalUsage(t *testing.T) {
 			}
 			if !strings.HasPrefix(errb.String(), "lweval: ") {
 				t.Errorf("%v: stderr = %q, want a lweval: line", args, errb.String())
+			}
+		}
+	})
+
+	// A-037-7: a malformed --set-config is refused without echoing it — a
+	// pasted secret with its "key=" forgotten must not land in a terminal log.
+	t.Run("a malformed --set-config is not echoed", func(t *testing.T) {
+		for _, bad := range []string{"sk-SECRET-123", "=sk-SECRET-123"} {
+			a, _, errb := newApp(nil, map[string]string{"LW_EVAL_SET": "/x"})
+			if code := a.run(ctx, []string{"run", "--set-config", bad}); code != 2 {
+				t.Errorf("%q: exit = %d, want 2", bad, code)
+			}
+			if strings.Contains(errb.String(), "SECRET") {
+				t.Errorf("%q: stderr echoes the value: %q", bad, errb.String())
+			}
+			if want := "lweval: --set-config: want key=value\n"; errb.String() != want {
+				t.Errorf("%q: stderr = %q, want %q", bad, errb.String(), want)
 			}
 		}
 	})
@@ -276,8 +311,8 @@ func TestSetConfigVariant(t *testing.T) {
 		if strings.Contains(string(raw), s.xdg) {
 			t.Errorf("run.json records the variant dir's path:\n%s", raw)
 		}
-		if info.Note != "llm.thinking=on" {
-			t.Errorf("note = %q, want the key=value list", info.Note)
+		if info.Note != "set-config: llm.thinking=on" {
+			t.Errorf("note = %q, want %q", info.Note, "set-config: llm.thinking=on")
 		}
 		if _, err := os.Stat(filepath.Join(filepath.Dir(runs[0]), "results.json")); err != nil {
 			t.Errorf("run did not score: %v", err)
@@ -474,6 +509,9 @@ func TestLwevalRunScoreCompare(t *testing.T) {
 	if strings.Contains(out.String(), "REAL") {
 		t.Errorf("identical runs compared as REAL:\n%s", out.String())
 	}
+	if strings.Contains(out.String(), "warning:") {
+		t.Errorf("two runs of the same set, snapshot, lw and n warned:\n%s", out.String())
+	}
 
 	// compare names the file that is missing.
 	a, _, errb = newApp(nil, nil)
@@ -526,4 +564,161 @@ func TestLwevalRunRefusals(t *testing.T) {
 			t.Errorf("stderr = %q, want the runner's refusal", errb.String())
 		}
 	})
+}
+
+// TestSetConfigSecretNote pins A-037-7 end to end: a variant that changes a
+// secret key records the key's NAME in the run note — never its value, in
+// run.json, the scorecard or any message — while lw itself still gets the
+// new value in the private config copy (037 T3).
+func TestSetConfigSecretNote(t *testing.T) {
+	const secret = "sk-NEW-SECRET-value-9"
+	xdg := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(xdg, "lw"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(xdg, "lw", "config.toml"), []byte("[llm]\nthinking = \"off\"\napi_key = \"old\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	t.Setenv("TMPDIR", t.TempDir())
+	set := newSet(t)
+
+	f := &fakeLW{}
+	a, out, errb := newApp(f, nil)
+	code := a.run(context.Background(), []string{
+		"run", "--set", set, "--lw", "lw-fake", "--n", "1", "--parallel", "1",
+		"--set-config", "llm.api_key=" + secret, "--set-config", "llm.thinking=on",
+	})
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errb.String())
+	}
+	if len(f.seen) != 1 || !strings.Contains(string(f.seen[0].bytes), `api_key = "`+secret+`"`) {
+		t.Fatalf("lw did not get the new key in its config copy: %+v", f.seen)
+	}
+	runs, _ := filepath.Glob(filepath.Join(set, "runs", "*", "*.json"))
+	if len(runs) == 0 {
+		t.Fatal("no run files")
+	}
+	for _, p := range append(runs, filepath.Join(set, "cases.toml")) {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(b), secret) {
+			t.Errorf("%s contains the secret", p)
+		}
+	}
+	for name, text := range map[string]string{"stdout": out.String(), "stderr": errb.String()} {
+		if strings.Contains(text, secret) {
+			t.Errorf("%s contains the secret:\n%s", name, text)
+		}
+	}
+	if want := "note:  set-config: llm.api_key llm.thinking=on\n"; !strings.Contains(out.String(), want) {
+		t.Errorf("scorecard lacks %q:\n%s", want, out.String())
+	}
+
+	// A refusal about a secret-named key does not quote the value either.
+	a, _, errb = newApp(&fakeLW{}, nil)
+	if code := a.run(context.Background(), []string{
+		"run", "--set", set, "--lw", "lw-fake", "--set-config", "llm.nope_token=" + secret,
+	}); code != 1 || strings.Contains(errb.String(), secret) {
+		t.Errorf("exit %d, stderr %q; want a refusal that does not echo the value", code, errb.String())
+	}
+}
+
+// TestShutdownSignals pins A-037-7: SIGHUP — a closed terminal, a dropped
+// ssh session — cancels the run like Ctrl-C, so the variant's config copy is
+// deleted instead of the process dying with it on disk. The test delivers the
+// real signal to itself (037 T3).
+func TestShutdownSignals(t *testing.T) {
+	for _, sig := range []os.Signal{os.Interrupt, syscall.SIGTERM, syscall.SIGHUP} {
+		found := false
+		for _, s := range shutdownSignals {
+			found = found || s == sig
+		}
+		if !found {
+			t.Errorf("%v is not in shutdownSignals", sig)
+		}
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), shutdownSignals...)
+	defer stop()
+	if err := syscall.Kill(os.Getpid(), syscall.SIGHUP); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-ctx.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("SIGHUP did not cancel the context")
+	}
+}
+
+// TestRunSweepsStaleConfigCopies pins A-037-7: `run` starts by removing the
+// user's own lweval-config-* directories that a killed run left behind, and
+// only those that are over an hour old (037 T3).
+func TestRunSweepsStaleConfigCopies(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	set := newSet(t)
+	f := &fakeLW{}
+	a, _, errb := newApp(f, nil)
+	a.sweep = eval.SweepVariantDirs
+	now := a.now()
+	mk := func(name string, age time.Duration) string {
+		dir := filepath.Join(tmp, name)
+		if err := os.MkdirAll(filepath.Join(dir, "lw"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(dir, now.Add(-age), now.Add(-age)); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	stale, fresh := mk("lweval-config-100", 3*time.Hour), mk("lweval-config-200", 5*time.Minute)
+
+	if code := a.run(context.Background(), []string{"run", "--set", set, "--lw", "lw-fake", "--n", "1", "--parallel", "1"}); code != 0 {
+		t.Fatalf("exit %d: %s", code, errb.String())
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Errorf("the stale config copy survived (%v)", err)
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Errorf("a fresh config copy was removed: %v", err)
+	}
+	if !strings.Contains(errb.String(), "removed 1 stale") {
+		t.Errorf("stderr = %q, want a line saying one stale config copy was removed", errb.String())
+	}
+}
+
+// TestRunJobTimeoutFlag pins A-037-9 at the command line: every lw command
+// runs under a deadline, 20 minutes unless --job-timeout says otherwise, and
+// 0 turns it off (037 T3).
+func TestRunJobTimeoutFlag(t *testing.T) {
+	set := newSet(t)
+	base := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+	calls := 0
+	run := func(extra ...string) deadline {
+		t.Helper()
+		f := &fakeLW{}
+		a, _, errb := newApp(f, nil)
+		calls++
+		at := base.Add(time.Duration(calls) * time.Minute) // a distinct run id per call
+		a.now = func() time.Time { return at }
+		args := append([]string{"run", "--set", set, "--lw", "lw-fake", "--n", "1", "--parallel", "1"}, extra...)
+		if code := a.run(context.Background(), args); code != 0 {
+			t.Fatalf("run %v: exit %d: %s", extra, code, errb.String())
+		}
+		if len(f.limits) != 1 {
+			t.Fatalf("run %v: %d query commands, want 1", extra, len(f.limits))
+		}
+		return f.limits[0]
+	}
+	if d := run(); !d.ok || d.left < 19*time.Minute || d.left > 20*time.Minute {
+		t.Errorf("default: %+v, want a deadline just under 20m", d)
+	}
+	if d := run("--job-timeout", "5m"); !d.ok || d.left < 4*time.Minute || d.left > 5*time.Minute {
+		t.Errorf("--job-timeout 5m: %+v, want a deadline just under 5m", d)
+	}
+	if d := run("--job-timeout", "0"); d.ok {
+		t.Errorf("--job-timeout 0: %+v, want no deadline", d)
+	}
 }

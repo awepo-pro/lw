@@ -14,8 +14,11 @@ import (
 // or a bare raw/ or wiki/ .md path written in prose. Refs fills everything
 // but Valid; CheckRefs decides that. (037 T2.)
 type Ref struct {
-	Kind   string // "marker" (a ^[…] marker) | "path" (a raw/… or wiki/… .md path in prose)
-	Target string // vault-relative path
+	// Kind is "marker" (a ^[…] marker), "path" (a raw/… or wiki/… .md path in
+	// prose) or "wikilink" ([[target]] / [[target|alias]] naming a wiki/ or
+	// raw/ path with or without .md — A-037-4).
+	Kind   string
+	Target string // vault-relative path; for a wikilink, as written (".md" may be missing, the alias is not part of it)
 	From   int    // page, 0 = none
 	To     int
 	Raw    string // as written
@@ -29,6 +32,14 @@ type Ref struct {
 // last ".md": "see wiki/a/b.md." yields "wiki/a/b.md", without the dot.
 // (037 T2.)
 var pathRe = regexp.MustCompile(`(?:wiki|raw)/[A-Za-z0-9._/-]+\.md`)
+
+// wikilinkRe is the frozen wikilink grammar (A-037-4): [[target]] or
+// [[target|alias]] where the target is a wiki/ or raw/ path of path
+// characters, ".md" optional, and the alias is anything up to the closing
+// "]]" on the same line. A slug link ([[kv-cache]]) names no path and a link
+// with an anchor ([[wiki/a#h]]) is not a plain path, so neither matches.
+// (037 T2.)
+var wikilinkRe = regexp.MustCompile(`\[\[((?:wiki|raw)/[A-Za-z0-9._/-]+)(?:\|[^\]\n]*)?\]\]`)
 
 // pathLeftBoundary is the bytes that, directly before a pathRe match, mean
 // the match is the tail of something longer rather than a path of its own:
@@ -51,12 +62,14 @@ func startsPath(text string, i int) bool {
 // Refs returns every vault reference in text, in order of appearance, Valid
 // unset. Markers come from cite.Scan — the marker grammar lives in one place
 // — and a marker cite.Parse rejected carries that Err as its Reason, so the
-// reviewer sees the grammar's own words. Prose paths are the pathRe matches
-// that are neither inside a marker (the marker is the reference; its path is
-// not a second one) nor in code, and that start a path of their own — a
-// match glued to a longer path or URL ("https://h/x/raw/main/README.md",
-// "foo/wiki/x.md") is a fragment of someone else's path, not a vault
-// reference. (037 T2, A-037-1.)
+// reviewer sees the grammar's own words. Prose paths and wikilinks are the
+// pathRe and wikilinkRe matches that are not inside a marker (the marker is
+// the reference; its path is not a second one), not in code, and that start
+// a path of their own — a match glued to a longer path or URL
+// ("https://h/x/raw/main/README.md", "foo/wiki/x.md", "foo[[wiki/x]]") is a
+// fragment of someone else's text, not a vault reference. A path inside a
+// wikilink ([[wiki/a.md]]) belongs to the wikilink: one reference, counted
+// once. (037 T2, A-037-1, A-037-4.)
 func Refs(text string) []Ref {
 	type found struct {
 		off int
@@ -69,9 +82,8 @@ func Refs(text string) []Ref {
 			Kind: "marker", Target: c.Source, From: c.From, To: c.To, Raw: c.Raw, Reason: c.Err,
 		}})
 	}
-	for _, m := range prosePaths(text, markers) {
-		p := text[m[0]:m[1]]
-		all = append(all, found{m[0], Ref{Kind: "path", Target: p, Raw: p}})
+	for _, p := range proseRefs(text, markers) {
+		all = append(all, found{p.start, Ref{Kind: p.kind, Target: p.target, Raw: text[p.start:p.end]}})
 	}
 	sort.SliceStable(all, func(i, j int) bool { return all[i].off < all[j].off })
 	if len(all) == 0 {
@@ -84,18 +96,28 @@ func Refs(text string) []Ref {
 	return refs
 }
 
-// prosePaths returns the [start, end) byte ranges of the pathRe matches in
-// text that sit outside every marker and outside code — fenced blocks and
-// inline code spans, "code" meaning exactly what cite.Scan skips. It asks
-// cite.Scan rather than re-implementing its fence and span rules, which a
-// copy would let drift: each candidate is rewritten, in a scratch copy of
-// the same byte length, into a well-formed marker "^[xxx]"; Scan then finds a
-// marker at that offset if and only if it would have found one there, i.e.
-// if the spot is not code. Before that, every "^[" that is not the start of a
-// real marker is disarmed ('^' to '_'): such a "^[" had no "]" after it on
-// its line, and the "]" the rewrite adds would otherwise let it swallow a
-// path that is plainly prose. (037 T2.)
-func prosePaths(text string, markers []cite.Cite) [][2]int {
+// proseRef is one prose reference found by proseRefs: its byte range, its
+// Kind ("path" or "wikilink") and its Target.
+type proseRef struct {
+	start, end int
+	kind       string
+	target     string
+}
+
+// proseRefs returns the wikilinks and bare paths in text that sit outside
+// every marker and outside code — fenced blocks and inline code spans, "code"
+// meaning exactly what cite.Scan skips. It asks cite.Scan rather than
+// re-implementing its fence and span rules, which a copy would let drift:
+// each candidate is rewritten, in a scratch copy of the same byte length,
+// into a well-formed marker "^[xxx]"; Scan then finds a marker at that offset
+// if and only if it would have found one there, i.e. if the spot is not code.
+// Before that, every "^[" that is not the start of a real marker is disarmed
+// ('^' to '_'): such a "^[" had no "]" after it on its line, and the "]" the
+// rewrite adds would otherwise let it swallow a path that is plainly prose.
+// A wikilink is rewritten the same way ("[[wiki/a]]" becomes "^[xxxxxxx]"),
+// and a path inside ANY wikilink match is left to the link, whether or not
+// the link itself passed the boundary rule. (037 T2, A-037-4.)
+func proseRefs(text string, markers []cite.Cite) []proseRef {
 	inMarker := func(i int) bool {
 		for _, c := range markers {
 			if i >= c.Offset && i < c.Offset+len(c.Raw) {
@@ -104,10 +126,24 @@ func prosePaths(text string, markers []cite.Cite) [][2]int {
 		}
 		return false
 	}
-	var cands [][]int
-	for _, m := range pathRe.FindAllStringIndex(text, -1) {
+	links := wikilinkRe.FindAllStringSubmatchIndex(text, -1)
+	inLink := func(i int) bool {
+		for _, m := range links {
+			if i >= m[0] && i < m[1] {
+				return true
+			}
+		}
+		return false
+	}
+	var cands []proseRef
+	for _, m := range links {
 		if !inMarker(m[0]) && startsPath(text, m[0]) {
-			cands = append(cands, m)
+			cands = append(cands, proseRef{m[0], m[1], "wikilink", text[m[2]:m[3]]})
+		}
+	}
+	for _, m := range pathRe.FindAllStringIndex(text, -1) {
+		if !inMarker(m[0]) && !inLink(m[0]) && startsPath(text, m[0]) {
+			cands = append(cands, proseRef{m[0], m[1], "path", text[m[0]:m[1]]})
 		}
 	}
 	if len(cands) == 0 {
@@ -119,8 +155,8 @@ func prosePaths(text string, markers []cite.Cite) [][2]int {
 			probe[i] = '_'
 		}
 	}
-	for _, m := range cands {
-		s, e := m[0], m[1] // a match is at least "raw/x.md", 8 bytes: room for "^[" + "]"
+	for _, c := range cands {
+		s, e := c.start, c.end // a candidate is at least "raw/x.md" or "[[raw/x]]": room for "^[" + "]"
 		probe[s], probe[s+1], probe[e-1] = '^', '[', ']'
 		for j := s + 2; j < e-1; j++ {
 			probe[j] = 'x'
@@ -130,10 +166,10 @@ func prosePaths(text string, markers []cite.Cite) [][2]int {
 	for _, c := range cite.Scan(string(probe)) {
 		prose[c.Offset] = true
 	}
-	var out [][2]int
-	for _, m := range cands {
-		if prose[m[0]] {
-			out = append(out, [2]int{m[0], m[1]})
+	var out []proseRef
+	for _, c := range cands {
+		if prose[c.start] {
+			out = append(out, c)
 		}
 	}
 	return out
@@ -153,7 +189,9 @@ type sourceInfo struct {
 // Valid and Reason set; refs itself is not modified, so a report can still
 // show what the model wrote. A marker and a prose path resolve the same way:
 // raw/ targets must exist as raw sources — resolve returns the source BODY,
-// frontmatter stripped — and wiki/ targets as pages. A paged marker also
+// frontmatter stripped — and wiki/ targets as pages. A wikilink resolves the
+// same way once ".md" is appended to a target that lacks it (its Target
+// stays as written). A paged marker also
 // needs the source to carry page anchors and no page past the last one,
 // exactly lint's cite-page rule (a page missing from the middle of the run
 // is fine: table-only pages get no anchor, and the nearest one above covers
@@ -165,7 +203,11 @@ func CheckRefs(refs []Ref, resolve func(path string) (body string, ok bool)) []R
 	sources := map[string]sourceInfo{}
 	for i, r := range refs {
 		if r.Reason == "" {
-			r.Reason = checkRef(r, resolve, sources)
+			resolved := r
+			if r.Kind == "wikilink" && !strings.HasSuffix(r.Target, ".md") {
+				resolved.Target += ".md"
+			}
+			r.Reason = checkRef(resolved, resolve, sources)
 		}
 		r.Valid = r.Reason == ""
 		out[i] = r
@@ -241,14 +283,35 @@ func Abstained(answer string) bool {
 }
 
 // CitesAny reports whether any ref points at any of targets, by exact
-// vault-relative path. Valid is deliberately not consulted: a model that
+// vault-relative path. A wikilink never counts (A-037-4): it is navigation,
+// not citation, and cite_any measures citing evidence — the same answer must
+// score the same before and after wikilinks became refs. Valid is deliberately not consulted: a model that
 // cites the right source with a page that does not exist did cite it, and
 // the bad page is counted by the invalid-ref tally instead. Reading Valid
 // here would also make the answer depend on whether the caller had run
 // CheckRefs yet. (037 T2.)
 func CitesAny(refs []Ref, targets []string) bool {
 	for _, r := range refs {
-		if slices.Contains(targets, r.Target) {
+		if r.Kind != "wikilink" && slices.Contains(targets, r.Target) {
+			return true
+		}
+	}
+	return false
+}
+
+// RawEvidence reports whether any ref points at raw evidence: any ref whose
+// target is under raw/, or a marker that does not name a wiki page (a marker
+// is provenance, and "^[something]" is a claim of evidence whatever it
+// names). A wiki page — as a prose path, a marker or a wikilink — is not: an
+// answer that says "not from your vault" may still name what the vault does
+// hold, and only an appeal to raw sources for the part it does not cover
+// contradicts the label. (037 T2, A-037-3.)
+func RawEvidence(refs []Ref) bool {
+	for _, r := range refs {
+		switch {
+		case strings.HasPrefix(r.Target, "raw/"):
+			return true
+		case r.Kind == "marker" && !strings.HasPrefix(r.Target, "wiki/"):
 			return true
 		}
 	}

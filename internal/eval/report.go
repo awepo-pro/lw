@@ -31,6 +31,14 @@ const (
 // 1e-9 is far below anything that is a difference.
 const verdictTolerance = 1e-9
 
+// boundedMetrics are the metrics bounded in [0,1]: rates and 0/1 outcomes.
+// Their per-case variance is floored (A-037-5, see Stat). max_rounds_hit is
+// here because a turn either hit the round limit or did not.
+var boundedMetrics = map[string]bool{
+	MetricFactRecall: true, MetricAbstainOK: true, MetricCiteValid: true, MetricCiteExpected: true,
+	MetricChunkCoverage: true, MetricToolErrorRate: true, MetricMaxRoundsHit: true,
+}
+
 // Stat is one metric aggregated over a run's cases (C5).
 //
 // Each case is repeated N times, and the repeats of one case are what
@@ -41,6 +49,14 @@ const verdictTolerance = 1e-9
 // and divided by C, the number of cases that have any. It is absent when no
 // case has two values — one run per case has no spread to estimate, and a
 // made-up 0 would claim a certainty nobody measured.
+//
+// A case whose runs all agree has a sample variance of exactly 0 — but three
+// 1.0s out of three tries do not prove the case is perfectly steady, and a 0
+// noise estimate makes the next 0.05 change read as REAL. So for a metric
+// bounded in [0,1] each case's variance is floored at the Laplace-smoothed
+// Bernoulli variance: s_c² = max(sample variance, p̃(1-p̃)), p̃ = (Σx+1)/(n+2),
+// which for 3 identical runs is 0.16. Unbounded metrics (rounds, tokens,
+// seconds) keep the plain sample variance. (A-037-5.)
 type Stat struct {
 	Metric string
 	Value  float64
@@ -116,7 +132,14 @@ func statOf(metric string, s series) Stat {
 			for _, x := range v {
 				ss += (x - mean) * (x - mean)
 			}
-			sumVar += ss / (n - 1) / n // s_c² / n_c
+			s2 := ss / (n - 1)
+			if boundedMetrics[metric] {
+				p := (sum(v) + 1) / (n + 2)
+				if floor := p * (1 - p); floor > s2 {
+					s2 = floor
+				}
+			}
+			sumVar += s2 / n // s_c² / n_c
 			st.HasSE = true
 		}
 	}
@@ -254,9 +277,7 @@ func Compare(a, b *Results) *Comparison {
 	}
 	sort.Strings(c.OnlyA)
 	sort.Strings(c.OnlyB)
-	if a.Run.SnapshotSHA256 != b.Run.SnapshotSHA256 {
-		c.Warnings = append(c.Warnings, "the runs used different snapshots; the numbers compare two vaults, not just two lw configurations")
-	}
+	c.Warnings = differingFields(a, b)
 
 	var ra, rb []CaseResult
 	for _, r := range a.Results {
@@ -299,6 +320,42 @@ func Compare(a, b *Results) *Comparison {
 		}
 	}
 	return c
+}
+
+// differingFields returns one warning line for each of the fields below that
+// differs between the two runs, in this order. Every one changes what the
+// numbers are numbers of — a comparison across them is still printed, but it
+// is not the comparison its header suggests. lw_version differs in any
+// comparison of two builds; the line is there so that is a fact on the page,
+// not an assumption. (A-037-8.)
+func differingFields(a, b *Results) []string {
+	short := func(s string) string {
+		if len(s) > 12 {
+			return s[:12]
+		}
+		return s
+	}
+	show := func(s string) string {
+		if s == "" {
+			return "—"
+		}
+		return s
+	}
+	fields := []struct{ name, a, b, why string }{
+		{"set_sha256", short(a.SetSHA256), short(b.SetSHA256), "cases.toml changed between the two scorings, so cases, facts or cite_any may differ"},
+		{"snapshot", short(a.Run.SnapshotSHA256), short(b.Run.SnapshotSHA256), "the numbers compare two vaults, not just two lw configurations"},
+		{"lw_version", a.Run.LWVersion, b.Run.LWVersion, "the runs used different lw builds"},
+		{"n", fmt.Sprint(a.Run.N), fmt.Sprint(b.Run.N), "the noise estimates rest on different numbers of repeats"},
+		{"holdout", fmt.Sprint(a.Run.Holdout), fmt.Sprint(b.Run.Holdout), "only one run included the holdout cases"},
+		{"only", fmt.Sprintf("%q", a.Run.Only), fmt.Sprintf("%q", b.Run.Only), "the runs covered different parts of the set"},
+	}
+	var out []string
+	for _, f := range fields {
+		if f.a != f.b {
+			out = append(out, fmt.Sprintf("%s differs (A %s · B %s): %s", f.name, show(f.a), show(f.b), f.why))
+		}
+	}
+	return out
 }
 
 // caseVerbs maps each case id in results to its verb.

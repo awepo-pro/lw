@@ -121,8 +121,9 @@ func TestScoreRun(t *testing.T) {
 		t.Errorf("results.json is not 2-space indented JSON with a trailing newline:\n%.200s", raw)
 	}
 	var file struct {
-		Run     RunInfo `json:"run"`
-		Results []struct {
+		Run       RunInfo `json:"run"`
+		SetSHA256 string  `json:"set_sha256"`
+		Results   []struct {
 			Case    string             `json:"case"`
 			Index   int                `json:"index"`
 			Verb    string             `json:"verb"`
@@ -138,6 +139,14 @@ func TestScoreRun(t *testing.T) {
 	readJSON(t, filepath.Join(out, "run.json"), &runInfo)
 	if !reflect.DeepEqual(file.Run, runInfo) {
 		t.Errorf("results.json run = %+v, want run.json's %+v", file.Run, runInfo)
+	}
+	// A-037-8: results.json stamps the cases.toml it was scored against —
+	// the edited one here, not the one the run started with.
+	if want := sha256Hex([]byte(edited)); file.SetSHA256 != want || res.SetSHA256 != want {
+		t.Errorf("set_sha256 = %q (returned %q), want the scored cases.toml's %q", file.SetSHA256, res.SetSHA256, want)
+	}
+	if file.SetSHA256 == runInfo.SetSHA256 {
+		t.Errorf("the stamp equals the run-time set_sha256 %q although cases.toml changed after the run", runInfo.SetSHA256)
 	}
 	if !strings.Contains(string(raw), `"metrics": {}`) {
 		t.Errorf("a failed run's metrics are not an empty object:\n%s", raw)
@@ -158,7 +167,7 @@ func TestScoreRun(t *testing.T) {
 	}
 	ingest := func() map[string]float64 {
 		return scProcess(map[string]float64{
-			"fact_recall": 0.5, "chunk_coverage": 0, "ops": 4, "lint_warns": float64(lf.Warns),
+			"fact_recall": 0.5, "chunk_coverage": 0, "ops": 4, "pages_staged": 1, "lint_warns": float64(lf.Warns),
 		})
 	}
 	wants := []want{
@@ -325,9 +334,10 @@ q = "Who won the 2030 cup?"
 	scMetrics(t, "kv-cache/2", scResult(t, res, "kv-cache", 2).Metrics, map[string]float64{
 		"fact_recall": 1.0 / 3, "cite_valid": 1, "cite_expected": 1,
 	})
-	// An abstention that still points at a page is not a clean abstention.
+	// A-037-3: naming a wiki page is not citing evidence — the abstention
+	// stands (and the ref is still checked: it resolves).
 	scMetrics(t, "no-topic/1", scResult(t, res, "no-topic", 1).Metrics, map[string]float64{
-		"abstain_ok": 0, "cite_valid": 1,
+		"abstain_ok": 1, "cite_valid": 1,
 	})
 	// Whitespace and case do not stop the phrase matching.
 	scMetrics(t, "no-topic/2", scResult(t, res, "no-topic", 2).Metrics, map[string]float64{"abstain_ok": 1})
@@ -455,8 +465,9 @@ facts = [["speculative"], ["inference"], ["verifies them"]]
 		"reasoning_tokens": 8,
 		"wall_s":           0.02,
 		// op2 is dropped: 4 live ops.
-		"ops":        4,
-		"lint_warns": 3,
+		"ops":          4,
+		"pages_staged": 2,
+		"lint_warns":   3,
 	})
 }
 
@@ -472,7 +483,7 @@ func TestScoreIngestNothingStaged(t *testing.T) {
 		t.Fatalf("Score: %v", err)
 	}
 	scMetrics(t, "paper-text/1", scResult(t, res, "paper-text", 1).Metrics, map[string]float64{
-		"fact_recall": 0, "ops": 0,
+		"fact_recall": 0, "ops": 0, "pages_staged": 0,
 	})
 }
 
@@ -565,5 +576,89 @@ func TestScoreRefusals(t *testing.T) {
 		if got := scResult(t, res, "kv-cache", 1).Metrics["fact_recall"]; got != 1 {
 			t.Errorf("fact_recall = %v, want 1", got)
 		}
+	})
+}
+
+// TestAbstainOKShapes pins A-037-3 on the shapes lw really answers an
+// out-of-vault question with. Its DESIGNED behaviour is the "Not from your
+// vault:" label followed by a knowledge answer, which may name the wiki pages
+// the vault does hold; what makes an abstention dirty is pointing at RAW
+// evidence — a marker or a raw/ path — for the part the vault does not
+// cover (037 T3).
+func TestAbstainOKShapes(t *testing.T) {
+	set := newRunSet(t)
+	scRewriteCases(t, set, `[[ask]]
+id = "no-topic"
+kind = "absent"
+q = "Who won the 2030 cup?"
+`)
+	run := scNewRun(t, set, "r1")
+	shapes := []struct {
+		name, stdout string
+		want         float64
+	}{
+		{"label, figures, no refs", "Not from your vault: Llama 3 has 8B and 70B parameters, trained on 15T tokens.\n", 1},
+		{"label and a wikilink to a wiki page", "Not from your vault: for the general idea see [[wiki/queries/cups]].\n", 1},
+		{"label and a wiki path in prose", "Not from your vault: the vault only has wiki/concepts/kv-cache.md on caching.\n", 1},
+		{"label and a wiki page marker", "Not from your vault: related ^[wiki/concepts/kv-cache.md].\n", 1},
+		{"label and a raw marker", "Not from your vault: the winner was X ^[raw/articles/kv-cache-explained.md].\n", 0},
+		{"label and a paged raw marker", "Not from your vault: see ^[raw/papers/leviathan-2023.md p.2].\n", 0},
+		{"label and a raw path in prose", "Not from your vault: compare raw/articles/kv-cache-explained.md.\n", 0},
+		{"label and a wikilink to a raw source", "Not from your vault: [[raw/articles/kv-cache-explained]].\n", 0},
+		{"label, a wiki link and a raw marker", "Not from your vault: [[wiki/queries/cups]] and ^[raw/a.md].\n", 0},
+		{"no label", "The 2030 cup was won by nobody yet.\n", 0},
+		{"no label, with a wiki link", "See [[wiki/queries/cups]].\n", 0},
+		{"the label in the middle", "Short answer first. Not from your vault: nothing on this.\n", 1},
+	}
+	for i, sh := range shapes {
+		scWriteCase(t, run, scAnsweredMeta("no-topic", "query", "absent", i+1), map[string]string{"stdout.txt": sh.stdout})
+	}
+	res, err := Score(run)
+	if err != nil {
+		t.Fatalf("Score: %v", err)
+	}
+	for i, sh := range shapes {
+		got, ok := scResult(t, res, "no-topic", i+1).Metrics["abstain_ok"]
+		if !ok || got != sh.want {
+			t.Errorf("%s: abstain_ok = %v (present %v), want %v", sh.name, got, ok, sh.want)
+		}
+	}
+}
+
+// TestScoreWikilinks pins A-037-4 in the score pass: a wikilink counts in
+// cite_valid like any ref and is checked against the vault (".md" appended
+// when missing), but it never satisfies cite_expected, which measures citing
+// evidence (037 T3).
+func TestScoreWikilinks(t *testing.T) {
+	set := newRunSet(t)
+	scRewriteCases(t, set, `[[ask]]
+id = "kv-cache"
+kind = "covered"
+q = "How does the KV cache work?"
+facts = [["keys"]]
+cite_any = ["wiki/concepts/kv-cache.md", "raw/articles/kv-cache-explained.md"]
+`)
+	run := scNewRun(t, set, "r1")
+	ask := func(i int, stdout string) {
+		scWriteCase(t, run, scAnsweredMeta("kv-cache", "query", "covered", i), map[string]string{"stdout.txt": stdout})
+	}
+	// 1: one wikilink that resolves, one that does not.
+	ask(1, "Keys are cached; see [[wiki/concepts/kv-cache]] and [[wiki/queries/missing|more]].\n")
+	// 2: wikilinks to the expected targets, written out in full.
+	ask(2, "Keys: [[wiki/concepts/kv-cache.md]] and [[raw/articles/kv-cache-explained.md]].\n")
+	// 3: a wikilink plus a real marker to an expected source.
+	ask(3, "Keys: [[wiki/concepts/kv-cache]] ^[raw/articles/kv-cache-explained.md].\n")
+	res, err := Score(run)
+	if err != nil {
+		t.Fatalf("Score: %v", err)
+	}
+	scMetrics(t, "1", scResult(t, res, "kv-cache", 1).Metrics, map[string]float64{
+		"fact_recall": 1, "cite_valid": 0.5, "cite_expected": 0,
+	})
+	scMetrics(t, "2", scResult(t, res, "kv-cache", 2).Metrics, map[string]float64{
+		"fact_recall": 1, "cite_valid": 1, "cite_expected": 0,
+	})
+	scMetrics(t, "3", scResult(t, res, "kv-cache", 3).Metrics, map[string]float64{
+		"fact_recall": 1, "cite_valid": 1, "cite_expected": 1,
 	})
 }

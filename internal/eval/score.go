@@ -36,6 +36,7 @@ const (
 	MetricReasoningTokens = "reasoning_tokens"
 	MetricWallS           = "wall_s"
 	MetricOps             = "ops"
+	MetricPagesStaged     = "pages_staged"
 	MetricLintWarns       = "lint_warns"
 )
 
@@ -46,7 +47,7 @@ var metricOrder = []string{
 	MetricFactRecall, MetricAbstainOK, MetricCiteValid, MetricCiteExpected, MetricChunkCoverage,
 	MetricToolErrorRate, MetricRounds, MetricMaxRoundsHit,
 	MetricInputTokens, MetricCachedTokens, MetricOutputTokens, MetricReasoningTokens, MetricWallS,
-	MetricOps, MetricLintWarns,
+	MetricOps, MetricPagesStaged, MetricLintWarns,
 }
 
 // resultsFile is the scored form of a run, kept beside run.json.
@@ -66,10 +67,16 @@ type CaseResult struct {
 // Results is <run>/results.json: the run's own record plus every run's
 // metrics, sorted by case then index. It is the one file `lweval show` and
 // `lweval compare` read, so neither needs the set, the snapshot or the
-// traces — a run can be reported on from its results alone. (037 T3.)
+// traces — a run can be reported on from its results alone.
+//
+// SetSHA256 is the sha256 of the cases.toml the run was SCORED against, which
+// is not Run.SetSHA256 (the one it was run against): a fact fixed after the
+// run changes the score without changing the run, and `compare` must be able
+// to tell two scorings of different sets apart. (037 T3, A-037-8.)
 type Results struct {
-	Run     RunInfo      `json:"run"`
-	Results []CaseResult `json:"results"`
+	Run       RunInfo      `json:"run"`
+	SetSHA256 string       `json:"set_sha256"`
+	Results   []CaseResult `json:"results"`
 }
 
 // LoadResults reads <runDir>/results.json, the file Score wrote (037 T3).
@@ -132,6 +139,10 @@ func ScoreSet(runDir string, set *Set) (*Results, error) {
 		return nil, fmt.Errorf("eval: score: run used snapshot sha256 %s, but the set's snapshot %s is %s",
 			info.SnapshotSHA256, set.Snapshot, set.SnapshotSHA256)
 	}
+	setSHA, err := fileSHA256(filepath.Join(set.Dir, "cases.toml"))
+	if err != nil {
+		return nil, fmt.Errorf("eval: score: read cases.toml: %w", err)
+	}
 	refs, err := listRunCases(abs)
 	if err != nil {
 		return nil, err
@@ -153,7 +164,7 @@ func ScoreSet(runDir string, set *Set) (*Results, error) {
 	for _, c := range set.Ingest {
 		s.ingest[c.ID] = c
 	}
-	res := &Results{Run: info, Results: []CaseResult{}}
+	res := &Results{Run: info, SetSHA256: setSHA, Results: []CaseResult{}}
 	for _, ref := range refs {
 		r, err := s.scoreOne(ref)
 		if err != nil {
@@ -286,9 +297,12 @@ func (s *scorer) scoreAsk(m map[string]float64, c AskCase, dir string) error {
 	}
 	refs := score.Refs(text)
 	if c.Kind == "absent" {
-		// A clean abstention says the vault does not cover it and points at
-		// nothing: a "not from your vault" that still cites a page is hedging.
-		m[MetricAbstainOK] = boolMetric(score.Abstained(text) && len(refs) == 0)
+		// lw's designed answer to an out-of-vault question is the "Not from
+		// your vault:" label and then a knowledge answer, which may name the
+		// wiki pages the vault does hold. What contradicts the label is
+		// appealing to RAW evidence — a marker or a raw/ path — for the part
+		// the vault does not cover; a wiki ref or wikilink does not. (A-037-3.)
+		m[MetricAbstainOK] = boolMetric(score.Abstained(text) && !score.RawEvidence(refs))
 	}
 	if len(refs) > 0 {
 		m[MetricCiteValid] = validShare(score.CheckRefs(refs, s.resolver("")))
@@ -310,10 +324,14 @@ func (s *scorer) scoreAsk(m map[string]float64, c AskCase, dir string) error {
 // it rather than dropped from the count.
 func (s *scorer) scoreIngest(m map[string]float64, c IngestCase, dir string, turns []*trace.Turn) error {
 	stagedDir := filepath.Join(dir, "staged")
-	text, err := stagedWikiText(stagedDir)
+	text, pages, err := stagedWikiText(stagedDir)
 	if err != nil {
 		return err
 	}
+	// pages_staged makes "the ingest staged no wiki page" a number on the
+	// scorecard: with 0 pages every fact misses and every ref check passes
+	// vacuously, and neither of those would say why. (A-037-10.)
+	m[MetricPagesStaged] = float64(pages)
 	if len(c.Facts) > 0 {
 		hit, _, err := score.FactRecall(text, c.Facts)
 		if err != nil {
@@ -377,8 +395,9 @@ func isLive(state string) bool {
 
 // stagedWikiText joins the bodies of every file under stagedDir/wiki, in
 // slash-path order, separated by a blank line so a word at the end of one
-// page never fuses with the start of the next.
-func stagedWikiText(stagedDir string) (string, error) {
+// page never fuses with the start of the next, and returns how many files
+// that is.
+func stagedWikiText(stagedDir string) (string, int, error) {
 	root := filepath.Join(stagedDir, "wiki")
 	var paths []string
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
@@ -398,14 +417,14 @@ func stagedWikiText(stagedDir string) (string, error) {
 		return nil
 	})
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	sort.Strings(paths)
 	parts := make([]string, 0, len(paths))
 	for _, rel := range paths {
 		b, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
 		if err != nil {
-			return "", err
+			return "", 0, err
 		}
 		if page, err := vault.ParsePage("wiki/"+rel, b); err == nil {
 			parts = append(parts, page.Body)
@@ -413,7 +432,7 @@ func stagedWikiText(stagedDir string) (string, error) {
 			parts = append(parts, string(b))
 		}
 	}
-	return strings.Join(parts, "\n\n"), nil
+	return strings.Join(parts, "\n\n"), len(paths), nil
 }
 
 // resolveStagedSource returns the body of a source the ingest staged:

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"math"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -27,11 +29,103 @@ func DefaultConfigPath() string {
 	return filepath.Join(config.ConfigDir(), "config.toml")
 }
 
-// VariantNote is the run note a variant gets when the caller gave none: the
-// key=value pairs, space-separated, so a run directory says what was changed
-// without anyone remembering. (037 T3.)
+// secretKeyRe matches the names of settings that may hold a credential. It
+// is a rule about NAMES, not values — a value cannot be recognised as a
+// secret, a name can be guessed at — so it errs wide: "llm.max_tokens"
+// matches "token" and is treated as secret too. (A-037-7.)
+var secretKeyRe = regexp.MustCompile(`(?i)key|token|secret|password|auth`)
+
+// SecretKey reports whether a dotted config key looks like it holds a secret:
+// its value must then never be echoed in a note or an error. (037 T3,
+// A-037-7.)
+func SecretKey(key string) bool {
+	return secretKeyRe.MatchString(key)
+}
+
+// VariantNote is the run note a variant gets when the caller gave none:
+// "set-config:" and the key=value pairs, space-separated, so a run directory
+// says what was changed without anyone remembering — with a key that looks
+// secret (SecretKey) listed by NAME only. The note lands in run.json and in
+// the scorecard, both of which get pasted into reports; an API key in the
+// variant must reach lw through the private config copy and nowhere else.
+// (037 T3, A-037-7.)
 func VariantNote(sets []string) string {
-	return strings.Join(sets, " ")
+	if len(sets) == 0 {
+		return ""
+	}
+	parts := make([]string, len(sets))
+	for i, s := range sets {
+		key, _, _ := strings.Cut(s, "=")
+		if key = strings.TrimSpace(key); SecretKey(key) {
+			parts[i] = key
+		} else {
+			parts[i] = s
+		}
+	}
+	return "set-config: " + strings.Join(parts, " ")
+}
+
+// staleVariantAge is how long an lweval-config-* directory must have gone
+// untouched before a new run sweeps it: well past the heartbeat, so a live
+// run's directory is never taken for a leftover.
+const staleVariantAge = time.Hour
+
+// variantHeartbeat is how often a running variant touches its directory so
+// the sweep's age test sees it as live — a full N=3 eval can outlast the
+// sweep's hour. A variable so a test can shorten it.
+var variantHeartbeat = 5 * time.Minute
+
+// variantDirRe is the name MkdirTemp("", "lweval-config-") gives: the prefix
+// and a run of digits. Nothing else in $TMPDIR is ours to delete.
+var variantDirRe = regexp.MustCompile(`^lweval-config-[0-9]+$`)
+
+// SweepVariantDirs removes the lweval-config-* directories in $TMPDIR that a
+// killed run left behind: really directories (never a symlink), owned by the
+// current user, named as WithVariant names them, and untouched for over an
+// hour. It returns the paths it removed, sorted. (037 T3, A-037-7.)
+//
+// A SIGKILL cannot be handled, so without this a copy of the user's config —
+// API key included — would sit in /tmp for good after every kill -9. The sweep
+// runs when a new run starts; WithVariant's heartbeat keeps a live run's
+// directory young.
+func SweepVariantDirs(now time.Time) ([]string, error) {
+	return sweepVariantDirs(os.TempDir(), now, staleVariantAge, os.Getuid())
+}
+
+// sweepVariantDirs is SweepVariantDirs over an explicit directory, age and
+// owner, so a test can aim it without touching the real $TMPDIR.
+func sweepVariantDirs(tmp string, now time.Time, maxAge time.Duration, uid int) ([]string, error) {
+	entries, err := os.ReadDir(tmp)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("sweep %s: %w", tmp, err)
+	}
+	var removed []string
+	var errs []error
+	for _, e := range entries { // sorted by name
+		if !variantDirRe.MatchString(e.Name()) {
+			continue
+		}
+		full := filepath.Join(tmp, e.Name())
+		info, err := os.Lstat(full)
+		if err != nil || !info.IsDir() {
+			continue // gone already, a file, or a symlink: not ours to remove
+		}
+		if st, ok := info.Sys().(*syscall.Stat_t); !ok || int(st.Uid) != uid {
+			continue
+		}
+		if now.Sub(info.ModTime()) <= maxAge {
+			continue
+		}
+		if err := removeAll(full); err != nil {
+			errs = append(errs, fmt.Errorf("sweep %s: %w", full, err))
+			continue
+		}
+		removed = append(removed, full)
+	}
+	return removed, errors.Join(errs...)
 }
 
 // WithVariant runs fn under a private copy of the config at configPath with
@@ -90,6 +184,29 @@ func WithVariant(ctx context.Context, configPath string, sets []string, fn func(
 	if err := os.Chmod(file, 0o600); err != nil {
 		return fmt.Errorf("--set-config: %w", err)
 	}
+
+	// The heartbeat keeps the directory's mtime young while fn runs, so a
+	// sweep by another lweval never mistakes a long run's config copy for a
+	// leftover. It stops before the directory is removed.
+	stop, done := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(done)
+		tick := time.NewTicker(variantHeartbeat)
+		defer tick.Stop()
+		for {
+			select {
+			case <-tick.C:
+				now := time.Now()
+				_ = os.Chtimes(dir, now, now)
+			case <-stop:
+				return
+			}
+		}
+	}()
+	defer func() {
+		close(stop)
+		<-done
+	}()
 	return fn([]string{"XDG_CONFIG_HOME=" + dir})
 }
 
@@ -120,7 +237,9 @@ func RewriteConfig(src []byte, sets []string) ([]byte, error) {
 		key, value, ok := strings.Cut(s, "=")
 		key = strings.TrimSpace(key)
 		if !ok || key == "" {
-			return nil, fmt.Errorf("--set-config %s: want key=value", s)
+			// Never echo the pair: without its "key=" it may be nothing but
+			// the secret. (A-037-7.)
+			return nil, errors.New("--set-config: want key=value")
 		}
 		if seen[key] {
 			return nil, fmt.Errorf("--set-config %s: given twice", key)
@@ -156,13 +275,13 @@ func RewriteConfig(src []byte, sets []string) ([]byte, error) {
 			want[p.key] = p.value
 		case int64:
 			if !intRe.MatchString(p.value) {
-				return nil, fmt.Errorf("--set-config %s: want an integer, got %q", p.key, p.value)
+				return nil, fmt.Errorf("--set-config %s: want an integer%s", p.key, got(p.key, p.value))
 			}
 			text = p.value
 		case float64:
 			f, err := strconv.ParseFloat(p.value, 64)
 			if !floatRe.MatchString(p.value) || err != nil || math.IsInf(f, 0) {
-				return nil, fmt.Errorf("--set-config %s: want a number, got %q", p.key, p.value)
+				return nil, fmt.Errorf("--set-config %s: want a number%s", p.key, got(p.key, p.value))
 			}
 			text = p.value
 			if !strings.ContainsAny(text, ".eE") {
@@ -170,7 +289,7 @@ func RewriteConfig(src []byte, sets []string) ([]byte, error) {
 			}
 		case bool:
 			if p.value != "true" && p.value != "false" {
-				return nil, fmt.Errorf("--set-config %s: want true or false, got %q", p.key, p.value)
+				return nil, fmt.Errorf("--set-config %s: want true or false%s", p.key, got(p.key, p.value))
 			}
 			text = p.value
 		default:
@@ -186,11 +305,20 @@ func RewriteConfig(src []byte, sets []string) ([]byte, error) {
 		return nil, fmt.Errorf("--set-config: the rewritten config is not valid TOML: %w", err)
 	}
 	for key, v := range want {
-		if got, _ := lookupKey(after, key); got != v {
-			return nil, fmt.Errorf("--set-config %s: the value does not read back as written (%q)", key, got)
+		if read, _ := lookupKey(after, key); read != v {
+			return nil, fmt.Errorf("--set-config %s: the value does not read back as written", key)
 		}
 	}
 	return []byte(out), nil
+}
+
+// got renders the offending value for a refusal — ", got "lots"" — except
+// for a key that looks secret, whose value is never repeated. (A-037-7.)
+func got(key, value string) string {
+	if SecretKey(key) {
+		return ""
+	}
+	return fmt.Sprintf(", got %q", value)
 }
 
 var (

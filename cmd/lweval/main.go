@@ -41,12 +41,15 @@ run flags:
   --lw PATH             the lw binary (default: lw on PATH)
   --n N                 runs per case (default 3)
   --parallel N          cases at once, 1 or 2 (default 2)
+  --job-timeout D       longest one lw command may run, e.g. 20m (default 20m; 0 = no limit);
+                        a command that outlives it counts as a failed attempt and is retried once
   --only X              ask, ingest, or one case id
   --holdout             include the holdout cases
   --note S              a label recorded in run.json
   --set-config K=V      run under a private copy of config.toml with that key
                         rewritten (e.g. llm.thinking=on); repeatable. The note
-                        defaults to the key=value list
+                        defaults to "set-config:" and the key=value list, with
+                        the value left out for a key that looks secret
 `
 
 // app is one lweval process's world. Everything the commands reach for —
@@ -56,16 +59,29 @@ type app struct {
 	stdout, stderr io.Writer
 	getenv         func(string) string
 	now            func() time.Time
-	exec           eval.ExecFunc                // nil = os/exec
-	lookPath       func(string) (string, error) // nil = exec.LookPath
+	exec           eval.ExecFunc                     // nil = os/exec
+	lookPath       func(string) (string, error)      // nil = exec.LookPath
+	sweep          func(time.Time) ([]string, error) // nil = eval.SweepVariantDirs
 }
 
+// defaultJobTimeout is how long one lw command may run before `run` gives up
+// on that attempt: generous for a 300-page PDF ingest, short enough that a
+// provider that stops answering costs a case 40 minutes, not the night.
+const defaultJobTimeout = 20 * time.Minute
+
+// shutdownSignals are the signals that cancel a run instead of killing
+// lweval. SIGHUP is among them — a closed terminal or a dropped ssh session
+// would otherwise end the process with the variant's config copy (and the API
+// key in it) still on disk.
+var shutdownSignals = []os.Signal{os.Interrupt, syscall.SIGTERM, syscall.SIGHUP}
+
 func main() {
-	// SIGINT and SIGTERM cancel the context rather than killing the process:
+	// A shutdown signal cancels the context rather than killing the process:
 	// a --set-config run must get to delete its private config copy (it can
-	// hold an API key), and a cancelled runner kills lw and returns.
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	a := &app{stdout: os.Stdout, stderr: os.Stderr, getenv: os.Getenv, now: time.Now, lookPath: exec.LookPath}
+	// hold an API key), and a cancelled runner kills lw and returns. SIGKILL
+	// cannot be caught; the next run's startup sweep clears what it leaves.
+	ctx, stop := signal.NotifyContext(context.Background(), shutdownSignals...)
+	a := &app{stdout: os.Stdout, stderr: os.Stderr, getenv: os.Getenv, now: time.Now, lookPath: exec.LookPath, sweep: eval.SweepVariantDirs}
 	code := a.run(ctx, os.Args[1:])
 	stop()
 	os.Exit(code)
@@ -145,10 +161,11 @@ type setConfigFlag []string
 
 func (s *setConfigFlag) String() string { return strings.Join(*s, " ") }
 
+// Set collects v unchecked. Checking it here would make the flag package
+// fail with `invalid value "<v>" for flag -set-config`, echoing the value; a
+// malformed pair may be nothing but a secret whose "key=" was forgotten, so
+// cmdRun validates the pairs itself, after Parse, and never repeats one.
 func (s *setConfigFlag) Set(v string) error {
-	if k, _, ok := strings.Cut(v, "="); !ok || strings.TrimSpace(k) == "" {
-		return errors.New("want key=value")
-	}
 	*s = append(*s, v)
 	return nil
 }
@@ -163,6 +180,7 @@ func (a *app) cmdRun(ctx context.Context, args []string) int {
 	only := fs.String("only", "", "")
 	holdout := fs.Bool("holdout", false, "")
 	note := fs.String("note", "", "")
+	jobTimeout := fs.Duration("job-timeout", defaultJobTimeout, "")
 	var sets setConfigFlag
 	fs.Var(&sets, "set-config", "")
 	if err := fs.Parse(args); err != nil {
@@ -175,6 +193,14 @@ func (a *app) cmdRun(ctx context.Context, args []string) int {
 	if fs.NArg() > 0 {
 		return a.usageErr("run: unexpected argument %q", fs.Arg(0))
 	}
+	for _, s := range sets {
+		if k, _, ok := strings.Cut(s, "="); !ok || strings.TrimSpace(k) == "" {
+			return a.usageErr("--set-config: want key=value")
+		}
+	}
+	if *jobTimeout < 0 {
+		return a.usageErr("run: --job-timeout %v: must not be negative", *jobTimeout)
+	}
 	dir := *setDir
 	if dir == "" {
 		dir = a.getenv("LW_EVAL_SET")
@@ -183,6 +209,7 @@ func (a *app) cmdRun(ctx context.Context, args []string) int {
 		return a.usageErr("no set: pass --set or export LW_EVAL_SET")
 	}
 
+	a.sweepStale()
 	set, err := eval.LoadSet(dir)
 	if err != nil {
 		return a.fail(err)
@@ -205,7 +232,7 @@ func (a *app) cmdRun(ctx context.Context, args []string) int {
 	}
 	job := runJob{
 		set: set, lw: resolved, n: *n, parallel: *parallel,
-		only: *only, holdout: *holdout, note: label,
+		only: *only, holdout: *holdout, note: label, jobTimeout: *jobTimeout,
 	}
 	if len(sets) == 0 {
 		return a.doRun(ctx, job, nil)
@@ -223,6 +250,27 @@ func (a *app) cmdRun(ctx context.Context, args []string) int {
 	return code
 }
 
+// sweepStale clears the config copies a killed variant run left in $TMPDIR
+// (eval.SweepVariantDirs) before a new run starts. It is best effort: a
+// failure is mentioned and never stops the run.
+func (a *app) sweepStale() {
+	sweep := a.sweep
+	if sweep == nil {
+		sweep = eval.SweepVariantDirs
+	}
+	removed, err := sweep(a.now())
+	if n := len(removed); n > 0 {
+		noun := "copy"
+		if n > 1 {
+			noun = "copies"
+		}
+		fmt.Fprintf(a.stderr, "lweval: removed %d stale config %s left by a killed run\n", n, noun)
+	}
+	if err != nil {
+		fmt.Fprintf(a.stderr, "lweval: sweeping stale config copies: %v\n", err)
+	}
+}
+
 // runJob is what `lweval run` resolved before any lw process starts.
 type runJob struct {
 	set         *eval.Set
@@ -231,6 +279,7 @@ type runJob struct {
 	only        string
 	holdout     bool
 	note        string
+	jobTimeout  time.Duration
 }
 
 // doRun asks the lw binary for its version (the run id carries it), runs the
@@ -245,7 +294,7 @@ func (a *app) doRun(ctx context.Context, j runJob, env []string) int {
 	out := filepath.Join(j.set.Dir, "runs", eval.RunID(a.now(), version))
 	r := &eval.Runner{
 		LW: j.lw, Set: j.set, N: j.n, Parallel: j.parallel, Out: out,
-		Only: j.only, Holdout: j.holdout, Note: j.note, Env: env, Exec: a.exec,
+		Only: j.only, Holdout: j.holdout, Note: j.note, Env: env, Exec: a.exec, JobTimeout: j.jobTimeout,
 	}
 	if err := r.Run(ctx); err != nil {
 		code := a.fail(err)

@@ -47,7 +47,9 @@ func TestRefsProse(t *testing.T) {
 		{"none", "no citations here", nil},
 		{"sentence-final dot", "see wiki/a.md.", []string{"wiki/a.md"}},
 		{"in parentheses", "(see raw/papers/x.md)", []string{"raw/papers/x.md"}},
-		{"inside a wikilink", "see [[wiki/concepts/kv-cache.md]]", []string{"wiki/concepts/kv-cache.md"}},
+		// A-037-4: a [[path]] is a "wikilink" ref, not a second, "path" one —
+		// the same reference must not be counted twice.
+		{"inside a wikilink", "see [[wiki/concepts/kv-cache.md]]", nil},
 		{"two on one line, in order", "wiki/b.md and raw/a.md", []string{"wiki/b.md", "raw/a.md"}},
 		{"only md paths", "raw/papers/x.pdf and wiki/a.txt", nil},
 		{"a bare directory is not a path", "see wiki/concepts/ and raw/", nil},
@@ -108,7 +110,7 @@ func TestRefsPathLeftBoundary(t *testing.T) {
 		{"after a dash", "x-wiki/a.md", nil},
 		// bytes the boundary lets through
 		{"after a comma", "a,wiki/a.md", []string{"wiki/a.md"}},
-		{"after a bracket", "[[wiki/a.md]]", []string{"wiki/a.md"}},
+		{"after a bracket", "([wiki/a.md])", []string{"wiki/a.md"}}, // A-037-4: "[[wiki/a.md]]" is now a wikilink ref, see wikilinks_test.go
 		{"after a tab", "\twiki/a.md", []string{"wiki/a.md"}},
 		{"after a multibyte character", "见wiki/a.md", []string{"wiki/a.md"}},
 		// a rejected match must not hide the accepted one that follows it
