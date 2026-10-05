@@ -1,0 +1,23 @@
+version = 1
+snapshot = "vault-20261005.tar.gz"
+snapshot_sha256 = "b3f304ee142d3bcaccbcc0f61203d038778104d281156a1acc7f7ce93127e3ba"
+
+[[ask]]
+id = "kv-cache-basics"
+kind = "covered"
+q = "What does the KV cache store during decoding?"
+facts = [["keys"], ["values", 're:value(s)?\b']]
+cite_any = ["wiki/concepts/kv-cache.md"]
+holdout = false
+
+[[ask]]
+id = "no-such-topic"
+kind = "absent"
+q = "What is the capital of Atlantis?"
+holdout = true
+
+[[ingest]]
+id = "paper-text"
+input = "inputs/paper.txt"
+facts = [["speculative"]]
+holdout = false
