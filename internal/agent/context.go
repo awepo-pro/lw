@@ -60,7 +60,8 @@ func NewContextBuilder(v *vault.Vault, r *tools.Registry, budget int) *ContextBu
 //     per session and refreshed only when index.md's content changes;
 //  4. session history, compacted (Compact) to fit whatever budget remains —
 //     prose records as plain messages, tool records as assistant tool_calls +
-//     tool result pairs (046, appendHistoryPair);
+//     tool result pairs (046, appendHistoryPair), a staged page's text in a
+//     replayed stage.create_page / stage.patch_page replaced by a stub (041);
 //  5. the user message.
 func (b *ContextBuilder) Build(s *Session, userMsg string) ([]llm.Message, error) {
 	memory, err := b.v.Read("curator-memory.md")
@@ -215,6 +216,19 @@ const noResultRecorded = "(no result recorded)"
 //
 // RESULT is the record's Result, or noResultRecorded when that is empty.
 //
+// ARGS is historyArgs(Args), except that a staged page's text is replaced by
+// stubStagedContent's stub (041). A stage.create_page / stage.patch_page record
+// carries the whole page it staged — 4.5 to 9 KB — and Staged records are never
+// compacted, so without the stub every later turn of a changeset replays every
+// page it ever staged. The page is in the open changeset and wiki.get reads it
+// back, so the history keeps the call (which path, which section, what was
+// said about it) and drops the text. The stub is a pure function of the
+// arguments, so the same history yields the same bytes on every Build and the
+// provider's prefix cache is as stable as before. Compact still sizes a
+// record by its full Args (compact.go recordText), so it budgets history
+// conservatively: never short of room, at worst compacting prose a little
+// earlier than the bytes sent would need.
+//
 // The split shape — an assistant-role tool record with an empty Result,
 // immediately followed in recs by a tool-role record with the same Tool and
 // empty Args — is one call logged as two records (the call, then its result).
@@ -239,6 +253,12 @@ func appendHistoryPair(msgs []llm.Message, recs []Record, i, k int) ([]llm.Messa
 	call := llm.ToolCall{ID: id, Type: "function"}
 	call.Function.Name = sanitizeWireName(tools.WireName(r.Tool))
 	call.Function.Arguments = historyArgs(r.Args)
+	// 041: a staged call's page text is already in the open changeset, so the
+	// replay carries a stub, not the page. Wire copy only: r is a copy of the
+	// record and the session's own Records are never written to.
+	if stubbed, _, ok := stubStagedContent(r.Tool, call.Function.Arguments); ok {
+		call.Function.Arguments = stubbed
+	}
 	return append(msgs,
 		llm.Message{Role: "assistant", ToolCalls: []llm.ToolCall{call}},
 		llm.Message{Role: "tool", ToolCallID: id, Content: result},
