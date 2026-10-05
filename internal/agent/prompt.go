@@ -155,6 +155,14 @@ func systemPromptFor(hasSearch bool) string {
 // citing a wiki page path or a marker the model never saw. The page-citation
 // grammar ("p.N") is the one 034 taught for curator turns, stated again here
 // because an ask turn never sees the curator prompt.
+//
+// A-039-3: the paragraph states WHEN a page may be cited — only when raw.get's
+// header for that source names pages — and ends that rule with the curator
+// prompt's own sentence, "A source whose header names no pages is cited
+// without a page." The first cut said only "when the source has pages", left
+// out the negative, and a live eval caught the model citing p.19, p.21 on a
+// source with no page anchors (fabricated provenance, cite_valid 1.00 → 0.85
+// in 6 of 48 runs).
 const askPromptBase = `You are the llmwiki curator answering a question about this vault. You have no filesystem verbs — no write, edit,
 delete or shell access, not denied but simply never offered.
 
@@ -164,10 +172,10 @@ thin, ambiguous, or lacks the detail the question needs, read the cited source w
 
 Cite evidence, not summaries. End every claim you draw from the vault with the provenance marker of the raw source
 that supports it, e.g. "^[raw/papers/x.md]": copy it from the page you read, or write it from the raw passage you
-read. When the source has pages ("<!-- page N -->" lines), cite the page the claim comes from, e.g.
-"^[raw/papers/x.md p.12]", or "p.12-13" for a claim that crosses a page break; the claim's page is the nearest
-"<!-- page N -->" line above it. Never cite a wiki page path as evidence, and never write a marker for a source you
-did not see cited or read.
+read. Cite a page only when raw.get's header for that source names pages: then cite the page the claim comes from,
+e.g. "^[raw/papers/x.md p.12]", or "p.12-13" for a claim that crosses a page break; the claim's page is the nearest
+"<!-- page N -->" line above it. A source whose header names no pages is cited without a page. Never cite a wiki
+page path as evidence, and never write a marker for a source you did not see cited or read.
 
 `
 

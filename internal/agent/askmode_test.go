@@ -32,10 +32,10 @@ thin, ambiguous, or lacks the detail the question needs, read the cited source w
 
 Cite evidence, not summaries. End every claim you draw from the vault with the provenance marker of the raw source
 that supports it, e.g. "^[raw/papers/x.md]": copy it from the page you read, or write it from the raw passage you
-read. When the source has pages ("<!-- page N -->" lines), cite the page the claim comes from, e.g.
-"^[raw/papers/x.md p.12]", or "p.12-13" for a claim that crosses a page break; the claim's page is the nearest
-"<!-- page N -->" line above it. Never cite a wiki page path as evidence, and never write a marker for a source you
-did not see cited or read.
+read. Cite a page only when raw.get's header for that source names pages: then cite the page the claim comes from,
+e.g. "^[raw/papers/x.md p.12]", or "p.12-13" for a claim that crosses a page break; the claim's page is the nearest
+"<!-- page N -->" line above it. A source whose header names no pages is cited without a page. Never cite a wiki
+page path as evidence, and never write a marker for a source you did not see cited or read.
 
 `
 
@@ -79,6 +79,12 @@ func TestAskPromptBytes(t *testing.T) {
 		if !strings.Contains(p, promptOutsideVault+"\n"+promptAnswerVoice+"\n\n") {
 			t.Error("the curator prompt no longer carries the shared outside-vault + answer-voice sentences")
 		}
+	}
+	// A-039-3: the no-pages rule is the curator prompt's own sentence, byte for
+	// byte, so the two prompts agree on when a page may be cited.
+	const noPagesRule = "A source whose header names no pages is cited without a page."
+	if !strings.Contains(systemPromptFor(false), noPagesRule) || !strings.Contains(askPromptFor(false), noPagesRule) {
+		t.Error("the ask prompt and the curator prompt must both carry the no-pages citation rule")
 	}
 	if !strings.HasSuffix(askPromptFor(false), wantAskTail) || !strings.HasSuffix(askPromptFor(true), wantAskTail) {
 		t.Error("an ask prompt does not end with the shared tail")
