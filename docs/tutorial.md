@@ -51,7 +51,7 @@ Either way, check it landed:
 
 ```
 $ lw version
-lw v2.1.0-2-g91f0c32
+lw v2.30.0
 ```
 
 The version is the release tag the build was made from — a bare `vX.Y.Z`
@@ -483,22 +483,15 @@ discarding a changeset opened by `lw revert`.
 ## 8. Ask questions
 
 `lw query` is read-only: it answers with citations to your own pages and
-never opens, touches, or leaves behind a changeset.
+never opens, touches, or leaves behind a changeset. Each claim ends with a
+marker that points at the raw evidence, `^[raw/…]`, with `p.N` added when the
+source is a paper with page anchors.
 
 ```
-$ lw query "What is the KV cache, and why does per-token cost drop from O(n) to O(1) during decoding? Cite the wiki pages."
-## What the KV cache is
+$ lw query "What is the KV cache, and why does per-token cost drop from O(n) to O(1) during decoding?"
 The **KV cache** stores the key and value projections a transformer computes during decoding, so
-each new token only requires computing attention *against* the cached keys and values, rather than
-recomputing those projections from scratch (`wiki/concepts/kv-cache.md`). …
-## Why per-token cost drops from O(n) to O(1)
-…
-2. **Caching makes it O(1) incremental work.** By storing the key and value projections from
-earlier steps, the cache removes the recomputation (`wiki/concepts/autoregressive-decoding.md`):
-each new token only pays the constant attention work against the cached keys and values, "turning
-the per-token cost from O(n) attention work back to O(1) incremental work" (`wiki/concepts/kv-cache.md`). …
-**Sources cited:** `wiki/concepts/kv-cache.md`, `wiki/concepts/autoregressive-decoding.md` — both drawn
-from `raw/articles/kv-cache-explained.md`.
+each new token only computes attention *against* the cached keys and values instead of recomputing
+them for the whole prefix. ^[raw/articles/kv-cache-explained.md] …
 $ lw status
 3 pages · 1 raw · 10 tags
 lint: 0 errors, 0 warnings, 0 info

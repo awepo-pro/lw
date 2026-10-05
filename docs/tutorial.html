@@ -1,0 +1,790 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Learn lw</title>
+<meta name="description" content="A hands-on tutorial for lw: from an empty directory to a reviewed, cited markdown wiki.">
+<style>
+:root {
+  --bg: #fbfaf7;
+  --surface: #ffffff;
+  --surface-2: #f3f1ec;
+  --text: #1d1d1b;
+  --muted: #5f5d57;
+  --border: #e2dfd7;
+  --accent: #2f5fd0;
+  --accent-soft: #e6edfb;
+  --ok: #1f7a4d;
+  --ok-soft: #e3f3ea;
+  --warn: #9a5b00;
+  --warn-soft: #fbf0dc;
+  --bad: #b3261e;
+  --code-bg: #f5f3ee;
+  --term-bg: #1b1d22;
+  --term-text: #d9dce3;
+  --term-dim: #8a90a0;
+  --radius: 10px;
+  --mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #131417;
+    --surface: #1a1c20;
+    --surface-2: #22252a;
+    --text: #e7e6e2;
+    --muted: #a09e97;
+    --border: #2e3137;
+    --accent: #7ea2ff;
+    --accent-soft: #1f2a44;
+    --ok: #5fcf95;
+    --ok-soft: #173326;
+    --warn: #f0b35a;
+    --warn-soft: #3a2c14;
+    --bad: #ff8a80;
+    --code-bg: #22252a;
+    --term-bg: #0d0e11;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #131417;
+  --surface: #1a1c20;
+  --surface-2: #22252a;
+  --text: #e7e6e2;
+  --muted: #a09e97;
+  --border: #2e3137;
+  --accent: #7ea2ff;
+  --accent-soft: #1f2a44;
+  --ok: #5fcf95;
+  --ok-soft: #173326;
+  --warn: #f0b35a;
+  --warn-soft: #3a2c14;
+  --bad: #ff8a80;
+  --code-bg: #22252a;
+  --term-bg: #0d0e11;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; scroll-padding-top: 16px; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.65 var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--accent); }
+code {
+  font-family: var(--mono);
+  font-size: 0.88em;
+  background: var(--code-bg);
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+}
+pre {
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.5;
+  background: var(--term-bg);
+  color: var(--term-text);
+  padding: 14px 16px;
+  border-radius: var(--radius);
+  overflow-x: auto;
+  margin: 12px 0 18px;
+}
+pre code { background: none; padding: 0; font-size: inherit; color: inherit; }
+pre .p { color: var(--term-dim); user-select: none; }
+pre .c { color: var(--term-dim); }
+pre .ok { color: #6fd39b; }
+pre .bad { color: #ff8a80; }
+pre .hl { color: #ffd479; }
+
+.layout {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  max-width: 1180px;
+  margin: 0 auto;
+}
+nav.toc {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+  padding: 28px 18px 28px 24px;
+  border-right: 1px solid var(--border);
+}
+nav.toc .brand { font-weight: 700; font-size: 18px; margin-bottom: 4px; }
+nav.toc .brand code { font-size: 16px; }
+nav.toc .sub { color: var(--muted); font-size: 13px; margin-bottom: 18px; }
+nav.toc ol { list-style: none; padding: 0; margin: 0; }
+nav.toc li { margin: 2px 0; }
+nav.toc a {
+  display: flex; align-items: center; gap: 8px;
+  color: var(--muted); text-decoration: none;
+  padding: 4px 8px; border-radius: 6px; font-size: 14px;
+}
+nav.toc a:hover { background: var(--surface-2); color: var(--text); }
+nav.toc a.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+nav.toc .tick {
+  width: 14px; height: 14px; border-radius: 50%;
+  border: 1.5px solid var(--border); flex: none;
+}
+nav.toc .done .tick { background: var(--ok); border-color: var(--ok); }
+.progress { margin: 18px 0 8px; font-size: 13px; color: var(--muted); }
+.bar { height: 6px; background: var(--surface-2); border-radius: 3px; overflow: hidden; margin-top: 6px; }
+.bar > span { display: block; height: 100%; width: 0; background: var(--ok); transition: width .25s; }
+.theme-btn {
+  margin-top: 16px; font: inherit; font-size: 13px;
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px; padding: 5px 10px; cursor: pointer;
+}
+
+main { padding: 40px 48px 120px; max-width: 860px; }
+header.hero h1 { font-size: 34px; line-height: 1.2; margin: 0 0 10px; letter-spacing: -0.01em; }
+header.hero p.lede { font-size: 18px; color: var(--muted); margin: 0 0 22px; }
+h2 {
+  font-size: 24px; margin: 64px 0 6px; padding-top: 8px;
+  display: flex; align-items: baseline; gap: 10px;
+}
+h2 .num { color: var(--accent); font-family: var(--mono); font-size: 16px; }
+h3 { font-size: 18px; margin: 30px 0 6px; }
+.goal { color: var(--muted); margin: 0 0 18px; font-size: 15px; }
+
+.card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 16px 18px; margin: 16px 0;
+}
+.callout { border-left: 4px solid var(--accent); background: var(--accent-soft); border-radius: 0 var(--radius) var(--radius) 0; padding: 12px 16px; margin: 16px 0; }
+.callout.warn { border-color: var(--warn); background: var(--warn-soft); }
+.callout.ok { border-color: var(--ok); background: var(--ok-soft); }
+.callout strong:first-child { display: block; margin-bottom: 2px; }
+
+.invariants { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 20px 0; }
+.invariants .card { margin: 0; }
+.invariants h4 { margin: 0 0 4px; font-size: 15px; }
+.invariants p { margin: 0; font-size: 14.5px; color: var(--muted); }
+
+table { width: 100%; border-collapse: collapse; margin: 12px 0 20px; font-size: 14.5px; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+th { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600; }
+.table-wrap { overflow-x: auto; }
+
+.flow svg { width: 100%; height: auto; display: block; }
+.flow .box { fill: var(--surface); stroke: var(--border); stroke-width: 1.5; }
+.flow .box.hot { fill: var(--accent-soft); stroke: var(--accent); }
+.flow .box.you { fill: var(--ok-soft); stroke: var(--ok); }
+.flow text { fill: var(--text); font: 13px var(--sans); }
+.flow text.small { fill: var(--muted); font-size: 11.5px; }
+.flow .arrow { stroke: var(--muted); stroke-width: 1.5; fill: none; marker-end: url(#ah); }
+.flow .arrow.back { stroke-dasharray: 4 4; }
+.flow #ah path { fill: var(--muted); }
+
+.try { border: 1px dashed var(--accent); border-radius: var(--radius); padding: 12px 16px; margin: 18px 0; }
+.try .label { font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--accent); }
+.mark-done {
+  margin-top: 26px; font: inherit; font-size: 14px; cursor: pointer;
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px; padding: 7px 14px;
+}
+.mark-done.is-done { background: var(--ok-soft); border-color: var(--ok); color: var(--ok); font-weight: 600; }
+
+details.quiz { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 16px; margin: 10px 0; }
+details.quiz summary { cursor: pointer; font-weight: 600; }
+details.quiz p { margin: 8px 0 2px; color: var(--muted); }
+
+.keys { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px 18px; margin: 12px 0; }
+.keys div { font-size: 14.5px; }
+kbd {
+  font-family: var(--mono); font-size: 12.5px;
+  background: var(--surface); border: 1px solid var(--border); border-bottom-width: 2px;
+  border-radius: 5px; padding: 1px 6px; margin-right: 6px; white-space: nowrap;
+}
+footer { margin-top: 80px; color: var(--muted); font-size: 14px; border-top: 1px solid var(--border); padding-top: 18px; }
+
+@media (max-width: 860px) {
+  .layout { grid-template-columns: 1fr; }
+  nav.toc { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--border); padding: 18px 16px; }
+  nav.toc ol { display: none; }
+  nav.toc.open ol { display: block; }
+  .toggle-toc { display: inline-block !important; }
+  main { padding: 24px 16px 80px; }
+  header.hero h1 { font-size: 27px; }
+  .invariants { grid-template-columns: 1fr; }
+  pre { font-size: 12px; }
+}
+.toggle-toc { display: none; font: inherit; font-size: 13px; background: none; border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 4px 10px; margin-left: 8px; cursor: pointer; }
+</style>
+</head>
+<body>
+<div class="layout">
+
+<nav class="toc" id="toc">
+  <div class="brand">Learn <code>lw</code><button class="toggle-toc" id="toggleToc" aria-expanded="false">Lessons</button></div>
+  <div class="sub">From an empty directory to a reviewed wiki</div>
+  <ol id="tocList">
+    <li><a href="#model"><span class="tick"></span>0 · The mental model</a></li>
+    <li><a href="#install"><span class="tick"></span>1 · Install &amp; connect</a></li>
+    <li><a href="#vault"><span class="tick"></span>2 · Create a vault</a></li>
+    <li><a href="#ingest"><span class="tick"></span>3 · Ingest a source</a></li>
+    <li><a href="#review"><span class="tick"></span>4 · Review the changeset</a></li>
+    <li><a href="#commit"><span class="tick"></span>5 · Commit or discard</a></li>
+    <li><a href="#ask"><span class="tick"></span>6 · Ask questions</a></li>
+    <li><a href="#tui"><span class="tick"></span>7 · The TUI</a></li>
+    <li><a href="#history"><span class="tick"></span>8 · History &amp; undo</a></li>
+    <li><a href="#health"><span class="tick"></span>9 · Keeping it healthy</a></li>
+    <li><a href="#more"><span class="tick"></span>10 · Notes, PDFs, MCP</a></li>
+    <li><a href="#trouble"><span class="tick"></span>11 · Troubleshooting</a></li>
+    <li><a href="#cheat"><span class="tick"></span>Cheat sheet</a></li>
+  </ol>
+  <div class="progress">
+    <span id="progText">0 of 12 lessons done</span>
+    <div class="bar"><span id="progBar"></span></div>
+  </div>
+  <button class="theme-btn" id="themeBtn">Toggle theme</button>
+</nav>
+
+<main>
+<header class="hero">
+  <h1>Learn <code>lw</code> by doing</h1>
+  <p class="lede">You start with sources — an article, a paper, a saved chat — and end with a small, cross-linked markdown wiki where every claim cites where it came from. <code>lw</code> is the compiler in the middle. An agent proposes the pages, and you decide what lands.</p>
+  <div class="callout">
+    <strong>How to use this page</strong>
+    Each lesson has a goal, the commands, what you should see, and a short check at the end. Open a terminal next to it and type along. Mark a lesson done when you've run it. Your progress is saved in this browser only. The terminal output shown here comes from real runs (see <a href="tutorial.md">tutorial.md</a>). Long output is trimmed, and trims are marked with <code>…</code>.
+  </div>
+</header>
+
+<!-- 0 -->
+<section id="model" data-lesson>
+  <h2><span class="num">00</span>The mental model</h2>
+  <p class="goal">Goal: know the two rules that explain every design choice in lw, before you type anything.</p>
+
+  <div class="invariants">
+    <div class="card">
+      <h4>1 · The agent gets no filesystem</h4>
+      <p>Its tool list has no <code>write</code>, <code>edit</code>, <code>delete</code> or <code>bash</code>. They aren't blocked. They're simply not offered. The only way the agent can change anything is through <code>stage.*</code> tools, which check each change and add it to a buffer.</p>
+    </div>
+    <div class="card">
+      <h4>2 · Nothing lands without your review</h4>
+      <p>Every proposal goes into a <strong>changeset</strong> that you review hunk by hunk. Rejections are journalled too, so the history shows what the agent tried, not just what got in.</p>
+    </div>
+  </div>
+
+  <p>Everything else follows from these two rules. One loop runs again and again:</p>
+
+  <div class="card flow" role="img" aria-label="Flow: sources go through ingest to the agent, which stages a changeset; you review it, then commit to wiki or reject to the journal.">
+    <svg viewBox="0 0 760 210">
+      <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker></defs>
+      <rect class="box" x="10" y="70" width="120" height="58" rx="8"/>
+      <text x="70" y="96" text-anchor="middle">sources</text>
+      <text class="small" x="70" y="114" text-anchor="middle">file · URL · PDF</text>
+
+      <rect class="box hot" x="170" y="70" width="130" height="58" rx="8"/>
+      <text x="235" y="96" text-anchor="middle">agent</text>
+      <text class="small" x="235" y="114" text-anchor="middle">read-only + stage.*</text>
+
+      <rect class="box hot" x="340" y="70" width="130" height="58" rx="8"/>
+      <text x="405" y="96" text-anchor="middle">changeset</text>
+      <text class="small" x="405" y="114" text-anchor="middle">buffer, not disk</text>
+
+      <rect class="box you" x="510" y="70" width="100" height="58" rx="8"/>
+      <text x="560" y="96" text-anchor="middle">you review</text>
+      <text class="small" x="560" y="114" text-anchor="middle">hunk by hunk</text>
+
+      <rect class="box" x="650" y="14" width="100" height="52" rx="8"/>
+      <text x="700" y="38" text-anchor="middle">wiki/</text>
+      <text class="small" x="700" y="55" text-anchor="middle">commit</text>
+
+      <rect class="box" x="650" y="134" width="100" height="52" rx="8"/>
+      <text x="700" y="158" text-anchor="middle">journal</text>
+      <text class="small" x="700" y="175" text-anchor="middle">reject (kept)</text>
+
+      <path class="arrow" d="M130 99 H166"/>
+      <text class="small" x="148" y="90" text-anchor="middle">ingest</text>
+      <path class="arrow" d="M300 99 H336"/>
+      <path class="arrow" d="M470 99 H506"/>
+      <path class="arrow" d="M610 88 L646 48"/>
+      <path class="arrow" d="M610 110 L646 152"/>
+    </svg>
+  </div>
+
+  <div class="table-wrap"><table>
+    <tr><th>Term</th><th>Meaning</th></tr>
+    <tr><td><strong>Vault</strong></td><td>A directory with a <code>SCHEMA.md</code>. lw walks up from your current directory to find the nearest one, or you pass <code>--vault &lt;dir&gt;</code>.</td></tr>
+    <tr><td><strong>raw/</strong></td><td>Ingested sources. Written once, never changed. Every claim cites back into here.</td></tr>
+    <tr><td><strong>wiki/</strong></td><td>Reviewed pages: <code>entities/</code>, <code>concepts/</code>, <code>comparisons/</code>, <code>queries/</code>.</td></tr>
+    <tr><td><strong>Changeset</strong></td><td>One reviewable unit of proposed ops (<code>create_page</code>, <code>patch</code>, <code>rename</code>, …). Only <em>one</em> can be open at a time.</td></tr>
+    <tr><td><strong>Session</strong></td><td>The recorded agent conversation that produced a changeset. They share one id.</td></tr>
+    <tr><td><strong>Journal</strong></td><td>The append-only event log (<code>.llmwiki/journal.ndjson</code>) that <code>lw log</code> reads.</td></tr>
+  </table></div>
+
+  <details class="quiz"><summary>Check: the agent wants to fix a typo in a page. How does it do that?</summary>
+    <p>It calls a <code>stage.*</code> tool (for example <code>stage.patch_page</code>). That adds a proposed op to the open changeset. The page on disk doesn't change until you review and commit.</p></details>
+  <button class="mark-done" data-for="model">Mark lesson done</button>
+</section>
+
+<!-- 1 -->
+<section id="install" data-lesson>
+  <h2><span class="num">01</span>Install &amp; connect a provider</h2>
+  <p class="goal">Goal: a working <code>lw</code> binary that can reach a model with tool calling.</p>
+
+  <h3>Install</h3>
+<pre><code><span class="c"># from source</span>
+git clone https://github.com/awepo-pro/lw &amp;&amp; cd lw
+make build                     <span class="c"># → ./lw</span>
+
+<span class="c"># or with Go 1.25.8+</span>
+go install github.com/awepo-pro/lw/cmd/lw@latest
+
+<span class="c"># or Homebrew / Nix</span>
+brew install awepo-pro/tap/lw
+nix profile install github:awepo-pro/lw</code></pre>
+<pre><code><span class="p">$ </span>lw version
+lw v2.30.0</code></pre>
+  <p>The version comes from the release tag the binary was built from, so a bug report can name the exact build.</p>
+
+  <h3>Point it at a model</h3>
+  <p>lw sends requests in the plain OpenAI chat-completions format and defaults to DeepSeek. <code>lw config</code> shows what lw will actually use:</p>
+<pre><code><span class="p">$ </span>lw config
+llm.base_url               = https://api.deepseek.com/v1   (default)
+llm.model                  = deepseek-v4-flash   (default)
+llm.api_key                = env:DEEPSEEK_API_KEY <span class="bad">(missing)</span>   (default)
+llm.temperature            = 0.2   (default)
+llm.max_tokens             = 32768   (default)
+llm.limits.max_tool_rounds = 24   (default)
+llm.limits.context_tokens  = 96000   (default)
+…</code></pre>
+
+  <div class="callout">
+    <strong>The key is a reference, not a value.</strong>
+    The config file stores <code>env:DEEPSEEK_API_KEY</code> (or <code>keyring:NAME</code>), and lw reads the variable only when it needs it. If you paste a literal key, lw rejects it with a warning. The key never shows up in output, in the config file, or in the vault.
+  </div>
+
+<pre><code>export DEEPSEEK_API_KEY=sk-...
+
+<span class="c"># another OpenAI-compatible provider? set both together:</span>
+lw config set llm.base_url https://api.deepseek.com/v1
+lw config set llm.model    deepseek-v4-flash
+lw config set llm.api_key  env:MY_PROVIDER_KEY   <span class="c"># if your variable has another name</span>
+
+<span class="c"># end-to-end check: resolves the key, calls the model, confirms tool calling</span>
+lw config --probe</code></pre>
+
+  <div class="callout warn">
+    <strong>The #1 setup mistake</strong>
+    <code>llm.base_url</code> must be an OpenAI-compatible <code>/v1</code> endpoint. <code>https://api.deepseek.com/anthropic</code> looks fine, but every request to it returns a 404.
+  </div>
+
+  <p>A healthy setup, as shown by <code>lw doctor</code>:</p>
+<pre><code><span class="ok">✓</span> config   api_key env:DEEPSEEK_API_KEY (set) · model deepseek-v4-flash @ https://api.deepseek.com/v1
+<span class="ok">✓</span> provider deepseek-v4-flash reachable, tool calling ok (1568ms)</code></pre>
+
+  <div class="try"><div class="label">Try it</div>Unset the key (<code>unset DEEPSEEK_API_KEY</code>) and run <code>lw config --probe</code>. It fails right away and tells you what to fix, without making a network call. Export the key again before you continue.</div>
+  <button class="mark-done" data-for="install">Mark lesson done</button>
+</section>
+
+<!-- 2 -->
+<section id="vault" data-lesson>
+  <h2><span class="num">02</span>Create a vault</h2>
+  <p class="goal">Goal: an empty but valid vault, and a picture of what each file is for.</p>
+<pre><code><span class="p">$ </span>mkdir ml-wiki &amp;&amp; cd ml-wiki
+<span class="p">$ </span>lw init --schema ml-systems
+initialized vault in /home/you/ml-wiki
+  domain           ml-systems
+  tags             10 (10-20 recommended)
+  files            SCHEMA.md, index.md, log.md, curator-memory.md, .gitignore
+  directories      raw/{articles,papers,transcripts,assets}, wiki/{entities,concepts,comparisons,queries} (8 of 8 created)
+  engine           .llmwiki/ (staging engine state)
+next: lw config — point lw at a provider, then lw ingest &lt;url&gt; to add the first source</code></pre>
+  <p>If you leave out <code>--schema</code>, <code>init</code> asks you for the domain, the tag list, and page-type conventions.</p>
+
+  <div class="table-wrap"><table>
+    <tr><th>Path</th><th>What it is</th></tr>
+    <tr><td><code>SCHEMA.md</code></td><td>The domain and its 10–20 tags. Every page's <code>tags:</code> must come from this list.</td></tr>
+    <tr><td><code>index.md</code></td><td>Catalog of every page, one line each, organized in sections. The engine keeps it in sync.</td></tr>
+    <tr><td><code>log.md</code></td><td>Append-only log for humans. Rotates at 500 entries.</td></tr>
+    <tr><td><code>curator-memory.md</code></td><td>The agent's standing editorial preferences. It's a normal page, so you can edit it.</td></tr>
+    <tr><td><code>raw/…</code></td><td>Ingested sources, written once and never changed.</td></tr>
+    <tr><td><code>wiki/…</code></td><td>Reviewed pages, one directory per page type.</td></tr>
+    <tr><td><code>.llmwiki/</code></td><td>Engine state: object store, changesets, journal, search index, transcripts. Listed in <code>.gitignore</code>. Deleting it loses history, not your notes.</td></tr>
+  </table></div>
+<pre><code><span class="p">$ </span>lw status
+0 pages · 0 raw · 10 tags
+lint: 0 errors, 0 warnings, 0 info
+no open changeset
+<span class="p">$ </span>lw lint
+<span class="ok">clean</span></code></pre>
+
+  <details class="quiz"><summary>Check: you're in <code>ml-wiki/wiki/concepts/</code>. Does <code>lw status</code> work?</summary>
+    <p>Yes. lw walks up to the nearest ancestor that contains <code>SCHEMA.md</code>. Only <code>init</code> doesn't need to be inside a vault.</p></details>
+  <button class="mark-done" data-for="vault">Mark lesson done</button>
+</section>
+
+<!-- 3 -->
+<section id="ingest" data-lesson>
+  <h2><span class="num">03</span>Ingest your first source</h2>
+  <p class="goal">Goal: turn one article into proposed pages, and understand what was proposed vs. what was written.</p>
+<pre><code>lw ingest ~/Downloads/kv-cache-explained.md   <span class="c"># a local file</span>
+lw ingest https://example.com/some-post        <span class="c"># or a URL</span>
+lw ingest ~/notes/                             <span class="c"># or a folder (.md .txt .html .pdf)</span></code></pre>
+  <p>lw first converts each source to fixed markdown. If a path or URL is bad, the whole command fails before any changeset is opened. Then the agent reads the source, <code>SCHEMA.md</code>, <code>index.md</code>, and recent <code>log.md</code>, and proposes pages. To keep it writing instead of browsing, an ingest may read at most 6 existing wiki pages between two staged changes; a 7th read is refused until it stages something. A real run that took about three minutes ends like this:</p>
+<pre><code>opened changeset cs-92c7d850b461792a: ingest ~/Downloads/kv-cache-explained.md (4 op(s))
+  op1 ingest_source raw/articles/kv-cache-explained.md
+  op2 create_page wiki/concepts/kv-cache.md
+  op3 create_page wiki/concepts/autoregressive-decoding.md
+  op4 create_page wiki/queries/reducing-kv-cache-memory.md</code></pre>
+
+  <div class="callout ok">
+    <strong>Nothing has been written yet.</strong>
+    <code>op1</code> is always the immutable copy of your source. It records the original <code>source_url</code> and a <code>sha256</code> of the body, which lw later uses to detect drift. Every <code>create_page</code> after it can only cite that source, because it's the only thing the agent has read.
+  </div>
+
+  <h3>Limits and dry runs</h3>
+  <p>A single ingest is capped at <strong>10 files</strong> and <strong>75% of the context budget in bytes</strong> (282 KB at the default <code>context_tokens = 96000</code>). The agent still needs room to read back what it wrote. If you go over the cap, nothing is opened, and the error names the largest file so you know which one to split out. Sources the vault already holds are skipped before anything else happens.</p>
+<pre><code><span class="p">$ </span>lw ingest --dry-run ~/notes/
+within limits: 3 files, 8 KB (limit 10 files, 282 KB)</code></pre>
+  <p><code>--dry-run</code> extracts every source and prints the result, but makes no changeset and no model call. URLs are still downloaded, because their size can't be checked otherwise.</p>
+
+  <div class="try"><div class="label">Try it</div>Run <code>lw ingest --dry-run</code> on a folder of your own notes. Then ingest one small article for real, and run <code>lw diff --op op1</code> to see the frontmatter lw added to the raw copy.</div>
+  <button class="mark-done" data-for="ingest">Mark lesson done</button>
+</section>
+
+<!-- 4 -->
+<section id="review" data-lesson>
+  <h2><span class="num">04</span>Review the changeset</h2>
+  <p class="goal">Goal: read exactly what would land, before it lands.</p>
+  <p>While a changeset is open, <code>lw status</code> counts only <em>committed</em> content. "0 pages" means nothing has landed yet, not that nothing happened:</p>
+<pre><code><span class="p">$ </span>lw status
+0 pages · 0 raw · 10 tags
+lint: 0 errors, 0 warnings, 0 info
+open changeset cs-92c7d850b461792a: ingest ~/Downloads/kv-cache-explained.md (4 op(s), 0 stale; schema=pass lint=pass orphans=0 broken_links=0)</code></pre>
+<pre><code><span class="p">$ </span>lw diff --stat
+wiki/concepts/autoregressive-decoding.md | +30 -0
+wiki/concepts/kv-cache.md | +38 -0
+wiki/queries/reducing-kv-cache-memory.md | +34 -0
+index.md | +5 -0
+raw/articles/kv-cache-explained.md | +27 -0
+5 file(s) changed, 134 insertion(s)(+), 0 deletion(s)(-)</code></pre>
+  <div class="table-wrap"><table>
+    <tr><th>Command</th><th>Shows</th></tr>
+    <tr><td><code>lw diff --stat</code></td><td>One line per file</td></tr>
+    <tr><td><code>lw diff</code></td><td>Full unified diff, one hunk per changed section</td></tr>
+    <tr><td><code>lw diff --op op3</code></td><td>Just one operation's files</td></tr>
+    <tr><td><code>lw lint</code></td><td>Lint on the <em>projected</em> tree, which catches problems before you commit</td></tr>
+  </table></div>
+  <p>The TUI's Review screen (lesson 7) shows the same diff, plus two things a plain diff lacks: the agent's <strong>rationale</strong> for each change, and its <strong>provenance</strong> back into <code>raw/</code>.</p>
+  <p>A <strong>stale</strong> op is one that was proposed against a file that has changed on disk since. lw won't apply it on top of your edit.</p>
+  <button class="mark-done" data-for="review">Mark lesson done</button>
+</section>
+
+<!-- 5 -->
+<section id="commit" data-lesson>
+  <h2><span class="num">05</span>Commit — or throw it away</h2>
+  <p class="goal">Goal: land the pages, and know the two safety checks a commit runs.</p>
+<pre><code><span class="p">$ </span>lw commit -m "first pages from kv-cache-explained"
+committed 000001
+<span class="p">$ </span>lw status
+3 pages · 1 raw · 10 tags
+lint: 0 errors, 0 warnings, 0 info
+no open changeset</code></pre>
+  <div class="card">
+    <p style="margin-top:0"><strong>A commit is refused if…</strong></p>
+    <ul>
+      <li>a target file changed on disk since the op was proposed (the op is <em>stale</em>), or</li>
+      <li>it would leave lint with more errors than the last commit. <code>--force</code> overrides this, and the override is itself recorded in the journal.</li>
+    </ul>
+  </div>
+  <p>There's no <code>lw reject</code> command. To throw a changeset away, discard it:</p>
+<pre><code>lw doctor --discard-changeset    <span class="c"># or press X on the TUI's Review screen</span></code></pre>
+  <p>Nothing is deleted. The buffer moves to <code>changesets/rejected/</code>, and <code>lw log --rejected</code> shows it afterwards.</p>
+  <div class="callout">
+    <strong>Lint severities</strong>
+    Only an <strong>error</strong> makes <code>lw lint</code> exit non-zero. <strong>warn</strong> and <strong>info</strong> don't. A single-source page with <code>confidence: low</code> produces an <code>info</code> finding. That's normal and means "find a second source when you can", not "fix this now". There are 18 checks in total; see <a href="vault-schema.md">vault-schema.md</a>.
+  </div>
+  <details class="quiz"><summary>Check: you hand-edited <code>kv-cache.md</code> while a changeset patching it was open. What happens at commit?</summary>
+    <p>The op is stale and the commit is refused, so your edit is never silently overwritten.</p></details>
+  <button class="mark-done" data-for="commit">Mark lesson done</button>
+</section>
+
+<!-- 6 -->
+<section id="ask" data-lesson>
+  <h2><span class="num">06</span>Ask questions</h2>
+  <p class="goal">Goal: get cited answers from your own pages, and keep the good ones.</p>
+<pre><code><span class="p">$ </span>lw query "What is the KV cache, and why does per-token cost drop from O(n) to O(1) during decoding?"
+The **KV cache** stores the key and value projections a transformer computes during decoding, so
+each new token only computes attention *against* the cached keys and values instead of recomputing
+them for the whole prefix. ^[raw/articles/kv-cache-explained.md] …</code></pre>
+  <p><code>lw query</code> is <strong>read-only</strong>. It never opens or leaves behind a changeset. Each claim ends with a marker that points at the raw evidence, <code>^[raw/…]</code>, with <code>p.N</code> added when the source is a paper with page anchors. If you ask about something you haven't ingested, the curator says so under <code>Not from your vault:</code> instead of making up a citation.</p>
+
+  <h3>Keep an answer</h3>
+  <p>In the TUI's Ask screen, an answer that cites the vault (it contains a <code>^[raw/…]</code> or <code>^[wiki/…]</code> marker) can be saved with <kbd>ctrl+s</kbd>. That stages a <code>wiki/queries/</code> page, which you review like any other change. An answer with no vault citation can't be saved: <em>"this answer cites no vault source; nothing to save"</em>.</p>
+
+  <h3>Web lookup (optional)</h3>
+  <p>Configure Tavily and the curator gets a 19th tool, <code>web.search</code>. When you don't configure it, the tool isn't offered at all. A search result only becomes a source after it's ingested with <code>stage.ingest_source</code>, and it goes through review like everything else.</p>
+<pre><code><span class="c"># config.toml</span>
+[web]
+api_key = "env:TAVILY_API_KEY"
+
+<span class="c"># shell</span>
+export TAVILY_API_KEY=tvly-...</code></pre>
+  <button class="mark-done" data-for="ask">Mark lesson done</button>
+</section>
+
+<!-- 7 -->
+<section id="tui" data-lesson>
+  <h2><span class="num">07</span>The TUI</h2>
+  <p class="goal">Goal: do the whole ask → review → commit loop without leaving the terminal UI.</p>
+  <p>Run <code>lw</code> with no command (or <code>lw tui</code>). It needs a terminal of at least <strong>80×24</strong>. <kbd>tab</kbd> cycles through five screens:</p>
+<pre><code>Review → Ask → Lint → Log → Browse   (wrapping back to Review)</code></pre>
+  <p>The header shows the vault counts and the open changeset (<code>cs-1c86cb · 1 op · checks ✓</code>). The footer always lists what the current screen's keys do. Press <kbd>?</kbd> for every key.</p>
+
+  <h3>Ask, then Review</h3>
+  <p>Type a request and press <kbd>enter</kbd>. If no changeset is open, the turn opens one (<code>ask: &lt;your question&gt;</code>). If the turn stages nothing, lw discards that changeset for you. While you're on Ask, <kbd>q</kbd> and <kbd>?</kbd> type into the message box, so quit with <kbd>ctrl+c</kbd>.</p>
+<pre><code> ml-wiki   Review  Ask  Lint  Log  Browse    3 pages · 1 raw · 0 lint   cs-fd447f · 1 op · checks <span class="ok">✓</span>
+╭ Transcript — cs-fd447f ─────────────────────────────────────────── ↑ 28 earlier ╮
+│ ▸ stage.close {}  → changeset cs-fd447f752de3e221                               │
+│ assistant                                                                       │
+│ Done — one staged patch, nothing else in the changeset.                         │
+│ …                                                                               │
+│ done · 5 rounds                                                                 │
+╰─────────────────────────────────────────────────────────────────────────────────╯
+╭ Message ────────────────────────────────────────────────────────────────────────╮
+│ › █ Ask about the wiki…                                                         │
+╰─────────────────────────────────────────────────────────────────────────────────╯
+ enter send  ↑/↓ select tool call  ctrl+r review  tab screen  ? help</code></pre>
+  <p>Press <kbd>ctrl+r</kbd> to jump to Review. The <strong>Ops</strong> panel on the left lists operations with a state glyph. The <strong>Diff</strong> panel on the right shows each op's rationale and provenance above its hunks:</p>
+  <div class="table-wrap"><table>
+    <tr><th>Glyph</th><th>Op state</th></tr>
+    <tr><td><code>●</code></td><td>untouched</td></tr>
+    <tr><td><code>◐</code></td><td>some hunks dropped</td></tr>
+    <tr><td><code>✗</code></td><td>every hunk dropped</td></tr>
+    <tr><td><code>!</code></td><td>stale. <kbd>y</kbd>, <kbd>n</kbd> and <kbd>A</kbd> refuse to act on it</td></tr>
+  </table></div>
+
+  <h3>Keys worth memorizing</h3>
+  <div class="keys">
+    <div><kbd>y</kbd>accept hunk, advance</div>
+    <div><kbd>n</kbd>drop hunk, advance</div>
+    <div><kbd>j</kbd><kbd>k</kbd>move</div>
+    <div><kbd>g</kbd><kbd>G</kbd>first / last</div>
+    <div><kbd>p</kbd>diff ↔ rendered preview</div>
+    <div><kbd>A</kbd>accept all (only if lint is clean)</div>
+    <div><kbd>X</kbd>reject whole changeset</div>
+    <div><kbd>C</kbd>commit</div>
+    <div><kbd>tab</kbd>next screen</div>
+    <div><kbd>?</kbd>help overlay</div>
+    <div><kbd>ctrl+r</kbd>Ask → Review</div>
+    <div><kbd>ctrl+s</kbd>Ask: save answer as page</div>
+  </div>
+
+  <h3>Lint, Log, Browse</h3>
+  <ul>
+    <li><strong>Lint</strong>: findings listed by severity. <kbd>enter</kbd> opens the page in Browse.</li>
+    <li><strong>Log</strong>: journal events. <kbd>f</kbd> cycles the filter (all → accepted → rejected → agent → human). <kbd>r</kbd> reverts the selected commit into a new changeset.</li>
+    <li><strong>Browse</strong>: the page tree. <kbd>/</kbd> finds a page, <kbd>h</kbd>/<kbd>l</kbd> collapse or expand a folder, <kbd>o</kbd> opens a cited PDF at the cited page.</li>
+  </ul>
+  <p>Most keys can be rebound in <code>~/.config/lw/hotkeys.toml</code>. See <a href="hotkeys.md">hotkeys.md</a>.</p>
+
+  <h3>Reading a conversation back</h3>
+  <p>Every agent conversation is saved under the changeset it opened, and stays after commit or reject:</p>
+<pre><code><span class="p">$ </span>lw session list
+ID         STATE      STARTED               RECORDS  BYTES
+cs-fd447f  open       2026-09-16T12:00:06Z  10       15379
+cs-bfa09e  rejected   2026-09-16T11:55:44Z  10       16158
+cs-614c83  committed  2026-09-16T11:51:12Z  17       44643
+
+<span class="p">$ </span>lw session show fd447f --plain     <span class="c"># full tool args + results; --thinking, --json</span>
+<span class="p">$ </span>lw trace                           <span class="c"># per-turn traces; lw trace show &lt;ref&gt; to inspect one</span></code></pre>
+
+  <div class="try"><div class="label">Try it</div>On Ask, type: <em>"Stage one patch only: add a short Trade-offs section to wiki/concepts/kv-cache.md, per the ingested source."</em> Press <kbd>ctrl+r</kbd>, then <kbd>p</kbd> to preview the page, <kbd>p</kbd> again to go back to the diff, and <kbd>C</kbd> to commit.</div>
+  <button class="mark-done" data-for="tui">Mark lesson done</button>
+</section>
+
+<!-- 8 -->
+<section id="history" data-lesson>
+  <h2><span class="num">08</span>History &amp; undo</h2>
+  <p class="goal">Goal: find out what happened, and roll back with the same review you'd give any change.</p>
+<pre><code><span class="p">$ </span>lw log --limit 20
+2026-09-15T20:20:04Z changeset_opened changeset=cs-92c7d850b461792a actor=agent message="ingest ~/Downloads/kv-cache-explained.md"
+2026-09-15T20:20:23Z op_proposed changeset=cs-92c7d850b461792a op=op1 actor=agent paths=raw/articles/kv-cache-explained.md
+…
+2026-09-15T20:25:55Z commit_end changeset=cs-92c7d850b461792a commit=000001 actor=agent message="first pages from kv-cache-explained" data={"lint_errors":0,"lint_warns":0}</code></pre>
+  <p>Filters: <code>--agent</code>, <code>--rejected</code>, <code>--limit N</code>, <code>--page &lt;path&gt;</code>, <code>--since &lt;date&gt;</code>.</p>
+
+  <h3>Revert opens a changeset, it doesn't write</h3>
+<pre><code><span class="p">$ </span>lw revert 000001
+opened cs-c5b709e6ddbd1832: revert of 000001 (skipped: index.md, raw/articles/kv-cache-explained.md)
+skipped: index.md
+skipped: raw/articles/kv-cache-explained.md</code></pre>
+  <ul>
+    <li><code>raw/</code> is skipped because it's immutable. A revert undoes the pages a source produced, never the source itself.</li>
+    <li>Reverted pages become retraction stubs, so links and <code>index.md</code> entries that point at them still resolve.</li>
+  </ul>
+  <p>Then <code>lw commit -m "revert 000001"</code>, or change your mind with <code>lw doctor --discard-changeset</code>.</p>
+  <div class="callout warn"><strong>Only one changeset at a time</strong> — from ingest, Ask, revert or <code>lint --fix</code>. Commit or discard the current one before you start another.</div>
+  <button class="mark-done" data-for="history">Mark lesson done</button>
+</section>
+
+<!-- 9 -->
+<section id="health" data-lesson>
+  <h2><span class="num">09</span>Keeping the vault healthy</h2>
+  <p class="goal">Goal: know where to look first when something seems wrong.</p>
+<pre><code><span class="p">$ </span>lw doctor
+lw doctor — /home/you/ml-wiki
+<span class="ok">✓</span> index    0 document(s) indexed in .llmwiki/index.gob
+<span class="ok">✓</span> objects  no objects referenced yet (no open changeset, no snapshot)
+<span class="ok">✓</span> journal  0 event(s) parse cleanly
+<span class="ok">✓</span> recovery no interrupted apply
+<span class="ok">✓</span> lock     no lock held
+- git      skipped: not a git repository
+<span class="bad">✗</span> config   api_key env:DEEPSEEK_API_KEY (missing) · model deepseek-v4-flash @ https://api.deepseek.com/v1
+  fix: export DEEPSEEK_API_KEY, or point llm.api_key at another variable with lw config set llm.api_key env:NAME
+- provider skipped: api_key did not resolve: config: environment variable DEEPSEEK_API_KEY is not set
+1 of 8 check(s) failed</code></pre>
+  <div class="table-wrap"><table>
+    <tr><th>Flag</th><th>Use when</th></tr>
+    <tr><td><code>--unlock</code></td><td>A stale writer lock remains after a crash</td></tr>
+    <tr><td><code>--rebuild-index</code></td><td>Search looks wrong. The index is a cache, so rebuilding is always safe</td></tr>
+    <tr><td><code>--discard-changeset</code></td><td>Throw away the open changeset (it's kept as rejected)</td></tr>
+    <tr><td><code>--json</code></td><td>Scripting</td></tr>
+  </table></div>
+  <p><strong>Recovery, honestly:</strong> each file is written atomically, but a commit across many files isn't. If a commit is interrupted, <code>lw doctor</code> shows which files were applied and which are pending, and finishes the commit <em>forward</em> from the object store. You never have to repair it by hand.</p>
+  <p><strong>Let the agent fix lint:</strong> <code>lw lint --fix</code> sends findings to the agent one page at a time. The fixes are staged as a changeset for you to review.</p>
+  <button class="mark-done" data-for="health">Mark lesson done</button>
+</section>
+
+<!-- 10 -->
+<section id="more" data-lesson>
+  <h2><span class="num">10</span>Notes, PDFs, MCP</h2>
+  <p class="goal">Goal: know the side doors: quick capture, papers, and other agents.</p>
+
+  <h3>Quick notes (no LLM, no review)</h3>
+<pre><code>lw note -m "check whether paged attention changes the KV-cache trade-off"
+lw note                 <span class="c"># compose in $VISUAL / $EDITOR</span>
+lw note list -n 10</code></pre>
+  <p>Notes go into <code>notes/</code>, outside the wiki. They're never indexed or snapshotted. Think of it as an inbox for thoughts you'll turn into sources later.</p>
+
+  <h3>PDFs</h3>
+<pre><code>uv tool install docling==2.130.0     <span class="c"># one-time; ~6 GB, runs CPU-only</span>
+lw ingest paper.pdf
+lw config set open.pdf "papers -i {page} {file}"   <span class="c"># or: mupdf {file} {page}</span></code></pre>
+  <ul>
+    <li>Citations can name the physical page: <code>^[raw/papers/leviathan-2023.md p.12]</code>. In Browse, <kbd>o</kbd> opens the PDF at that page.</li>
+    <li>Scanned or image-only PDFs are refused (no OCR). Whole books are too big for one ingest, so ingest a chapter at a time.</li>
+    <li>Converted PDFs are cached in <code>.llmwiki/cache/extract/</code>. The cache is safe to delete.</li>
+  </ul>
+
+  <h3>Use lw from another agent (MCP)</h3>
+<pre><code>{
+  "mcpServers": {
+    "lw": { "command": "lw", "args": ["mcp"] }
+  }
+}</code></pre>
+  <p>This exposes the same 18 vault tools, plus <code>web.search</code> when it's configured. <code>lw mcp</code> itself needs no API key, because the client brings its own model. On the wire, dots become underscores (<code>wiki.search</code> → <code>wiki_search</code>). See <a href="tools.md">tools.md</a>.</p>
+  <button class="mark-done" data-for="more">Mark lesson done</button>
+</section>
+
+<!-- 11 -->
+<section id="trouble" data-lesson>
+  <h2><span class="num">11</span>Troubleshooting</h2>
+  <p class="goal">Goal: recognise the common failures by their symptoms.</p>
+  <div class="table-wrap"><table>
+    <tr><th>Symptom</th><th>Cause → fix</th></tr>
+    <tr><td>Provider returns 400 / 404 / "not found"</td><td><code>llm.base_url</code> isn't an OpenAI-compatible <code>/v1</code> endpoint. Run <code>lw config set llm.base_url …/v1</code>, then <code>lw config --probe</code>.</td></tr>
+    <tr><td><code>env:DEEPSEEK_API_KEY (missing)</code></td><td>Export the variable in <em>this</em> shell, or point the reference at another one with <code>lw config set llm.api_key env:NAME</code>.</td></tr>
+    <tr><td>"a changeset is already open"</td><td>Run <code>lw status</code> → <code>lw diff</code>, then commit, press <kbd>X</kbd>, or run <code>lw doctor --discard-changeset</code>.</td></tr>
+    <tr><td>Ingest stops: output limit reached</td><td>The default is 32768. If your config sets it lower, raise it with <code>lw config set llm.max_tokens 32768</code> (<code>lw doctor</code> warns below 16000). Thinking models use a lot of it.</td></tr>
+    <tr><td>Agent refuses to write a page</td><td>It won't write a claim it can't cite. Ingest a source first. Pages also need at least two outbound <code>[[wikilinks]]</code>.</td></tr>
+    <tr><td><code>warning: lint regresses</code> after ingest</td><td>The changeset is still open. Review it with <code>lw diff</code>, drop the bad hunks, or commit with <code>--force</code> (which is recorded in the journal).</td></tr>
+  </table></div>
+  <button class="mark-done" data-for="trouble">Mark lesson done</button>
+</section>
+
+<!-- cheat -->
+<section id="cheat">
+  <h2><span class="num">⌘</span>Cheat sheet</h2>
+  <div class="table-wrap"><table>
+    <tr><th>Command</th><th>Does</th><th>Needs model?</th></tr>
+    <tr><td><code>lw init [--schema d]</code></td><td>Scaffold a vault</td><td>no</td></tr>
+    <tr><td><code>lw config [set k v] [--probe]</code></td><td>Show, edit, or test config</td><td>probe only</td></tr>
+    <tr><td><code>lw ingest &lt;path|url|dir&gt;… [--dry-run]</code></td><td>Propose pages from sources</td><td>yes</td></tr>
+    <tr><td><code>lw note [-m "…"] | note list</code></td><td>Quick capture outside the wiki</td><td>no</td></tr>
+    <tr><td><code>lw status</code></td><td>Committed counts + open changeset</td><td>no</td></tr>
+    <tr><td><code>lw diff [--stat] [--op id]</code></td><td>Projected diff</td><td>no</td></tr>
+    <tr><td><code>lw commit -m "…" [--force]</code></td><td>Land the changeset</td><td>no</td></tr>
+    <tr><td><code>lw query "…"</code></td><td>Cited, read-only answer</td><td>yes</td></tr>
+    <tr><td><code>lw lint [--fix] [--json]</code></td><td>18 checks; <code>--fix</code> stages repairs</td><td>fix only</td></tr>
+    <tr><td><code>lw log [--rejected] [--agent] [--page p]</code></td><td>Journal</td><td>no</td></tr>
+    <tr><td><code>lw revert &lt;commit&gt;</code></td><td>Open an inverse changeset</td><td>no</td></tr>
+    <tr><td><code>lw session list | show [id]</code></td><td>Agent transcripts</td><td>no</td></tr>
+    <tr><td><code>lw trace [-n N] | trace show &lt;ref&gt;</code></td><td>Per-turn traces</td><td>no</td></tr>
+    <tr><td><code>lw doctor [--unlock] [--rebuild-index] [--discard-changeset]</code></td><td>Health + repairs</td><td>provider check</td></tr>
+    <tr><td><code>lw mcp</code></td><td>MCP stdio server</td><td>no</td></tr>
+    <tr><td><code>lw</code> / <code>lw tui</code></td><td>Terminal UI</td><td>Ask only</td></tr>
+  </table></div>
+  <p><strong>Where to go next:</strong> <a href="tutorial.md">tutorial.md</a> (the long-form version of this page) · <a href="vault-schema.md">vault-schema.md</a> · <a href="changesets.md">changesets.md</a> · <a href="tools.md">tools.md</a> · <a href="hotkeys.md">hotkeys.md</a> · <a href="design.md">design.md</a></p>
+</section>
+
+<footer>Matches <code>lw --help</code> as of v2.30.0. If a command here doesn't match your build, trust <code>lw --help</code>.</footer>
+</main>
+</div>
+
+<script>
+(function () {
+  var KEY = 'lw-tutorial-done';
+  var done = {};
+  try { done = JSON.parse(localStorage.getItem(KEY) || '{}') || {}; } catch (e) { done = {}; }
+  var lessons = Array.prototype.slice.call(document.querySelectorAll('[data-lesson]')).map(function (s) { return s.id; });
+
+  function save() { try { localStorage.setItem(KEY, JSON.stringify(done)); } catch (e) {} }
+  function render() {
+    var n = 0;
+    lessons.forEach(function (id) {
+      var on = !!done[id]; if (on) n++;
+      var link = document.querySelector('nav.toc a[href="#' + id + '"]');
+      if (link) link.parentElement.classList.toggle('done', on);
+      var btn = document.querySelector('.mark-done[data-for="' + id + '"]');
+      if (btn) { btn.classList.toggle('is-done', on); btn.textContent = on ? '✓ Done' : 'Mark lesson done'; }
+    });
+    document.getElementById('progText').textContent = n + ' of ' + lessons.length + ' lessons done';
+    document.getElementById('progBar').style.width = (100 * n / lessons.length) + '%';
+  }
+  document.querySelectorAll('.mark-done').forEach(function (b) {
+    b.addEventListener('click', function () { var id = b.dataset.for; done[id] = !done[id]; save(); render(); });
+  });
+  render();
+
+  // Active section highlight
+  var links = {};
+  document.querySelectorAll('nav.toc a').forEach(function (a) { links[a.getAttribute('href').slice(1)] = a; });
+  if ('IntersectionObserver' in window) {
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting) {
+          Object.keys(links).forEach(function (k) { links[k].classList.remove('active'); });
+          if (links[e.target.id]) links[e.target.id].classList.add('active');
+        }
+      });
+    }, { rootMargin: '-20% 0px -70% 0px' });
+    document.querySelectorAll('main section').forEach(function (s) { io.observe(s); });
+  }
+
+  // Theme toggle
+  var root = document.documentElement;
+  try { var t = localStorage.getItem('lw-tutorial-theme'); if (t) root.setAttribute('data-theme', t); } catch (e) {}
+  document.getElementById('themeBtn').addEventListener('click', function () {
+    var cur = root.getAttribute('data-theme') ||
+      (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+    var next = cur === 'dark' ? 'light' : 'dark';
+    root.setAttribute('data-theme', next);
+    try { localStorage.setItem('lw-tutorial-theme', next); } catch (e) {}
+  });
+
+  // Mobile TOC toggle
+  var toc = document.getElementById('toc'), tg = document.getElementById('toggleToc');
+  tg.addEventListener('click', function () { var o = toc.classList.toggle('open'); tg.setAttribute('aria-expanded', o); });
+  toc.querySelectorAll('ol a').forEach(function (a) { a.addEventListener('click', function () { toc.classList.remove('open'); }); });
+})();
+</script>
+</body>
+</html>
