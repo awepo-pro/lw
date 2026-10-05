@@ -164,13 +164,55 @@ func (r *Registry) Definitions() []llm.ToolDef {
 	list := r.List()
 	out := make([]llm.ToolDef, 0, len(list))
 	for _, t := range list {
-		out = append(out, llm.ToolDef{
-			Name:        WireName(t.Name),
-			Description: t.Description,
-			Parameters:  t.Schema,
-		})
+		out = append(out, toolDef(t))
 	}
 	return out
+}
+
+// DefinitionsOf is Definitions restricted to the tools named in names —
+// canonical dotted spellings, the registry's own keys (039).
+//
+// Why it exists: the model reads every schema it is offered on every round,
+// and a read-only question — `lw query`, a TUI ask turn — has no use for the
+// ten stage.* schemas a curator turn needs. Advertising only the tools a turn
+// may use shrinks the request and takes the stage.* verbs out of the model's
+// sight, which the system prompt alone cannot do: a prompt asks, a definitions
+// list decides what the model can name. This is a filter over the one
+// registry, not a second registry — nothing is removed from it, and Call still
+// dispatches every registered tool; deciding which a turn may call is the
+// agent loop's job.
+//
+// The result keeps Definitions' order (sorted by canonical Name, via List)
+// and its wire spelling and schemas — the entries are the very values
+// Definitions returns — regardless of the order names arrives in. A name
+// listed twice yields one entry; a name no tool is registered under is
+// skipped, so an unbacked verb such as web.search without a provider is
+// never offered. A nil or empty names yields no definitions, never all of
+// them: "everything" is Definitions, and a filter that silently widened on an
+// empty argument would offer the stage.* verbs to the very turn that asked to
+// have them withheld. names is not modified.
+func (r *Registry) DefinitionsOf(names []string) []llm.ToolDef {
+	want := make(map[string]bool, len(names))
+	for _, n := range names {
+		want[n] = true
+	}
+	out := make([]llm.ToolDef, 0, len(want))
+	for _, t := range r.List() {
+		if want[t.Name] {
+			out = append(out, toolDef(t))
+		}
+	}
+	return out
+}
+
+// toolDef is t's wire shape: the one conversion Definitions and DefinitionsOf
+// share, so a tool is advertised identically whichever of them lists it.
+func toolDef(t Tool) llm.ToolDef {
+	return llm.ToolDef{
+		Name:        WireName(t.Name),
+		Description: t.Description,
+		Parameters:  t.Schema,
+	}
 }
 
 // decodeArgs unmarshals args into out, treating a missing/empty args

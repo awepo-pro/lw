@@ -70,6 +70,14 @@ const maxConsecutiveBadCalls = 2
 // deferred Done below is what makes "exactly one" true; cancellation wins
 // over an error, since a turn that died because its ctx died is a canceled
 // turn even when a later step also produced an error value.
+//
+// Turn mode (039): the turn's ctx verb (trace.WithVerb, which every entry
+// point already sets for the trace) decides how the turn is run — see
+// modeFromVerb. An ask or query turn is sent the ask prompt and only the read
+// tools it may use, and a call to any other tool is refused, not dispatched
+// (toolsFor, dispatchToolCall); every other verb runs exactly as it did
+// before 039. The plan is resolved once, here, so a turn cannot change mode
+// between rounds.
 func (l *Loop) Send(ctx context.Context, sessionID, msg string, out chan<- Event) (err error) {
 	defer close(out)
 
@@ -109,7 +117,8 @@ func (l *Loop) Send(ctx context.Context, sessionID, msg string, out chan<- Event
 		rec.Done(d)
 	}()
 
-	slog.InfoContext(ctx, "agent turn", "rounds_max", l.cfg.MaxToolRounds)
+	plan := planFor(trace.VerbFrom(ctx))
+	slog.InfoContext(ctx, "agent turn", "rounds_max", l.cfg.MaxToolRounds, "mode", plan.mode.String())
 
 	sess, err := l.sessions.Get(sessionID)
 	if err != nil {
@@ -128,7 +137,7 @@ func (l *Loop) Send(ctx context.Context, sessionID, msg string, out chan<- Event
 		return l.fail(ctx, out, fmt.Errorf("agent: append user record: %w", err))
 	}
 
-	msgs, err := l.ctxBldr.Build(sess, msg)
+	msgs, err := l.ctxBldr.buildFor(sess, msg, plan)
 	if err != nil {
 		return l.fail(ctx, out, fmt.Errorf("agent: build context: %w", err))
 	}
@@ -146,6 +155,7 @@ func (l *Loop) Send(ctx context.Context, sessionID, msg string, out chan<- Event
 	// live only for this Send, so a Loop reused for a second turn starts
 	// clean.
 	turnStart := len(msgs)
+	tt := l.toolsFor(plan)
 	elided := make(map[int]bool)
 	pinned := make(map[string]bool)
 
@@ -159,7 +169,7 @@ func (l *Loop) Send(ctx context.Context, sessionID, msg string, out chan<- Event
 		// is the one checkpoint a round's request passes through.
 		msgs = boundContext(ctx, msgs, turnStart, elided, pinned, rounds, l.cfg.ContextTokens)
 
-		newMsgs, toolCalled, finish, err := l.runRound(ctx, sessionID, rounds, msgs, &badCalls, out)
+		newMsgs, toolCalled, finish, err := l.runRound(ctx, sessionID, rounds, msgs, tt, &badCalls, out)
 		if err != nil {
 			return err
 		}
@@ -235,7 +245,7 @@ func (l *Loop) Send(ctx context.Context, sessionID, msg string, out chan<- Event
 // right here, when the round ends; dispatchToolCall and correctable no
 // longer build assistant messages at all, only the matching tool-result
 // message.
-func (l *Loop) runRound(ctx context.Context, sessionID string, round int, msgs []llm.Message, badCalls *int, out chan<- Event) ([]llm.Message, bool, string, error) {
+func (l *Loop) runRound(ctx context.Context, sessionID string, round int, msgs []llm.Message, tt turnTools, badCalls *int, out chan<- Event) ([]llm.Message, bool, string, error) {
 	var roundText strings.Builder        // every Text delta this round, in full — becomes the round's one assistant message Content.
 	var pendingText strings.Builder      // text since the last flushRecord; drives session Record order only, not the wire message.
 	var pendingReasoning strings.Builder // reasoning since the last flushRecord; same session-Record view as pendingText (005).
@@ -328,7 +338,7 @@ streamLoop:
 		// first_delta_ms off the first content chunk, stream_ms off the
 		// attempt's end, which is wherever this attempt's response is
 		// recorded.
-		defs := l.tools.Definitions()
+		defs := tt.defs
 		tr.BeginRequest(round, attempt, len(msgs), len(defs))
 		t0 := time.Now()
 		ch, err := l.client.Stream(ctx, llm.Request{Messages: msgs, Tools: defs})
@@ -484,7 +494,7 @@ streamLoop:
 					}
 					toolCalled = true
 
-					toolMsg, stop, tErr := l.dispatchToolCall(ctx, sessionID, round, *chunk.ToolCall, badCalls, out)
+					toolMsg, stop, tErr := l.dispatchToolCall(ctx, sessionID, round, *chunk.ToolCall, tt, badCalls, out)
 					if stop {
 						recordResponse(false, tErr.Error())
 						return nil, false, "", tErr
@@ -498,6 +508,67 @@ streamLoop:
 			}
 		}
 	}
+}
+
+// askTools is the read-only tool set an ask-mode turn is offered (039), by
+// canonical name: discovery (raw.list, vault.orient), reading (raw.get,
+// wiki.get), search and graph (wiki.search, wiki.neighbors, wiki.backlinks)
+// and wiki.lint. Every one is Tool.ReadOnly, and raw.get is on the list
+// because the ask prompt tells the model to read the cited raw source when a
+// page is thin.
+var askTools = []string{
+	"raw.list", "raw.get", "vault.orient",
+	"wiki.search", "wiki.get", "wiki.neighbors", "wiki.backlinks", "wiki.lint",
+}
+
+// askWebTools is what a TUI ask turn is additionally offered when the
+// registry has web.search (039): the search itself and the 010/017 flow that
+// ingests the best result as a raw source — stage.open, stage.ingest_source —
+// and stage.close, the call that flow ends on and where 040's unread-chunks
+// guard refuses until an ingested source has been read. They are offered
+// together or not at all: a web.search with no way to act on its result would
+// send the model off to fetch pages it cannot keep.
+var askWebTools = []string{"web.search", "stage.open", "stage.ingest_source", "stage.close"}
+
+// turnTools is the tool surface one turn has: what its request advertises and
+// what its dispatch allows.
+type turnTools struct {
+	defs []llm.ToolDef
+
+	// offered is the set of canonical names the turn may call, nil for a
+	// curator turn — every registered tool, which is the registry's own
+	// decision, not a list to keep in step with it.
+	offered map[string]bool
+
+	// names is the offered canonical names, sorted and comma-separated: the
+	// tail of a refusal message. Empty for a curator turn.
+	names string
+}
+
+// toolsFor resolves plan to the turn's tool surface, once per Send (039).
+// A curator turn is offered everything, exactly Definitions() as before; an
+// ask turn is offered askTools, plus askWebTools when the plan allows web and
+// the registry has web.search. Names no tool is registered under are skipped
+// by DefinitionsOf, and the offered set and names are read back off the
+// definitions themselves, so what the request advertises, what dispatch allows
+// and what a refusal lists cannot disagree.
+func (l *Loop) toolsFor(plan turnPlan) turnTools {
+	if plan.mode != modeAsk {
+		return turnTools{defs: l.tools.Definitions()}
+	}
+	want := append([]string(nil), askTools...)
+	if _, ok := l.tools.Get("web.search"); ok && plan.web {
+		want = append(want, askWebTools...)
+	}
+	defs := l.tools.DefinitionsOf(want)
+	offered := make(map[string]bool, len(defs))
+	names := make([]string, 0, len(defs))
+	for _, d := range defs {
+		c := tools.CanonicalName(d.Name)
+		offered[c] = true
+		names = append(names, c) // defs are in canonical-name order already
+	}
+	return turnTools{defs: defs, offered: offered, names: strings.Join(names, ", ")}
 }
 
 // traceToolCalls converts a round's llm.ToolCalls to their trace shape: the
@@ -516,11 +587,13 @@ func traceToolCalls(tcs []llm.ToolCall) []trace.ToolCall {
 }
 
 // dispatchToolCall handles one complete llm.ToolCall: it always emits
-// ToolCallEv, then validates the arguments parse as a JSON object before
+// ToolCallEv, then refuses a tool this turn was not offered (039), then
+// validates the arguments parse as a JSON object before
 // ever calling the registry (backbone §9 item 7). A parse failure, or a
 // Call error wrapping tools.ErrUnknownTool (item 8, D-CT), is
 // model-correctable and shares the one-retry budget in badCalls; a second
-// consecutive one aborts the turn. Every other non-nil error from Call
+// consecutive one aborts the turn. A refused tool is answered with an error
+// result too, but sits outside that budget (A-039-1). Every other non-nil error from Call
 // aborts immediately. On success it emits ToolResEv (and StageEv when
 // applicable), records the turn, resets badCalls to 0, and returns the
 // tool-result message for the next round.
@@ -528,7 +601,7 @@ func traceToolCalls(tcs []llm.ToolCall) []trace.ToolCall {
 // It no longer builds an assistant message (C-120/D-DG): the round's one
 // assistant message — carrying every tool call and the round's shared text
 // and reasoning — is assembled once, by runRound, when the round ends.
-func (l *Loop) dispatchToolCall(ctx context.Context, sessionID string, round int, tc llm.ToolCall, badCalls *int, out chan<- Event) (msg llm.Message, stop bool, err error) {
+func (l *Loop) dispatchToolCall(ctx context.Context, sessionID string, round int, tc llm.ToolCall, tt turnTools, badCalls *int, out chan<- Event) (msg llm.Message, stop bool, err error) {
 	// The provider echoes tc.Function.Name back to us in wire spelling —
 	// underscores, never dots (backbone §6/§7's amendment, D-CY/C-112),
 	// since Registry.Definitions advertised it that way. Canonicalize once,
@@ -546,6 +619,26 @@ func (l *Loop) dispatchToolCall(ctx context.Context, sessionID string, round int
 
 	if !l.send(ctx, out, ToolCallEv{ID: tc.ID, Name: canonical, Args: tc.Function.Arguments}) {
 		return llm.Message{}, true, ctx.Err()
+	}
+
+	// 039: a tool this turn was not offered is refused before anything else
+	// looks at the call, and never reaches the registry. Advertising a
+	// restricted tool list only asks the model not to call the rest; it can
+	// still name any tool it saw in session history (the pane replays earlier
+	// turns' stage.* calls) or one it invented, and the prompt's "read-only"
+	// is not a guard. The refusal is feedback, not a malformed call, so it
+	// stays outside the retry budget (A-039-1): it neither counts toward the
+	// two-in-a-row abort — the call was well formed, and ending an ask turn on
+	// it would throw away the answer the model was about to give; max_rounds
+	// already bounds one that never stops asking — nor resets it, so a refusal
+	// between two malformed calls leaves the second one the second in a row.
+	// tt.offered is nil for a curator turn, which keeps the pre-039 path — an
+	// unregistered name still reaches the registry and fails there with
+	// tools.ErrUnknownTool.
+	if tt.offered != nil && !tt.offered[canonical] {
+		return l.toolError(ctx, sessionID, round, tc, canonical,
+			fmt.Sprintf("tool %s is not available in this turn; use one of: %s", canonical, tt.names),
+			out, t0)
 	}
 
 	args := strings.TrimSpace(tc.Function.Arguments)
@@ -623,14 +716,36 @@ func (l *Loop) dispatchToolCall(ctx context.Context, sessionID string, round int
 // it returns only the tool-result message: the call still counts toward the
 // round's one assistant message (runRound appends tc to roundToolCalls
 // regardless of which branch produced its result), but no separate
-// assistant message is built here (C-120/D-DG).
+// assistant message is built here (C-120/D-DG). Feeding the error back is
+// toolError's job; this adds the budget around it.
 func (l *Loop) correctable(ctx context.Context, sessionID string, round int, tc llm.ToolCall, canonical string, cause error, badCalls *int, out chan<- Event, t0 time.Time) (llm.Message, bool, error) {
 	*badCalls++
-	content := cause.Error()
 
-	// 038 T4 (A7): a correctable call is still a dispatched call — its
-	// error result is what the model reads next, so the trace shows it like
-	// any other tool, timed from the same t0 dispatchToolCall started.
+	msg, stop, err := l.toolError(ctx, sessionID, round, tc, canonical, cause.Error(), out, t0)
+	if stop {
+		return msg, stop, err
+	}
+
+	if *badCalls >= maxConsecutiveBadCalls {
+		return llm.Message{}, true, l.fail(ctx, out, fmt.Errorf("agent: tool %s: two consecutive unusable calls: %w", canonical, cause))
+	}
+
+	return msg, false, nil
+}
+
+// toolError feeds content back to the model as an IsError tool result without
+// touching the retry budget — the part of correctable that does not depend on
+// it, split out for 039's refusal of an unoffered tool (A-039-1), which must
+// reach the model like any other tool error but be counted as neither a bad
+// call nor a good one. It emits the trace's tool row, the ToolResEv and the
+// session Record, in that order, and returns the tool-result message for the
+// next round; stop is true only when the turn could not go on (ctx ended, or
+// the record could not be written). Like dispatchToolCall it builds no
+// assistant message (C-120/D-DG).
+func (l *Loop) toolError(ctx context.Context, sessionID string, round int, tc llm.ToolCall, canonical, content string, out chan<- Event, t0 time.Time) (llm.Message, bool, error) {
+	// 038 T4 (A7): a failed call is still a dispatched call — its error
+	// result is what the model reads next, so the trace shows it like any
+	// other tool, timed from the same t0 dispatchToolCall started.
 	trace.FromContext(ctx).Tool(trace.Tool{
 		Round: round, ID: tc.ID, Name: canonical, IsError: true,
 		MS: time.Since(t0).Milliseconds(), ResultBytes: len(content),
@@ -644,10 +759,6 @@ func (l *Loop) correctable(ctx context.Context, sessionID string, round int, tc 
 	rec := Record{TS: time.Now().UTC(), Role: "tool", Tool: canonical, Args: tc.Function.Arguments, Result: content, Turn: logging.TurnFrom(ctx)}
 	if aerr := l.sessions.Append(sessionID, rec); aerr != nil {
 		return llm.Message{}, true, l.fail(ctx, out, fmt.Errorf("agent: append tool record: %w", aerr))
-	}
-
-	if *badCalls >= maxConsecutiveBadCalls {
-		return llm.Message{}, true, l.fail(ctx, out, fmt.Errorf("agent: tool %s: two consecutive unusable calls: %w", canonical, cause))
 	}
 
 	return llm.Message{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: content}, false, nil

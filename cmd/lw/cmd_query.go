@@ -16,23 +16,30 @@ import (
 )
 
 // queryPromptPrefix frames the user's question so the model treats the turn as
-// read-only. This is advisory, not a technical wall — internal/tools'
-// Registry (frozen, not owned by this subtask) has no filtered-definitions
-// constructor, and every stage.* tool it registers uses the same real
-// *stage.Engine the loop's own context needs (backbone §9's C-104 pinned
-// instruction: "assemble the deps exactly as cmd_mcp.go does", which rules
-// out handing the registry a different, crippled Engine). The hard
-// guarantee cmdQuery actually enforces is structural, below: any changeset
-// the turn opened — one open at the end that was not open at the start — is
-// rejected before cmdQuery returns, so "this turn opened nothing" holds
-// regardless of what the model attempts. Since 019 stage.open JOINS an
-// already-open changeset instead of failing, so the second half of the
-// guarantee is scoped to the op: ops the turn appends to a changeset that
-// was already open when `lw query` started are dropped again before the
-// command returns — the 019 scoped-rollback rule, DropOps over only what
-// the turn added, never Reject (the changeset is the curator's own review
-// in progress, C-116).
-const queryPromptPrefix = "Answer the following question about the vault, citing the wiki pages you draw from by path. This is a read-only query: do not open a changeset or propose any change.\n\nQuestion: "
+// read-only. This is advisory, not a technical wall; since 039 there are two
+// walls behind it. The `query` verb on the turn's ctx makes the agent loop
+// send the ask prompt and advertise only the read tools, and refuse a call to
+// any other tool without dispatching it (internal/agent, toolsFor). And the
+// guard cmdQuery itself enforces, below, is structural: any changeset the turn
+// opened — one open at the end that was not open at the start — is rejected
+// before cmdQuery returns, so "this turn opened nothing" holds regardless of
+// what the model attempts. Since 019 stage.open JOINS an already-open
+// changeset instead of failing, so the second half of the guarantee is scoped
+// to the op: ops the turn appends to a changeset that was already open when
+// `lw query` started are dropped again before the command returns — the 019
+// scoped-rollback rule, DropOps over only what the turn added, never Reject
+// (the changeset is the curator's own review in progress, C-116). The guard
+// stays even though the tool set no longer offers a stage.* verb: it is the
+// backstop for a loop that is wired wrong, not a second copy of the first wall.
+//
+// The prefix used to ask the model to cite "the wiki pages you draw from by
+// path". The system prompt said "Never narrate your sources" and the
+// provenance markers carry the citations, so the two instructions
+// contradicted each other, and a wiki page path is not evidence anyway — the
+// ask prompt (internal/agent, askPromptBase) now owns the citation rules, and
+// the prefix says only what is specific to this command: the question is
+// read-only and its text follows.
+const queryPromptPrefix = "Answer the following question about the vault. This is a read-only query: do not open a changeset or propose any change.\n\nQuestion: "
 
 // cmdQuery asks the curator agent a one-shot, read-only question over the
 // vault: no changeset is opened, and none is left behind even if the
@@ -93,7 +100,9 @@ func cmdQuery(args []string) error {
 	}
 
 	// 038: the turn's verb rides the ctx (038 C-3) — query here, as ingest
-	// and lint --fix set theirs around their own Send.
+	// and lint --fix set theirs around their own Send. 039: the same verb is
+	// what puts the turn in ask mode — the ask prompt, the read tools only —
+	// so it is load-bearing, not just a trace label.
 	sendErr := runAgentTurn(trace.WithVerb(context.Background(), "query"), ag, sess.ID, queryPromptPrefix+question, os.Stdout)
 	fmt.Println()
 

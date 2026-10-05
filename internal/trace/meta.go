@@ -12,7 +12,7 @@ import (
 // agent.LoopConfig.TraceMeta; agent.Send fills Session, MaxRounds and
 // ContextTokens.
 type Meta struct {
-	Verb          string // ingest | ask | query | lint
+	Verb          string // ingest | ask | file | query | lint
 	Session       string // the session id: a changeset id, or "query"
 	Version       string // lw's version string
 	Model         string // gen_ai.request.model
@@ -37,7 +37,9 @@ type verbKey struct{}
 
 // WithVerb returns ctx carrying the verb that started the turn (038):
 // cmd/lw sets "ingest", "query" or "lint" around its Send call and the TUI
-// ask pane sets "ask". agent.Send prefers it over LoopConfig.TraceMeta.Verb.
+// ask pane sets "ask" — or "file" for a ctrl+s filing turn (039). agent.Send
+// prefers it over LoopConfig.TraceMeta.Verb, and, since 039, reads the same
+// verb to decide how the turn is run (agent.modeFromVerb).
 func WithVerb(ctx context.Context, verb string) context.Context {
 	return context.WithValue(ctx, verbKey{}, verb)
 }

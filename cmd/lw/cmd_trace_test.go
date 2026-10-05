@@ -238,8 +238,11 @@ func fmtMB(b int64) string {
 
 // TestTraceListEmptyAndOff pins the two whole-output shapes: a vault with
 // no traces yet, and the off line a trace.keep_mb = 0 config adds.
+//
+// A-039-2: the empty sentence's verb list gained "file" — 039 gave the TUI's
+// ctrl+s filing turn its own verb, so a vault can now hold a "file" trace.
 func TestTraceListEmptyAndOff(t *testing.T) {
-	const emptyText = "no traces yet — every agent turn (ingest, ask, query, lint --fix) records one under .llmwiki/traces\n"
+	const emptyText = "no traces yet — every agent turn (ingest, ask, file, query, lint --fix) records one under .llmwiki/traces\n"
 
 	t.Run("empty", func(t *testing.T) {
 		root := traceFixtureVault(t)

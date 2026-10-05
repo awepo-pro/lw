@@ -146,7 +146,10 @@ func (m *Model) fileKey() tea.Cmd {
 		return nil
 	}
 	msg := fileMessage(m.last.question, m.last.answer, m.queryCandidates(m.last.question))
-	cmd := m.beginTurn(fileEcho, msg)
+	// 039: the filing turn runs under its own verb, "file", so the agent runs
+	// it as a curator turn: it has to stage a query page, and an "ask" turn is
+	// offered no stage.* tool.
+	cmd := m.beginTurnAs(verbFile, fileEcho, msg)
 	if cmd != nil {
 		// The filing turn really started — beginTurn returns nil only for
 		// the nil-agent degrade — so its own answer will record as a filing
@@ -177,7 +180,17 @@ func (m *Model) queryCandidates(question string) []index.Hit {
 // entry points set m.back, turnActive and sessionID identically. echo is
 // the user entry the transcript shows; msg is what the agent receives —
 // the submitted text for submitInput, fileMessage's for ctrl+s.
+//
+// beginTurn is the question's entry (verb "ask"); beginTurnAs takes the verb
+// for the one caller that is not a question (039).
 func (m *Model) beginTurn(echo, msg string) tea.Cmd {
+	return m.beginTurnAs(verbAsk, echo, msg)
+}
+
+// beginTurnAs is beginTurn for a turn tagged with verb (039): verbAsk for a
+// question, verbFile for the filing turn. The verb is passed down to the
+// goroutine startTurn spawns and ends up on the ctx Agent.Send receives.
+func (m *Model) beginTurnAs(verb, echo, msg string) tea.Cmd {
 	if m.deps.Agent == nil {
 		m.echoUser(echo)
 		m.appendStatus(noAgentStatus)
@@ -201,7 +214,7 @@ func (m *Model) beginTurn(echo, msg string) tea.Cmd {
 	// (C-124/D-DH) — a changeset already open above is known synchronously,
 	// same as before.
 	m.sessionID = sessionID
-	return m.startTurn(sessionID, m.convID, msg)
+	return m.startTurn(sessionID, m.convID, msg, verb)
 }
 
 // fileMessage renders the message a filing turn runs on, byte for byte as

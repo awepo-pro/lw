@@ -54,7 +54,9 @@ func NewContextBuilder(v *vault.Vault, r *tools.Registry, budget int) *ContextBu
 // in backbone §9's exact order (/docs/design.md §11.3):
 //
 //  1. the system prompt (prompt.go — its web-lookup paragraphs only when
-//     this builder's registry offers web.search, 012 D-12B);
+//     this builder's registry offers web.search, 012 D-12B). Build is the
+//     curator turn: Send, which knows the turn's verb, calls buildFor with
+//     the plan that verb decides (039);
 //  2. curator-memory.md, verbatim;
 //  3. the orientation digest — vault.orient's Result.Content, injected once
 //     per session and refreshed only when index.md's content changes;
@@ -64,6 +66,17 @@ func NewContextBuilder(v *vault.Vault, r *tools.Registry, budget int) *ContextBu
 //     replayed stage.create_page / stage.patch_page replaced by a stub (041);
 //  5. the user message.
 func (b *ContextBuilder) Build(s *Session, userMsg string) ([]llm.Message, error) {
+	return b.buildFor(s, userMsg, turnPlan{})
+}
+
+// buildFor is Build for the turn plan its verb decided (039): identical in
+// every part but the first. A curator plan sends systemPromptFor, exactly as
+// before 039; an ask plan sends askPromptFor, so a question is answered under
+// a prompt written for answering rather than under the ingest policy. The
+// other four parts — memory, digest, history, user message — are the same for
+// both: a question still reads the curator's memory and the vault's
+// orientation, and replays the session's history.
+func (b *ContextBuilder) buildFor(s *Session, userMsg string, plan turnPlan) ([]llm.Message, error) {
 	memory, err := b.v.Read("curator-memory.md")
 	if err != nil {
 		return nil, fmt.Errorf("agent: build context: read curator-memory.md: %w", err)
@@ -79,8 +92,14 @@ func (b *ContextBuilder) Build(s *Session, userMsg string) ([]llm.Message, error
 	// (012 contract §1) — never a constructor parameter, never a stored
 	// field.
 	_, hasSearch := b.r.Get("web.search")
+	system := systemPromptFor(hasSearch)
+	if plan.mode == modeAsk {
+		// 039: the ask prompt promises web.search only to a turn that is
+		// offered it — the registry has the verb AND the verb allows it.
+		system = askPromptFor(hasSearch && plan.web)
+	}
 	msgs := []llm.Message{
-		{Role: "system", Content: systemPromptFor(hasSearch)},
+		{Role: "system", Content: system},
 		{Role: "system", Content: string(memory)},
 		{Role: "system", Content: digest},
 	}
