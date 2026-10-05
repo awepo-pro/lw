@@ -78,6 +78,11 @@ const maxConsecutiveBadCalls = 2
 // (toolsFor, dispatchToolCall); every other verb runs exactly as it did
 // before 039. The plan is resolved once, here, so a turn cannot change mode
 // between rounds.
+//
+// Ingest read budget (048): an ingest turn is also capped in how many wiki
+// pages it may read between page changes (readBudget). The count is made here,
+// one per Send, so it never outlives the turn: a Loop the TUI reuses across
+// turns starts each of them at zero.
 func (l *Loop) Send(ctx context.Context, sessionID, msg string, out chan<- Event) (err error) {
 	defer close(out)
 
@@ -165,6 +170,10 @@ func (l *Loop) Send(ctx context.Context, sessionID, msg string, out chan<- Event
 	// reworded, so the only calls whose page text may be stubbed are the ones
 	// the loop itself saw succeed.
 	staged := make(map[string]bool)
+	// 048: the ingest verb's read budget, nil for every other verb. Like staged
+	// it is per Send and handed down by reference; dispatch is sequential, so
+	// it needs no lock.
+	budget := newReadBudget(plan)
 
 	badCalls := 0
 
@@ -176,7 +185,7 @@ func (l *Loop) Send(ctx context.Context, sessionID, msg string, out chan<- Event
 		// is the one checkpoint a round's request passes through.
 		msgs = boundContext(ctx, msgs, turnStart, elided, pinned, staged, rounds, l.cfg.ContextTokens)
 
-		newMsgs, toolCalled, finish, err := l.runRound(ctx, sessionID, rounds, msgs, tt, staged, &badCalls, out)
+		newMsgs, toolCalled, finish, err := l.runRound(ctx, sessionID, rounds, msgs, tt, staged, budget, &badCalls, out)
 		if err != nil {
 			return err
 		}
@@ -277,7 +286,8 @@ func nudgeLastToolResult(ctx context.Context, msgs []llm.Message, round, k int, 
 // non-empty Chunk.Finish ("" when the provider sent none), which Send
 // checks for truncation (008, contract §1). staged is the turn's set of tool
 // call ids that staged an op (041, A-041-3): dispatchToolCall fills it, Send's
-// next boundContext reads it.
+// next boundContext reads it. budget is the turn's ingest read budget (048),
+// nil on every other verb, which dispatchToolCall consults and updates.
 //
 // Truncation record: a round that ends abnormally (truncated(finish) and no
 // tool call) writes ONE assistant Record carrying its pending text, pending
@@ -312,7 +322,7 @@ func nudgeLastToolResult(ctx context.Context, msgs []llm.Message, round, k int, 
 // right here, when the round ends; dispatchToolCall and correctable no
 // longer build assistant messages at all, only the matching tool-result
 // message.
-func (l *Loop) runRound(ctx context.Context, sessionID string, round int, msgs []llm.Message, tt turnTools, staged map[string]bool, badCalls *int, out chan<- Event) ([]llm.Message, bool, string, error) {
+func (l *Loop) runRound(ctx context.Context, sessionID string, round int, msgs []llm.Message, tt turnTools, staged map[string]bool, budget *readBudget, badCalls *int, out chan<- Event) ([]llm.Message, bool, string, error) {
 	var roundText strings.Builder        // every Text delta this round, in full — becomes the round's one assistant message Content.
 	var pendingText strings.Builder      // text since the last flushRecord; drives session Record order only, not the wire message.
 	var pendingReasoning strings.Builder // reasoning since the last flushRecord; same session-Record view as pendingText (005).
@@ -561,7 +571,7 @@ streamLoop:
 					}
 					toolCalled = true
 
-					toolMsg, stop, tErr := l.dispatchToolCall(ctx, sessionID, round, *chunk.ToolCall, tt, staged, badCalls, out)
+					toolMsg, stop, tErr := l.dispatchToolCall(ctx, sessionID, round, *chunk.ToolCall, tt, staged, budget, badCalls, out)
 					if stop {
 						recordResponse(false, tErr.Error())
 						return nil, false, "", tErr
@@ -660,17 +670,19 @@ func traceToolCalls(tcs []llm.ToolCall) []trace.ToolCall {
 // Call error wrapping tools.ErrUnknownTool (item 8, D-CT), is
 // model-correctable and shares the one-retry budget in badCalls; a second
 // consecutive one aborts the turn. A refused tool is answered with an error
-// result too, but sits outside that budget (A-039-1). Every other non-nil error from Call
+// result too, but sits outside that budget (A-039-1), and so does a read the
+// ingest read budget refuses (048). Every other non-nil error from Call
 // aborts immediately. On success it emits ToolResEv (and StageEv when
 // applicable), records the turn, resets badCalls to 0, and returns the
 // tool-result message for the next round. A stage.* call that came back
 // without IsError — the one that sets the record's Staged — is also marked in
-// stagedCalls (041, A-041-3), the only calls boundContext may stub.
+// stagedCalls (041, A-041-3), the only calls boundContext may stub; when it
+// changes a page it also resets the turn's ingest read count (048).
 //
 // It no longer builds an assistant message (C-120/D-DG): the round's one
 // assistant message — carrying every tool call and the round's shared text
 // and reasoning — is assembled once, by runRound, when the round ends.
-func (l *Loop) dispatchToolCall(ctx context.Context, sessionID string, round int, tc llm.ToolCall, tt turnTools, stagedCalls map[string]bool, badCalls *int, out chan<- Event) (msg llm.Message, stop bool, err error) {
+func (l *Loop) dispatchToolCall(ctx context.Context, sessionID string, round int, tc llm.ToolCall, tt turnTools, stagedCalls map[string]bool, budget *readBudget, badCalls *int, out chan<- Event) (msg llm.Message, stop bool, err error) {
 	// The provider echoes tc.Function.Name back to us in wire spelling —
 	// underscores, never dots (backbone §6/§7's amendment, D-CY/C-112),
 	// since Registry.Definitions advertised it that way. Canonicalize once,
@@ -716,6 +728,20 @@ func (l *Loop) dispatchToolCall(ctx context.Context, sessionID string, round int
 			out, t0)
 	}
 
+	// 048: a wiki read over the ingest budget is refused here, before the
+	// arguments are parsed and before the registry hears of it. A real ingest
+	// called wiki.get on all 37 pages and staged none, and 040's prompt line
+	// and round nudge did not stop it, so the loop does. The refusal is
+	// feedback in the 039 sense — a well-formed call to a tool the model may
+	// still use once it stages something — so it goes through toolError and
+	// stays outside the two-in-a-row budget: ending the turn on it would throw
+	// away the pages the model was just told to write. budget is nil, and
+	// refusal says no, for every verb but ingest.
+	if text, refused := budget.refusal(canonical); refused {
+		slog.InfoContext(ctx, "agent read budget refusal", "name", canonical, "reads", budget.reads)
+		return l.toolError(ctx, sessionID, round, tc, canonical, text, out, t0)
+	}
+
 	args := strings.TrimSpace(tc.Function.Arguments)
 	if args == "" {
 		args = "{}" // legal for a no-argument tool (backbone §9 item 7)
@@ -741,6 +767,7 @@ func (l *Loop) dispatchToolCall(ctx context.Context, sessionID string, round int
 		return llm.Message{}, true, l.fail(ctx, out, fmt.Errorf("agent: call %s: %w", canonical, callErr))
 	}
 	*badCalls = 0 // a dispatched call, whatever its result, resets the retry budget
+	budget.noteRead(canonical)
 
 	// 038 T4 (A7): one tool event per dispatched call, written the moment
 	// the result exists — before the events and records below, so a turn
@@ -768,6 +795,7 @@ func (l *Loop) dispatchToolCall(ctx context.Context, sessionID string, round int
 		}
 		staged = true
 		stagedCalls[tc.ID] = true // 041 A-041-3: this call's page text is now in the open changeset
+		budget.notePageChange(canonical)
 	}
 
 	rec := Record{TS: time.Now().UTC(), Role: "tool", Tool: canonical, Args: args, Result: res.Content, Staged: staged, Turn: logging.TurnFrom(ctx)}

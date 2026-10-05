@@ -206,8 +206,9 @@ func askPromptFor(hasSearch bool) string {
 // ingest, lint, the pane's "file" for a ctrl+s filing turn, or none at all —
 // is a curator turn.
 const (
-	verbAsk   = "ask"   // the TUI ask pane's question
-	verbQuery = "query" // `lw query`
+	verbAsk    = "ask"    // the TUI ask pane's question
+	verbQuery  = "query"  // `lw query`
+	verbIngest = "ingest" // `lw ingest`, and lweval's ingest jobs
 )
 
 // turnMode is how a turn is run: which system prompt it sends and which tools
@@ -254,13 +255,18 @@ func askOffersWeb(verb string) bool { return verb == verbAsk }
 // turnPlan is everything a turn's verb decides, resolved once at the top of
 // Send: the mode, and — for an ask-mode turn — whether web lookup is allowed.
 // web is meaningless in curator mode, which offers whatever the registry has.
+// readBudget (048) is whether the turn's wiki reads are capped between page
+// changes: true for the ingest verb alone, and not for curator mode as a whole
+// — lint and a ctrl+s filing turn are curator turns that legitimately read
+// many pages and were never the crawl 048 measured.
 type turnPlan struct {
-	mode turnMode
-	web  bool
+	mode       turnMode
+	web        bool
+	readBudget bool
 }
 
 // planFor resolves verb to its turnPlan. The zero turnPlan is the curator
 // turn, which is what ContextBuilder.Build — the pre-039 entry point — uses.
 func planFor(verb string) turnPlan {
-	return turnPlan{mode: modeFromVerb(verb), web: askOffersWeb(verb)}
+	return turnPlan{mode: modeFromVerb(verb), web: askOffersWeb(verb), readBudget: verb == verbIngest}
 }
