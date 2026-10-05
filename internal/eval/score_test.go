@@ -166,8 +166,14 @@ func TestScoreRun(t *testing.T) {
 		metrics           map[string]float64
 	}
 	ingest := func() map[string]float64 {
+		// A-049-1: the 049 ingest metrics. The one staged page is new and its
+		// slug is nobody's near-duplicate; lint.json holds a link-orphan on
+		// it; the fake's turn makes no tool call and no existing page was
+		// staged (patched_lossless is absent).
 		return scProcess(map[string]float64{
 			"fact_recall": 0.5, "chunk_coverage": 0, "ops": 4, "pages_staged": 1, "lint_warns": float64(lf.Warns),
+			"pages_new": 1, "dup_pages": 0, "orphans_new": 1,
+			"reads_before_first_stage": 0, "read_refusals": 0, "closed": 0, "search_calls": 0,
 		})
 	}
 	wants := []want{
@@ -468,6 +474,12 @@ facts = [["speculative"], ["inference"], ["verifies them"]]
 		"ops":          4,
 		"pages_staged": 2,
 		"lint_warns":   3,
+		// A-049-2: the 049 ingest metrics. Both staged pages are new (a.md
+		// and b.md share no token with a snapshot slug), lint.json lists no
+		// finding, and the trace never reads the wiki, searches, closes or is
+		// refused — its one failing call is a raw.get.
+		"pages_new": 2, "dup_pages": 0, "orphans_new": 0,
+		"reads_before_first_stage": 0, "read_refusals": 0, "closed": 0, "search_calls": 0,
 	})
 }
 
@@ -482,8 +494,10 @@ func TestScoreIngestNothingStaged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Score: %v", err)
 	}
+	// A-049-3: pages_new and dup_pages are values even at 0; everything that
+	// needs a trace, a lint.json or a pre-existing staged page is absent.
 	scMetrics(t, "paper-text/1", scResult(t, res, "paper-text", 1).Metrics, map[string]float64{
-		"fact_recall": 0, "ops": 0, "pages_staged": 0,
+		"fact_recall": 0, "ops": 0, "pages_staged": 0, "pages_new": 0, "dup_pages": 0,
 	})
 }
 

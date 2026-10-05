@@ -33,10 +33,12 @@ const verdictTolerance = 1e-9
 
 // boundedMetrics are the metrics bounded in [0,1]: rates and 0/1 outcomes.
 // Their per-case variance is floored (A-037-5, see Stat). max_rounds_hit is
-// here because a turn either hit the round limit or did not.
+// here because a turn either hit the round limit or did not; so are closed (a
+// turn reached stage.close or did not) and patched_lossless (a share) (049).
 var boundedMetrics = map[string]bool{
 	MetricFactRecall: true, MetricAbstainOK: true, MetricCiteValid: true, MetricCiteExpected: true,
 	MetricChunkCoverage: true, MetricToolErrorRate: true, MetricMaxRoundsHit: true,
+	MetricClosed: true, MetricPatchedLossless: true,
 }
 
 // Stat is one metric aggregated over a run's cases (C5).
