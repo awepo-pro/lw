@@ -83,6 +83,12 @@ const maxConsecutiveBadCalls = 2
 // pages it may read between page changes (readBudget). The count is made here,
 // one per Send, so it never outlives the turn: a Loop the TUI reuses across
 // turns starts each of them at zero.
+//
+// Repeat-call guard (051): in every verb, a guarded read whose identical twin
+// already ran this turn and whose result is still above, un-elided and
+// unchanged by a stage call since, is refused instead of run (repeatGuard). The
+// record is made here, one per Send, like the 048 budget, and is told after every
+// boundContext which results it elided.
 func (l *Loop) Send(ctx context.Context, sessionID, msg string, out chan<- Event) (err error) {
 	defer close(out)
 
@@ -174,6 +180,9 @@ func (l *Loop) Send(ctx context.Context, sessionID, msg string, out chan<- Event
 	// it is per Send and handed down by reference; dispatch is sequential, so
 	// it needs no lock.
 	budget := newReadBudget(plan)
+	// 051: which guarded reads have an answer above, for every verb. Per Send,
+	// by reference, like budget.
+	repeats := newRepeatGuard()
 
 	badCalls := 0
 
@@ -184,8 +193,11 @@ func (l *Loop) Send(ctx context.Context, sessionID, msg string, out chan<- Event
 		// round 1 included; runRound is the only Stream caller, so this
 		// is the one checkpoint a round's request passes through.
 		msgs = boundContext(ctx, msgs, turnStart, elided, pinned, staged, rounds, l.cfg.ContextTokens)
+		// 051: a result boundContext just elided is no longer above, and A-004-2
+		// lets the model read it again, so the guard must not refuse that read.
+		repeats.syncElided(msgs, turnStart, elided)
 
-		newMsgs, toolCalled, finish, err := l.runRound(ctx, sessionID, rounds, msgs, tt, staged, budget, &badCalls, out)
+		newMsgs, toolCalled, finish, err := l.runRound(ctx, sessionID, rounds, msgs, tt, staged, budget, repeats, &badCalls, out)
 		if err != nil {
 			return err
 		}
@@ -287,7 +299,9 @@ func nudgeLastToolResult(ctx context.Context, msgs []llm.Message, round, k int, 
 // checks for truncation (008, contract §1). staged is the turn's set of tool
 // call ids that staged an op (041, A-041-3): dispatchToolCall fills it, Send's
 // next boundContext reads it. budget is the turn's ingest read budget (048),
-// nil on every other verb, which dispatchToolCall consults and updates.
+// nil on every other verb, which dispatchToolCall consults and updates; repeats
+// is the turn's repeat-call guard (051), never nil, which it consults and
+// updates the same way.
 //
 // Truncation record: a round that ends abnormally (truncated(finish) and no
 // tool call) writes ONE assistant Record carrying its pending text, pending
@@ -322,7 +336,7 @@ func nudgeLastToolResult(ctx context.Context, msgs []llm.Message, round, k int, 
 // right here, when the round ends; dispatchToolCall and correctable no
 // longer build assistant messages at all, only the matching tool-result
 // message.
-func (l *Loop) runRound(ctx context.Context, sessionID string, round int, msgs []llm.Message, tt turnTools, staged map[string]bool, budget *readBudget, badCalls *int, out chan<- Event) ([]llm.Message, bool, string, error) {
+func (l *Loop) runRound(ctx context.Context, sessionID string, round int, msgs []llm.Message, tt turnTools, staged map[string]bool, budget *readBudget, repeats *repeatGuard, badCalls *int, out chan<- Event) ([]llm.Message, bool, string, error) {
 	var roundText strings.Builder        // every Text delta this round, in full — becomes the round's one assistant message Content.
 	var pendingText strings.Builder      // text since the last flushRecord; drives session Record order only, not the wire message.
 	var pendingReasoning strings.Builder // reasoning since the last flushRecord; same session-Record view as pendingText (005).
@@ -571,7 +585,7 @@ streamLoop:
 					}
 					toolCalled = true
 
-					toolMsg, stop, tErr := l.dispatchToolCall(ctx, sessionID, round, *chunk.ToolCall, tt, staged, budget, badCalls, out)
+					toolMsg, stop, tErr := l.dispatchToolCall(ctx, sessionID, round, *chunk.ToolCall, tt, staged, budget, repeats, badCalls, out)
 					if stop {
 						recordResponse(false, tErr.Error())
 						return nil, false, "", tErr
@@ -671,7 +685,8 @@ func traceToolCalls(tcs []llm.ToolCall) []trace.ToolCall {
 // model-correctable and shares the one-retry budget in badCalls; a second
 // consecutive one aborts the turn. A refused tool is answered with an error
 // result too, but sits outside that budget (A-039-1), and so does a read the
-// ingest read budget refuses (048). Every other non-nil error from Call
+// ingest read budget refuses (048) and an identical repeat of a read whose
+// answer is still above (051). Every other non-nil error from Call
 // aborts immediately. On success it emits ToolResEv (and StageEv when
 // applicable), records the turn, resets badCalls to 0, and returns the
 // tool-result message for the next round. A stage.* call that came back
@@ -682,7 +697,7 @@ func traceToolCalls(tcs []llm.ToolCall) []trace.ToolCall {
 // It no longer builds an assistant message (C-120/D-DG): the round's one
 // assistant message — carrying every tool call and the round's shared text
 // and reasoning — is assembled once, by runRound, when the round ends.
-func (l *Loop) dispatchToolCall(ctx context.Context, sessionID string, round int, tc llm.ToolCall, tt turnTools, stagedCalls map[string]bool, budget *readBudget, badCalls *int, out chan<- Event) (msg llm.Message, stop bool, err error) {
+func (l *Loop) dispatchToolCall(ctx context.Context, sessionID string, round int, tc llm.ToolCall, tt turnTools, stagedCalls map[string]bool, budget *readBudget, repeats *repeatGuard, badCalls *int, out chan<- Event) (msg llm.Message, stop bool, err error) {
 	// The provider echoes tc.Function.Name back to us in wire spelling —
 	// underscores, never dots (backbone §6/§7's amendment, D-CY/C-112),
 	// since Registry.Definitions advertised it that way. Canonicalize once,
@@ -728,6 +743,21 @@ func (l *Loop) dispatchToolCall(ctx context.Context, sessionID string, round int
 			out, t0)
 	}
 
+	// 051: an identical repeat of a read whose answer is still above is refused
+	// here, after the offered check (a tool the turn may not call is refused as
+	// that, whatever else is true of it) and before 048's budget (a repeat is not
+	// a read and must neither spend the budget nor be answered with the wrong
+	// reason). A real ingest sent the same wiki.search twice a round for seventeen
+	// rounds, and the nudge did not stop it. Like 039's and 048's refusals it is
+	// feedback, not a malformed call, so it goes through toolError and stays
+	// outside the two-in-a-row budget. Only a call whose earlier twin succeeded
+	// and is still un-elided is refused; the guard checks the raw arguments,
+	// which a malformed call cannot match.
+	if text, first, refused := repeats.refusal(tc.Function.Name, tc.Function.Arguments); refused {
+		slog.InfoContext(ctx, "agent repeat call refusal", "name", canonical, "first_round", first)
+		return l.toolError(ctx, sessionID, round, tc, canonical, text, out, t0)
+	}
+
 	// 048: a wiki read over the ingest budget is refused here, before the
 	// arguments are parsed and before the registry hears of it. A real ingest
 	// called wiki.get on all 37 pages and staged none, and 040's prompt line
@@ -768,6 +798,7 @@ func (l *Loop) dispatchToolCall(ctx context.Context, sessionID string, round int
 	}
 	*badCalls = 0 // a dispatched call, whatever its result, resets the retry budget
 	budget.noteRead(canonical)
+	repeats.noteResult(tc.Function.Name, tc.Function.Arguments, tc.ID, round, res.IsError)
 
 	// 038 T4 (A7): one tool event per dispatched call, written the moment
 	// the result exists — before the events and records below, so a turn

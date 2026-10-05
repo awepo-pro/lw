@@ -37,6 +37,14 @@ const bigResultBytes = 20000
 // bigWikiArgs is the argument payload the scripted rounds send to wiki_get.
 const bigWikiArgs = `{"page":"big"}`
 
+// bigWikiArgsTwin is a second spelling of the same read (A-051-1): the same
+// page and, because an empty section is "the whole page", byte-for-byte the same
+// 20000-byte result — but a different call signature, so 051's repeat-call guard
+// serves it instead of refusing it as a repeat of bigWikiArgs. It is for the
+// scripts below that need two big results and only used the one page for
+// convenience; a pin on repeated identical reads builds its own script.
+const bigWikiArgsTwin = `{"page":"big","section":""}`
+
 // wireEstimate re-derives F.C1's estimate independently of budget.go's
 // requestTokens: the pins size their budgets from it, so if the production
 // estimator ever drifts from the frozen formula the pins fail on their
@@ -233,12 +241,12 @@ func newRereadFixture(t *testing.T) *testLoopFixture {
 
 // bigWikiRounds scripts the three-round shape P1/P2/P4/P5 pin: two rounds
 // each calling wiki_get on the big page (a 20000-byte Result.Content both
-// times), then a prose stop. The wire spelling "wiki_get" is what
+// times; the second call is spelled bigWikiArgsTwin, A-051-1), then a prose stop. The wire spelling "wiki_get" is what
 // Definitions advertised (D-CY) — the provider echoes it back.
 func bigWikiRounds() [][]llm.Chunk {
 	return [][]llm.Chunk{
 		{toolCallChunk("call-w1", "wiki_get", bigWikiArgs), {Finish: "tool_calls"}},
-		{toolCallChunk("call-w2", "wiki_get", bigWikiArgs), {Finish: "tool_calls"}},
+		{toolCallChunk("call-w2", "wiki_get", bigWikiArgsTwin), {Finish: "tool_calls"}},
 		{{Text: "done"}, {Finish: "stop"}},
 	}
 }
@@ -296,6 +304,9 @@ func wireBytes(t *testing.T, v any) []byte {
 // scriptedBigCall rebuilds the literal llm.ToolCall the script streamed for
 // one big wiki_get call.
 func scriptedBigCall(id string) llm.ToolCall {
+	if id == "call-w2" {
+		return *toolCallChunk(id, "wiki_get", bigWikiArgsTwin).ToolCall // A-051-1
+	}
 	return *toolCallChunk(id, "wiki_get", bigWikiArgs).ToolCall
 }
 
@@ -427,7 +438,7 @@ func TestBudgetNeverElidesStagedResults(t *testing.T) {
 			toolCallChunk("call-w1", "wiki_get", bigWikiArgs),
 			{Finish: "tool_calls"},
 		},
-		{toolCallChunk("call-w2", "wiki_get", bigWikiArgs), {Finish: "tool_calls"}},
+		{toolCallChunk("call-w2", "wiki_get", bigWikiArgsTwin), {Finish: "tool_calls"}}, // A-051-2: not a repeat of call-w1
 		{{Text: "done"}, {Finish: "stop"}},
 	}
 
@@ -679,12 +690,19 @@ func pinSignature(wireName, args string) string {
 }
 
 // newRereadTurn scripts the live defect's shape (A-004-2, acceptance step
-// 4): round 1 reads two big pages, then rounds 2–7 the model re-requests,
-// alternating, whatever was just elided — six re-read rounds, page a's
-// third read re-spaced (`{ "page": "a" }`) so the whitespace case rides
-// along — and only then answers. Every call id is mapped to its argument
-// payload, so assertions below can attribute each wire placeholder to the
-// distinct read it stands for.
+// 4) the way 051's repeat-call guard lets it arise: round 1 reads two big
+// pages, round 2 reads a third (so round 3's request has pressure and elides
+// both of round 1's results), and then the model re-requests, one per round,
+// whatever was just elided — page a's re-read re-spaced (`{ "page": "a" }`) so
+// the whitespace case rides along — before two more rounds in which the walk
+// has to pass the pinned re-reads by. A re-read of a result that was still on
+// the wire is a repeat 051 refuses (A-051-3), so the original script's third
+// and fourth reads of a and b, each of an un-elided result, cannot occur any
+// more: the cycle this repairs is elide → re-read → elide, and a re-read now
+// can only follow its elision. Every call id is mapped to its argument payload,
+// so assertions below can attribute each wire placeholder to the distinct read
+// it stands for. The two filler rounds read the big page under two spellings,
+// which are two distinct reads.
 func newRereadTurn() ([][]llm.Chunk, map[string]string) {
 	rounds := [][]llm.Chunk{
 		{
@@ -692,23 +710,19 @@ func newRereadTurn() ([][]llm.Chunk, map[string]string) {
 			toolCallChunk("call-b1", "wiki_get", `{"page":"b"}`),
 			{Finish: "tool_calls"},
 		},
-		{toolCallChunk("call-a2", "wiki_get", `{"page":"a"}`), {Finish: "tool_calls"}},
+		{toolCallChunk("call-f1", "wiki_get", bigWikiArgs), {Finish: "tool_calls"}},
+		{toolCallChunk("call-a2", "wiki_get", `{ "page": "a" }`), {Finish: "tool_calls"}},
 		{toolCallChunk("call-b2", "wiki_get", `{"page":"b"}`), {Finish: "tool_calls"}},
-		{toolCallChunk("call-a3", "wiki_get", `{ "page": "a" }`), {Finish: "tool_calls"}},
-		{toolCallChunk("call-b3", "wiki_get", `{"page":"b"}`), {Finish: "tool_calls"}},
-		{toolCallChunk("call-a4", "wiki_get", `{"page":"a"}`), {Finish: "tool_calls"}},
-		{toolCallChunk("call-b4", "wiki_get", `{"page":"b"}`), {Finish: "tool_calls"}},
+		{toolCallChunk("call-f2", "wiki_get", bigWikiArgsTwin), {Finish: "tool_calls"}},
 		{{Text: "I have both pages now"}, {Finish: "stop"}},
 	}
 	script := map[string]string{
 		"call-a1": `{"page":"a"}`,
 		"call-b1": `{"page":"b"}`,
-		"call-a2": `{"page":"a"}`,
+		"call-f1": bigWikiArgs,
+		"call-a2": `{ "page": "a" }`,
 		"call-b2": `{"page":"b"}`,
-		"call-a3": `{ "page": "a" }`,
-		"call-b3": `{"page":"b"}`,
-		"call-a4": `{"page":"a"}`,
-		"call-b4": `{"page":"b"}`,
+		"call-f2": bigWikiArgsTwin,
 	}
 	return rounds, script
 }
@@ -759,6 +773,14 @@ func assertStopTurn(t *testing.T, events []Event, wantRounds int) {
 // which is the SAME read as its compact twin; and the turn still ends
 // with DoneEv{stop}. The live run this repair answers ended
 // reason=max_rounds after 24 rounds of exactly this shape, never answering.
+//
+// A-051-3: every re-read here is made after its result was elided (round 3's
+// request elides both of round 1's), so 051's repeat-call guard serves it, and
+// the test asserts none was refused as a repeat — a refusal's small text would
+// be "intact" on the wire and prove nothing about the pin. The original
+// script's further re-reads of a and b, each of a result still on the wire and
+// pinned, are exactly what the guard now refuses, and the pin is still shown
+// at work: rounds 5 and 6 walk past both pinned re-reads.
 func TestBudgetPinsRereadOfElidedCall(t *testing.T) {
 	rounds, script := newRereadTurn()
 
@@ -770,18 +792,21 @@ func TestBudgetPinsRereadOfElidedCall(t *testing.T) {
 
 	fake, events := runRereadTurn(t, rounds, LoopConfig{ContextTokens: budget})
 	reqs := fake.Requests()
-	if len(reqs) != 8 {
-		t.Fatalf("Stream called %d times, want 8", len(reqs))
+	if len(reqs) != 6 {
+		t.Fatalf("Stream called %d times, want 6", len(reqs))
 	}
-	assertStopTurn(t, events, 8)
+	assertStopTurn(t, events, 6)
 
 	originals := map[string]string{}
 	for _, ev := range events {
 		if res, ok := ev.(ToolResEv); ok {
 			originals[res.ID] = res.Content
+			if strings.Contains(res.Content, "this exact call already ran in round") {
+				t.Errorf("call %q was refused as a repeat (%q): a re-read after elision must be dispatched, or the pin below is shown on a refusal text", res.ID, res.Content)
+			}
 		}
 	}
-	rereads := []string{"call-a2", "call-b2", "call-a3", "call-b3", "call-a4", "call-b4"}
+	rereads := []string{"call-a2", "call-b2"}
 
 	// Per request: the wire must stay valid (checkWireShape), every
 	// placeholder is attributed to its read's signature, and every
@@ -813,35 +838,58 @@ func TestBudgetPinsRereadOfElidedCall(t *testing.T) {
 		t.Fatalf("nothing was ever elided (base %d, budget %d) — sizing broke, pin vacuous", base, budget)
 	}
 
+	// Non-vacuous: both of round 1's results were elided before their re-reads
+	// were made, so each re-read really is a re-read of an elided result.
+	for _, id := range []string{"call-a1", "call-b1"} {
+		if msg := toolMsgByID(t, reqs[2].Messages, id); msg.Content != probePlaceholder("wiki.get", len(originals[id])) {
+			t.Fatalf("%s's result was not elided when round 3 began — sizing broke, the re-reads are not re-reads of elided results: %q", id, msg.Content)
+		}
+	}
+
 	// THE pin: one elision per distinct read, whole turn. The placeholder
 	// persists on the call it elided (that is F.C2's own rule); what may
 	// never happen is a SECOND call — a re-read — losing its result too.
 	sigA := pinSignature("wiki_get", `{"page":"a"}`)
 	sigB := pinSignature("wiki_get", `{"page":"b"}`)
 	if ids := elidedReads[sigA]; len(ids) != 1 || !ids["call-a1"] {
-		t.Errorf("page a was elided on calls %v — A-004-2 wants exactly {call-a1}: the re-reads (call-a2, call-a3 with re-spaced JSON, call-a4) are the same read and must stay intact", ids)
+		t.Errorf("page a was elided on calls %v — A-004-2 wants exactly {call-a1}: the re-read (call-a2, with re-spaced JSON) is the same read and must stay intact", ids)
 	}
 	if ids := elidedReads[sigB]; len(ids) != 1 || !ids["call-b1"] {
 		t.Errorf("page b was elided on calls %v — A-004-2 wants exactly {call-b1}", ids)
+	}
+	for sig, ids := range elidedReads {
+		if len(ids) > 1 {
+			t.Errorf("read %q was elided on %d calls %v, want at most one", sig, len(ids), ids)
+		}
 	}
 }
 
 // TestBudgetPinRereadMatchesAcrossJSONSpacing is P7's focused whitespace
 // case: the re-request differs from the elided call ONLY in JSON spacing
-// (`{"page":"a"}` vs `{ "page":  "a" }`). Three tool rounds, so that at
-// round 4's request the spaced re-read is no longer the most recent
+// (`{"page":"a"}` vs `{ "page":  "a" }`). Four tool rounds, so that at
+// round 5's request the spaced re-read is no longer the most recent
 // round's result (F.C2a would shield it there and the pin would be
 // vacuous) and the walk genuinely reaches it. The budget sits under one
-// result, so eliding round 1's result is never enough: the pin must
-// recognize the re-read as the same read across the spacing and skip it —
-// leaving the request over budget with F.C3's warn — rather than elide it
-// and re-create the cycle.
+// result, so eliding is never enough to fit: the pin must recognize the
+// re-read as the same read across the spacing and skip it — leaving the
+// request over budget with F.C3's warn — rather than elide it and
+// re-create the cycle.
+//
+// A-051-4: the re-read is made after its original was elided — round 2 reads
+// another page so that round 3's request has an older result to elide — because
+// 051's repeat-call guard refuses a re-read of a result still on the wire, which
+// is what the original script (a, a-spaced, b) did. The test also asserts the
+// re-read was served, not refused as a repeat: a refusal text is intact on the
+// wire and would prove nothing about the pin. Round 4 reads a third page so the
+// re-read is an older round by round 5, and round 4's request elides round 2's
+// page, so the elision lines are rounds 3 and 4 (one message each).
 func TestBudgetPinRereadMatchesAcrossJSONSpacing(t *testing.T) {
 	logPath := installFileLog(t)
 	rounds := [][]llm.Chunk{
 		{toolCallChunk("call-1", "wiki_get", `{"page":"a"}`), {Finish: "tool_calls"}},
-		{toolCallChunk("call-2", "wiki_get", `{ "page":  "a" }`), {Finish: "tool_calls"}},
-		{toolCallChunk("call-3", "wiki_get", `{"page":"b"}`), {Finish: "tool_calls"}},
+		{toolCallChunk("call-2", "wiki_get", `{"page":"b"}`), {Finish: "tool_calls"}},
+		{toolCallChunk("call-3", "wiki_get", `{ "page":  "a" }`), {Finish: "tool_calls"}},
+		{toolCallChunk("call-4", "wiki_get", bigWikiArgs), {Finish: "tool_calls"}},
 		{{Text: "got it"}, {Finish: "stop"}},
 	}
 
@@ -851,34 +899,38 @@ func TestBudgetPinRereadMatchesAcrossJSONSpacing(t *testing.T) {
 
 	fake, events := runRereadTurn(t, rounds, LoopConfig{ContextTokens: budget})
 	reqs := fake.Requests()
-	if len(reqs) != 4 {
-		t.Fatalf("Stream called %d times, want 4", len(reqs))
+	if len(reqs) != 5 {
+		t.Fatalf("Stream called %d times, want 5", len(reqs))
 	}
-	assertStopTurn(t, events, 4)
+	assertStopTurn(t, events, 5)
 
 	originals := map[string]string{}
 	for _, ev := range events {
 		if res, ok := ev.(ToolResEv); ok {
 			originals[res.ID] = res.Content
+			if strings.Contains(res.Content, "this exact call already ran in round") {
+				t.Errorf("call %q was refused as a repeat (%q): the re-read follows its original's elision and must be dispatched", res.ID, res.Content)
+			}
 		}
 	}
 
-	// Non-vacuous: round 1's result really was elided at round 3.
+	// Non-vacuous: round 1's result really was elided at round 3, before the
+	// re-read was made.
 	if msg := toolMsgByID(t, reqs[2].Messages, "call-1"); msg.Content != probePlaceholder("wiki.get", len(originals["call-1"])) {
 		t.Fatalf("call-1's result was not elided — sizing broke, pin vacuous: %q", msg.Content)
 	}
-	// THE pin: the spaced re-read is the same read — intact at round 4,
+	// THE pin: the spaced re-read is the same read — intact at round 5,
 	// where the walk visits it and pinning is the only thing protecting it.
-	if msg := toolMsgByID(t, reqs[3].Messages, "call-2"); msg.Content != originals["call-2"] {
+	if msg := toolMsgByID(t, reqs[4].Messages, "call-3"); msg.Content != originals["call-3"] {
 		t.Errorf("re-read with re-spaced JSON ({ \"page\":  \"a\" }) was elided too — the cycle is back: %q", msg.Content)
 	}
 
 	log := readLog(t, logPath)
-	if n := strings.Count(log, `msg="context elided"`); n != 1 {
-		t.Errorf("want exactly 1 elision log line (round 3, one message), got %d:\n%s", n, log)
+	if n := strings.Count(log, `msg="context elided"`); n != 2 {
+		t.Errorf("want exactly 2 elision log lines (round 3: call-1, round 4: call-2), got %d:\n%s", n, log)
 	}
 	if !strings.Contains(log, `msg="context over budget"`) {
-		t.Errorf("skipping the pinned re-read must leave round 4 over budget with an F.C3 warn:\n%s", log)
+		t.Errorf("skipping the pinned re-read must leave round 5 over budget with an F.C3 warn:\n%s", log)
 	}
 }
 
@@ -1478,37 +1530,48 @@ func TestProbeReorderedKeysCannotSustainTheCycle(t *testing.T) {
 // over budget: the walk provably reaches the twin and skips it by pin — the
 // round-3/4 F.C3 warns are the evidence it was the pin, not an early stop,
 // that protected it.
+//
+// A-051-5: this drives boundContext directly over hand-built messages, round by
+// round the way Send grows them. Through Send the state it needs — two results
+// with one signature on the wire at once — no longer arises: 051's repeat-call
+// guard refuses the second of two identical reads, in one round or across
+// rounds, so only one of them is ever served. The state is still reachable
+// (history, a later change to the guard), and the pin is boundContext's, so the
+// same scenario and the same assertions run on it without the loop.
 func TestProbeSameSignatureTwiceInOneRoundIsOneRead(t *testing.T) {
 	logPath := installFileLog(t)
 
-	rounds := [][]llm.Chunk{
-		{toolCallChunk("call-d1", "wiki_get", bigWikiArgs), toolCallChunk("call-d2", "wiki_get", bigWikiArgs), {Finish: "tool_calls"}},
-		{toolCallChunk("call-d3", "wiki_get", bigWikiArgs), {Finish: "tool_calls"}},
-		{toolCallChunk("call-d4", "wiki_get", bigWikiArgs), {Finish: "tool_calls"}},
-		{{Text: "done"}, {Finish: "stop"}},
+	big := strings.Repeat("x", 20000) // 5000 estimated tokens
+	call := func(id string) llm.ToolCall { return *toolCallChunk(id, "wiki_get", bigWikiArgs).ToolCall }
+	result := func(id string) llm.Message {
+		return llm.Message{Role: "tool", ToolCallID: id, Name: "wiki_get", Content: big}
 	}
-
-	ctlFake, _, _ := runBigTurn(t, LoopConfig{ContextTokens: 1000000})
-	base := wireEstimate(ctlFake.Requests()[0].Messages)
-	budget := base + 9000 // two full results over; one elision (~4974) cannot reach it
-
-	l, fx, fake, _ := newBudgetLoop(t, rounds, LoopConfig{ContextTokens: budget})
-	out := make(chan Event, 256)
-	if err := l.Send(context.Background(), fx.csID, "read the big page twice at once", out); err != nil {
-		t.Fatalf("Send: %v", err)
+	fixed := []llm.Message{
+		{Role: "system", Content: strings.Repeat("s", 400)},
+		{Role: "user", Content: "read the big page twice at once"},
 	}
-	events := drain(out)
-	assertStopTurn(t, events, 4)
-
-	reqs := fake.Requests()
-	if len(reqs) != 4 {
-		t.Fatalf("Stream called %d times, want 4", len(reqs))
+	// Round 1 issues the read twice in parallel, rounds 2 and 3 once more each —
+	// what runRound assembles: one assistant message, then its results in call order.
+	rounds := [][]llm.Message{
+		{{Role: "assistant", ToolCalls: []llm.ToolCall{call("call-d1"), call("call-d2")}}, result("call-d1"), result("call-d2")},
+		{{Role: "assistant", ToolCalls: []llm.ToolCall{call("call-d3")}}, result("call-d3")},
+		{{Role: "assistant", ToolCalls: []llm.ToolCall{call("call-d4")}}, result("call-d4")},
 	}
-	originals := map[string]string{}
-	for _, ev := range events {
-		if res, ok := ev.(ToolResEv); ok {
-			originals[res.ID] = res.Content
-		}
+	originals := map[string]string{"call-d1": big, "call-d2": big, "call-d3": big, "call-d4": big}
+	budget := wireEstimate(fixed) + 9000 // two full results over; one elision (~4974) cannot reach it
+
+	// Requests 2-4 (request 1 holds nothing of the turn yet), grown and bounded
+	// as Send does: the elided and pinned maps persist, and boundContext's result
+	// is the working list the next round appends to.
+	turnStart := len(fixed)
+	elided := map[int]bool{}
+	pinned := map[string]bool{}
+	msgs := append([]llm.Message(nil), fixed...)
+	var reqs []llm.Request
+	for r, round := range rounds {
+		msgs = append(msgs, round...)
+		msgs = boundContext(context.Background(), msgs, turnStart, elided, pinned, nil, r+2, budget)
+		reqs = append(reqs, llm.Request{Messages: msgs})
 	}
 
 	// Exactly one elision across the whole turn, and it is the OLDEST twin.
@@ -1519,7 +1582,7 @@ func TestProbeSameSignatureTwiceInOneRoundIsOneRead(t *testing.T) {
 	var elidedIDs []string
 	for k, req := range reqs {
 		nowPlaceholder := map[string]bool{}
-		for _, i := range checkWireShape(t, req, k+1, originals) {
+		for _, i := range checkWireShape(t, req, k+2, originals) {
 			id := req.Messages[i].ToolCallID
 			nowPlaceholder[id] = true
 			if !wasPlaceholder[id] {
@@ -1533,12 +1596,12 @@ func TestProbeSameSignatureTwiceInOneRoundIsOneRead(t *testing.T) {
 	}
 
 	// Every surviving twin keeps its full result in every request that
-	// carries it — d2 (the round-1 twin), and the re-reads d3, d4.
+	// carries it — d2 (the round-1 twin), and the later twins d3, d4.
 	for _, id := range []string{"call-d2", "call-d3", "call-d4"} {
 		for k, req := range reqs {
 			for _, m := range req.Messages {
 				if m.Role == "tool" && m.ToolCallID == id && m.Content != originals[id] {
-					t.Errorf("round %d: twin %q is not intact on the wire: %.60q", k+1, id, m.Content)
+					t.Errorf("round %d: twin %q is not intact on the wire: %.60q", k+2, id, m.Content)
 				}
 			}
 		}

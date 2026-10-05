@@ -229,13 +229,18 @@ func TestIngestReadBudgetRefusesSeventhRead(t *testing.T) {
 // count. Two of each, then a seventh read of any kind is refused under its own
 // name — and the count stays where it is, so the next read of every kind is
 // refused too.
+//
+// A-051-6: the read after the seventh asks for a page no earlier neighbors call
+// asked about (speculative-decoding, not kv-cache again): an identical repeat of
+// the first neighbors call is 051's refusal, not 048's, so it would no longer be
+// the over-budget read this test is about. Every call is still a distinct read.
 func TestIngestReadBudgetCountsNeighborsBacklinks(t *testing.T) {
 	s := new(rbScript)
 	s.get(1).get(2)
 	s.call("wiki_neighbors", `{"page":"kv-cache"}`).call("wiki_neighbors", `{"page":"gpt-4"}`)
 	s.call("wiki_backlinks", `{"page":"kv-cache"}`).call("wiki_backlinks", `{"page":"gpt-4"}`)
-	s.call("wiki_backlinks", `{"page":"flash-attention"}`) // 7th
-	s.call("wiki_neighbors", `{"page":"kv-cache"}`).get(3) // still refused: the count did not move
+	s.call("wiki_backlinks", `{"page":"flash-attention"}`)             // 7th
+	s.call("wiki_neighbors", `{"page":"speculative-decoding"}`).get(3) // still refused: the count did not move
 	f := newRBFixture(t, s.stop())
 	events, err := f.send(t, "ingest")
 	rbCleanStop(t, events, err)
@@ -315,28 +320,49 @@ func TestIngestReadBudgetNoResetOnNonChange(t *testing.T) {
 }
 
 // TestIngestReadBudgetSkipsSearchRawOrient: wiki.search, raw.get and
-// vault.orient are not page reads. Ten of each, interleaved, spend nothing:
-// the seven wiki.get calls after them are six dispatched and one refused.
+// vault.orient are not page reads. Ten searches and ten raw reads, interleaved
+// with an orient, spend nothing: the seven wiki.get calls after them are six
+// dispatched and one refused.
+//
+// A-051-7: 051's repeat-call guard refuses an identical repeat, so the original
+// thirty identical calls (ten each of one search, one raw read, one orient) would
+// be one served call and twenty-nine refusals, none of them a 048 read. The same
+// intent now takes distinct calls: ten different queries, ten different raw
+// sources (the fixture is given ten small ones, since it ships two), and
+// vault.orient — which has no arguments, so it can be asked once — exactly once.
 func TestIngestReadBudgetSkipsSearchRawOrient(t *testing.T) {
+	f := newRBFixture(t, nil) // the script needs the raw sources the fixture serves
+	root := f.engine.Vault().Root()
 	s := new(rbScript)
-	for i := 0; i < 10; i++ {
-		s.call("wiki_search", `{"q":"cache"}`)
-		s.call("raw_get", `{"source":"raw/papers/leviathan-2023.md"}`)
-		s.call("vault_orient", `{}`)
+	for i := 1; i <= 10; i++ {
+		name := fmt.Sprintf("rb-raw-%02d", i)
+		raw := "---\nsource_url: https://example.org/articles/" + name + "\ningested: 2026-10-05\nsha256: " +
+			strings.Repeat("0", 63) + "\n---\n\n# " + name + "\n\nA small source for the read budget tests.\n"
+		if err := os.WriteFile(filepath.Join(root, "raw", "articles", name+".md"), []byte(raw), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+		s.call("wiki_search", fmt.Sprintf(`{"q":"cache %d"}`, i))
+		s.call("raw_get", fmt.Sprintf(`{"source":"raw/articles/%s.md"}`, name))
+		if i == 1 {
+			s.call("vault_orient", `{}`)
+		}
+	}
+	if err := f.engine.Vault().Reload(); err != nil {
+		t.Fatalf("Vault.Reload: %v", err)
 	}
 	s.gets(1, 7)
-	f := newRBFixture(t, s.stop())
+	f.fake.rounds = s.stop()
 	events, err := f.send(t, "ingest")
 	rbCleanStop(t, events, err)
 
 	res := toolResults(events)
-	for _, name := range []string{"wiki.search", "raw.get", "vault.orient"} {
-		if got := rbOutcomes(res, name); !rbEqual(got, rbWant(10)) {
-			t.Errorf("%s outcomes = %v, want 10 dispatched", name, got)
+	for name, n := range map[string]int{"wiki.search": 10, "raw.get": 10, "vault.orient": 1} {
+		if got := rbOutcomes(res, name); !rbEqual(got, rbWant(n)) {
+			t.Errorf("%s outcomes = %v, want %d dispatched", name, got, n)
 		}
 	}
 	if got := rbOutcomes(res, "wiki.get"); !rbEqual(got, rbWant(6, "refused")) {
-		t.Errorf("wiki.get outcomes = %v, want 6 dispatched then 1 refused: the thirty calls before them did not count", got)
+		t.Errorf("wiki.get outcomes = %v, want 6 dispatched then 1 refused: the twenty-one calls before them did not count", got)
 	}
 }
 
