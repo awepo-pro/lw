@@ -438,16 +438,24 @@ func fileHeader(path, old, new string) string {
 // Hunk.Path — its caller stamps it (backbone §5.3, D-BH). Before carries
 // the hunk's old-side lines (context and removed, in original order) for
 // display; Add and Del carry only the inserted and removed lines.
+//
+// 052: every hunk also carries its position — At, the 1-based old-file line
+// of the window's first line, and Lines, the window's diff lines in order
+// (" " context, "-" removed, "+" added) — so a window that merged two
+// changes keeps the context between them and applyHunksTraced can re-apply
+// it like patch, byte-exact (TD-15). Window boundaries and ids are unchanged.
 func ComputeHunks(old, new string) []Hunk {
 	oldLines, _ := diffSplitLines(old)
 	newLines, _ := diffSplitLines(new)
 	ops := diffOps(oldLines, newLines)
 	windows := hunkWindows(ops, diffContext)
+	oldPos, _ := prefixCounts(ops)
 
 	hunks := make([]Hunk, 0, len(windows))
 	for i, w := range windows {
-		var before, add, del []string
+		var before, add, del, lines []string
 		for k := w.lo; k <= w.hi; k++ {
+			lines = append(lines, string(ops[k].kind)+ops[k].text)
 			switch ops[k].kind {
 			case ' ':
 				before = append(before, ops[k].text)
@@ -463,6 +471,8 @@ func ComputeHunks(old, new string) []Hunk {
 			Before: before,
 			Add:    add,
 			Del:    del,
+			At:     oldPos[w.lo] + 1,
+			Lines:  lines,
 		})
 	}
 	return hunks
@@ -471,12 +481,13 @@ func ComputeHunks(old, new string) []Hunk {
 // --- the line-level diff engine ----------------------------------------
 //
 // diffFile, diffOps, hunkWindows and diffSplitLines are the shared machinery
-// behind both ComputeHunks (the exported, position-free Hunk shape) and
-// Unified/UnifiedFile (which need full line-position information to render
-// "@@ -l,c +l,c @@" headers — information the frozen Hunk struct has no
-// field for, D-BQ's Unified Contract note is read as "use the same
-// algorithm ComputeHunks uses", not "reconstruct positions by re-parsing
-// ComputeHunks' lossy return value"). See this subtask's report.
+// behind both ComputeHunks (the exported Hunk shape) and Unified/UnifiedFile
+// (which need full line-position information to render "@@ -l,c +l,c @@"
+// headers — information the Hunk struct had no field for until 052 gave it
+// At, and which render time still recomputes rather than reads, D-BQ's
+// Unified Contract note is read as "use the same algorithm ComputeHunks
+// uses", not "reconstruct positions by re-parsing ComputeHunks' lossy
+// return value"). See this subtask's report.
 
 // diffContext is the number of context lines on each side of a change,
 // per backbone §5.6 ("3 lines of context").

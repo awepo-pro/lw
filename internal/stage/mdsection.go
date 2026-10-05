@@ -240,6 +240,10 @@ func scanHeadingLevels(lines []string) []int {
 // blank line already present in lines, including the one separating
 // section's last content line from the next heading, is left exactly
 // where it was — add is inserted after it, not instead of it.
+//
+// Since 052 this is the placement of a hunk WITHOUT a position (At == 0: an
+// old changeset, or a hunk built by hand). A hunk that carries At and Lines
+// is applied by applyWindow, which needs no section anchor.
 func insertAtSectionEnd(lines []string, section string, add []string) []string {
 	out, _ := insertAtSectionEndAt(lines, section, add)
 	return out

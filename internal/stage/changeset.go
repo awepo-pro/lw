@@ -35,6 +35,17 @@ const (
 )
 
 // Hunk is the unit of review. Reviewers accept or drop hunks, not ops.
+//
+// At and Lines (052, TD-15) make a hunk a unified-diff hunk that applies
+// like patch: At is the 1-based index, in the op's before-file lines, of the
+// window's first line, and Lines is the window's diff lines in order, each
+// prefixed " " (context), "-" (removed) or "+" (added). Without them a
+// re-applied hunk has only flat Add/Del lists, so a Review drop or undrop
+// placed a Del at its first textual match and an Add-only hunk at its
+// section's end, and a merged window lost the context between its changes
+// (the 050 review's measured byte drift). Add, Del and Before stay filled
+// exactly as before; At 0 means unknown — a hunk staged before 052, or built
+// by hand — and keeps the legacy placement (applyHunksTraced).
 type Hunk struct {
 	ID      string   `json:"id"`   // "h1", "h2", … unique within the op
 	Path    string   `json:"path"` // the file this hunk edits
@@ -42,6 +53,8 @@ type Hunk struct {
 	Before  []string `json:"-"` // context/removed lines, for display
 	Add     []string `json:"+,omitempty"`
 	Del     []string `json:"-,omitempty"`
+	At      int      `json:"at,omitempty"`    // 1-based before-file line of the window's first line; 0 = unknown
+	Lines   []string `json:"lines,omitempty"` // the window's diff lines: " " context, "-" removed, "+" added
 	Dropped bool     `json:"dropped,omitempty"`
 }
 
@@ -217,7 +230,7 @@ func (c *Changeset) Touches() []string {
 
 // clone returns a deep copy of c, nil for a nil receiver. Every slice the
 // type graph holds is copied — Ops, each op's Sources/SourceSHAs/
-// Provenance/Content/OriginalContent, each Hunk's Before/Add/Del lines,
+// Provenance/Content/OriginalContent, each Hunk's Before/Add/Del/Lines lines,
 // and each Cascade tree recursively — so mutating a clone, or any slice
 // reachable from it, can never reach the original. This is what makes
 // D-8H's copy rule possible: Current hands callers a clone of the engine's
@@ -259,7 +272,7 @@ func (op Op) clone() Op {
 }
 
 // cloneHunks deep-copies a hunk slice; each hunk's line slices are copied
-// too, since a caller mutating a returned hunk's Add/Del/Before must not
+// too, since a caller mutating a returned hunk's Add/Del/Before/Lines must not
 // reach the engine's copy.
 func cloneHunks(hunks []Hunk) []Hunk {
 	if hunks == nil {
@@ -274,6 +287,8 @@ func cloneHunks(hunks []Hunk) []Hunk {
 			Before:  cloneStrings(hunks[i].Before),
 			Add:     cloneStrings(hunks[i].Add),
 			Del:     cloneStrings(hunks[i].Del),
+			At:      hunks[i].At,
+			Lines:   cloneStrings(hunks[i].Lines),
 			Dropped: hunks[i].Dropped,
 		}
 	}
