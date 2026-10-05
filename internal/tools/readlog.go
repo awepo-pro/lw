@@ -52,7 +52,11 @@ func newReadLog() *readLog {
 // noteIngest records that this registry staged path, whose body raw.get
 // serves in n chunks. A path ingested again is a new body — the changeset
 // dropped the old op and staged another at the same path — so reads of the
-// earlier one are forgotten rather than counted toward it.
+// earlier one are forgotten rather than counted toward it, and so is a
+// refusal made over it (A-040-4): the model was told what it skipped of the
+// OLD body, and a re-ingest that is read the same way produces the same
+// unread set, which a surviving "already refused this set" key would wave
+// through unwarned.
 func (l *readLog) noteIngest(path string, n int) {
 	if l == nil {
 		return
@@ -61,6 +65,7 @@ func (l *readLog) noteIngest(path string, n int) {
 	defer l.mu.Unlock()
 	l.ingested[path] = n
 	l.read[path] = map[int]bool{}
+	l.refused = ""
 }
 
 // noteRead records that raw.get served chunk of path. A source this registry
@@ -135,13 +140,25 @@ func (l *readLog) unreadLocked(live func(path string) bool) []unreadSource {
 // outlives a changeset (the TUI's does, and an MCP server's), and the log
 // keeps what it saw; a source whose op was dropped or committed is no longer
 // part of the changeset being closed, so its unread chunks must not hold
-// this close to a source nobody will write pages from.
+// this close to a source nobody will write pages from. A-040-5: the close
+// also forgets those sources outright — the log would otherwise grow by one
+// entry per source ingested for as long as the process lives, and filter all
+// of them out again on every close. nil live means every source is live and
+// nothing is pruned.
 func (l *readLog) closeVerdict(live func(path string) bool) (unread []unreadSource, refuse bool) {
 	if l == nil {
 		return nil, false
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if live != nil {
+		for p := range l.ingested {
+			if !live(p) {
+				delete(l.ingested, p)
+				delete(l.read, p)
+			}
+		}
+	}
 	unread = l.unreadLocked(live)
 	if len(unread) == 0 {
 		l.refused = ""

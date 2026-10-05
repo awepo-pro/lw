@@ -1024,6 +1024,16 @@ func TestProbeWireHoldsAcrossMaxRounds(t *testing.T) {
 				originals[res.ID] = res.Content
 			}
 		}
+		// A-040-6 (amends this probe for A-040-3): the last tool result of each
+		// of the final four rounds carries the round-budget nudge on the wire,
+		// so the wire content the probe compares against — and the length an
+		// elision placeholder names — is the result PLUS its nudge. The call
+		// ids are scripted above: round r's second call is call-wRRb.
+		for r := 1; r <= len(rounds); r++ {
+			if k := len(rounds) - r; k > 0 && k <= nudgeWindow {
+				originals[fmt.Sprintf("call-w%02db", r)] += fmt.Sprintf(nudgeCuratorFmt, k)
+			}
+		}
 		elidedIdx := checkWireShape(t, req, round, originals)
 
 		// F.C2a: the most recent round's results are never elided. The

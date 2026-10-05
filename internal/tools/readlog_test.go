@@ -127,3 +127,74 @@ func TestReadLogConcurrent(t *testing.T) {
 		t.Fatalf("unread after every chunk of a.md was read concurrently = %+v, want %+v", got, want)
 	}
 }
+
+// TestReadLogReingestClearsRefusal pins A-040-4: a re-ingested path is a new
+// body, so a refusal the log remembers for the old one must not let the new
+// one through. The set is rebuilt to the SAME unread chunks the refusal named
+// — {2, 3} of 3 — which is exactly where a surviving "already refused this
+// set" key would wave the close through.
+func TestReadLogReingestClearsRefusal(t *testing.T) {
+	l := newReadLog()
+	l.noteIngest("raw/a.md", 3)
+	l.noteRead("raw/a.md", 1)
+	if _, refuse := l.closeVerdict(nil); !refuse {
+		t.Fatal("first close over {2, 3} was not refused")
+	}
+
+	l.noteIngest("raw/a.md", 3) // the op was dropped and staged again
+	l.noteRead("raw/a.md", 1)
+	if got, refuse := l.closeVerdict(nil); !refuse || len(got) != 1 {
+		t.Fatalf("close over the re-ingested {2, 3} = refuse %v, unread %+v; want a fresh refusal", refuse, got)
+	}
+	// A refusal is still once per set: the same set again goes through.
+	if _, refuse := l.closeVerdict(nil); refuse {
+		t.Error("the repeat close over the same set was refused a second time")
+	}
+}
+
+// TestReadLogCloseVerdictPrunes pins A-040-5: a close prunes what the
+// changeset being closed no longer holds. A registry outlives its changesets,
+// so without pruning every source ever ingested in the process stays in the
+// log, and each close re-filters them all, for as long as the process runs.
+func TestReadLogCloseVerdictPrunes(t *testing.T) {
+	l := newReadLog()
+	l.noteIngest("raw/kept.md", 2)
+	l.noteIngest("raw/gone.md", 3)
+	l.noteRead("raw/gone.md", 1)
+
+	live := func(p string) bool { return p == "raw/kept.md" }
+	got, refuse := l.closeVerdict(live)
+	if want := []unreadSource{{Path: "raw/kept.md", Chunks: []int{1, 2}, N: 2}}; !refuse || !reflect.DeepEqual(got, want) {
+		t.Fatalf("closeVerdict = %+v, refuse %v; want only raw/kept.md", got, refuse)
+	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.ingested) != 1 || len(l.read) != 1 {
+		t.Errorf("after the close the log holds %d ingested and %d read entries, want 1 and 1 (raw/gone.md pruned)", len(l.ingested), len(l.read))
+	}
+	if _, ok := l.ingested["raw/gone.md"]; ok {
+		t.Error("raw/gone.md is still in the log after a close that did not find it live")
+	}
+}
+
+// TestReadLogUnreadDoesNotPrune: unread is a read; only closeVerdict, the
+// decision at the end of a changeset, forgets sources. A nil live keeps
+// everything — the unit tests and any caller with no changeset to ask.
+func TestReadLogUnreadDoesNotPrune(t *testing.T) {
+	l := newReadLog()
+	l.noteIngest("raw/a.md", 2)
+	l.noteIngest("raw/b.md", 2)
+	if got := l.unread(func(p string) bool { return p == "raw/a.md" }); len(got) != 1 {
+		t.Fatalf("unread = %+v, want only raw/a.md", got)
+	}
+	if got := l.unread(nil); len(got) != 2 {
+		t.Errorf("unread(nil) after a filtered unread = %+v, want both sources: unread must not prune", got)
+	}
+	if _, refuse := l.closeVerdict(nil); !refuse {
+		t.Error("closeVerdict(nil) did not refuse over two unread sources")
+	}
+	if got := l.unread(nil); len(got) != 2 {
+		t.Errorf("closeVerdict(nil) pruned: %+v; a nil live means every source is live", got)
+	}
+}

@@ -388,3 +388,34 @@ func TestStageCloseAfterConcurrentReads(t *testing.T) {
 		t.Errorf("close content = %q, want the plain summary %q", got.Content, want)
 	}
 }
+
+// TestStageCloseRefusesAgainAfterReingest is A-040-4 through the real tools:
+// refused in a changeset, the op dropped, the same source staged again and
+// read the same way — the unread set is identical to the one just refused,
+// and the close is still refused afresh, because the body is a new one.
+func TestStageCloseRefusesAgainAfterReingest(t *testing.T) {
+	reg, e := guardRegistry(t, map[string]*extract.Doc{"long.md": guardDoc("Long Source", 40000)})
+	guardOpen(t, reg)
+	path, _ := guardIngest(t, reg, "long.md")
+	guardRead(t, reg, path, 1)
+	want := closeRefusalHead + path + " chunks 2, 3 of 3 unread" + closeRefusalTail
+	if first := guardCall(t, reg, "stage.close", `{}`); !first.IsError || first.Content != want {
+		t.Fatalf("first close = %+v, want the {2, 3} refusal", first)
+	}
+
+	cs, err := e.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.DropOp(cs.Ops[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	again, _ := guardIngest(t, reg, "long.md")
+	if again != path {
+		t.Fatalf("re-ingest landed at %q, want the same path %q", again, path)
+	}
+	guardRead(t, reg, path, 1)
+	if r := guardCall(t, reg, "stage.close", `{}`); !r.IsError || r.Content != want {
+		t.Errorf("close over the re-ingested source's {2, 3} = %+v, want a fresh refusal %q", r, want)
+	}
+}

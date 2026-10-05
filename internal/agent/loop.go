@@ -202,7 +202,65 @@ func (l *Loop) Send(ctx context.Context, sessionID, msg string, out chan<- Event
 			}
 			return nil
 		}
+
+		// 040 A-040-3: this round's tool results are in msgs and another
+		// round follows, so say how many are left once few remain. Here, in
+		// Send, and not in runRound: the nudge belongs to the history the
+		// NEXT request carries, and runRound's 035 retry re-sends the
+		// identical request it was handed, so nothing in that loop can add it
+		// twice.
+		if k := l.cfg.MaxToolRounds - rounds; k > 0 && k <= nudgeWindow {
+			msgs = nudgeLastToolResult(ctx, msgs, rounds, k, plan.mode)
+		}
 	}
+}
+
+// nudgeWindow is how many rounds before the cap the loop starts telling the
+// model how many it has left (A-040-3): the last four. Wider and the line is
+// noise on a turn that is working; narrower and a model that has been reading
+// for twenty rounds gets no room to stage and close.
+const nudgeWindow = 4
+
+// roundBudgetNudge is the line appended to a round's last tool result when k
+// rounds remain (A-040-3). The first half is shared; the second half is the
+// instruction, and it differs by what the turn is for: a curator turn
+// (ingest, lint, file) has pages to stage and a changeset to close, an ask
+// turn (ask, query — 039's modeFromVerb) has only an answer to give, and
+// "stage the pages" would be an instruction to call tools it was not offered.
+// The wording is a frozen contract: the exact bytes ride the wire and are
+// pinned by nudge_test.go.
+func roundBudgetNudge(k int, mode turnMode) string {
+	instruction := "stop reading; stage the pages you have now and call stage.close"
+	if mode == modeAsk {
+		instruction = "stop searching; answer now from what you have read"
+	}
+	return fmt.Sprintf("\n\n[lw: %d round(s) left in this turn — %s]", k, instruction)
+}
+
+// nudgeLastToolResult appends the round-budget nudge to the last message of
+// msgs — the last tool result of the round that just ended — and returns msgs.
+//
+// It touches the wire message and nothing else: the session Record for that
+// tool call was written from the tool's own result before this runs, so the
+// nudge is not stored, not replayed into a later turn's history and not
+// counted as the tool's output. The edit is in place on the element, which is
+// safe: msgs[len-1] was appended by this round's assemble, so no earlier
+// request's slice (the fake client and the trace both keep those) reaches it.
+// It persists in every later request, one line per nudged round — the same
+// bytes at the same position, so the provider's prefix cache is not broken by
+// a message that changes under it.
+//
+// A last message that is not a tool result (a round that called no tool never
+// reaches here, but a defensive caller might) is left alone. The one log line
+// says when the model was told, for a stuck turn to be read back from.
+func nudgeLastToolResult(ctx context.Context, msgs []llm.Message, round, k int, mode turnMode) []llm.Message {
+	n := len(msgs)
+	if n == 0 || msgs[n-1].Role != "tool" {
+		return msgs
+	}
+	msgs[n-1].Content += roundBudgetNudge(k, mode)
+	slog.InfoContext(ctx, "agent round budget nudge", "round", round, "rounds_left", k, "mode", mode.String())
+	return msgs
 }
 
 // runRound streams the round's response to completion — re-sending the
