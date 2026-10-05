@@ -107,7 +107,7 @@ TUI.
 `lw ingest`, `lw query` and `lw lint --fix` need a configured provider with a
 resolvable API key. **Every other verb works offline with no LLM at all** —
 `lw diff`, `lw commit`, `lw log`, `lw revert`, `lw lint`, `lw status`,
-`lw doctor` and `lw mcp` are pure Go over the vault.
+`lw doctor`, `lw note` and `lw mcp` are pure Go over the vault.
 
 **If an ingest stops early** — the provider hit its output-token cap
 mid-turn — `lw` fails loudly instead of quietly committing nothing: the error
@@ -171,6 +171,7 @@ are the same flag). Exit codes: `0` success, `1` failure, `2` usage error.
 | `revert` | (positional) `<commit-id>` | Opens the inverse ops as a *new* changeset — a rollback is reviewed like anything else |
 | `query` | (positional) `"…"` | One-shot answer with citations; uses an ephemeral in-process session and never touches a changeset |
 | `lint` | `-checks <id,id,…>`, `-fix`, `-json` | 16 checks ([docs/vault-schema.md](docs/vault-schema.md#the-16-lint-checks)). Exits 1 only on errors. `--fix` asks the agent to propose repairs — one page at a time (one agent round per page, a single changeset), as a changeset; a page whose round fails is named in the output and fails the command |
+| `note` | `-m "<text>"`; `list`: `-n <count>` | Captures a quick raw note into `notes/` (outside the wiki: no LLM, no changeset, never indexed or snapshotted). No `-m` opens `$VISUAL`/`$EDITOR`; an empty buffer saves nothing |
 | `mcp` | — | stdio MCP server; see below |
 | `doctor` | `--unlock`, `--rebuild-index`, `--discard-changeset`, `--json` | Index freshness, object-store completeness, journal tail, interrupted apply, stale lock, config, provider. Every failure prints the fix. `--discard-changeset` moves the open changeset to `changesets/rejected/`, journalled — the CLI way to discard one without opening the TUI. Exit 1 on any failure |
 | `tui` | — | The TUI; also the default with no command |
