@@ -100,11 +100,35 @@ type ToolError struct {
 // Text there would pass for a clean one. dir and id name the turn on disk, as
 // trace.Body wants them. (037 T2.)
 func ToolErrors(dir, id string, t *trace.Turn) ([]ToolError, error) {
+	failed, err := failedCalls(dir, id, t)
+	if err != nil {
+		return nil, err
+	}
+	var out []ToolError
+	for _, f := range failed {
+		out = append(out, f.ToolError)
+	}
+	return out, nil
+}
+
+// failedCall is a ToolError with what else the tool event knows of that call:
+// the size of the result it returned. ToolError itself stays as it was (037's
+// tests compare it whole); the 049 scorer needs the size because the text of a
+// last-round failure is never recovered (ReadRefusals).
+type failedCall struct {
+	ToolError
+	ResultBytes int
+}
+
+// failedCalls is ToolErrors with each error's result size attached, read from
+// the same tool event the error is; see ToolErrors for how Text is recovered
+// and when it is empty.
+func failedCalls(dir, id string, t *trace.Turn) ([]failedCall, error) {
 	if t == nil {
 		return nil, nil
 	}
 	results := map[int]map[string]string{} // next round -> tool_call_id -> content, read once
-	var out []ToolError
+	var out []failedCall
 	for _, a := range t.Attempts {
 		for _, c := range a.Calls {
 			if !c.IsError {
@@ -119,10 +143,13 @@ func ToolErrors(dir, id string, t *trace.Turn) ([]ToolError, error) {
 				}
 				results[next] = byID
 			}
-			out = append(out, ToolError{
-				Round: c.Round,
-				Name:  tools.CanonicalName(c.Name),
-				Text:  firstRunes(byID[c.ID], toolErrorRunes),
+			out = append(out, failedCall{
+				ToolError: ToolError{
+					Round: c.Round,
+					Name:  tools.CanonicalName(c.Name),
+					Text:  firstRunes(byID[c.ID], toolErrorRunes),
+				},
+				ResultBytes: c.ResultBytes,
 			})
 		}
 	}

@@ -38,6 +38,18 @@ const (
 	MetricOps             = "ops"
 	MetricPagesStaged     = "pages_staged"
 	MetricLintWarns       = "lint_warns"
+
+	// The ingest-process and page-quality metrics of 049. The first four read
+	// the trace (absent when the run recorded no turn); the others read what
+	// was staged against the snapshot.
+	MetricReadsBeforeFirstStage = "reads_before_first_stage"
+	MetricReadRefusals          = "read_refusals"
+	MetricClosed                = "closed"
+	MetricSearchCalls           = "search_calls"
+	MetricPagesNew              = "pages_new"
+	MetricPatchedLossless       = "patched_lossless"
+	MetricDupPages              = "dup_pages"
+	MetricOrphansNew            = "orphans_new"
 )
 
 // metricOrder is the order every table prints metrics in: accuracy first,
@@ -48,6 +60,8 @@ var metricOrder = []string{
 	MetricToolErrorRate, MetricRounds, MetricMaxRoundsHit,
 	MetricInputTokens, MetricCachedTokens, MetricOutputTokens, MetricReasoningTokens, MetricWallS,
 	MetricOps, MetricPagesStaged, MetricLintWarns,
+	MetricReadsBeforeFirstStage, MetricReadRefusals, MetricClosed, MetricSearchCalls,
+	MetricPagesNew, MetricPatchedLossless, MetricDupPages, MetricOrphansNew,
 }
 
 // resultsFile is the scored form of a run, kept beside run.json.
@@ -229,6 +243,12 @@ type scorer struct {
 	bodies map[string]string // root + "\x00" + path -> raw body
 	ask    map[string]AskCase
 	ingest map[string]IngestCase
+
+	// snapSlugs is the slug of every wiki page of the snapshot vault, read
+	// once on first use: dup_pages compares each new page against all of them
+	// and a run has dozens of ingests (049).
+	snapSlugs     []string
+	snapSlugsRead bool
 }
 
 // scoreOne scores one run directory. A run that failed (its last attempt
@@ -324,14 +344,19 @@ func (s *scorer) scoreAsk(m map[string]float64, c AskCase, dir string) error {
 // it rather than dropped from the count.
 func (s *scorer) scoreIngest(m map[string]float64, c IngestCase, dir string, turns []*trace.Turn) error {
 	stagedDir := filepath.Join(dir, "staged")
-	text, pages, err := stagedWikiText(stagedDir)
+	pages, err := stagedWikiPages(stagedDir)
 	if err != nil {
 		return err
 	}
+	text := joinPageBodies(pages)
 	// pages_staged makes "the ingest staged no wiki page" a number on the
 	// scorecard: with 0 pages every fact misses and every ref check passes
 	// vacuously, and neither of those would say why. (A-037-10.)
-	m[MetricPagesStaged] = float64(pages)
+	m[MetricPagesStaged] = float64(len(pages))
+	newPages, err := s.stagedPageMetrics(m, pages)
+	if err != nil {
+		return err
+	}
 	if len(c.Facts) > 0 {
 		hit, _, err := score.FactRecall(text, c.Facts)
 		if err != nil {
@@ -383,8 +408,138 @@ func (s *scorer) scoreIngest(m map[string]float64, c IngestCase, dir string, tur
 		return err
 	default:
 		m[MetricLintWarns] = float64(lf.Warns)
+		// lint.json holds only findings on pages the ingest staged, so an
+		// orphan here is either a page it changed or one it created; only the
+		// created one is the ingest's own failure to link.
+		orphans := 0
+		for _, f := range lf.Findings {
+			if f.Check == "link-orphan" && newPages[f.Path] {
+				orphans++
+			}
+		}
+		m[MetricOrphansNew] = float64(orphans)
 	}
+	return ingestTraceMetrics(m, filepath.Join(dir, "traces"), turns)
+}
+
+// ingestTraceMetrics adds the four ingest metrics that come from the trace:
+// how many wiki reads came before the first page change (refused or not),
+// how many reads 048's budget refused, whether stage.close was reached, and
+// how many wiki.search calls were made. A run with no recorded turn has none
+// of them — "nobody looked" must not average in as 0 reads. (049.)
+func ingestTraceMetrics(m map[string]float64, tracesDir string, turns []*trace.Turn) error {
+	if len(turns) == 0 {
+		return nil
+	}
+	refusals := 0
+	for _, t := range turns {
+		if t == nil {
+			continue
+		}
+		n, err := score.ReadRefusals(tracesDir, t.ID, t)
+		if err != nil {
+			return err
+		}
+		refusals += n
+	}
+	m[MetricReadsBeforeFirstStage] = float64(score.ReadsBeforeFirstStage(turns))
+	m[MetricReadRefusals] = float64(refusals)
+	m[MetricClosed] = boolMetric(score.Closed(turns))
+	m[MetricSearchCalls] = float64(score.CallCount(turns, "wiki.search"))
 	return nil
+}
+
+// stagedPageMetrics adds pages_new, dup_pages and patched_lossless, and
+// returns the set of new pages' paths (the ones the snapshot does not have).
+//
+// A staged wiki page either is not in the snapshot — new — or is, and then
+// the ingest edited a page that existed. For the new ones, dup_pages counts
+// those whose slug is a near-duplicate of any snapshot page's (the model made
+// a second page for a topic the wiki already covered). For the edited ones,
+// patched_lossless is the share whose staged body still has every non-blank
+// line of the snapshot's, a line a patch only added to included
+// (score.LinesKept): a patch that rewrites a page and drops its facts fails
+// here though it scores well on fact_recall. It is absent when no existing
+// page was staged — there was nothing to lose. (049.)
+func (s *scorer) stagedPageMetrics(m map[string]float64, pages []stagedPage) (map[string]bool, error) {
+	newPages := map[string]bool{}
+	existing, kept := 0, 0
+	for _, p := range pages {
+		full := filepath.Join(s.snap, filepath.FromSlash(p.path))
+		info, err := os.Stat(full)
+		switch {
+		case err == nil && info.Mode().IsRegular():
+			b, err := os.ReadFile(full)
+			if err != nil {
+				return nil, err
+			}
+			existing++
+			if score.LinesKept(pageBody(p.path, b), p.body) {
+				kept++
+			}
+		case err == nil || errors.Is(err, fs.ErrNotExist):
+			newPages[p.path] = true
+		default:
+			return nil, err
+		}
+	}
+	m[MetricPagesNew] = float64(len(newPages))
+	if existing > 0 {
+		m[MetricPatchedLossless] = float64(kept) / float64(existing)
+	}
+
+	slugs, err := s.snapshotSlugs()
+	if err != nil {
+		return nil, err
+	}
+	dups := 0
+	for _, p := range pages { // page order, so the count never depends on map order
+		if !newPages[p.path] {
+			continue
+		}
+		slug := slugOf(p.path)
+		for _, other := range slugs {
+			if score.NearDuplicate(slug, other) {
+				dups++
+				break // a page is counted once, however many it matches
+			}
+		}
+	}
+	m[MetricDupPages] = float64(dups)
+	return newPages, nil
+}
+
+// snapshotSlugs returns the slug of every wiki page in the snapshot vault,
+// in path order, reading the tree on the first call only.
+func (s *scorer) snapshotSlugs() ([]string, error) {
+	if s.snapSlugsRead {
+		return s.snapSlugs, nil
+	}
+	root := filepath.Join(s.snap, "wiki")
+	var slugs []string
+	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) && p == root {
+				return nil
+			}
+			return err
+		}
+		if d.Type().IsRegular() && strings.HasSuffix(d.Name(), ".md") {
+			slugs = append(slugs, slugOf(d.Name()))
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	s.snapSlugs, s.snapSlugsRead = slugs, true
+	return slugs, nil
+}
+
+// slugOf is a page's slug: its file name without the ".md", from a
+// slash-separated path or a bare name.
+func slugOf(p string) string {
+	return strings.TrimSuffix(p[strings.LastIndex(p, "/")+1:], ".md")
 }
 
 // isLive reports whether an op's state leaves it in the changeset the way
@@ -393,11 +548,16 @@ func isLive(state string) bool {
 	return state != string(stage.StateDropped) && state != string(stage.StateRejected)
 }
 
-// stagedWikiText joins the bodies of every file under stagedDir/wiki, in
-// slash-path order, separated by a blank line so a word at the end of one
-// page never fuses with the start of the next, and returns how many files
-// that is.
-func stagedWikiText(stagedDir string) (string, int, error) {
+// stagedPage is one staged wiki page: its vault path (slash-separated,
+// "wiki/…") and its body as scoring reads it.
+type stagedPage struct {
+	path string
+	body string
+}
+
+// stagedWikiPages reads every file under stagedDir/wiki, in slash-path order.
+// A page's body is what follows its frontmatter (pageBody).
+func stagedWikiPages(stagedDir string) ([]stagedPage, error) {
 	root := filepath.Join(stagedDir, "wiki")
 	var paths []string
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
@@ -417,22 +577,38 @@ func stagedWikiText(stagedDir string) (string, int, error) {
 		return nil
 	})
 	if err != nil {
-		return "", 0, err
+		return nil, err
 	}
 	sort.Strings(paths)
-	parts := make([]string, 0, len(paths))
+	pages := make([]stagedPage, 0, len(paths))
 	for _, rel := range paths {
 		b, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
 		if err != nil {
-			return "", 0, err
+			return nil, err
 		}
-		if page, err := vault.ParsePage("wiki/"+rel, b); err == nil {
-			parts = append(parts, page.Body)
-		} else {
-			parts = append(parts, string(b))
-		}
+		pages = append(pages, stagedPage{path: "wiki/" + rel, body: pageBody("wiki/"+rel, b)})
 	}
-	return strings.Join(parts, "\n\n"), len(paths), nil
+	return pages, nil
+}
+
+// pageBody is the text of a page file that scoring reads: the body after the
+// frontmatter, or the whole file when it does not parse — a malformed page is
+// judged by what is on it rather than dropped.
+func pageBody(path string, b []byte) string {
+	if page, err := vault.ParsePage(path, b); err == nil {
+		return page.Body
+	}
+	return string(b)
+}
+
+// joinPageBodies joins the bodies of pages, separated by a blank line so a
+// word at the end of one page never fuses with the start of the next.
+func joinPageBodies(pages []stagedPage) string {
+	parts := make([]string, len(pages))
+	for i, p := range pages {
+		parts[i] = p.body
+	}
+	return strings.Join(parts, "\n\n")
 }
 
 // resolveStagedSource returns the body of a source the ingest staged:

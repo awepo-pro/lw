@@ -179,9 +179,9 @@ func osExec(ctx context.Context, c Cmd) (Output, error) {
 // job is one (case, index) pair: a single lw invocation's worth of work.
 type job struct {
 	id    string
-	verb  string // "query" | "ingest"
-	kind  string // ask kind, or "ingest"
-	arg   string // the question, or the absolute input path
+	verb  string   // "query" | "ingest"
+	kind  string   // ask kind, or "ingest"
+	args  []string // the question; or, for ingest, every absolute input path in order (049)
 	index int
 }
 
@@ -336,10 +336,14 @@ func (r *Runner) selectJobs() ([]job, error) {
 	}
 	var all []entry
 	for _, c := range r.Set.Ask {
-		all = append(all, entry{job{id: c.ID, verb: "query", kind: c.Kind, arg: c.Q}, c.Holdout, true})
+		all = append(all, entry{job{id: c.ID, verb: "query", kind: c.Kind, args: []string{c.Q}}, c.Holdout, true})
 	}
 	for _, c := range r.Set.Ingest {
-		all = append(all, entry{job{id: c.ID, verb: "ingest", kind: "ingest", arg: filepath.Join(r.Set.Dir, filepath.FromSlash(c.Input))}, c.Holdout, false})
+		var paths []string
+		for _, p := range c.Paths() {
+			paths = append(paths, filepath.Join(r.Set.Dir, filepath.FromSlash(p)))
+		}
+		all = append(all, entry{job{id: c.ID, verb: "ingest", kind: "ingest", args: paths}, c.Holdout, false})
 	}
 
 	group := r.Only == "" || r.Only == "ask" || r.Only == "ingest"
@@ -454,7 +458,10 @@ func (r *Runner) runJob(ctx context.Context, st *runState, j job) error {
 		if st.jobTimeout > 0 {
 			actx, cancel = context.WithTimeout(ctx, st.jobTimeout)
 		}
-		res, err = st.exec(actx, Cmd{Path: r.LW, Args: []string{j.verb, "--vault", scratch, j.arg}, Env: st.env})
+		// One lw call per job, whatever its inputs: a multi-file ingest case
+		// is the files of ONE `lw ingest`, in the order the case lists them.
+		argv := append([]string{j.verb, "--vault", scratch}, j.args...)
+		res, err = st.exec(actx, Cmd{Path: r.LW, Args: argv, Env: st.env})
 		// A cut-off attempt is the job timeout, not a run error: the deadline
 		// fired on the attempt's own context while the run's was still live,
 		// and the command did not finish cleanly. One that exited 0 just as

@@ -40,13 +40,31 @@ type AskCase struct {
 	Holdout bool       `toml:"holdout"`
 }
 
-// IngestCase is one input for `lw ingest`. Input is relative to the set's
+// IngestCase is one `lw ingest` call. A case names its input as Input (one
+// file) or Inputs (several files handed to the SAME call, 049: the failure
+// the user hit was three articles in one `lw ingest`, which a single path
+// cannot express) — exactly one of the two. Paths are relative to the set's
 // directory; Facts are matched against the staged wiki pages.
 type IngestCase struct {
 	ID      string     `toml:"id"`
 	Input   string     `toml:"input"`
+	Inputs  []string   `toml:"inputs"`
 	Facts   [][]string `toml:"facts"`
 	Holdout bool       `toml:"holdout"`
+}
+
+// Paths returns the files the case ingests, as written and in order: Inputs
+// when it is set, else Input alone. It is nil for a case that names none,
+// which LoadSet never lets through. The slice is the case's own — read it,
+// do not append to it.
+func (c IngestCase) Paths() []string {
+	if len(c.Inputs) > 0 {
+		return c.Inputs
+	}
+	if c.Input != "" {
+		return []string{c.Input}
+	}
+	return nil
 }
 
 // setFormatVersion is the cases.toml version this loader reads.
@@ -225,28 +243,54 @@ func checkAsk(c AskCase) error {
 
 // checkIngest validates one ingest case. Its facts are optional: the case
 // still yields the staged pages and their lint report, which is a result
-// even when nobody wrote a fact to look for.
+// even when nobody wrote a fact to look for. Every file it names, whether as
+// input or as an element of inputs, gets the same checks, and the same
+// words, as a lone input always did; a file listed twice is refused because
+// the run would hand lw the same source twice and score a different case
+// than the one written.
 func checkIngest(setDir string, c IngestCase) error {
 	who := fmt.Sprintf("ingest %q", c.ID)
-	if c.Input == "" {
+	switch {
+	case c.Input != "" && len(c.Inputs) > 0:
+		return fmt.Errorf("cases.toml: %s: set input or inputs, not both", who)
+	case c.Input == "" && len(c.Inputs) == 0:
+		return fmt.Errorf("cases.toml: %s: input is empty", who)
+	}
+	seen := map[string]bool{}
+	for _, p := range c.Paths() {
+		if err := checkInput(setDir, who, p); err != nil {
+			return err
+		}
+		key := filepath.Clean(filepath.FromSlash(p))
+		if seen[key] {
+			return fmt.Errorf("cases.toml: %s: input %s is listed twice", who, p)
+		}
+		seen[key] = true
+	}
+	return checkFacts(who, c.Facts)
+}
+
+// checkInput validates one input path of an ingest case.
+func checkInput(setDir, who, p string) error {
+	if p == "" {
 		return fmt.Errorf("cases.toml: %s: input is empty", who)
 	}
 	// The input is read by the real lw, with the set's directory as the only
 	// thing the case is allowed to name; a path out of it would make the set
 	// depend on files nobody froze.
-	if !filepath.IsLocal(filepath.FromSlash(c.Input)) {
-		return fmt.Errorf("cases.toml: %s: input %s must be a path inside the set", who, c.Input)
+	if !filepath.IsLocal(filepath.FromSlash(p)) {
+		return fmt.Errorf("cases.toml: %s: input %s must be a path inside the set", who, p)
 	}
-	info, err := os.Stat(filepath.Join(setDir, filepath.FromSlash(c.Input)))
+	info, err := os.Stat(filepath.Join(setDir, filepath.FromSlash(p)))
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
-		return fmt.Errorf("cases.toml: %s: input %s: no such file", who, c.Input)
+		return fmt.Errorf("cases.toml: %s: input %s: no such file", who, p)
 	case err != nil:
-		return fmt.Errorf("cases.toml: %s: input %s: %w", who, c.Input, err)
+		return fmt.Errorf("cases.toml: %s: input %s: %w", who, p, err)
 	case !info.Mode().IsRegular():
-		return fmt.Errorf("cases.toml: %s: input %s is not a regular file", who, c.Input)
+		return fmt.Errorf("cases.toml: %s: input %s is not a regular file", who, p)
 	}
-	return checkFacts(who, c.Facts)
+	return nil
 }
 
 // checkFacts validates a case's facts: no empty fact (a fact with no
