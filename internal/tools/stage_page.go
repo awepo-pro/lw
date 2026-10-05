@@ -110,9 +110,18 @@ func stageCreatePageTool(d Deps) Tool {
 		}
 		now := time.Now().UTC()
 		created, _ := vault.ParseDate(now.Format("2006-01-02"))
-		fm := vault.Frontmatter{Title: a.Title, Created: created, Updated: created, Type: vault.PageType(a.Type), Tags: a.Tags, Sources: a.Sources, Confidence: vault.Confidence(a.Confidence), Contested: a.Contested}
-		page := vault.Page{Path: a.Path, FM: fm, Body: normalizeToolBody(a.Body)}
-		return appendStageOp(d, "stage.create_page", stage.Op{Kind: stage.OpCreatePage, Path: a.Path, Content: page.Serialize(), Rationale: a.Rationale, Provenance: append([]string(nil), a.Sources...)})
+		// 050 D2: a raw source the body cites but the model did not list joins
+		// sources: before the page is built, so the page and its Provenance
+		// carry the same final list.
+		body := normalizeToolBody(a.Body)
+		sources, added := citedSources(d, a.Sources, body)
+		fm := vault.Frontmatter{Title: a.Title, Created: created, Updated: created, Type: vault.PageType(a.Type), Tags: a.Tags, Sources: sources, Confidence: vault.Confidence(a.Confidence), Contested: a.Contested}
+		page := vault.Page{Path: a.Path, FM: fm, Body: body}
+		res, err := appendStageOp(d, "stage.create_page", stage.Op{Kind: stage.OpCreatePage, Path: a.Path, Content: page.Serialize(), Rationale: a.Rationale, Provenance: append([]string(nil), sources...)})
+		if err == nil && !res.IsError && len(added) > 0 {
+			res = withNotes(res, []string{sourcesNote(added)})
+		}
+		return res, err
 	}}
 }
 
@@ -166,6 +175,22 @@ func stagePatchPageTool(d Deps) Tool {
 		var body string
 		var armConsumed bool // 043 T2: the check consumed the key's arm…
 		armKey := shrinkArmKey(a.Path, a.Section)
+		// 050 D1: append_section and replace_section content that opens with
+		// the section's own heading is the model sending the section where
+		// the schema asks for its body (notion-vs-obsidian/1 op10 appended a
+		// second "## Related"). The echo is dropped here, before the 043
+		// guards, so they measure what will be written; a is rebound with the
+		// stripped content and every later read of a.Content sees it. The
+		// note rides on the result of a call that stages. insert_after,
+		// insert_before and replace_text are never stripped: the first two
+		// take a heading by contract, the last quotes text.
+		var notes []string
+		if a.Op == "append_section" || a.Op == "replace_section" {
+			if stripped, line, ok := stripEchoedHeading(sec, a.Content); ok {
+				a.Content = stripped
+				notes = append(notes, echoNote(line, a.Op))
+			}
+		}
 		switch a.Op {
 		case "replace_section", "replace_text":
 			armMu.Lock()
@@ -213,13 +238,37 @@ func stagePatchPageTool(d Deps) Tool {
 		default:
 			return Result{IsError: true, Content: fmt.Sprintf("op %q is invalid; use replace_text, replace_section, append_section, insert_after, insert_before or remove_section", a.Op)}, nil
 		}
-		updated := vault.Page{Path: page.Path, FM: page.FM, Body: body}
+		// 050 D2: sources: follows the citations. A raw source the new body
+		// cites and the page does not list joins the frontmatter, so the
+		// frontmatter edit shows up in the hunks below — Review shows it, and
+		// a reviewer can drop it — instead of the patch staging a cite-source
+		// warn. page.FM is shared with the committed vault; citedSources
+		// returns a fresh slice, never a write through its argument.
+		//
+		// A page with no sources: key at all (Sources nil — a note written by
+		// hand, never by create_page) is left to lint: adding the key makes the
+		// frontmatter change an insert-only hunk, and the engine anchors an
+		// insert-only hunk at the end of Hunk.Section, so dropping the body
+		// hunk in Review would re-apply "sources: [...]" into the body text.
+		// A changed sources: line is a Del+Add pair and anchors on its own text.
+		fm := page.FM
+		var addedSources []string
+		if page.FM.Sources != nil {
+			fm.Sources, addedSources = citedSources(d, page.FM.Sources, body)
+		}
+		if len(addedSources) > 0 {
+			notes = append(notes, sourcesNote(addedSources))
+		}
+		updated := vault.Page{Path: page.Path, FM: fm, Body: body}
 		hunks := stage.ComputeHunks(string(page.Serialize()), string(updated.Serialize()))
 		for i := range hunks {
 			hunks[i].Path = a.Path
 			hunks[i].Section = a.Section
 		}
 		res, err := appendStageOp(d, "stage.patch_page", stage.Op{Kind: stage.OpPatchPage, Path: a.Path, Section: a.Section, Before: page.SHA256(), Content: updated.Serialize(), Hunks: hunks, Rationale: a.Rationale})
+		if err == nil && !res.IsError {
+			res = withNotes(res, notes)
+		}
 		armMu.Lock()
 		if err != nil || res.IsError {
 			if armConsumed {
