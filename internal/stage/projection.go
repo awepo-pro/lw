@@ -19,10 +19,25 @@ import (
 	"github.com/awepo-pro/lw/internal/vault"
 )
 
+// notesInboxDir is the vault-root directory `lw note` writes to (047 S1).
+// cmd/lw owns the verb and stage cannot import it, so the name is spelled
+// here too; TestNotesInvisibleToHistory pins that the two agree.
+const notesInboxDir = "notes"
+
 // walkWholeTree walks os.DirFS(root) and returns every *.md file's
 // vault-relative path mapped to its raw bytes, skipping any directory
 // (and everything under it) whose name begins with "." — which is what
-// excludes .llmwiki/.
+// excludes .llmwiki/ — and the vault-root notes/ directory.
+//
+// notes/ is `lw note`'s inbox (047 S1): raw thoughts that sit outside the
+// wiki and outside review, so no tree built here may contain them. The walk
+// seeds both the projection and every commit's snapshot manifest, and a
+// note in a manifest is a file lw would own history for — a note taken
+// between two commits would be an ADDED path in the next one's delta, and
+// `lw revert` would list it as "skipped: notes/…" in a changeset about wiki
+// pages. The skip is this one explicit directory name at the root, never a
+// wider rule: a directory called notes deeper in the tree is ordinary vault
+// content.
 //
 // Contract (backbone §5.4 "how the projection is seeded", MASTER §9
 // D-AX). Pages() and RawSources() cover only wiki/ and raw/, but
@@ -43,6 +58,9 @@ func walkWholeTree(root string) (map[string][]byte, error) {
 		}
 		if d.IsDir() {
 			if p != "." && strings.HasPrefix(d.Name(), ".") {
+				return fs.SkipDir
+			}
+			if p == notesInboxDir {
 				return fs.SkipDir
 			}
 			return nil

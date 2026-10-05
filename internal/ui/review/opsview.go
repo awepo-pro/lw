@@ -118,7 +118,11 @@ func (m *Model) opsPanel(w, h int) []string {
 // 0, the kind at column 2 padded to 6, the basename at column 8 clipped
 // to cw-8, then — when it fits in what remains — the full directory plus
 // "/", else its last segment plus "/", else nothing. A dropped op's kind
-// is faint and its basename faint with strikethrough.
+// is faint and its basename faint with strikethrough. An op that deletes
+// text it does not re-add (047 S3, deletedText) gains a Bad `−` after the
+// basename, a space away, only when that much is free: the basename is
+// never clipped to make room, and the directory hint — the cosmetic part —
+// is what gives way when the marker leaves it too little.
 func (m *Model) opsRow(op stage.Op, cw int) string {
 	files := m.opDiffs[op.ID]
 	glyph, gstyle := glyphFor(m.theme, op, files)
@@ -152,9 +156,16 @@ func (m *Model) opsRow(op stage.Op, cw int) string {
 	b.WriteString(kstyle.Render(kind))
 	b.WriteString(strings.Repeat(" ", 6-lipgloss.Width(kind)))
 	b.WriteString(bstyle.Render(bt))
-	// The hint starts two cells after the basename's end (mockgen.ops_panel
-	// draws it at content column 8+len(bt)+2).
-	rest := cw - 8 - lipgloss.Width(bt) - 2
+	// The hint starts two cells after the end of what precedes it
+	// (mockgen.ops_panel draws it at content column 8+len(bt)+2) — the
+	// basename, or the 047 S3 delete marker when the row carries one.
+	free := cw - 8 - lipgloss.Width(bt)
+	if _, _, marked := deletedText(op, files); marked && free >= 2 {
+		b.WriteString(" ")
+		b.WriteString(m.theme.Bad.Render("−"))
+		free -= 2
+	}
+	rest := free - 2
 	for _, cand := range []string{dir, lastDir} {
 		if cand == "" || cand == "/" {
 			continue

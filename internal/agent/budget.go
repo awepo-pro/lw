@@ -17,6 +17,17 @@ package agent
 // matching one whose result was already elided this turn is pinned, never
 // elided again (pinned and callSignature below) — so each distinct read
 // is elided at most once per turn and the cycle cannot form.
+//
+// 041: a staged page's text is dead weight the moment the model has emitted
+// it — it is in the open changeset, and wiki.get reads it back — yet the
+// assistant tool_calls that carried it rode every later round, and the
+// estimate counted it, so when the budget bound it was the source text of
+// raw.get results that was pushed out first to keep a page already written
+// (a 21 KB ingest request grew to 391 KB). stubStagedContent is the one
+// replacement both seams use: Build (context.go) applies it to every replayed
+// staged record, and boundContext's phase 0 applies it to this turn's older
+// stage calls before any read result is elided. It buys cost and context
+// room, not latency: first-byte time was measured flat from 20 to 390 KB.
 
 import (
 	"bytes"
@@ -53,6 +64,87 @@ func callSignature(callName, args string) string {
 // collapse placeholder (compact.go), which stands in for history.
 const elidedResultFormat = "[elided to fit the context budget: %s result, %d bytes — call %s again if you still need it]"
 
+// stagedStubFormat is the text that stands in for one staged page's text
+// (041): the byte count it replaced, and the way back — it is in the open
+// changeset, so wiki.get reads it. The wording is frozen and byte-exact; the
+// em dash is deliberate, as in elidedResultFormat.
+const stagedStubFormat = "[elided: %d bytes of staged content — it is in the open changeset; read it back with wiki.get]"
+
+// stagedStubMin is the size above which a page text is stubbed: a value of
+// exactly this many bytes stays, one byte more goes. Short values — an
+// append_section's one-line link, a remove_section's "" — cost less than the
+// stub and carry the edit itself, so stubbing them would only hide it.
+const stagedStubMin = 512
+
+// stagedContentKeys names, per canonical staged tool, the string arguments
+// that carry a page's text (041, A-041-1). stage.create_page's schema calls it
+// `body` (stage_page.go stageCreatePageSchema) — the frozen block said
+// `content`, which the schema does not have, so a stub keyed on `content`
+// alone would leave every real create_page body on the wire. `content` stays
+// listed for it as well: it is a string a model may send under that name, and
+// the frozen block pins it. stage.patch_page's text is `content`. Slices, not
+// a map of sets, so the order the keys are visited in never depends on map
+// iteration.
+var stagedContentKeys = map[string][]string{
+	"stage.create_page": {"body", "content"},
+	"stage.patch_page":  {"content"},
+}
+
+// stubStagedContent returns args with the page text of the staged tool call
+// canonical (a canonical dotted name, "stage.create_page") replaced by the
+// stub, the number of bytes it replaced, and whether anything was replaced
+// (041). It is the one place both seams — Build's history replay and
+// boundContext's phase 0 — decide what is dead weight.
+//
+// Only a JSON object is touched, and only a string value longer than
+// stagedStubMin under one of the tool's stagedContentKeys. Anything else — an
+// unknown tool, arguments that are not an object, a text of 512 bytes or less, a
+// value that is not a string — comes back byte for byte as it came in, with
+// ok false: the common case never re-encodes, so the model's own spelling of a
+// short call is what replays. When something is stubbed the object is
+// re-encoded through a map, so its keys come out sorted: the bytes depend only
+// on the arguments, never on the order the model wrote them or on map
+// iteration, and the provider's prefix cache keeps hitting across turns. Other
+// values are carried as json.RawMessage, so a number or a nested array
+// survives the round trip exactly rather than through float64.
+//
+// n counts bytes — len of the decoded string, not runes — summed over every key
+// stubbed in this call.
+func stubStagedContent(canonical, args string) (stubbed string, n int, ok bool) {
+	keys, staged := stagedContentKeys[canonical]
+	if !staged {
+		return args, 0, false
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(args), &obj); err != nil || obj == nil {
+		return args, 0, false
+	}
+	for _, key := range keys {
+		raw, present := obj[key]
+		if !present {
+			continue
+		}
+		var text string
+		if err := json.Unmarshal(raw, &text); err != nil || len(text) <= stagedStubMin {
+			continue
+		}
+		stub, err := json.Marshal(fmt.Sprintf(stagedStubFormat, len(text)))
+		if err != nil {
+			return args, 0, false // unreachable: a string always marshals
+		}
+		obj[key] = stub
+		n += len(text)
+	}
+	if n == 0 {
+		return args, 0, false
+	}
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return args, 0, false // unreachable: every value is already valid JSON
+	}
+	return string(out), n, true
+}
+
 // requestTokens estimates the token cost of everything that goes on the
 // wire for msgs (004 T0a, F.C1): Σ EstimateTokens(m.Content) +
 // EstimateTokens(m.ReasoningContent) over every message plus
@@ -83,7 +175,19 @@ func requestTokens(msgs []llm.Message) int {
 // stream, for the F.C3/F.C5 log lines.
 //
 // Under budget (F.C1) msgs is returned as-is — byte-identical to a run
-// with no budget logic. Over budget (F.C2) the current turn's tool-result
+// with no budget logic; since 041 that holds for staged page text too, which
+// is never rewritten inside a request that fits. Over budget, 041's phase 0
+// runs first: this turn's assistant tool calls are walked oldest first,
+// skipping the most recent round's, and each stage.create_page /
+// stage.patch_page call whose page text is longer than 512 bytes has it
+// replaced by stubStagedContent's stub, re-estimating after each call and
+// stopping at the first point the request fits. A page the model already wrote
+// is in the open changeset and wiki.get reads it back; a source it has only
+// read once is not recoverable from anywhere but a re-read, so the stale page
+// gives way before the evidence does. Every stub counts as one message in the
+// "context elided" line and the trace's elide event, and its bytes are the
+// page text it replaced. Only if the stubs are not enough does the F.C2 phase
+// run, unchanged: over budget (F.C2) the current turn's tool-result
 // messages are walked oldest first, skipping the most recent round's
 // results (the model just produced them; they are the live end of the
 // conversation), every stage.* result (the audit trail behind the open
@@ -96,10 +200,16 @@ func requestTokens(msgs []llm.Message) int {
 // over with nothing eligible (round 1), the request is sent anyway — the
 // budget is an estimate, the provider is the authority — with one warn.
 //
-// When anything is elided the returned slice is a fresh copy: callers
-// (and tests via fakeStreamer.Requests) keep slices from earlier rounds'
-// requests, and mutating those in place would rewrite requests that were
-// already sent. Under-budget and warn-only paths return msgs itself.
+// When anything is elided or stubbed the returned slice is a fresh copy:
+// callers (and tests via fakeStreamer.Requests) keep slices from earlier
+// rounds' requests, and mutating those in place would rewrite requests that
+// were already sent. A stubbed message also gets a fresh ToolCalls array —
+// copying the message slice copies each message's ToolCalls slice header, not
+// the array behind it, so rewriting an argument through the copy would still
+// rewrite the earlier request's. Under-budget and warn-only paths return msgs
+// itself. The loop keeps the returned slice as its working list, so a stub
+// persists into later rounds (and, being under 512 bytes, is never stubbed
+// twice).
 func boundContext(ctx context.Context, msgs []llm.Message, turnStart int, elided map[int]bool, pinned map[string]bool, round, budget int) []llm.Message {
 	est := requestTokens(msgs)
 	if est <= budget {
@@ -133,8 +243,45 @@ func boundContext(ctx context.Context, msgs []llm.Message, turnStart int, elided
 		}
 	}
 
-	var out []llm.Message // copied lazily, at the first elision
+	var out []llm.Message // copied lazily, at the first stub or elision
 	elidedCount, elidedBytes := 0, 0
+
+	// 041 phase 0: stub the page text of this turn's older stage calls before
+	// any read result is elided. mostRecentStart bounds the walk exactly as it
+	// bounds the read-result walk: the live round's calls are the model's own
+	// just-produced output and are never touched; with no tool-calling
+	// assistant message in the turn it is -1 and nothing is walked. cloned
+	// remembers the messages whose ToolCalls array is already this call's own
+	// copy, so a round with several stage calls clones it once.
+	cloned := make(map[int]bool)
+	for i := turnStart; i < mostRecentStart && est > budget; i++ {
+		m := msgs[i]
+		if m.Role != "assistant" {
+			continue
+		}
+		for j, tc := range m.ToolCalls {
+			stubbed, n, ok := stubStagedContent(tools.CanonicalName(tc.Function.Name), tc.Function.Arguments)
+			if !ok {
+				continue
+			}
+			if out == nil {
+				out = make([]llm.Message, len(msgs))
+				copy(out, msgs)
+			}
+			if !cloned[i] {
+				out[i].ToolCalls = append([]llm.ToolCall(nil), m.ToolCalls...)
+				cloned[i] = true
+			}
+			out[i].ToolCalls[j].Function.Arguments = stubbed
+			elidedCount++
+			elidedBytes += n
+			est = requestTokens(out) // re-estimate after each stub, as F.C2 does per elision
+			if est <= budget {
+				break
+			}
+		}
+	}
+
 	for i := turnStart; i < len(msgs) && est > budget; i++ {
 		m := msgs[i]
 		if m.Role != "tool" || i >= mostRecentStart || elided[i] {

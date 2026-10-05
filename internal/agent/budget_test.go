@@ -571,6 +571,15 @@ func TestBudgetLeavesRecordsByteIdentical(t *testing.T) {
 // elide the prior-turn history messages OLDEST FIRST, before anything in
 // the current turn. A single-round turn 2 cannot tell those apart.
 func TestBudgetNeverElidesPriorHistory(t *testing.T) {
+	// 046: a prior turn's tool call is replayed as an assistant tool_calls +
+	// tool result pair, so "one rendered history message per call" is now the
+	// pair's tool message — the one whose id Build minted (hist_<k>) — and
+	// the result bytes sit in its Content, no longer behind a "wiki.get(…) ->"
+	// text prefix. The assertions on what must survive are unchanged.
+	isHistoryToolResult := func(m llm.Message) bool {
+		return m.Role == "tool" && strings.HasPrefix(m.ToolCallID, "hist_")
+	}
+
 	turn2 := [][]llm.Chunk{
 		{toolCallChunk("call-w3", "wiki_get", bigWikiArgs), {Finish: "tool_calls"}},
 		{{Text: "second turn"}, {Finish: "stop"}},
@@ -598,7 +607,7 @@ func TestBudgetNeverElidesPriorHistory(t *testing.T) {
 	// Turn 2, round 1: nothing is elidable yet — history must be whole.
 	history := 0
 	for _, m := range reqs[3].Messages {
-		if strings.Contains(m.Content, "wiki.get(") {
+		if isHistoryToolResult(m) { // A-046-1: was strings.Contains(m.Content, "wiki.get(")
 			history++
 			if !strings.Contains(m.Content, big) {
 				t.Errorf("prior-turn history message was truncated or elided: %d bytes, want it to still carry the full %d-byte result", len(m.Content), len(big))
@@ -636,7 +645,7 @@ func TestBudgetNeverElidesPriorHistory(t *testing.T) {
 		if strings.Contains(m.Content, "[elided to fit the context budget") {
 			t.Errorf("elision marker reached a message outside this turn's own rounds: %+v", m)
 		}
-		if strings.Contains(m.Content, "wiki.get(") {
+		if isHistoryToolResult(m) { // A-046-2: was strings.Contains(m.Content, "wiki.get(")
 			history++
 			if !strings.Contains(m.Content, big) {
 				t.Errorf("prior-turn history message was elided once the turn had a second round: %q", m.Content)
