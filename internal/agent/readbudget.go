@@ -61,9 +61,10 @@ func isPageChange(canonical string) bool {
 	return strings.HasPrefix(canonical, "stage.") && !notPageChange[canonical]
 }
 
-// readBudget is one Send's count of wiki page reads since the turn's last page
-// change. It lives in the turn, like 041's staged map, and never in the Loop or
-// the registry, so a TUI Loop reused across turns starts every turn at zero.
+// readBudget is one Send's count of wiki page reads — and, since 053, of
+// wiki.search calls (searchbudget.go) — since the turn's last page change. It
+// lives in the turn, like 041's staged map, and never in the Loop or the
+// registry, so a TUI Loop reused across turns starts every turn at zero.
 // Dispatch is sequential — dispatchToolCall has one caller, runRound's stream
 // loop — so a plain struct passed by pointer needs no mutex.
 //
@@ -72,7 +73,8 @@ func isPageChange(canonical string) bool {
 // the call sites stay unconditional and those turns run byte for byte as they
 // did before 048.
 type readBudget struct {
-	reads int
+	reads    int
+	searches int // 053: wiki.search calls dispatched; reads and searches are separate counts
 }
 
 // newReadBudget returns the budget plan calls for: a fresh one for an ingest
@@ -103,10 +105,11 @@ func (b *readBudget) noteRead(canonical string) {
 	}
 }
 
-// notePageChange resets the count when canonical, a stage.* call that came back
-// without IsError, was a page change.
+// notePageChange resets both counts when canonical, a stage.* call that came
+// back without IsError, was a page change.
 func (b *readBudget) notePageChange(canonical string) {
 	if b != nil && isPageChange(canonical) {
 		b.reads = 0
+		b.searches = 0
 	}
 }
