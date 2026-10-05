@@ -87,9 +87,37 @@ func stageCloseTool(d Deps) Tool {
 			if err != nil {
 				return stageFailure("stage.close", err)
 			}
-			return stageSummary(cs), nil
+			// 040: the coverage guard. Only sources this registry ingested
+			// that the changeset still holds are checked; see readLog.
+			live := liveIngestPaths(cs)
+			unread, refuse := d.reads.closeVerdict(func(p string) bool { return live[p] })
+			if refuse {
+				return Result{IsError: true, Content: unreadRefusal(unread)}, nil
+			}
+			res := stageSummary(cs)
+			if len(unread) > 0 {
+				// A close over an unread set the model was already told
+				// about goes through, and says so on its last line — the
+				// trace and the review then show what was never read.
+				res.Content += "\n" + unreadLine(unread)
+			}
+			return res, nil
 		},
 	}
+}
+
+// liveIngestPaths is the set of staged raw paths cs still holds as live
+// ingest_source ops — the sources the changeset being closed is made of
+// (040). Dropped and rejected ops are not in cs.Live(), so they are not in
+// the set.
+func liveIngestPaths(cs *stage.Changeset) map[string]bool {
+	out := map[string]bool{}
+	for _, op := range cs.Live() {
+		if op.Kind == stage.OpIngestSource {
+			out[op.Path] = true
+		}
+	}
+	return out
 }
 
 func stageSummary(cs *stage.Changeset) Result {

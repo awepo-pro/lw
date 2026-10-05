@@ -227,6 +227,11 @@ func stageIngestSourceTool(d Deps) Tool {
 		// through vault.ParseRawSource before chunking, so the two counts
 		// cannot drift.
 		n := len(chunkText(body, rawChunkRunes))
+		// 040: the same count is what stage.close holds the reads against —
+		// the source is now this registry's to see read in full. Recorded
+		// only on success: the early returns above staged nothing, and an
+		// IsError result from appendStageOp returned before this line.
+		d.reads.noteIngest(sourcePath, n)
 		res.Content = fmt.Sprintf("%s at %s — %d chunk(s); read it with raw.get {\"source\":%q,\"chunk\":1}",
 			res.Content, sourcePath, n, sourcePath)
 		// 008 §4.1: when the -n suffix decided the path, say so — otherwise

@@ -76,6 +76,12 @@ func rawGetHandler(ctx context.Context, d Deps, args json.RawMessage) (Result, e
 		)}, nil
 	}
 
+	// 040: the chunk is served — only now does it count as read. A refused
+	// call (missing source, chunk out of range) returned above and leaves
+	// the log alone, and so does a source no stage.ingest_source of this
+	// registry staged (the log drops it): stage.close guards only what it
+	// can know was skipped.
+	d.reads.noteRead(source, chunk)
 	return Result{Content: fmt.Sprintf("%s%s\n\n%s", marker, chunkHeader(body, chunks, chunk, n), chunks[chunk-1])}, nil
 }
 

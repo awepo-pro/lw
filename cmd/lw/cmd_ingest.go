@@ -665,9 +665,18 @@ func ingestIntent(sources []string) string {
 // buildIngestMessage is the first user message sent to the agent: it
 // names every scratch file and asks the agent to ingest each one, then
 // compile or update wiki pages from the newly ingested content.
+//
+// 040: the fixed paragraph also asks for two things a live ingest did not do
+// unprompted — read every chunk of a source before writing pages from it
+// (stage.close now refuses once over unread chunks, so the ask and the check
+// agree) and batch: one DeepSeek turn read two chunks and wrote one page per
+// round and ran out of rounds at 24/24 with pages unwritten, though the same
+// model sent five patches in one round when it was free to. The sentence
+// lives here, in the user message, not in the system prompt, so the
+// curator-prompt pins do not move.
 func buildIngestMessage(items []ingestItem) string {
 	var b strings.Builder
-	b.WriteString("New source material has been extracted and saved locally, ready to ingest. The changeset for this ingest is already open, so do not call stage.open. For each file below: call stage.ingest_source with its local path (and the given kind, if it does not match) — its result names the exact raw/ path to read next with raw.get — then create or update wiki pages that faithfully reflect it, following the schema and citing the new raw source. When you are done, call stage.close to summarize the proposed changeset.\n\n")
+	b.WriteString("New source material has been extracted and saved locally, ready to ingest. The changeset for this ingest is already open, so do not call stage.open. For each file below: call stage.ingest_source with its local path (and the given kind, if it does not match) — its result names the exact raw/ path to read next with raw.get — then create or update wiki pages that faithfully reflect it, following the schema and citing the new raw source. Read every chunk of each source before you write pages from it, and save rounds: request several raw.get chunks in one response, and stage several pages or patches in one response when they do not depend on each other. When you are done, call stage.close to summarize the proposed changeset.\n\n")
 	for _, it := range items {
 		fmt.Fprintf(&b, "- path: %s\n  kind: %s\n  title: %s\n  original source: %s\n", it.path, it.kind, it.title, it.source)
 	}
