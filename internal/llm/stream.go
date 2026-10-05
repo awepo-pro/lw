@@ -383,6 +383,15 @@ func consumeStreamTimed(ctx context.Context, body io.ReadCloser, out chan<- Chun
 		dataLines++
 		if payload == "[DONE]" {
 			emitUsage()
+			// The SSE ended; the HTTP response behind it has not, necessarily.
+			// Read it to its end before the deferred Close so net/http has the
+			// connection back in the idle pool by the time the channel closes
+			// (stallBody.drain) — a Close before EOF pools it asynchronously
+			// and the next turn can dial a second connection first. Skipped
+			// when ctx is already done: that is a cancellation, not a clean end.
+			if ctx.Err() == nil {
+				drainTail(body)
+			}
 			return
 		}
 

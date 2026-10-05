@@ -15,8 +15,10 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -425,5 +427,166 @@ func TestStallStreamReuseAcrossTurns(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&conns); got != 1 {
 		t.Errorf("server accepted %d connections for 2 turns, want 1 (keep-alive reuse)", got)
+	}
+}
+
+// sseOK is the one-chunk SSE body the pooling tests serve: a content delta
+// that carries the finish_reason, then [DONE].
+const sseOK = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
+
+// twoTurnConns runs two full turns on one client against a server whose
+// response ends tail AFTER the SSE data was flushed, and returns how many
+// connections the server accepted. tail 0 is the shape where the HTTP
+// terminator usually rides in with the data; a positive tail is the
+// terminator trailing [DONE], which is what a real provider's last bytes
+// look like and what the stream's drain has to wait out.
+func twoTurnConns(t *testing.T, tail time.Duration) int32 {
+	t.Helper()
+	var conns int32
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, sseOK)
+		w.(http.Flusher).Flush()
+		time.Sleep(tail)
+	}))
+	srv.Config.ConnState = func(c net.Conn, s http.ConnState) {
+		if s == http.StateNew {
+			atomic.AddInt32(&conns, 1)
+		}
+	}
+	srv.Start()
+	defer srv.Close()
+
+	c := New(Config{BaseURL: srv.URL, Model: "test-model", StallTimeout: testStall})
+	for turn := 0; turn < 2; turn++ {
+		ch, err := c.Stream(context.Background(), Request{Messages: []Message{{Role: "user", Content: "hi"}}})
+		if err != nil {
+			t.Fatalf("turn %d: Stream: %v", turn, err)
+		}
+		for chunk := range ch {
+			if chunk.Err != nil {
+				t.Fatalf("turn %d: %v", turn, chunk.Err)
+			}
+		}
+	}
+	return atomic.LoadInt32(&conns)
+}
+
+func TestStallStreamReuseTrailingTerminator(t *testing.T) {
+	// The root cause of the TestStallStreamReuseAcrossTurns flake. The stream
+	// ends at [DONE], but the HTTP response ends a moment later; whenever the
+	// client read [DONE] before that last chunk arrived, the body was closed
+	// un-drained, net/http pooled the connection asynchronously AFTER Close
+	// returned, and the next turn's request dialled a second connection
+	// before the first was back in the pool. Here the terminator trails by a
+	// fixed 10ms, so that ordering is the rule instead of a ~1% race: a
+	// stream that does not read the response to its end before its channel
+	// closes fails this every time.
+	for _, tc := range []struct {
+		name string
+		tail time.Duration
+	}{
+		{"terminator-with-data", 0},
+		{"terminator-trails-done", 10 * time.Millisecond},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := twoTurnConns(t, tc.tail); got != 1 {
+				t.Errorf("server accepted %d connections for 2 turns, want 1 (keep-alive reuse)", got)
+			}
+		})
+	}
+}
+
+func TestStallStreamDoneThenOpenReleasesTurn(t *testing.T) {
+	// The bound on the drain above. A provider that sends [DONE] and then
+	// never ends the response must not hold the turn: the answer was
+	// delivered at [DONE], so the channel closes within the drain window
+	// (50ms) — clean, no Err chunk, and nowhere near the 100ms StallTimeout
+	// or the 120s default a stalled drain would otherwise wait out.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, sseOK)
+		w.(http.Flusher).Flush()
+		<-r.Context().Done() // the response never ends on its own
+	}))
+	defer srv.Close()
+
+	// A StallTimeout far above the drain window: a drain bounded by it would
+	// hold the turn for the full 10s and trip the 1s assertion below.
+	c := New(Config{BaseURL: srv.URL, Model: "test-model", StallTimeout: 10 * time.Second})
+	start := time.Now()
+	ch, err := c.Stream(context.Background(), Request{Messages: []Message{{Role: "user", Content: "hi"}}})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	var text string
+	for chunk := range ch {
+		if chunk.Err != nil {
+			t.Fatalf("stream error after a clean [DONE]: %v", chunk.Err)
+		}
+		text += chunk.Text
+	}
+	if elapsed := time.Since(start); elapsed >= time.Second {
+		t.Errorf("turn held %s by a response that never ended after [DONE], want < 1s", elapsed)
+	}
+	if text != "ok" {
+		t.Errorf("text = %q, want %q", text, "ok")
+	}
+}
+
+func TestStallBodyCloseBeforeCancelPoolsConn(t *testing.T) {
+	// 026 T2's Close-order pin, direct and deterministic. A body closed
+	// before its EOF is pooled by net/http's read loop draining the tail
+	// after Close returns — and only if the request context is still live
+	// then: cancelling first (the order Close must not take) makes the loop
+	// abandon the connection instead. The response is held open until Close
+	// has returned, so the body is certainly not at EOF when it is closed,
+	// and PutIdleConn (an httptrace hook) is the transport's own signal that
+	// the connection reached the idle pool — no timing guess.
+	release := make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: x\n\n")
+		w.(http.Flusher).Flush()
+		<-release
+	}))
+	defer srv.Close()
+	defer unblock()
+
+	hc := &http.Client{Transport: &http.Transport{}}
+	pooled := make(chan error, 1)
+	trace := &httptrace.ClientTrace{PutIdleConn: func(err error) { pooled <- err }}
+	ctx, cancel := context.WithCancel(httptrace.WithClientTrace(context.Background(), trace))
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := hc.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := newStallBody(resp.Body, time.Minute, cancel)
+	if n, err := body.Read(make([]byte, 64)); n == 0 || err != nil {
+		t.Fatalf("first read = (%d, %v), want the flushed data and no error", n, err)
+	}
+	if err := body.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	unblock() // the response can end now; the transport's drain reads its tail
+
+	select {
+	case err := <-pooled:
+		if err != nil {
+			t.Fatalf("connection not pooled: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("connection never returned to the idle pool: the request was cancelled before the body was closed")
 	}
 }
