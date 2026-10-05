@@ -65,6 +65,28 @@ const stageSplitPageSchema = `{
   "required":["path","sections","rationale"],"additionalProperties":false
 }`
 
+// elisionRefusal is the IsError text of a stage.create_page or stage.patch_page
+// call whose page text is an elision placeholder (041, A-041-5). Replayed
+// history shows the model "[elided: N bytes of page text sent in this call —
+// …]" where a page's text used to be, so a model that repeats an old call
+// verbatim can send that placeholder back as the text; nothing structural
+// rejects it (a one-line body is a page, a one-line content is a section), and
+// it would be staged — a page whose whole body is the stub. The refusal names
+// the cause and the fix. Wording is exact.
+const elisionRefusal = "refused: this text is an elision placeholder, not page content; send the real text"
+
+// elisionPrefix is what every placeholder the agent writes begins with
+// (internal/agent/budget.go stagedStubFormat). The check is a prefix on the
+// trimmed text, not a search: a page that mentions the marker mid-text is
+// ordinary prose, and only text that STARTS as one is a placeholder.
+const elisionPrefix = "[elided:"
+
+// isElisionPlaceholder reports whether text, once its surrounding whitespace
+// is trimmed, starts with the elision marker.
+func isElisionPlaceholder(text string) bool {
+	return strings.HasPrefix(strings.TrimSpace(text), elisionPrefix)
+}
+
 type stageCreatePageArgs struct {
 	Path       string   `json:"path"`
 	Title      string   `json:"title"`
@@ -82,6 +104,9 @@ func stageCreatePageTool(d Deps) Tool {
 		var a stageCreatePageArgs
 		if err := decodeArgs(args, &a); err != nil {
 			return badArgs("stage.create_page", err, `{"path":"wiki/concepts/new-page.md","title":"New Page"}`), nil
+		}
+		if isElisionPlaceholder(a.Body) { // 041 A-041-5: before anything is built from it
+			return Result{IsError: true, Content: elisionRefusal}, nil
 		}
 		now := time.Now().UTC()
 		created, _ := vault.ParseDate(now.Format("2006-01-02"))
@@ -116,6 +141,13 @@ func stagePatchPageTool(d Deps) Tool {
 		var a stagePatchPageArgs
 		if err := decodeArgs(args, &a); err != nil {
 			return badArgs("stage.patch_page", err, `{"path":"wiki/concepts/kv-cache.md","section":"## Related","op":"append_section","content":"- [[new-page]]","rationale":"add a related page"}`), nil
+		}
+		// 041 A-041-5: every op that writes its content — replace_text,
+		// replace_section, append_section, insert_after, insert_before — is
+		// refused when that content is an elision placeholder. remove_section
+		// ignores its content, so a placeholder there changes nothing.
+		if a.Op != "remove_section" && isElisionPlaceholder(a.Content) {
+			return Result{IsError: true, Content: elisionRefusal}, nil
 		}
 		if d.Vault == nil {
 			return Result{IsError: true, Content: "no vault configured"}, nil

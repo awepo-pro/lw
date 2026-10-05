@@ -241,7 +241,11 @@ const noResultRecorded = "(no result recorded)"
 // compacted, so without the stub every later turn of a changeset replays every
 // page it ever staged. The page is in the open changeset and wiki.get reads it
 // back, so the history keeps the call (which path, which section, what was
-// said about it) and drops the text. The stub is a pure function of the
+// said about it) and drops the text. Only a call that staged is stubbed
+// (A-041-3): the record's Staged flag, or for the split shape the paired
+// result record's. A refused call — a validation error, a 043 shrink refusal —
+// staged nothing, so its text is in no changeset for wiki.get to return, and
+// the record keeps it for the model to correct and resend. The stub is a pure function of the
 // arguments, so the same history yields the same bytes on every Build and the
 // provider's prefix cache is as stable as before. Compact still sizes a
 // record by its full Args (compact.go recordText), so it budgets history
@@ -257,10 +261,12 @@ const noResultRecorded = "(no result recorded)"
 func appendHistoryPair(msgs []llm.Message, recs []Record, i, k int) ([]llm.Message, int) {
 	r := recs[i]
 	result := r.Result
+	staged := r.Staged
 	used := 1
 	if r.Role == "assistant" && r.Result == "" && i+1 < len(recs) {
 		if next := recs[i+1]; next.Role == "tool" && next.Tool == r.Tool && next.Args == "" {
 			result = next.Result
+			staged = next.Staged // the outcome lives on the result record
 			used = 2
 		}
 	}
@@ -273,10 +279,13 @@ func appendHistoryPair(msgs []llm.Message, recs []Record, i, k int) ([]llm.Messa
 	call.Function.Name = sanitizeWireName(tools.WireName(r.Tool))
 	call.Function.Arguments = historyArgs(r.Args)
 	// 041: a staged call's page text is already in the open changeset, so the
-	// replay carries a stub, not the page. Wire copy only: r is a copy of the
-	// record and the session's own Records are never written to.
-	if stubbed, _, ok := stubStagedContent(r.Tool, call.Function.Arguments); ok {
-		call.Function.Arguments = stubbed
+	// replay carries a stub, not the page — but only for a call that staged
+	// (A-041-3). Wire copy only: r is a copy of the record and the session's
+	// own Records are never written to.
+	if staged {
+		if stubbed, _, ok := stubStagedContent(r.Tool, call.Function.Arguments); ok {
+			call.Function.Arguments = stubbed
+		}
 	}
 	return append(msgs,
 		llm.Message{Role: "assistant", ToolCalls: []llm.ToolCall{call}},

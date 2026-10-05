@@ -65,10 +65,16 @@ func callSignature(callName, args string) string {
 const elidedResultFormat = "[elided to fit the context budget: %s result, %d bytes — call %s again if you still need it]"
 
 // stagedStubFormat is the text that stands in for one staged page's text
-// (041): the byte count it replaced, and the way back — it is in the open
-// changeset, so wiki.get reads it. The wording is frozen and byte-exact; the
-// em dash is deliberate, as in elidedResultFormat.
-const stagedStubFormat = "[elided: %d bytes of staged content — it is in the open changeset; read it back with wiki.get]"
+// (041, A-041-4): the byte count it replaced, and the way to see the page —
+// wiki.get returns the page's CURRENT staged or committed text. It says
+// "current", not "the text you sent", on purpose: by the time a stub is read
+// the page may have been patched, renamed over or merged, and promising the
+// model its own old bytes back would be a lie it could act on. The wording
+// is frozen and byte-exact; the em dash is deliberate, as in
+// elidedResultFormat. It begins "[elided:", which stage.create_page and
+// stage.patch_page refuse as page text (A-041-5), so a model that copies it
+// into a call is told so instead of writing a placeholder into a page.
+const stagedStubFormat = "[elided: %d bytes of page text sent in this call — wiki.get returns the page's current staged or committed text]"
 
 // stagedStubMin is the size above which a page text is stubbed: a value of
 // exactly this many bytes stays, one byte more goes. Short values — an
@@ -95,6 +101,14 @@ var stagedContentKeys = map[string][]string{
 // stub, the number of bytes it replaced, and whether anything was replaced
 // (041). It is the one place both seams — Build's history replay and
 // boundContext's phase 0 — decide what is dead weight.
+//
+// It decides what to stub, never whether the call may be stubbed: that the
+// call actually staged is the caller's gate (A-041-3). A call the tool refused
+// staged nothing, so its text is not in the changeset, wiki.get cannot return
+// it, and the call's arguments are the only copy the model has to correct and
+// resend — a refused create_page or a 043 shrink refusal's replace_section
+// must keep its text. Build checks Record.Staged and boundContext the loop's
+// staged-call set before they call this.
 //
 // Only a JSON object is touched, and only a string value longer than
 // stagedStubMin under one of the tool's stagedContentKeys. Anything else — an
@@ -171,20 +185,27 @@ func requestTokens(msgs []llm.Message) int {
 // indices already replaced in earlier rounds of this turn, so no message
 // is ever elided twice; pinned maps the signatures (callSignature) of
 // reads already elided this turn, so no re-read of them ever is (A-004-2);
-// both live only for the current Send. round is the round about to
-// stream, for the F.C3/F.C5 log lines.
+// both live only for the current Send. staged holds the ids of this turn's
+// tool calls that actually staged an op (dispatchToolCall writes it, in the
+// one place that also sets Record.Staged: a stage.* call that did not come
+// back IsError) — the only calls phase 0 below may stub, A-041-3; a nil set
+// stubs nothing. round is the round about to stream, for the F.C3/F.C5 log
+// lines.
 //
 // Under budget (F.C1) msgs is returned as-is — byte-identical to a run
 // with no budget logic; since 041 that holds for staged page text too, which
 // is never rewritten inside a request that fits. Over budget, 041's phase 0
 // runs first: this turn's assistant tool calls are walked oldest first,
 // skipping the most recent round's, and each stage.create_page /
-// stage.patch_page call whose page text is longer than 512 bytes has it
-// replaced by stubStagedContent's stub, re-estimating after each call and
-// stopping at the first point the request fits. A page the model already wrote
-// is in the open changeset and wiki.get reads it back; a source it has only
-// read once is not recoverable from anywhere but a re-read, so the stale page
-// gives way before the evidence does. Every stub counts as one message in the
+// stage.patch_page call that staged (A-041-3) and whose page text is longer
+// than 512 bytes has it replaced by stubStagedContent's stub, re-estimating
+// after each call and stopping at the first point the request fits. A page the
+// model already staged is in the open changeset and wiki.get reads it back; a
+// source it has only read once is not recoverable from anywhere but a re-read,
+// so the stale page gives way before the evidence does. A call the tool
+// refused (a validation error, a 043 shrink refusal) staged nothing: its text
+// is the only copy there is, the model is about to correct and resend it, and
+// it is never stubbed. Every stub counts as one message in the
 // "context elided" line and the trace's elide event, and its bytes are the
 // page text it replaced. Only if the stubs are not enough does the F.C2 phase
 // run, unchanged: over budget (F.C2) the current turn's tool-result
@@ -210,7 +231,7 @@ func requestTokens(msgs []llm.Message) int {
 // itself. The loop keeps the returned slice as its working list, so a stub
 // persists into later rounds (and, being under 512 bytes, is never stubbed
 // twice).
-func boundContext(ctx context.Context, msgs []llm.Message, turnStart int, elided map[int]bool, pinned map[string]bool, round, budget int) []llm.Message {
+func boundContext(ctx context.Context, msgs []llm.Message, turnStart int, elided map[int]bool, pinned, staged map[string]bool, round, budget int) []llm.Message {
 	est := requestTokens(msgs)
 	if est <= budget {
 		return msgs
@@ -246,8 +267,10 @@ func boundContext(ctx context.Context, msgs []llm.Message, turnStart int, elided
 	var out []llm.Message // copied lazily, at the first stub or elision
 	elidedCount, elidedBytes := 0, 0
 
-	// 041 phase 0: stub the page text of this turn's older stage calls before
-	// any read result is elided. mostRecentStart bounds the walk exactly as it
+	// 041 phase 0: stub the page text of this turn's older stage calls that
+	// staged (A-041-3: staged[id], set by dispatchToolCall only for a call
+	// that did not come back IsError) before any read result is elided. A
+	// refused call is skipped here, not stubbed. mostRecentStart bounds the walk exactly as it
 	// bounds the read-result walk: the live round's calls are the model's own
 	// just-produced output and are never touched; with no tool-calling
 	// assistant message in the turn it is -1 and nothing is walked. cloned
@@ -260,6 +283,9 @@ func boundContext(ctx context.Context, msgs []llm.Message, turnStart int, elided
 			continue
 		}
 		for j, tc := range m.ToolCalls {
+			if !staged[tc.ID] {
+				continue // A-041-3: refused or not a staged call — its text is not in the changeset
+			}
 			stubbed, n, ok := stubStagedContent(tools.CanonicalName(tc.Function.Name), tc.Function.Arguments)
 			if !ok {
 				continue

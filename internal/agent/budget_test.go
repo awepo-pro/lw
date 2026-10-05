@@ -1228,8 +1228,8 @@ func TestProbeElidedMapTracksIndicesAcrossGrowth(t *testing.T) {
 
 	turnStart := 2
 	elided := map[int]bool{}
-	pinned := map[string]bool{}                                                        // the same maps Send passes across rounds
-	out1 := boundContext(context.Background(), msgs, turnStart, elided, pinned, 2, 10) // budget 10: far over
+	pinned := map[string]bool{}                                                             // the same maps Send passes across rounds
+	out1 := boundContext(context.Background(), msgs, turnStart, elided, pinned, nil, 2, 10) // budget 10: far over
 
 	// Round 2's result (index 5) is the most recent round — only index 3
 	// (round 1's result) may be elided.
@@ -1254,7 +1254,7 @@ func TestProbeElidedMapTracksIndicesAcrossGrowth(t *testing.T) {
 		t.Fatalf("append did not reallocate — the test no longer exercises index stability across a new backing array")
 	}
 
-	out2 := boundContext(context.Background(), msgs2, turnStart, elided, pinned, 3, 10)
+	out2 := boundContext(context.Background(), msgs2, turnStart, elided, pinned, nil, 3, 10)
 
 	// Index 3 still holds round-1's placeholder — NOT a re-elision of it
 	// (which would name len(placeholder), ~95 bytes, not 400).
@@ -1408,7 +1408,7 @@ func TestProbeReorderedKeysCannotSustainTheCycle(t *testing.T) {
 		for i := range elided {
 			prev[i] = true
 		}
-		msgs = boundContext(context.Background(), msgs, turnStart, elided, pinned, r, budget)
+		msgs = boundContext(context.Background(), msgs, turnStart, elided, pinned, nil, r, budget)
 		for i := range elided {
 			if !prev[i] {
 				newlyElided[r] = append(newlyElided[r], spellings[(i-turnStart-1)/2].id)
@@ -1592,6 +1592,6 @@ func BenchmarkBoundContextRealisticWorstCase(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		boundContext(context.Background(), msgs, 4, make(map[int]bool), make(map[string]bool), 24, budget)
+		boundContext(context.Background(), msgs, 4, make(map[int]bool), make(map[string]bool), nil, 24, budget)
 	}
 }

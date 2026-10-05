@@ -9,9 +9,11 @@ package agent
 //   - boundContext's phase 0 stubs this turn's older stage calls before it
 //     elides any read result (within the turn, only when over budget).
 //
-// The stub text is written out literally here — never read back from
-// production — so a drift in the format fails these tests rather than agreeing
-// with itself. 041's scope is cost and context room, never latency.
+// Only a call that actually staged is stubbed (A-041-3): a refused call's text
+// is in no changeset for wiki.get to return, so the call keeps it. The stub
+// text is written out literally here — never read back from production — so a
+// drift in the format fails these tests rather than agreeing with itself.
+// 041's scope is cost and context room, never latency.
 
 import (
 	"bytes"
@@ -29,9 +31,17 @@ import (
 	"github.com/awepo-pro/lw/internal/trace"
 )
 
-// dwStub is the frozen stub for n bytes of staged content.
+// dwStub is the frozen stub for n bytes of page text (A-041-4's wording).
 func dwStub(n int) string {
-	return fmt.Sprintf("[elided: %d bytes of staged content — it is in the open changeset; read it back with wiki.get]", n)
+	return fmt.Sprintf("[elided: %d bytes of page text sent in this call — wiki.get returns the page's current staged or committed text]", n)
+}
+
+// dwRec is a tool record the way loop.go writes one: staged is the record's
+// Staged flag, true only for a call that came back without IsError.
+func dwRec(ts time.Time, tool, args, result string, staged bool) Record {
+	r := toolRec(ts, tool, args, result)
+	r.Staged = staged
+	return r
 }
 
 // dwObj marshals kv the way the stub re-encodes: keys sorted. It builds
@@ -63,7 +73,7 @@ func TestBuildStubsStagedContent(t *testing.T) {
 
 	// The frozen case, byte for byte: keys come out sorted, the stub names the
 	// byte count, and the rest of the object is untouched.
-	const frozenWant = `{"content":"[elided: 2000 bytes of staged content — it is in the open changeset; read it back with wiki.get]","path":"wiki/concepts/x.md","rationale":"r","title":"X"}`
+	const frozenWant = `{"content":"[elided: 2000 bytes of page text sent in this call — wiki.get returns the page's current staged or committed text]","path":"wiki/concepts/x.md","rationale":"r","title":"X"}`
 
 	createBody := func(n int) string {
 		return `{"path":"wiki/concepts/x.md","title":"X","type":"concept","tags":["inference"],"sources":["raw/papers/leviathan-2023.md"],"confidence":"low","contested":false,"body":"` + c(n) + `","rationale":"r"}`
@@ -128,7 +138,7 @@ func TestBuildStubsStagedContent(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			recs := []Record{
 				rec(ts, "user", "Q1"),
-				toolRec(ts.Add(time.Second), tc.tool, tc.args, "proposed op1"),
+				dwRec(ts.Add(time.Second), tc.tool, tc.args, "proposed op1", true),
 			}
 			all, got := buildHistory(t, 1_000_000, recs, "Q2")
 
@@ -181,7 +191,7 @@ func TestBuildStubsStagedContent(t *testing.T) {
 		recs := []Record{
 			rec(ts, "user", "Q1"),
 			{TS: ts.Add(time.Second), Role: "assistant", Tool: "stage.patch_page", Args: patch(2000)},
-			{TS: ts.Add(2 * time.Second), Role: "tool", Tool: "stage.patch_page", Result: "patched"},
+			{TS: ts.Add(2 * time.Second), Role: "tool", Tool: "stage.patch_page", Result: "patched", Staged: true},
 		}
 		_, got := buildHistory(t, 1_000_000, recs, "Q2")
 		requireHistory(t, got, []llm.Message{
@@ -223,7 +233,7 @@ func TestStubKeysMatchRegistrySchema(t *testing.T) {
 
 			args := dwObj(t, map[string]any{"path": "wiki/concepts/x.md", tc.key: strings.Repeat("p", 2000)})
 			_, got := buildHistory(t, 1_000_000, []Record{
-				toolRec(histTS, tc.tool, args, "proposed"),
+				dwRec(histTS, tc.tool, args, "proposed", true),
 			}, "Q")
 			var out map[string]any
 			if err := json.Unmarshal([]byte(got[0].ToolCalls[0].Function.Arguments), &out); err != nil {
@@ -248,9 +258,9 @@ func TestBuildStubDeterministic(t *testing.T) {
 	argsB := `{"type":"concept","body":"` + big + `","title":"X","path":"wiki/concepts/x.md","rationale":"r"}`
 	recs := []Record{
 		rec(ts, "user", "Q1"),
-		toolRec(ts.Add(1*time.Second), "stage.create_page", argsA, "proposed op1"),
-		toolRec(ts.Add(2*time.Second), "stage.create_page", argsB, "proposed op2"),
-		toolRec(ts.Add(3*time.Second), "stage.patch_page", `{"section":"## S","path":"p","op":"replace_section","content":"`+big+`"}`, "patched"),
+		dwRec(ts.Add(1*time.Second), "stage.create_page", argsA, "proposed op1", true),
+		dwRec(ts.Add(2*time.Second), "stage.create_page", argsB, "proposed op2", true),
+		dwRec(ts.Add(3*time.Second), "stage.patch_page", `{"section":"## S","path":"p","op":"replace_section","content":"`+big+`"}`, "patched", true),
 		rec(ts.Add(4*time.Second), "assistant", "A1"),
 	}
 
@@ -274,7 +284,7 @@ func TestBuildStubDeterministic(t *testing.T) {
 
 	// Non-vacuous: the stub really is on the wire, with sorted keys, whatever
 	// order the model wrote them in.
-	const wantCreate = `{"body":"[elided: 4000 bytes of staged content — it is in the open changeset; read it back with wiki.get]","path":"wiki/concepts/x.md","rationale":"r","title":"X","type":"concept"}`
+	const wantCreate = `{"body":"[elided: 4000 bytes of page text sent in this call — wiki.get returns the page's current staged or committed text]","path":"wiki/concepts/x.md","rationale":"r","title":"X","type":"concept"}`
 	history := first[3 : len(first)-1]
 	for _, i := range []int{1, 3} {
 		if got := history[i].ToolCalls[0].Function.Arguments; got != wantCreate {
@@ -295,9 +305,9 @@ func TestBuildStubLeavesRecordsAlone(t *testing.T) {
 	args := `{"path":"p","content":"` + strings.Repeat("k", 3000) + `"}`
 	recs := []Record{
 		rec(ts, "user", "Q1"),
-		toolRec(ts.Add(time.Second), "stage.patch_page", args, "patched"),
+		dwRec(ts.Add(time.Second), "stage.patch_page", args, "patched", true),
 		{TS: ts.Add(2 * time.Second), Role: "assistant", Tool: "stage.patch_page", Args: args},
-		{TS: ts.Add(3 * time.Second), Role: "tool", Tool: "stage.patch_page", Result: "patched again"},
+		{TS: ts.Add(3 * time.Second), Role: "tool", Tool: "stage.patch_page", Result: "patched again", Staged: true},
 	}
 	snapshot := append([]Record(nil), recs...)
 
@@ -341,9 +351,26 @@ func dwStageArgs(key string, n int) string {
 	return `{"path":"wiki/concepts/x.md","title":"X","` + key + `":"` + strings.Repeat("s", n) + `","rationale":"r"}`
 }
 
-// dwBound runs boundContext with fresh per-turn state as round 3.
+// dwBound runs boundContext with fresh per-turn state as round 3, with every
+// page-writing stage call in msgs recorded as staged — the common case, where
+// each call the script made went through. dwBoundWith takes the set explicitly,
+// for the calls a tool refused.
 func dwBound(msgs []llm.Message, budget int) []llm.Message {
-	return boundContext(context.Background(), msgs, len(dwBase()), map[int]bool{}, map[string]bool{}, 3, budget)
+	staged := map[string]bool{}
+	for _, m := range msgs {
+		for _, tc := range m.ToolCalls {
+			if c := tools.CanonicalName(tc.Function.Name); c == "stage.create_page" || c == "stage.patch_page" {
+				staged[tc.ID] = true
+			}
+		}
+	}
+	return dwBoundWith(msgs, budget, staged)
+}
+
+// dwBoundWith is boundContext as the loop calls it, with staged the ids of the
+// calls that staged an op.
+func dwBoundWith(msgs []llm.Message, budget int, staged map[string]bool) []llm.Message {
+	return boundContext(context.Background(), msgs, len(dwBase()), map[int]bool{}, map[string]bool{}, staged, 3, budget)
 }
 
 // dwStubbed is the test's own derivation of what msgs look like once the named
@@ -674,13 +701,22 @@ func TestBoundContextMostRecentRoundUntouched(t *testing.T) {
 // stages for real through the registry.
 func dwCreateArgs(t *testing.T, n int) string {
 	t.Helper()
+	return dwCreateArgsAt(t, n, "wiki/concepts/dead-weight.md", []string{"inference"})
+}
+
+// dwCreateArgsAt is dwCreateArgs at another path and with other tags. A tag the
+// vault's taxonomy does not know makes the real tool refuse the call — the
+// validation refusal A-041-3's pins need, produced by the registry, not
+// scripted.
+func dwCreateArgsAt(t *testing.T, n int, path string, tags []string) string {
+	t.Helper()
 	body := "# Dead Weight\n\nSee [[kv-cache]] and [[gpt-4]].\n\n"
 	for i := 0; len(body) < n; i++ {
 		body += fmt.Sprintf("Sentence %d about staged page bodies that ride every round.\n", i)
 	}
 	return dwObj(t, map[string]any{
-		"path": "wiki/concepts/dead-weight.md", "title": "Dead Weight", "type": "concept",
-		"tags": []string{"inference"}, "sources": []string{"raw/papers/leviathan-2023.md"},
+		"path": path, "title": "Dead Weight", "type": "concept",
+		"tags": tags, "sources": []string{"raw/papers/leviathan-2023.md"},
 		"confidence": "low", "contested": false, "body": body[:n], "rationale": "pin 041",
 	})
 }
@@ -703,10 +739,20 @@ type dwRun struct {
 // big read is eligible too.
 func dwLoop(t *testing.T, budget int) dwRun {
 	t.Helper()
+	return dwLoopWith(t, budget, []llm.Chunk{
+		toolCallChunk("call-s1", "stage_create_page", dwCreateArgs(t, dwBodyBytes)), {Finish: "tool_calls"},
+	})
+}
+
+// dwLoopWith is dwLoop with round 1's chunks given: what the model does first
+// — a valid stage call, a call the tool will refuse — is the only thing the
+// A-041-3 pins vary.
+func dwLoopWith(t *testing.T, budget int, first []llm.Chunk) dwRun {
+	t.Helper()
 	logPath := installFileLog(t)
 	fx, _, _ := newBudgetFixture(t, bigResultBytes)
 	fake := &fakeStreamer{rounds: [][]llm.Chunk{
-		{toolCallChunk("call-s1", "stage_create_page", dwCreateArgs(t, dwBodyBytes)), {Finish: "tool_calls"}},
+		first,
 		{toolCallChunk("call-w1", "wiki_get", bigWikiArgs), {Finish: "tool_calls"}},
 		{toolCallChunk("call-k1", "wiki_get", `{"page":"kv-cache"}`), {Finish: "tool_calls"}},
 		{{Text: "done"}, {Finish: "stop"}},
@@ -847,5 +893,337 @@ func dwNoMutationLoop(t *testing.T) {
 	}
 	if el := turn.Elisions[0]; el.Round != 3 || el.Count != 1 || el.Bytes != dwBodyBytes {
 		t.Errorf("elide event = %+v, want {round 3, count 1, bytes %d}", el, dwBodyBytes)
+	}
+}
+
+// ---- A-041-3: only a call that staged is stubbed ----
+
+// dwResultEv returns the ToolResEv for call id.
+func dwResultEv(t *testing.T, events []Event, id string) ToolResEv {
+	t.Helper()
+	for _, ev := range events {
+		if res, ok := ev.(ToolResEv); ok && res.ID == id {
+			return res
+		}
+	}
+	t.Fatalf("no ToolResEv for call %q", id)
+	return ToolResEv{}
+}
+
+// dwCallArgs returns the raw arguments string of the tool call with id from
+// msgs, or fails.
+func dwCallArgs(t *testing.T, msgs []llm.Message, id string) string {
+	t.Helper()
+	for _, m := range msgs {
+		for _, tc := range m.ToolCalls {
+			if tc.ID == id {
+				return tc.Function.Arguments
+			}
+		}
+	}
+	t.Fatalf("no tool call %q in the request", id)
+	return ""
+}
+
+// TestBuildKeepsTextOfRefusedCalls: a record that is not Staged — the tool
+// answered IsError, so nothing reached the changeset — replays its page text
+// whole, however large. Stubbing it would send the model to wiki.get for text
+// that was never saved, and take away the only copy it has to correct and
+// resend. For the split shape (one call logged as two records) the paired
+// result record decides, not the call half.
+func TestBuildKeepsTextOfRefusedCalls(t *testing.T) {
+	ts := histTS
+	body := strings.Repeat("r", 3000)
+	create := `{"path":"wiki/concepts/x.md","title":"X","type":"concept","tags":["no-such-tag"],"body":"` + body + `","rationale":"r"}`
+	shrink := `{"path":"wiki/concepts/x.md","section":"# X","op":"replace_section","content":"` + body + `","rationale":"r"}`
+	const validationRefusal = `error: tag "no-such-tag" is not in the SCHEMA.md taxonomy`
+	const shrinkRefusal = `replace_section "# X" keeps 3000 of 9000 bytes (33%) of the section; it would delete:`
+
+	t.Run("single_record", func(t *testing.T) {
+		for _, tc := range []struct {
+			name, tool, args, result string
+		}{
+			{"create_page_validation_refusal", "stage.create_page", create, validationRefusal},
+			{"patch_page_043_shrink_refusal", "stage.patch_page", shrink, shrinkRefusal},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				recs := []Record{rec(ts, "user", "Q1"), dwRec(ts.Add(time.Second), tc.tool, tc.args, tc.result, false)}
+				all, got := buildHistory(t, 1_000_000, recs, "Q2")
+				requireHistory(t, got, []llm.Message{
+					{Role: "user", Content: "Q1"},
+					wireCall("hist_1", tools.WireName(tc.tool), tc.args),
+					wireResult("hist_1", tc.result),
+				})
+				if err := validChat(all); err != nil {
+					t.Errorf("not a valid chat: %v", err)
+				}
+			})
+		}
+	})
+
+	// The same arguments, once staged, ARE stubbed: the pin above is about
+	// the flag, not about the text.
+	t.Run("same_args_staged_are_stubbed", func(t *testing.T) {
+		recs := []Record{dwRec(ts, "stage.create_page", create, "proposed op1", true)}
+		_, got := buildHistory(t, 1_000_000, recs, "Q")
+		if args := got[0].ToolCalls[0].Function.Arguments; strings.Contains(args, body) {
+			t.Errorf("a staged call's text was kept: %.80s…", args)
+		}
+	})
+
+	t.Run("split_shape", func(t *testing.T) {
+		for _, tc := range []struct {
+			name       string
+			callStaged bool // the assistant (call) record's flag
+			resStaged  bool // the tool (result) record's flag — the one that decides
+			wantStub   bool
+		}{
+			{"result_record_staged", false, true, true},
+			{"result_record_refused", false, false, false},
+			{"only_call_record_flagged_is_not_enough", true, false, false},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				recs := []Record{
+					rec(ts, "user", "Q1"),
+					{TS: ts.Add(time.Second), Role: "assistant", Tool: "stage.patch_page", Args: shrink, Staged: tc.callStaged},
+					{TS: ts.Add(2 * time.Second), Role: "tool", Tool: "stage.patch_page", Result: "x", Staged: tc.resStaged},
+				}
+				_, got := buildHistory(t, 1_000_000, recs, "Q2")
+				args := got[1].ToolCalls[0].Function.Arguments
+				if stubbed := !strings.Contains(args, body); stubbed != tc.wantStub {
+					t.Errorf("stubbed = %v, want %v: %.80s…", stubbed, tc.wantStub, args)
+				}
+			})
+		}
+	})
+}
+
+// TestBoundContextKeepsTextOfRefusedCalls: inside a turn, phase 0 stubs only a
+// call the loop saw stage. The staged set is what tells them apart — the wire
+// message carries no error flag — so a call missing from it keeps its text
+// even when the request is far over budget and stubbing it alone would fit,
+// and a nil set stubs nothing at all.
+func TestBoundContextKeepsTextOfRefusedCalls(t *testing.T) {
+	msgs := append(dwBase(),
+		wireCall("c1", "stage_create_page", dwStageArgs("body", 6000)), dwRes("c1", "stage_create_page", "error: refused"),
+		wireCall("c2", "stage_patch_page", dwStageArgs("content", 6000)), dwRes("c2", "stage_patch_page", "proposed op2"),
+		wireCall("r1", "raw_get", `{"path":"raw/a.md"}`), dwRes("r1", "raw_get", "tiny"),
+	)
+
+	t.Run("refused_call_keeps_text_staged_call_is_stubbed", func(t *testing.T) {
+		staged := map[string]bool{"c2": true}
+		got := dwBoundWith(msgs, wireEstimate(dwStubbed(t, msgs, "c2")), staged)
+		if args := dwArgsOf(t, got, "c1"); len(args["body"].(string)) != 6000 {
+			t.Errorf("the refused call's text was stubbed (%.40v…)", args["body"])
+		}
+		if args := dwArgsOf(t, got, "c2"); args["content"] != dwStub(6000) {
+			t.Errorf("the staged call was not stubbed: %.40v…", args["content"])
+		}
+	})
+
+	t.Run("budget_only_a_stub_would_meet_is_not_met_by_stubbing_a_refused_call", func(t *testing.T) {
+		logPath := installFileLog(t)
+		got := dwBoundWith(msgs, wireEstimate(dwStubbed(t, msgs, "c1")), map[string]bool{})
+		if dwSnapshot(t, got) != dwSnapshot(t, msgs) {
+			t.Errorf("a refused call's text was rewritten to meet the budget")
+		}
+		if log := readLog(t, logPath); !strings.Contains(log, "context over budget") {
+			t.Errorf("the request stayed over budget; F.C3 wants the warn:\n%s", log)
+		}
+	})
+
+	t.Run("nil_set_stubs_nothing", func(t *testing.T) {
+		got := boundContext(context.Background(), msgs, len(dwBase()), map[int]bool{}, map[string]bool{}, nil, 3, 1)
+		for _, id := range []string{"c1", "c2"} {
+			key := map[string]string{"c1": "body", "c2": "content"}[id]
+			if args := dwArgsOf(t, got, id); len(args[key].(string)) != 6000 {
+				t.Errorf("%s was stubbed with no staged set", id)
+			}
+		}
+	})
+}
+
+// dwRefusedRun drives the 041 script with round 1 a call the REAL tool refuses
+// — wantRefusal is a fragment of the registry's own refusal text, asserted so
+// the pin cannot silently become a call that staged — and checks that the
+// refused call's text rides every request whole while the budget does its
+// work on the read evidence instead.
+func dwRefusedRun(t *testing.T, call llm.Chunk, wantRefusal string) {
+	t.Helper()
+	first := []llm.Chunk{call, {Finish: "tool_calls"}}
+	ctl := dwLoopWith(t, 1_000_000, first)
+	ctlReqs := ctl.fake.Requests()
+	if len(ctlReqs) != 4 {
+		t.Fatalf("control run made %d requests, want 4", len(ctlReqs))
+	}
+	// The budget a stub of the refused call's text would satisfy at round 3:
+	// before A-041-3 the stub took it, and the page the model must resend went
+	// with it.
+	budget := wireEstimate(dwStubbed(t, ctlReqs[3].Messages, call.ToolCall.ID))
+
+	run := dwLoopWith(t, budget, first)
+	res := dwResultEv(t, run.events, call.ToolCall.ID)
+	if !res.IsError || !strings.Contains(res.Content, wantRefusal) {
+		t.Fatalf("the scripted call was not refused as intended — pin is vacuous (IsError=%v): %s", res.IsError, res.Content)
+	}
+	reqs := run.fake.Requests()
+	if len(reqs) != 4 {
+		t.Fatalf("sized run made %d requests, want 4", len(reqs))
+	}
+
+	// The refused call's arguments ride every request exactly as the model
+	// sent them.
+	want := call.ToolCall.Function.Arguments
+	for i := 1; i < 4; i++ {
+		if got := dwCallArgs(t, reqs[i].Messages, call.ToolCall.ID); got != want {
+			t.Errorf("request %d: the refused call's arguments changed (%d bytes, want the original %d)", i+1, len(got), len(want))
+		}
+		if b := dwSnapshot(t, reqs[i].Messages); strings.Contains(b, "bytes of page text sent in this call") {
+			t.Errorf("request %d carries a stub though nothing staged", i+1)
+		}
+	}
+
+	// The budget did bind: round 3 had nothing eligible and warned, and round
+	// 4 gave up the big read result instead — the evidence the stub used to
+	// save, and the one thing that was recoverable by a re-read.
+	log := readLog(t, run.logPath)
+	if !strings.Contains(log, "context over budget") || !strings.Contains(log, "round=3") {
+		t.Errorf("round 3 should have been left over budget (nothing eligible):\n%s", log)
+	}
+	if m := toolMsgByID(t, reqs[3].Messages, "call-w1"); !strings.HasPrefix(m.Content, "[elided to fit the context budget:") {
+		t.Errorf("round 4 did not elide the big read result to meet the budget: %d bytes left", len(m.Content))
+	}
+	turn, err := trace.Load(run.traces, turnID(t, run.fx))
+	if err != nil {
+		t.Fatalf("trace.Load: %v", err)
+	}
+	if len(turn.Elisions) != 1 || turn.Elisions[0].Round != 4 || turn.Elisions[0].Count != 1 || turn.Elisions[0].Bytes != bigResultBytes {
+		t.Errorf("elisions = %+v, want exactly one {round 4, count 1, bytes %d} — the read result, not a stub", turn.Elisions, bigResultBytes)
+	}
+
+	// Nothing on disk changed either: the record is the unstaged one.
+	sess, err := run.fx.store.Get(run.fx.csID)
+	if err != nil {
+		t.Fatalf("Get session: %v", err)
+	}
+	for _, r := range sess.Records {
+		if r.Role == "tool" && strings.HasPrefix(r.Tool, "stage.") && r.Staged {
+			t.Errorf("record %s is Staged, but the call was refused", r.Tool)
+		}
+	}
+}
+
+// TestBoundContextRefusedCallEndToEnd: the same, through the real Loop and the
+// real registry, for the two refusals the review named — a validation refusal
+// and a 043 shrink refusal. The fake streamer scripts what the model says;
+// what the tool answers is the tool's own.
+func TestBoundContextRefusedCallEndToEnd(t *testing.T) {
+	t.Run("create_page_validation_refusal", func(t *testing.T) {
+		args := dwCreateArgsAt(t, dwBodyBytes, "wiki/concepts/dead-weight.md", []string{"no-such-tag"})
+		dwRefusedRun(t, toolCallChunk("call-f1", "stage_create_page", args), "no-such-tag")
+	})
+
+	// big.md is the budget fixture's 20 KB page; its one section is the whole
+	// body, so replacing it with 4000 bytes keeps under half and 043 refuses.
+	t.Run("patch_page_043_shrink_refusal", func(t *testing.T) {
+		args := dwObj(t, map[string]any{
+			"path": "wiki/concepts/big.md", "section": "# big", "op": "replace_section",
+			"content": strings.Repeat("z", 4000), "rationale": "pin 041",
+		})
+		dwRefusedRun(t, toolCallChunk("call-f1", "stage_patch_page", args), "keeps ")
+	})
+}
+
+// TestBuildKeepsTextOfRefusedCallsFromRealSession: the flag Build reads is the
+// one the loop wrote. One turn stages a page and has the tool refuse another
+// in the same round; the next turn's history stubs the first and replays the
+// second whole.
+func TestBuildKeepsTextOfRefusedCallsFromRealSession(t *testing.T) {
+	refused := dwCreateArgsAt(t, dwBodyBytes, "wiki/concepts/dead-weight-two.md", []string{"no-such-tag"})
+	staged := dwCreateArgs(t, dwBodyBytes)
+
+	fx, _, _ := newBudgetFixture(t, bigResultBytes)
+	fake := &fakeStreamer{rounds: [][]llm.Chunk{
+		{toolCallChunk("call-f1", "stage_create_page", refused), toolCallChunk("call-s1", "stage_create_page", staged), {Finish: "tool_calls"}},
+		{{Text: "done"}, {Finish: "stop"}},
+		{{Text: "and again"}, {Finish: "stop"}},
+	}}
+	l := newLoop(fake, fx.reg, fx.store, fx.engine, LoopConfig{ContextTokens: 1_000_000})
+
+	out := make(chan Event, 256)
+	if err := l.Send(context.Background(), fx.csID, "stage two pages", out); err != nil {
+		t.Fatalf("Send turn 1: %v", err)
+	}
+	events := drain(out)
+	if res := dwResultEv(t, events, "call-f1"); !res.IsError {
+		t.Fatalf("the scripted call was not refused — pin is vacuous: %s", res.Content)
+	}
+	if res := dwResultEv(t, events, "call-s1"); res.IsError {
+		t.Fatalf("the valid call was refused — pin is vacuous: %s", res.Content)
+	}
+	out2 := make(chan Event, 256)
+	if err := l.Send(context.Background(), fx.csID, "continue", out2); err != nil {
+		t.Fatalf("Send turn 2: %v", err)
+	}
+	drain(out2)
+
+	reqs := fake.Requests()
+	if len(reqs) != 3 {
+		t.Fatalf("Stream called %d times, want 3", len(reqs))
+	}
+	history := reqs[2].Messages
+	// Records are appended in dispatch order, so hist_1 is the refused call.
+	if got := dwCallArgs(t, history, "hist_1"); got != refused {
+		t.Errorf("the refused call's replayed arguments changed (%d bytes, want the original %d)", len(got), len(refused))
+	}
+	if args := dwArgsOf(t, history, "hist_2"); args["body"] != dwStub(dwBodyBytes) {
+		t.Errorf("the staged call's replayed body = %.60v…, want the %d-byte stub", args["body"], dwBodyBytes)
+	}
+}
+
+// TestBoundContextReusedCallIDFailsSafe: the staged set is keyed by the
+// provider's call id, and the id is the provider's to choose. If one id
+// answers a call that staged and another that was refused — the same id twice
+// in a round — the later dispatch decides, so the set never says "staged" for
+// a call that was not. Neither call is stubbed: a wrong "keep" costs tokens, a
+// wrong "stub" costs the only copy of a page the model must resend.
+func TestBoundContextReusedCallIDFailsSafe(t *testing.T) {
+	good := dwCreateArgs(t, dwBodyBytes)
+	bad := dwCreateArgsAt(t, dwBodyBytes, "wiki/concepts/dead-weight-two.md", []string{"no-such-tag"})
+	first := []llm.Chunk{
+		toolCallChunk("dup", "stage_create_page", good),
+		toolCallChunk("dup", "stage_create_page", bad),
+		{Finish: "tool_calls"},
+	}
+	ctl := dwLoopWith(t, 1_000_000, first)
+	ctlReqs := ctl.fake.Requests()
+	if len(ctlReqs) != 4 {
+		t.Fatalf("control run made %d requests, want 4", len(ctlReqs))
+	}
+	budget := wireEstimate(dwStubbed(t, ctlReqs[3].Messages, "dup"))
+
+	run := dwLoopWith(t, budget, first)
+	var verdicts []bool
+	for _, ev := range run.events {
+		if res, ok := ev.(ToolResEv); ok && res.ID == "dup" {
+			verdicts = append(verdicts, res.IsError)
+		}
+	}
+	if !reflect.DeepEqual(verdicts, []bool{false, true}) {
+		t.Fatalf("the scripted pair was not staged-then-refused — pin is vacuous: IsError = %v", verdicts)
+	}
+	reqs := run.fake.Requests()
+	for i := 1; i < 4; i++ {
+		var calls []string
+		for _, m := range reqs[i].Messages {
+			for _, tc := range m.ToolCalls {
+				if tc.ID == "dup" {
+					calls = append(calls, tc.Function.Arguments)
+				}
+			}
+		}
+		if !reflect.DeepEqual(calls, []string{good, bad}) {
+			t.Errorf("request %d: the calls sharing an id were rewritten:\n got %d calls", i+1, len(calls))
+		}
 	}
 }

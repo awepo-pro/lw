@@ -158,6 +158,13 @@ func (l *Loop) Send(ctx context.Context, sessionID, msg string, out chan<- Event
 	tt := l.toolsFor(plan)
 	elided := make(map[int]bool)
 	pinned := make(map[string]bool)
+	// 041 A-041-3: staged remembers the ids of this turn's tool calls that
+	// actually staged an op — dispatchToolCall writes it where it sets
+	// Record.Staged, boundContext reads it. The wire message carries no error
+	// flag, and guessing from a result's text would break the day a refusal is
+	// reworded, so the only calls whose page text may be stubbed are the ones
+	// the loop itself saw succeed.
+	staged := make(map[string]bool)
 
 	badCalls := 0
 
@@ -167,9 +174,9 @@ func (l *Loop) Send(ctx context.Context, sessionID, msg string, out chan<- Event
 		// 004 T0a (F.C1): estimate the request before every Stream call,
 		// round 1 included; runRound is the only Stream caller, so this
 		// is the one checkpoint a round's request passes through.
-		msgs = boundContext(ctx, msgs, turnStart, elided, pinned, rounds, l.cfg.ContextTokens)
+		msgs = boundContext(ctx, msgs, turnStart, elided, pinned, staged, rounds, l.cfg.ContextTokens)
 
-		newMsgs, toolCalled, finish, err := l.runRound(ctx, sessionID, rounds, msgs, tt, &badCalls, out)
+		newMsgs, toolCalled, finish, err := l.runRound(ctx, sessionID, rounds, msgs, tt, staged, &badCalls, out)
 		if err != nil {
 			return err
 		}
@@ -210,7 +217,9 @@ func (l *Loop) Send(ctx context.Context, sessionID, msg string, out chan<- Event
 // appended), whether this round produced at least one tool call — the
 // signal Send uses to decide whether to loop again — and the round's last
 // non-empty Chunk.Finish ("" when the provider sent none), which Send
-// checks for truncation (008, contract §1).
+// checks for truncation (008, contract §1). staged is the turn's set of tool
+// call ids that staged an op (041, A-041-3): dispatchToolCall fills it, Send's
+// next boundContext reads it.
 //
 // Truncation record: a round that ends abnormally (truncated(finish) and no
 // tool call) writes ONE assistant Record carrying its pending text, pending
@@ -245,7 +254,7 @@ func (l *Loop) Send(ctx context.Context, sessionID, msg string, out chan<- Event
 // right here, when the round ends; dispatchToolCall and correctable no
 // longer build assistant messages at all, only the matching tool-result
 // message.
-func (l *Loop) runRound(ctx context.Context, sessionID string, round int, msgs []llm.Message, tt turnTools, badCalls *int, out chan<- Event) ([]llm.Message, bool, string, error) {
+func (l *Loop) runRound(ctx context.Context, sessionID string, round int, msgs []llm.Message, tt turnTools, staged map[string]bool, badCalls *int, out chan<- Event) ([]llm.Message, bool, string, error) {
 	var roundText strings.Builder        // every Text delta this round, in full — becomes the round's one assistant message Content.
 	var pendingText strings.Builder      // text since the last flushRecord; drives session Record order only, not the wire message.
 	var pendingReasoning strings.Builder // reasoning since the last flushRecord; same session-Record view as pendingText (005).
@@ -494,7 +503,7 @@ streamLoop:
 					}
 					toolCalled = true
 
-					toolMsg, stop, tErr := l.dispatchToolCall(ctx, sessionID, round, *chunk.ToolCall, tt, badCalls, out)
+					toolMsg, stop, tErr := l.dispatchToolCall(ctx, sessionID, round, *chunk.ToolCall, tt, staged, badCalls, out)
 					if stop {
 						recordResponse(false, tErr.Error())
 						return nil, false, "", tErr
@@ -596,12 +605,14 @@ func traceToolCalls(tcs []llm.ToolCall) []trace.ToolCall {
 // result too, but sits outside that budget (A-039-1). Every other non-nil error from Call
 // aborts immediately. On success it emits ToolResEv (and StageEv when
 // applicable), records the turn, resets badCalls to 0, and returns the
-// tool-result message for the next round.
+// tool-result message for the next round. A stage.* call that came back
+// without IsError — the one that sets the record's Staged — is also marked in
+// stagedCalls (041, A-041-3), the only calls boundContext may stub.
 //
 // It no longer builds an assistant message (C-120/D-DG): the round's one
 // assistant message — carrying every tool call and the round's shared text
 // and reasoning — is assembled once, by runRound, when the round ends.
-func (l *Loop) dispatchToolCall(ctx context.Context, sessionID string, round int, tc llm.ToolCall, tt turnTools, badCalls *int, out chan<- Event) (msg llm.Message, stop bool, err error) {
+func (l *Loop) dispatchToolCall(ctx context.Context, sessionID string, round int, tc llm.ToolCall, tt turnTools, stagedCalls map[string]bool, badCalls *int, out chan<- Event) (msg llm.Message, stop bool, err error) {
 	// The provider echoes tc.Function.Name back to us in wire spelling —
 	// underscores, never dots (backbone §6/§7's amendment, D-CY/C-112),
 	// since Registry.Definitions advertised it that way. Canonicalize once,
@@ -609,6 +620,12 @@ func (l *Loop) dispatchToolCall(ctx context.Context, sessionID string, round int
 	// message sent back to the provider, which must keep its own spelling
 	// to match the tool_call_id/name pair it gave us.
 	canonical := tools.CanonicalName(tc.Function.Name)
+	// 041 A-041-3: a dispatch of an id starts it as not staged. Only the
+	// success path below sets it, so a refusal, a malformed call, an unknown
+	// tool or an IsError result all leave it unset — and a provider that ever
+	// reused an id for a later, failed call cannot leave the earlier success's
+	// entry behind to stub the failed call's text.
+	delete(stagedCalls, tc.ID)
 	// The file log's per-dispatch line (010 contract §0): the wire-spelled
 	// name and the raw argument payload's byte count — never its content.
 	slog.InfoContext(ctx, "agent tool call", "name", tc.Function.Name, "args_bytes", len(tc.Function.Arguments))
@@ -692,6 +709,7 @@ func (l *Loop) dispatchToolCall(ctx context.Context, sessionID string, round int
 			return llm.Message{}, true, ctx.Err()
 		}
 		staged = true
+		stagedCalls[tc.ID] = true // 041 A-041-3: this call's page text is now in the open changeset
 	}
 
 	rec := Record{TS: time.Now().UTC(), Role: "tool", Tool: canonical, Args: args, Result: res.Content, Staged: staged, Turn: logging.TurnFrom(ctx)}
