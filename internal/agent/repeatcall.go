@@ -64,6 +64,10 @@ type repeatRan struct {
 // so a TUI Loop reused across turns starts every turn empty, and it applies to
 // every verb. Dispatch is sequential — dispatchToolCall has one caller, runRound's
 // stream loop — so plain maps passed by pointer need no mutex.
+//
+// A nil *repeatGuard is the guard of a turn that has none, and every method is a
+// no-op on it, the way a nil *readBudget is the budget of every verb but ingest:
+// a call site never has to ask. Send always makes one.
 type repeatGuard struct {
 	// ran maps a call's signature (callSignature, A-004-2's identity) to the
 	// latest successful call with it whose result has not been elided and has not
@@ -71,7 +75,8 @@ type repeatGuard struct {
 	ran map[string]repeatRan
 
 	// sig maps the id of every call in ran to its signature, for syncElided: an
-	// elided result message names only its ToolCallID.
+	// elided result message names only its ToolCallID. An id is expected to be
+	// unique within a turn; noteResult forgets the older call when one is not.
 	sig map[string]string
 
 	// synced remembers which message indices syncElided already processed, so
@@ -102,6 +107,9 @@ func repeatSignature(callName, args string) string {
 // and the text to answer the repeat with. A refused repeat is not recorded: the
 // round named stays that of the call that actually ran.
 func (g *repeatGuard) refusal(callName, args string) (string, int, bool) {
+	if g == nil {
+		return "", 0, false
+	}
 	canonical := tools.CanonicalName(callName)
 	if !guardedReads[canonical] {
 		return "", 0, false
@@ -120,7 +128,7 @@ func (g *repeatGuard) refusal(callName, args string) (string, int, bool) {
 // it left the model with nothing worth keeping, so its identical retry is
 // dispatched — and neither is any other tool.
 func (g *repeatGuard) noteResult(callName, args, id string, round int, isError bool) {
-	if isError {
+	if g == nil || isError {
 		return
 	}
 	canonical := tools.CanonicalName(callName)
@@ -133,6 +141,17 @@ func (g *repeatGuard) noteResult(callName, args, id string, round int, isError b
 		return
 	}
 	sig := repeatSignature(callName, args)
+	// A provider that reuses one tool call id across rounds leaves two result
+	// messages the guard cannot tell apart by id, so the elision of either would
+	// be attributed to whichever call named the id last, and the older call's
+	// entry would outlive its elided result and refuse a read the model can no
+	// longer see. Forgetting the older call here fails open: at worst a read that
+	// is still above is served again.
+	if old, ok := g.sig[id]; ok && old != sig {
+		if prior, ok := g.ran[old]; ok && prior.id == id {
+			delete(g.ran, old)
+		}
+	}
 	g.ran[sig] = repeatRan{id: id, round: round}
 	g.sig[id] = sig
 }
@@ -145,7 +164,7 @@ func (g *repeatGuard) noteResult(callName, args, id string, round int, isError b
 // elision is pinned by boundContext, so it stays above, and it is the call
 // recorded here once it has run.
 func (g *repeatGuard) syncElided(msgs []llm.Message, turnStart int, elided map[int]bool) {
-	if len(elided) == 0 {
+	if g == nil || len(elided) == 0 {
 		return
 	}
 	for i := turnStart; i < len(msgs); i++ {

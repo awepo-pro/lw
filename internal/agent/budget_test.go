@@ -1532,12 +1532,16 @@ func TestProbeReorderedKeysCannotSustainTheCycle(t *testing.T) {
 // that protected it.
 //
 // A-051-5: this drives boundContext directly over hand-built messages, round by
-// round the way Send grows them. Through Send the state it needs — two results
-// with one signature on the wire at once — no longer arises: 051's repeat-call
-// guard refuses the second of two identical reads, in one round or across
-// rounds, so only one of them is ever served. The state is still reachable
-// (history, a later change to the guard), and the pin is boundContext's, so the
-// same scenario and the same assertions run on it without the loop.
+// round the way Send grows them. Sent through the loop, this exact script has
+// 051's repeat-call guard refuse the second of two identical reads in a row — in
+// one round or across rounds — so only one of them is served and the scenario is
+// no longer the one the probe means. Two same-signature results still reach the
+// wire together when a stage call that changed state sits between the reads (the
+// guard forgets everything at a state change, so [wiki_get p, stage_create_page,
+// wiki_get p] in one round serves both), which
+// TestProbeSameSigTwinsAcrossStageInOneRound runs through Send. The pin is
+// boundContext's, so the bare scenario and its assertions run here on it without
+// the loop's guard in the way.
 func TestProbeSameSignatureTwiceInOneRoundIsOneRead(t *testing.T) {
 	logPath := installFileLog(t)
 
@@ -1614,6 +1618,96 @@ func TestProbeSameSignatureTwiceInOneRoundIsOneRead(t *testing.T) {
 	// Rounds 2–4 all warn: round 2 has nothing eligible (most-recent
 	// protection), rounds 3 and 4 are skipped past pinned twins — the
 	// walk ran to exhaustion, so d2's intactness above is the pin's work.
+	if n := strings.Count(log, `msg="context over budget"`); n != 3 {
+		t.Errorf("want exactly 3 F.C3 warns (rounds 2, 3, 4), got %d:\n%s", n, log)
+	}
+}
+
+// TestProbeSameSigTwinsAcrossStageInOneRound is probe 7 run through Send
+// (S1b, 051): the one way two same-signature results reach the wire together
+// under the repeat-call guard. A round of [wiki_get big, stage_create_page,
+// wiki_get big] serves both reads — the successful stage call is a state change,
+// so the guard forgets the first read and the second is a fresh one — and the
+// pin, keyed by signature, must still treat them as one read: of the twins only
+// the oldest is ever elided, the second keeps its full result in every request
+// for the rest of the turn, the staged result is never elided, and the wire shape
+// holds. Two filler reads (pages a and b) in rounds 2 and 3 keep the request over
+// budget, so the walk provably reaches the second twin and passes it by pin: the
+// round-3 and round-4 F.C3 warns say so. The filler a is the one other result
+// that is ever elided, at round 4.
+func TestProbeSameSigTwinsAcrossStageInOneRound(t *testing.T) {
+	logPath := installFileLog(t)
+
+	rounds := [][]llm.Chunk{
+		{
+			toolCallChunk("call-d1", "wiki_get", bigWikiArgs),
+			toolCallChunk("call-s1", "stage_create_page", wireCreatePageArgs),
+			toolCallChunk("call-d2", "wiki_get", bigWikiArgs),
+			{Finish: "tool_calls"},
+		},
+		{toolCallChunk("call-f1", "wiki_get", `{"page":"a"}`), {Finish: "tool_calls"}},
+		{toolCallChunk("call-f2", "wiki_get", `{"page":"b"}`), {Finish: "tool_calls"}},
+		{{Text: "done"}, {Finish: "stop"}},
+	}
+
+	ctlFake, _ := runRereadTurn(t, rounds, LoopConfig{ContextTokens: 1000000})
+	base := wireEstimate(ctlFake.Requests()[0].Messages)
+	budget := base + 9000 // two big results over; one elision (~4974) cannot reach it
+
+	fake, events := runRereadTurn(t, rounds, LoopConfig{ContextTokens: budget})
+	assertStopTurn(t, events, 4)
+	reqs := fake.Requests()
+	if len(reqs) != 4 {
+		t.Fatalf("Stream called %d times, want 4", len(reqs))
+	}
+	originals := map[string]string{}
+	for _, ev := range events {
+		if res, ok := ev.(ToolResEv); ok {
+			originals[res.ID] = res.Content
+		}
+	}
+
+	// Non-vacuous: both twins really were served, with the same bytes, and the
+	// stage call really ran — a refusal here would leave nothing to pin.
+	rcWant(t, events, "wiki.get", "ok", "ok", "ok", "ok")
+	rcWant(t, events, "stage.create_page", "ok")
+	if originals["call-d1"] != originals["call-d2"] || len(originals["call-d1"]) != bigResultBytes {
+		t.Fatalf("the twins differ or are not 20000 bytes: %d vs %d", len(originals["call-d1"]), len(originals["call-d2"]))
+	}
+
+	// Elisions are transitions intact→placeholder between consecutive requests.
+	wasPlaceholder := map[string]bool{}
+	var elidedIDs []string
+	for k, req := range reqs {
+		nowPlaceholder := map[string]bool{}
+		for _, i := range checkWireShape(t, req, k+1, originals) {
+			id := req.Messages[i].ToolCallID
+			nowPlaceholder[id] = true
+			if !wasPlaceholder[id] {
+				elidedIDs = append(elidedIDs, id)
+			}
+		}
+		wasPlaceholder = nowPlaceholder
+	}
+	if want := []string{"call-d1", "call-f1"}; strings.Join(elidedIDs, ",") != strings.Join(want, ",") {
+		t.Errorf("elided across the turn = %v, want %v — the oldest twin (round 3) and the older filler (round 4), and never the second twin or the staged result", elidedIDs, want)
+	}
+
+	// The second twin keeps its full result in every request that carries it.
+	for k, req := range reqs {
+		for _, m := range req.Messages {
+			if m.Role == "tool" && m.ToolCallID == "call-d2" && m.Content != originals["call-d2"] {
+				t.Errorf("round %d: the second twin is not intact on the wire: %.60q", k+1, m.Content)
+			}
+		}
+	}
+
+	log := readLog(t, logPath)
+	if n := strings.Count(log, `msg="context elided"`); n != 2 {
+		t.Errorf("want exactly 2 elision log lines (call-d1 at round 3, call-f1 at round 4), got %d:\n%s", n, log)
+	}
+	// Round 2 has nothing eligible (most-recent protection); rounds 3 and 4 are
+	// skipped past the pinned second twin, so its intactness is the pin's work.
 	if n := strings.Count(log, `msg="context over budget"`); n != 3 {
 		t.Errorf("want exactly 3 F.C3 warns (rounds 2, 3, 4), got %d:\n%s", n, log)
 	}

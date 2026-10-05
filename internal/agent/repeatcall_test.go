@@ -599,3 +599,60 @@ func TestRepeatCallStateChangeSet(t *testing.T) {
 		t.Errorf("the registry has %d stage tools %v, want the 10 this table covers", len(stageTools), stageTools)
 	}
 }
+
+// TestRepeatCallReusedIDFailsOpen: the guard finds a result to forget by its
+// tool call id, so a provider that reuses one id for every call must not make it
+// forget the wrong read. Calls a, b, a all carry id "x", and the budget elides a's
+// first result before the third call: the third call is dispatched. Left keyed by
+// the id alone, b's record overwrote a's mapping, the elision of a's result then
+// dropped b's entry instead, and a's stayed — so the re-read of an elided page was
+// refused as "still above". When an id turns out to be shared, the older call it
+// named is forgotten at once (fail open: an extra read is cheap, a refusal of a
+// read the model cannot see is not).
+func TestRepeatCallReusedIDFailsOpen(t *testing.T) {
+	rounds := [][]llm.Chunk{
+		{toolCallChunk("x", "wiki_get", `{"page":"a"}`), {Finish: "tool_calls"}},
+		{toolCallChunk("x", "wiki_get", `{"page":"b"}`), {Finish: "tool_calls"}},
+		{toolCallChunk("x", "wiki_get", `{"page":"a"}`), {Finish: "tool_calls"}},
+		{{Text: "I have both pages now"}, {Finish: "stop"}},
+	}
+	ctlFake, _ := runRereadTurn(t, rounds, LoopConfig{ContextTokens: 1000000})
+	base := wireEstimate(ctlFake.Requests()[0].Messages)
+
+	fake, events := runRereadTurn(t, rounds, LoopConfig{ContextTokens: base + 5500})
+	assertStopTurn(t, events, 4)
+	res := toolResults(events)
+
+	// Non-vacuous: when round 3 began, a's result (the first tool message with
+	// the shared id) was elided and b's (the second) was not.
+	var onWire []llm.Message
+	for _, m := range fake.Requests()[2].Messages {
+		if m.Role == "tool" && m.ToolCallID == "x" {
+			onWire = append(onWire, m)
+		}
+	}
+	if len(onWire) != 2 || onWire[0].Content != probePlaceholder("wiki.get", len(res[0].Content)) || onWire[1].Content != res[1].Content {
+		t.Fatalf("round 3's request does not carry a's result elided and b's intact — sizing broke, test vacuous: %q", onWire)
+	}
+	rcWant(t, events, "wiki.get", "ok", "ok", "ok")
+	if res[2].Content != res[0].Content {
+		t.Errorf("the re-read of page a returned %q, want the page again", res[2].Content)
+	}
+}
+
+// TestRepeatCallNilGuardIsInert: a nil *repeatGuard is the guard of a turn that
+// has none, the way a nil *readBudget is the budget of every verb but ingest:
+// every method is a no-op on it, so a call site never has to ask.
+func TestRepeatCallNilGuardIsInert(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("a method panicked on a nil guard: %v", r)
+		}
+	}()
+	var g *repeatGuard
+	g.noteResult("wiki_search", rcSearch, "id-1", 1, false)
+	if text, round, refused := g.refusal("wiki_search", rcSearch); refused || text != "" || round != 0 {
+		t.Errorf("refusal on a nil guard = (%q, %d, %v), want none", text, round, refused)
+	}
+	g.syncElided([]llm.Message{{Role: "tool", ToolCallID: "id-1"}}, 0, map[int]bool{0: true})
+}

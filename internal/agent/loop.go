@@ -300,8 +300,8 @@ func nudgeLastToolResult(ctx context.Context, msgs []llm.Message, round, k int, 
 // call ids that staged an op (041, A-041-3): dispatchToolCall fills it, Send's
 // next boundContext reads it. budget is the turn's ingest read budget (048),
 // nil on every other verb, which dispatchToolCall consults and updates; repeats
-// is the turn's repeat-call guard (051), never nil, which it consults and
-// updates the same way.
+// is the turn's repeat-call guard (051), one for every verb and inert when nil,
+// which it consults and updates the same way.
 //
 // Truncation record: a round that ends abnormally (truncated(finish) and no
 // tool call) writes ONE assistant Record carrying its pending text, pending
