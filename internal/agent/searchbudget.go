@@ -21,10 +21,12 @@ package agent
 import "fmt"
 
 // ingestSearchBudget is how many wiki.search calls an ingest turn may make
-// between page changes (053). It sits above every non-loop run measured — the
-// most was 10, in notion-vs-obsidian — and far below the loops, 38-70. A run
-// that stages after each few searches is never refused, because each page
-// change resets the count.
+// between page changes (053). The most a non-loop run made in eval B49 was 10
+// (notion-vs-obsidian). In the 050+051 candidate 2 of 30 ordinary runs reached
+// 11, and their 11th searches found nothing new — "Obsidian" returned no
+// results, "session" a page already seen — so refusing there costs nothing. The
+// loops it exists for ran 38-70. A run that stages after each few searches is
+// never refused, because each page change resets the count.
 const ingestSearchBudget = 10
 
 // searchBudgetRefusalFmt is the refusal a search over the budget gets, with the

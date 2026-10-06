@@ -357,19 +357,42 @@ func TestIngestSearchBudgetCountsFailedSearch(t *testing.T) {
 
 // TestIngestSearchBudgetRefusalIsLogged: every refusal leaves one "agent search
 // budget refusal" line in the file log with the count, so a stalled ingest can
-// be read back for where the model was told to stop.
+// be read back for where the model was told to stop. The count on EVERY line is
+// the budget: a refused search does not count, so the second refusal reads
+// searches=10 exactly as the first did. A budget that counted its own refusals
+// would log 10, 11, 12 ... and the loop's refused-search count would drift.
 func TestIngestSearchBudgetRefusalIsLogged(t *testing.T) {
 	logPath := installFileLog(t)
 	f := newRBFixture(t, new(rbScript).searches(1, 12).stop())
 	events, err := f.send(t, "ingest")
 	rbCleanStop(t, events, err)
 
-	log := readLog(t, logPath)
-	if n := strings.Count(log, `msg="agent search budget refusal"`); n != 2 {
-		t.Errorf("log holds %d refusal lines, want 2:\n%s", n, log)
+	refusals := 0
+	for _, o := range sbOutcomes(toolResults(events)) {
+		if o == "refused" {
+			refusals++
+		}
 	}
-	if !strings.Contains(log, "searches=10") {
-		t.Errorf("log missing searches=10:\n%s", log)
+	if refusals != 2 {
+		t.Fatalf("refused searches = %d, want 2 (the 11th and the 12th)", refusals)
+	}
+
+	log := readLog(t, logPath)
+	lines, atBudget := 0, 0
+	for _, line := range strings.Split(log, "\n") {
+		if !strings.Contains(line, `msg="agent search budget refusal"`) {
+			continue
+		}
+		lines++
+		if strings.HasSuffix(line, " searches=10") {
+			atBudget++
+		}
+	}
+	if lines != refusals {
+		t.Errorf("log holds %d refusal lines, want %d (one per refusal):\n%s", lines, refusals, log)
+	}
+	if atBudget != refusals {
+		t.Errorf("%d of %d refusal lines end in searches=10, want every one — a refused search must not count:\n%s", atBudget, refusals, log)
 	}
 }
 

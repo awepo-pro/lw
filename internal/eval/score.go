@@ -50,6 +50,14 @@ const (
 	MetricPatchedLossless       = "patched_lossless"
 	MetricDupPages              = "dup_pages"
 	MetricOrphansNew            = "orphans_new"
+
+	// MetricSearchRefusals is 053's: the wiki.search calls the engine's search
+	// budget refused, from the trace like read_refusals. search_calls still
+	// counts every call, the refused included, so older baselines stay
+	// comparable. It is not in metricOrder — the tail of that list is the 049
+	// block and is pinned as such — so every table prints it last, by name,
+	// the way the rule above metricOrder says a newer metric is placed.
+	MetricSearchRefusals = "search_refusals"
 )
 
 // metricOrder is the order every table prints metrics in: accuracy first,
@@ -422,16 +430,17 @@ func (s *scorer) scoreIngest(m map[string]float64, c IngestCase, dir string, tur
 	return ingestTraceMetrics(m, filepath.Join(dir, "traces"), turns)
 }
 
-// ingestTraceMetrics adds the four ingest metrics that come from the trace:
-// how many wiki reads came before the first page change (refused or not),
-// how many reads 048's budget refused, whether stage.close was reached, and
-// how many wiki.search calls were made. A run with no recorded turn has none
-// of them — "nobody looked" must not average in as 0 reads. (049.)
+// ingestTraceMetrics adds the ingest metrics that come from the trace: how
+// many wiki reads came before the first page change (refused or not), how many
+// reads 048's budget refused, whether stage.close was reached, how many
+// wiki.search calls were made, and how many of those 053's budget refused. A
+// run with no recorded turn has none of them — "nobody looked" must not
+// average in as 0 reads. (049; search_refusals 053.)
 func ingestTraceMetrics(m map[string]float64, tracesDir string, turns []*trace.Turn) error {
 	if len(turns) == 0 {
 		return nil
 	}
-	refusals := 0
+	refusals, searchRefusals := 0, 0
 	for _, t := range turns {
 		if t == nil {
 			continue
@@ -441,11 +450,17 @@ func ingestTraceMetrics(m map[string]float64, tracesDir string, turns []*trace.T
 			return err
 		}
 		refusals += n
+		n, err = score.SearchRefusals(tracesDir, t.ID, t)
+		if err != nil {
+			return err
+		}
+		searchRefusals += n
 	}
 	m[MetricReadsBeforeFirstStage] = float64(score.ReadsBeforeFirstStage(turns))
 	m[MetricReadRefusals] = float64(refusals)
 	m[MetricClosed] = boolMetric(score.Closed(turns))
 	m[MetricSearchCalls] = float64(score.CallCount(turns, "wiki.search"))
+	m[MetricSearchRefusals] = float64(searchRefusals)
 	return nil
 }
 
