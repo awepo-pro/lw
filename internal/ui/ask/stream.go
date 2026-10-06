@@ -104,16 +104,6 @@ type turnStartedMsg struct {
 	err       error
 }
 
-// The verbs this pane tags its turns with (trace.WithVerb, 038). The agent
-// reads the verb to decide how the turn is run (039): "ask" is a question —
-// the ask prompt, the read tools, no staging — and "file" is a ctrl+s filing
-// turn, which must stage a query page and so runs as a curator turn. A filing
-// turn used to ride "ask" with every other turn; 039 split them because the
-// same tag now chooses the prompt and the tool set, and a filing turn under
-// "ask" would have been refused the very stage.* tools it exists to call.
-// Since 054 the pane uses trace.VerbAsk and trace.VerbFile directly: the
-// spelling lives in trace's vocabulary alone.
-
 // startTurn launches one agent turn (backbone §9, C-105). sessionID is the
 // changeset id already known at submit time, or "" when none was open —
 // C-124/D-DH: runTurn resolves it, opening one itself when it must, because
