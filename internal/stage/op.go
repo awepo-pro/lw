@@ -349,7 +349,9 @@ func buildCascadeOp(v *vault.Vault, p string, froms []string, to string) (*Op, e
 			Path:    p,
 			Before:  before,
 			Content: content,
-			Hunks:   buildCascadeHunks(p, page.Body, newBody),
+			// Whole files, not bodies: the hunks' At must index the bytes
+			// Before names, frontmatter included (052).
+			Hunks: buildCascadeHunks(p, string(page.Serialize()), string(content)),
 		}, nil
 	}
 

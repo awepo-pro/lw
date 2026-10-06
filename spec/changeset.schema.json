@@ -83,6 +83,8 @@
         "section": { "type": "string" },
         "+": { "type": "array", "items": { "type": "string" } },
         "-": { "type": "array", "items": { "type": "string" } },
+        "at": { "type": "integer", "minimum": 1, "description": "052: the 1-based line, in the op's before file, of the window's first line (context or change). Absent on a hunk staged before 052 or built by hand: such a hunk keeps the legacy placement." },
+        "lines": { "type": "array", "items": { "type": "string", "pattern": "^[ +-]" }, "description": "052: the window's diff lines in order, each prefixed ' ' (context), '-' (removed) or '+' (added)." },
         "dropped": { "type": "boolean" }
       }
     },

@@ -134,11 +134,23 @@ backbone §5.3, and frozen as JSON Schema in `changeset.schema.json`. See that
 file's `$defs.op.oneOf` for the per-kind required fields, derived from
 backbone §5.5 (`ValidateOp`).
 
-Two structural notes worth calling out because they are easy to miss reading
+Three structural notes worth calling out because they are easy to miss reading
 the struct alone:
 
 - `Hunk.Add` serializes as `"+"` and `Hunk.Del` as `"-"`; `Hunk.Before` is
   `json:"-"` and is **never serialized** — it exists only for in-memory
   display and has no property in the schema.
+- `Hunk.At` serializes as `"at"` and `Hunk.Lines` as `"lines"` (052). A hunk is
+  a unified-diff hunk that is applied like `patch`: `at` is the 1-based line,
+  in the op's **before** file, of the window's first line (context or change),
+  and `lines` is the window's diff lines in order, each prefixed `" "`
+  (context), `"-"` (removed) or `"+"` (added). `"+"`/`"-"` repeat `lines`'
+  added and removed text for readers that predate it. Both keys are omitted when
+  empty: a hunk without `at`/`lines` (staged before 052, or written by hand)
+  means "position unknown" and is applied the way it always was — each removed
+  line at its first textual match, an add-only hunk at the end of its section.
+  A window never holds a change inside the page's frontmatter (up to and
+  including its closing `---`) together with a change below it (052 S1b), so
+  those are always separate hunks.
 - `Op.Kind` serializes as `"op"`, not `"kind"` — the schema pins this per
   variant with a JSON Schema `const`.

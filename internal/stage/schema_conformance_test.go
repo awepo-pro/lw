@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/awepo-pro/lw/internal/testutil"
@@ -363,6 +364,107 @@ func TestSchemaConformance(t *testing.T) {
 		if errs := s.validate(root, generic, "$"); len(errs) == 0 {
 			t.Fatalf("a create_page carrying the original pair validated; want schema violations:\n%s", b)
 		}
+	})
+
+	// 052: a hunk carries its position — "at" (1-based before-file line of
+	// the window's first line) and "lines" (the window's diff lines, each
+	// prefixed ' ', '-' or '+'). The hunk definition is additionalProperties:
+	// false, so before the schema declared them every changeset.json a
+	// ComputeHunks hunk reached disk in failed validation. This builds the
+	// changeset from REAL ComputeHunks output, the way internal/tools stages
+	// a patch, not from hand-written hunks.
+	t.Run("patch_page with positioned hunks from ComputeHunks", func(t *testing.T) {
+		after := strings.Replace(hunkPosBefore,
+			"sources: [raw/articles/kv-cache-explained.md]",
+			"sources: [raw/articles/kv-cache-explained.md, raw/papers/leviathan-2023.md]", 1)
+		after = strings.Replace(after, "Gamma line three.", "Gamma line three, revised.", 1)
+		hunks := ComputeHunks(hunkPosBefore, after)
+		if len(hunks) != 2 {
+			t.Fatalf("ComputeHunks gave %d hunks, want 2", len(hunks))
+		}
+		for i := range hunks {
+			if hunks[i].At < 1 || len(hunks[i].Lines) == 0 {
+				t.Fatalf("hunk %s is not positioned: At=%d Lines=%q", hunks[i].ID, hunks[i].At, hunks[i].Lines)
+			}
+			hunks[i].Path = hunkPosPath
+			hunks[i].Section = "## Gamma"
+		}
+		c := &Changeset{
+			ID:       "cs-4444444",
+			Intent:   "patch with positioned hunks",
+			Author:   Author{Kind: "agent", Model: "m"},
+			OpenedAt: testutil.FixedClock()(),
+			Ops: []Op{{
+				ID:      "op1",
+				Kind:    OpPatchPage,
+				Path:    hunkPosPath,
+				Section: "## Gamma",
+				Before:  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				After:   "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+				Hunks:   hunks,
+				State:   StateProposed,
+			}},
+			Checks: Checks{Schema: "pass", Lint: "pass", Orphans: 0, BrokenLinks: 0},
+		}
+		assertValidatesAgainstSchema(t, root, s, c)
+
+		// The negative direction, against the parsed schema directly: the
+		// position's own constraints are enforced, not merely tolerated.
+		mutations := []struct {
+			name string
+			edit func(h *Hunk)
+		}{
+			{"at below 1", func(h *Hunk) { h.At = -3 }},
+			{"a lines entry with no diff prefix", func(h *Hunk) { h.Lines = append(append([]string(nil), h.Lines...), "no prefix") }},
+		}
+		for _, m := range mutations {
+			bad := *c
+			bad.Ops = cloneOps(c.Ops)
+			m.edit(&bad.Ops[0].Hunks[0])
+			b, err := json.Marshal(&bad)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			var generic any
+			if err := json.Unmarshal(b, &generic); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if errs := s.validate(root, generic, "$"); len(errs) == 0 {
+				t.Fatalf("%s validated; want schema violations:\n%s", m.name, b)
+			}
+		}
+	})
+
+	// 052 S1b: the cascade's own hunks are positioned too (buildCascadeHunks).
+	// A rename the ENGINE builds — pages with frontmatter and vault-root
+	// files, every sub-op carrying at+lines hunks — must validate as persisted.
+	t.Run("rename cascade built by the engine, hunks positioned", func(t *testing.T) {
+		e := cascadeEngine(t)
+		if _, err := e.OpenChangeset("rename with positioned cascade hunks", testAuthor); err != nil {
+			t.Fatalf("OpenChangeset: %v", err)
+		}
+		renameID, err := e.Append(Op{Kind: OpRenamePage, From: "wiki/concepts/kv-cache.md", To: "wiki/concepts/kv-caching.md"})
+		if err != nil {
+			t.Fatalf("Append rename: %v", err)
+		}
+		c, err := e.Current()
+		if err != nil {
+			t.Fatalf("Current: %v", err)
+		}
+		rename, _ := c.Op(renameID)
+		positioned := 0
+		for _, sub := range cascadeSubOps(*rename) {
+			for _, h := range sub.Hunks {
+				if h.At < 1 || len(h.Lines) == 0 {
+					t.Fatalf("cascade hunk %s of %s is not positioned: At=%d Lines=%q", h.ID, sub.Path, h.At, h.Lines)
+				}
+				positioned++
+			}
+		}
+		if positioned == 0 {
+			t.Fatal("the rename's cascade has no hunks")
+		}
+		assertValidatesAgainstSchema(t, root, s, c)
 	})
 
 	t.Run("cascade sub-op with no section", func(t *testing.T) {
