@@ -435,7 +435,7 @@ func TestOpDiffShowsOriginal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpDiff: %v", err)
 	}
-	// originalBlob is a fixed 3 KiB: humanSize renders it "3.0 KB"
+	// originalBlob is a fixed 3 KiB: HumanSize renders it "3.0 KB"
 	// (TestHumanSize pins the rendering itself).
 	want := "original (3.0 KB, sha256 " + blobSHA(blob)[:12] + "): " + originalPDFPath
 
@@ -471,8 +471,8 @@ func TestHumanSize(t *testing.T) {
 		{1153434, "1.1 MB"},
 	}
 	for _, row := range rows {
-		if got := humanSize(row.n); got != row.want {
-			t.Errorf("humanSize(%d) = %q; want %q", row.n, got, row.want)
+		if got := HumanSize(row.n); got != row.want {
+			t.Errorf("HumanSize(%d) = %q; want %q", row.n, got, row.want)
 		}
 	}
 }

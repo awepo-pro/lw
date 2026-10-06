@@ -32,14 +32,28 @@ func NewID(now time.Time) string {
 	return now.UTC().Format("20060102T150405Z") + "-" + hex.EncodeToString(b[:])
 }
 
+// The verbs an entry point tags its turn with (WithVerb). One vocabulary for
+// every package that names or reads a verb (054): agent.modeFromVerb sends an
+// unknown verb to curator mode — every stage tool — so a mistyped literal at
+// an entry point would be a silent privilege change, and a constant makes it
+// a compile error instead. Untyped, so WithVerb's signature stays a plain
+// string and a verb read back from a run's JSON compares against them as is.
+const (
+	VerbAsk    = "ask"    // the TUI ask pane's question
+	VerbQuery  = "query"  // `lw query`
+	VerbIngest = "ingest" // `lw ingest`, and lweval's ingest jobs
+	VerbLint   = "lint"   // `lw lint --fix`
+	VerbFile   = "file"   // the TUI ask pane's ctrl+s filing turn
+)
+
 // verbKey is the context key WithVerb stores under.
 type verbKey struct{}
 
 // WithVerb returns ctx carrying the verb that started the turn (038):
-// cmd/lw sets "ingest", "query" or "lint" around its Send call and the TUI
-// ask pane sets "ask" — or "file" for a ctrl+s filing turn (039). agent.Send
-// prefers it over LoopConfig.TraceMeta.Verb, and, since 039, reads the same
-// verb to decide how the turn is run (agent.modeFromVerb).
+// cmd/lw sets VerbIngest, VerbQuery or VerbLint around its Send call and the
+// TUI ask pane sets VerbAsk — or VerbFile for a ctrl+s filing turn (039).
+// agent.Send prefers it over LoopConfig.TraceMeta.Verb, and, since 039, reads
+// the same verb to decide how the turn is run (agent.modeFromVerb).
 func WithVerb(ctx context.Context, verb string) context.Context {
 	return context.WithValue(ctx, verbKey{}, verb)
 }

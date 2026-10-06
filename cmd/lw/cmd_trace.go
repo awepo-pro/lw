@@ -19,6 +19,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/awepo-pro/lw/internal/config"
+	"github.com/awepo-pro/lw/internal/stage"
 	"github.com/awepo-pro/lw/internal/trace"
 )
 
@@ -149,19 +150,6 @@ func traceK(n int) string {
 	return fmt.Sprintf("%.1fk", float64(n)/1000)
 }
 
-// traceSize renders a byte count: whole bytes below 1 KiB, then KB, then
-// MB — the unit every size in show's rendered form quotes.
-func traceSize(n int) string {
-	switch {
-	case n < 1024:
-		return fmt.Sprintf("%d B", n)
-	case n < 1<<20:
-		return fmt.Sprintf("%.1f KB", float64(n)/1024)
-	default:
-		return fmt.Sprintf("%.1f MB", float64(n)/(1<<20))
-	}
-}
-
 // cmdTraceShow implements `lw trace show <ref> [--thinking] [--body R[.A]]
 // [--json]`. Users put flags on either side of the ref, and Go's flag
 // package stops at the first positional, so the parse runs twice — the same
@@ -287,14 +275,14 @@ func writeTraceShow(w io.Writer, t *trace.Turn, thinking bool) error {
 		if a.Attempt == 1 {
 			if e, ok := elisionFor(t.Elisions, a.Round); ok {
 				fmt.Fprintf(w, "  elided %d earlier result(s) (%s) to fit context_tokens\n",
-					e.Count, traceSize(e.Bytes))
+					e.Count, stage.HumanSize(e.Bytes))
 			}
 		}
 		label := fmt.Sprintf("round %d", a.Round)
 		if a.Attempt > 1 {
 			label += fmt.Sprintf(" (attempt %d)", a.Attempt)
 		}
-		fmt.Fprintf(w, "%s  sent %s (%d msgs, %d tools)", label, traceSize(a.Bytes), a.Messages, a.ToolDefs)
+		fmt.Fprintf(w, "%s  sent %s (%d msgs, %d tools)", label, stage.HumanSize(a.Bytes), a.Messages, a.ToolDefs)
 		if a.Response != nil {
 			// Usage arrives as a pointer: a response the provider cut short
 			// carries no usage object, and that must read "no usage", not
@@ -351,7 +339,7 @@ func writeResponseDetail(w io.Writer, a *trace.Attempt, thinking bool) {
 				break
 			}
 		}
-		fmt.Fprintf(w, "  called: %s %s → %s%s\n", c.Name, cutRunes(c.Arguments, 120), traceSize(size), errSuffix)
+		fmt.Fprintf(w, "  called: %s %s → %s%s\n", c.Name, cutRunes(c.Arguments, 120), stage.HumanSize(size), errSuffix)
 	}
 	if r.Cut {
 		fmt.Fprintln(w, "  cut: the stream ended early")

@@ -515,9 +515,10 @@ func TestDeleteMarkNotInPreview(t *testing.T) {
 	}
 }
 
-// TestDeleteMarkSize pins the size rendering to the rows stage's own
-// TestHumanSize pins for the ingest original line, plus the unit boundaries
-// the brief's examples sit between ("412 B", "1.4 KB").
+// TestDeleteMarkSize pins the size the mark quotes — stage.HumanSize since 054
+// (A-054-1), which replaced this package's same-output copy — to the rows
+// stage's own TestHumanSize pins for the ingest original line, plus the unit
+// boundaries the brief's examples sit between ("412 B", "1.4 KB").
 func TestDeleteMarkSize(t *testing.T) {
 	rows := []struct {
 		n    int
@@ -535,17 +536,18 @@ func TestDeleteMarkSize(t *testing.T) {
 		{1153434, "1.1 MB"},
 	}
 	for _, row := range rows {
-		if got := deleteMarkSize(row.n); got != row.want {
-			t.Errorf("deleteMarkSize(%d) = %q, want %q", row.n, got, row.want)
+		if got := stage.HumanSize(row.n); got != row.want {
+			t.Errorf("stage.HumanSize(%d) = %q, want %q", row.n, got, row.want)
 		}
 	}
 }
 
-// TestDeleteMarkSizeMatchesOriginalLine is the drift guard for the copied
+// TestDeleteMarkSizeMatchesOriginalLine is the drift guard for the shared
 // humanizer: for blobs of several sizes, the size stage writes into an
-// ingest's original line (its own unexported humanSize, on a real engine) is
-// the size deleteMarkSize renders for the same byte count — the brief's
-// "same humanizer as the original line".
+// ingest's original line (on a real engine) is the size stage.HumanSize
+// renders for the same byte count, which is what the delete mark quotes — the
+// brief's "same humanizer as the original line" (A-054-1: it once compared
+// against a copy, now it pins the one function).
 func TestDeleteMarkSizeMatchesOriginalLine(t *testing.T) {
 	for _, n := range []int{900, 1023, 1024, 3072, 1048575, 1048576, 1153434} {
 		t.Run(fmt.Sprintf("%d", n), func(t *testing.T) {
@@ -586,8 +588,8 @@ func TestDeleteMarkSizeMatchesOriginalLine(t *testing.T) {
 			if line == "" || !found {
 				t.Fatalf("OpDiff carries no original line (got %q)", line)
 			}
-			if want := deleteMarkSize(n); size != want {
-				t.Errorf("original line says %q for %d bytes, deleteMarkSize says %q", size, n, want)
+			if want := stage.HumanSize(n); size != want {
+				t.Errorf("original line says %q for %d bytes, stage.HumanSize says %q", size, n, want)
 			}
 		})
 	}

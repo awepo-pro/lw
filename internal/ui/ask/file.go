@@ -14,6 +14,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/awepo-pro/lw/internal/index"
+	"github.com/awepo-pro/lw/internal/trace"
 	"github.com/awepo-pro/lw/internal/ui"
 )
 
@@ -149,7 +150,7 @@ func (m *Model) fileKey() tea.Cmd {
 	// 039: the filing turn runs under its own verb, "file", so the agent runs
 	// it as a curator turn: it has to stage a query page, and an "ask" turn is
 	// offered no stage.* tool.
-	cmd := m.beginTurnAs(verbFile, fileEcho, msg)
+	cmd := m.beginTurnAs(trace.VerbFile, fileEcho, msg)
 	if cmd != nil {
 		// The filing turn really started — beginTurn returns nil only for
 		// the nil-agent degrade — so its own answer will record as a filing
@@ -184,12 +185,16 @@ func (m *Model) queryCandidates(question string) []index.Hit {
 // beginTurn is the question's entry (verb "ask"); beginTurnAs takes the verb
 // for the one caller that is not a question (039).
 func (m *Model) beginTurn(echo, msg string) tea.Cmd {
-	return m.beginTurnAs(verbAsk, echo, msg)
+	return m.beginTurnAs(trace.VerbAsk, echo, msg)
 }
 
-// beginTurnAs is beginTurn for a turn tagged with verb (039): verbAsk for a
-// question, verbFile for the filing turn. The verb is passed down to the
+// beginTurnAs is beginTurn for a turn tagged with verb (039): trace.VerbAsk for a
+// question, trace.VerbFile for the filing turn. The verb is passed down to the
 // goroutine startTurn spawns and ends up on the ctx Agent.Send receives.
+// The agent reads it to decide how the turn is run: a question gets the ask
+// prompt and the read tools, while a filing turn must stage a query page and
+// so runs as a curator turn — under "ask" it would be refused the very
+// stage.* tools it exists to call. The spellings live in trace (054).
 func (m *Model) beginTurnAs(verb, echo, msg string) tea.Cmd {
 	if m.deps.Agent == nil {
 		m.echoUser(echo)

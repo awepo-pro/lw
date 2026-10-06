@@ -255,7 +255,7 @@ func cmdIngest(args []string) error {
 	// 038: the turn's verb rides the ctx — the agent loop reads it with
 	// trace.VerbFrom to name the turn event, and no constructor argument
 	// could tell the shared newAgent which verb is driving (038 C-3).
-	ctx := trace.WithVerb(context.Background(), "ingest")
+	ctx := trace.WithVerb(context.Background(), trace.VerbIngest)
 
 	// 004 F.I1: an argument that stats as a directory is replaced, in
 	// place, by extract.Walk's eligible files — the same chain extracts
@@ -532,7 +532,7 @@ func cmdIngest(args []string) error {
 	}
 
 	fmt.Println()
-	printChangesetSummary(os.Stdout, final)
+	printChangesetSummary(os.Stdout, final, joined)
 
 	// A raw-only ingest (live raw sources, no other live op — 029 A-029-1)
 	// still succeeds — the changeset stays open for review — but says so,
@@ -689,8 +689,16 @@ func buildIngestMessage(items []ingestItem) string {
 // printChangesetSummary writes cs's id, intent, op count and each live
 // op's id/kind/path — in cs.Ops order, the order Append assigned them, so
 // the summary is exactly what a human sees again in `lw status`/`lw diff`.
-func printChangesetSummary(w io.Writer, cs *stage.Changeset) {
-	fmt.Fprintf(w, "opened changeset %s: %s (%d op(s))\n", cs.ID, cs.Intent, len(cs.Live()))
+// joined is whether the verb joined an already-open changeset rather than
+// opening one: the first line says which (054), matching the stderr notice
+// "joined open changeset …" a joining verb prints before its turn — the two
+// lines of one run used to disagree.
+func printChangesetSummary(w io.Writer, cs *stage.Changeset, joined bool) {
+	how := "opened"
+	if joined {
+		how = "joined"
+	}
+	fmt.Fprintf(w, "%s changeset %s: %s (%d op(s))\n", how, cs.ID, cs.Intent, len(cs.Live()))
 	for _, op := range cs.Live() {
 		fmt.Fprintf(w, "  %s %s %s\n", op.ID, op.Kind, op.Path)
 	}
