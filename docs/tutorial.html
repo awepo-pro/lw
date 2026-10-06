@@ -4,7 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Learn lw</title>
-<meta name="description" content="A hands-on tutorial for lw: from an empty directory to a reviewed, cited markdown wiki.">
+<meta name="description" content="A hands-on tutorial for lw v2.35.0: from an empty directory to a reviewed, cited markdown wiki.">
+<meta name="lw-version" content="v2.35.0">
 <style>
 :root {
   --bg: #fbfaf7;
@@ -117,6 +118,13 @@ nav.toc {
 nav.toc .brand { font-weight: 700; font-size: 18px; margin-bottom: 4px; }
 nav.toc .brand code { font-size: 16px; }
 nav.toc .sub { color: var(--muted); font-size: 13px; margin-bottom: 18px; }
+.ver {
+  display: inline-block; font-family: var(--mono); font-size: 12px; font-weight: 600;
+  color: var(--accent); background: var(--accent-soft);
+  border: 1px solid var(--accent); border-radius: 999px; padding: 1px 9px;
+}
+nav.toc .ver { margin: -10px 0 18px; }
+header.hero .ver { margin-bottom: 12px; }
 nav.toc ol { list-style: none; padding: 0; margin: 0; }
 nav.toc li { margin: 2px 0; }
 nav.toc a {
@@ -222,6 +230,7 @@ footer { margin-top: 80px; color: var(--muted); font-size: 14px; border-top: 1px
 <nav class="toc" id="toc">
   <div class="brand">Learn <code>lw</code><button class="toggle-toc" id="toggleToc" aria-expanded="false">Lessons</button></div>
   <div class="sub">From an empty directory to a reviewed wiki</div>
+  <div class="ver" title="The lw release this page was checked against">lw v2.35.0</div>
   <ol id="tocList">
     <li><a href="#model"><span class="tick"></span>0 · The mental model</a></li>
     <li><a href="#install"><span class="tick"></span>1 · Install &amp; connect</a></li>
@@ -246,12 +255,25 @@ footer { margin-top: 80px; color: var(--muted); font-size: 14px; border-top: 1px
 
 <main>
 <header class="hero">
+  <div class="ver">Covers lw v2.35.0 · 2026-10-06</div>
   <h1>Learn <code>lw</code> by doing</h1>
   <p class="lede">You start with sources — an article, a paper, a saved chat — and end with a small, cross-linked markdown wiki where every claim cites where it came from. <code>lw</code> is the compiler in the middle. An agent proposes the pages, and you decide what lands.</p>
   <div class="callout">
     <strong>How to use this page</strong>
     Each lesson has a goal, the commands, what you should see, and a short check at the end. Open a terminal next to it and type along. Mark a lesson done when you've run it. Your progress is saved in this browser only. The terminal output shown here comes from real runs (see <a href="tutorial.md">tutorial.md</a>). Long output is trimmed, and trims are marked with <code>…</code>.
   </div>
+  <details class="quiz">
+    <summary>Which lw is this page for? (v2.35.0, and what changed since v2.30.0)</summary>
+    <p>This page was checked against <strong>lw v2.35.0</strong>. Run <code>lw version</code>. If yours is older, some behaviour below won't match. If it's newer, trust <code>lw --help</code> where they disagree.</p>
+    <p>Changes since the last edition of this page (v2.30.0):</p>
+    <ul>
+      <li><strong>v2.35.0</strong>: an ingest that adds to an already-open changeset now says <code>joined changeset …</code> instead of <code>opened</code> (lesson 3).</li>
+      <li><strong>v2.34.0</strong>: dropping or restoring a hunk in Review puts the text back exactly where it was, byte for byte. A frontmatter change is always its own hunk (lesson 4).</li>
+      <li><strong>v2.33.0</strong>: the agent can't repeat a read whose answer it already has (lesson 3).</li>
+      <li><strong>v2.32.0</strong>: cleaner staged pages. An echoed section heading is stripped, and a cited raw source is added to <code>sources:</code> (lesson 3).</li>
+      <li><strong>v2.31.0</strong>: evaluation tooling only. Nothing you type changes.</li>
+    </ul>
+  </details>
 </header>
 
 <!-- 0 -->
@@ -340,7 +362,7 @@ go install github.com/awepo-pro/lw/cmd/lw@latest
 brew install awepo-pro/tap/lw
 nix profile install github:awepo-pro/lw</code></pre>
 <pre><code><span class="p">$ </span>lw version
-lw v2.30.0</code></pre>
+lw v2.35.0</code></pre>
   <p>The version comes from the release tag the binary was built from, so a bug report can name the exact build.</p>
 
   <h3>Point it at a model</h3>
@@ -427,7 +449,7 @@ no open changeset
 <pre><code>lw ingest ~/Downloads/kv-cache-explained.md   <span class="c"># a local file</span>
 lw ingest https://example.com/some-post        <span class="c"># or a URL</span>
 lw ingest ~/notes/                             <span class="c"># or a folder (.md .txt .html .pdf)</span></code></pre>
-  <p>lw first converts each source to fixed markdown. If a path or URL is bad, the whole command fails before any changeset is opened. Then the agent reads the source, <code>SCHEMA.md</code>, <code>index.md</code>, and recent <code>log.md</code>, and proposes pages. To keep it writing instead of browsing, an ingest may read at most 6 existing wiki pages between two staged changes; a 7th read is refused until it stages something. A real run that took about three minutes ends like this:</p>
+  <p>lw first converts each source to fixed markdown. If a path or URL is bad, the whole command fails before any changeset is opened. Then the agent reads the source, <code>SCHEMA.md</code>, <code>index.md</code>, and recent <code>log.md</code>, and proposes pages. To keep it writing instead of browsing, an ingest may read at most 6 existing wiki pages between two staged changes; a 7th read is refused until it stages something. It also can't repeat a read whose answer is still in its context, so it doesn't spend rounds looking at the same page twice. A real run that took about three minutes ends like this:</p>
 <pre><code>opened changeset cs-92c7d850b461792a: ingest ~/Downloads/kv-cache-explained.md (4 op(s))
   op1 ingest_source raw/articles/kv-cache-explained.md
   op2 create_page wiki/concepts/kv-cache.md
@@ -438,6 +460,9 @@ lw ingest ~/notes/                             <span class="c"># or a folder (.m
     <strong>Nothing has been written yet.</strong>
     <code>op1</code> is always the immutable copy of your source. It records the original <code>source_url</code> and a <code>sha256</code> of the body, which lw later uses to detect drift. Every <code>create_page</code> after it can only cite that source, because it's the only thing the agent has read.
   </div>
+
+  <p>If a changeset is already open (say, from an Ask turn), the ingest adds to it instead of opening a second one, and the first line says so: <code>joined changeset cs-…</code> rather than <code>opened changeset cs-…</code>.</p>
+  <p>Two small repairs happen as pages are staged, and the agent is told about each one. If a section edit repeats the section's own heading (<code>## Trade-offs</code> inside the Trade-offs section), the duplicate heading is removed. If a page's body cites a <code>raw/</code> source that its <code>sources:</code> frontmatter doesn't list, the source is added. Both used to show up as lint warnings after an ingest.</p>
 
   <h3>Limits and dry runs</h3>
   <p>A single ingest is capped at <strong>10 files</strong> and <strong>75% of the context budget in bytes</strong> (282 KB at the default <code>context_tokens = 96000</code>). The agent still needs room to read back what it wrote. If you go over the cap, nothing is opened, and the error names the largest file so you know which one to split out. Sources the vault already holds are skipped before anything else happens.</p>
@@ -473,6 +498,7 @@ raw/articles/kv-cache-explained.md | +27 -0
     <tr><td><code>lw lint</code></td><td>Lint on the <em>projected</em> tree, which catches problems before you commit</td></tr>
   </table></div>
   <p>The TUI's Review screen (lesson 7) shows the same diff, plus two things a plain diff lacks: the agent's <strong>rationale</strong> for each change, and its <strong>provenance</strong> back into <code>raw/</code>.</p>
+  <p>Each hunk records the line where it starts, and it's applied the way <code>patch</code> applies a hunk. When you drop a hunk and restore it later, the page comes back byte for byte. A change to the frontmatter (the block between the <code>---</code> lines) is never in the same hunk as a change to the body, so you can drop one and keep the other.</p>
   <p>A <strong>stale</strong> op is one that was proposed against a file that has changed on disk since. lw won't apply it on top of your edit.</p>
   <button class="mark-done" data-for="review">Mark lesson done</button>
 </section>
@@ -621,7 +647,7 @@ skipped: raw/articles/kv-cache-explained.md</code></pre>
     <li>Reverted pages become retraction stubs, so links and <code>index.md</code> entries that point at them still resolve.</li>
   </ul>
   <p>Then <code>lw commit -m "revert 000001"</code>, or change your mind with <code>lw doctor --discard-changeset</code>.</p>
-  <div class="callout warn"><strong>Only one changeset at a time</strong> — from ingest, Ask, revert or <code>lint --fix</code>. Commit or discard the current one before you start another.</div>
+  <div class="callout warn"><strong>Only one changeset is open at a time</strong> Ingest, Ask and <code>lint --fix</code> add their ops to the open changeset, and you review and commit them together. <code>lw revert</code> is the exception: it refuses while a changeset is open, so commit or discard that one first.</div>
   <button class="mark-done" data-for="history">Mark lesson done</button>
 </section>
 
@@ -692,7 +718,7 @@ lw config set open.pdf "papers -i {page} {file}"   <span class="c"># or: mupdf {
     <tr><th>Symptom</th><th>Cause → fix</th></tr>
     <tr><td>Provider returns 400 / 404 / "not found"</td><td><code>llm.base_url</code> isn't an OpenAI-compatible <code>/v1</code> endpoint. Run <code>lw config set llm.base_url …/v1</code>, then <code>lw config --probe</code>.</td></tr>
     <tr><td><code>env:DEEPSEEK_API_KEY (missing)</code></td><td>Export the variable in <em>this</em> shell, or point the reference at another one with <code>lw config set llm.api_key env:NAME</code>.</td></tr>
-    <tr><td>"a changeset is already open"</td><td>Run <code>lw status</code> → <code>lw diff</code>, then commit, press <kbd>X</kbd>, or run <code>lw doctor --discard-changeset</code>.</td></tr>
+    <tr><td><code>lw revert</code>: "a changeset is already open"</td><td>Revert needs a clean slate. Run <code>lw status</code> → <code>lw diff</code>, then commit, press <kbd>X</kbd>, or run <code>lw doctor --discard-changeset</code>. (Ingest, Ask and <code>lint --fix</code> join the open changeset instead.)</td></tr>
     <tr><td>Ingest stops: output limit reached</td><td>The default is 32768. If your config sets it lower, raise it with <code>lw config set llm.max_tokens 32768</code> (<code>lw doctor</code> warns below 16000). Thinking models use a lot of it.</td></tr>
     <tr><td>Agent refuses to write a page</td><td>It won't write a claim it can't cite. Ingest a source first. Pages also need at least two outbound <code>[[wikilinks]]</code>.</td></tr>
     <tr><td><code>warning: lint regresses</code> after ingest</td><td>The changeset is still open. Review it with <code>lw diff</code>, drop the bad hunks, or commit with <code>--force</code> (which is recorded in the journal).</td></tr>
@@ -725,7 +751,7 @@ lw config set open.pdf "papers -i {page} {file}"   <span class="c"># or: mupdf {
   <p><strong>Where to go next:</strong> <a href="tutorial.md">tutorial.md</a> (the long-form version of this page) · <a href="vault-schema.md">vault-schema.md</a> · <a href="changesets.md">changesets.md</a> · <a href="tools.md">tools.md</a> · <a href="hotkeys.md">hotkeys.md</a> · <a href="design.md">design.md</a></p>
 </section>
 
-<footer>Matches <code>lw --help</code> as of v2.30.0. If a command here doesn't match your build, trust <code>lw --help</code>.</footer>
+<footer>Covers <strong>lw v2.35.0</strong> (tagged 2026-10-06) and matches its <code>lw --help</code>. If a command here doesn't match your build, trust <code>lw --help</code>.</footer>
 </main>
 </div>
 
