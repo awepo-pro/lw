@@ -176,7 +176,7 @@ func runLintFix(vaultPath, checksFlag string) error {
 		msg := buildLintFixRoundMessage(r, i, len(rounds))
 		// 038: the turn's verb rides the ctx (038 C-3) — lint here, the same
 		// one-word tag ingest and query set around their own Send.
-		if err := runAgentTurn(trace.WithVerb(context.Background(), "lint"), ag, sess.ID, msg, os.Stdout); err != nil {
+		if err := runAgentTurn(trace.WithVerb(context.Background(), trace.VerbLint), ag, sess.ID, msg, os.Stdout); err != nil {
 			failures = append(failures, lintFixFailure{page: lintFixRoundLabel(r), err: err})
 		}
 	}
@@ -190,7 +190,7 @@ func runLintFix(vaultPath, checksFlag string) error {
 	}
 
 	fmt.Println()
-	printChangesetSummary(os.Stdout, final)
+	printChangesetSummary(os.Stdout, final, joined)
 
 	if len(failures) > 0 {
 		// U1 still applies per failure: agentErrorHint names the output

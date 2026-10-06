@@ -27,6 +27,8 @@ package agent
 // the "Not from your vault:" rule and the answer-voice rule — as the shared
 // consts below, so they cannot drift apart.
 
+import "github.com/awepo-pro/lw/internal/trace"
+
 // The two sentences the curator prompt and the ask prompt both carry, byte for
 // byte: the outside-vault rule (the "Not from your vault:" label a turn writes
 // when neither the wiki nor the raw sources answer) and the answer-voice rule
@@ -201,16 +203,6 @@ func askPromptFor(hasSearch bool) string {
 	return askPromptBase + web + askPromptTail
 }
 
-// Verbs the agent recognises on a turn's ctx (trace.WithVerb), the one
-// channel every entry point already tags its turn on (038). Any other verb —
-// ingest, lint, the pane's "file" for a ctrl+s filing turn, or none at all —
-// is a curator turn.
-const (
-	verbAsk    = "ask"    // the TUI ask pane's question
-	verbQuery  = "query"  // `lw query`
-	verbIngest = "ingest" // `lw ingest`, and lweval's ingest jobs
-)
-
 // turnMode is how a turn is run: which system prompt it sends and which tools
 // it advertises and may call.
 type turnMode int
@@ -236,10 +228,12 @@ func (m turnMode) String() string {
 // a verb nobody has heard of, is curator mode: a new entry point defaults to
 // the full behaviour it has always had, never to a silently read-only turn.
 // A ctrl+s filing turn runs under "file" precisely so it lands here: it must
-// stage a query page, which an ask turn cannot do.
+// stage a query page, which an ask turn cannot do. The verbs are the
+// trace.Verb* constants the entry points tag their ctx with — one vocabulary
+// since 054, so a mistyped literal cannot reach here as "a verb nobody knows".
 func modeFromVerb(verb string) turnMode {
 	switch verb {
-	case verbAsk, verbQuery:
+	case trace.VerbAsk, trace.VerbQuery:
 		return modeAsk
 	}
 	return modeCurator
@@ -250,7 +244,7 @@ func modeFromVerb(verb string) turnMode {
 // as a raw source (010/017), which is a write, and `lw query` is a one-shot
 // read-only command whose structural guard (cmd_query.go) exists to undo
 // exactly that.
-func askOffersWeb(verb string) bool { return verb == verbAsk }
+func askOffersWeb(verb string) bool { return verb == trace.VerbAsk }
 
 // turnPlan is everything a turn's verb decides, resolved once at the top of
 // Send: the mode, and — for an ask-mode turn — whether web lookup is allowed.
@@ -268,5 +262,5 @@ type turnPlan struct {
 // planFor resolves verb to its turnPlan. The zero turnPlan is the curator
 // turn, which is what ContextBuilder.Build — the pre-039 entry point — uses.
 func planFor(verb string) turnPlan {
-	return turnPlan{mode: modeFromVerb(verb), web: askOffersWeb(verb), readBudget: verb == verbIngest}
+	return turnPlan{mode: modeFromVerb(verb), web: askOffersWeb(verb), readBudget: verb == trace.VerbIngest}
 }

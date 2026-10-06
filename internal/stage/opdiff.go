@@ -174,17 +174,19 @@ func (e *Engine) originalDisplayLine(op Op) string {
 	if len(sha) > 12 {
 		sha = sha[:12]
 	}
-	return fmt.Sprintf("original (%s, sha256 %s): %s", humanSize(len(b)), sha, op.OriginalPath)
+	return fmt.Sprintf("original (%s, sha256 %s): %s", HumanSize(len(b)), sha, op.OriginalPath)
 }
 
-// humanSize renders n as a reviewer-readable size — "900 B", "3.0 KB",
+// HumanSize renders n as a reviewer-readable size — "900 B", "3.0 KB",
 // "1.1 MB" (034 T3, A-034-1). Binary divisors (1 KB = 1024 B), so the
 // figure agrees with what ls and stat print for the same file and can be
 // checked against the working tree without mental conversion. The unit
 // switches on the byte count, not on the rendered value: 1048575 — one
 // byte short of the MB range — shows as "1024.0 KB" rather than rounding
-// into "1.0 MB" a step early.
-func humanSize(n int) string {
+// into "1.0 MB" a step early. Exported since 054 so the review pane's
+// delete mark and `lw trace show` quote sizes with this one function
+// instead of byte-identical copies of it.
+func HumanSize(n int) string {
 	switch {
 	case n < 1024:
 		return fmt.Sprintf("%d B", n)

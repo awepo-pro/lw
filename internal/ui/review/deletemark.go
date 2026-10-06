@@ -85,25 +85,9 @@ func deletedText(op stage.Op, files []stage.FileOpDiff) (lines, bytes int, marke
 
 // deleteMarkText is the Detail line, fact first so a narrow panel's clip
 // eats the explanation and never the count: "deletes 3 lines, 412 B — text
-// this op does not re-add".
+// this op does not re-add". The size is stage.HumanSize, the rendering the
+// ingest original line uses, so one review screen never writes the same
+// quantity two ways (054: this package kept a same-output copy before).
 func deleteMarkText(lines, bytes int) string {
-	return fmt.Sprintf("deletes %d line%s, %s — text this op does not re-add", lines, plural(lines), deleteMarkSize(bytes))
-}
-
-// deleteMarkSize renders n with the rendering the ingest original line
-// uses — "412 B", "1.4 KB", "1.1 MB" — so one review screen never writes
-// the same quantity two ways. stage keeps that humanizer unexported
-// (stage.humanSize) and this package may not reach into it, so this is a
-// same-output copy: binary divisors, the unit chosen by the byte count and
-// not the rendered value (1048575 reads "1024.0 KB", never a premature
-// "1.0 MB"). TestDeleteMarkSize holds both copies to the same rows.
-func deleteMarkSize(n int) string {
-	switch {
-	case n < 1024:
-		return fmt.Sprintf("%d B", n)
-	case n < 1048576:
-		return fmt.Sprintf("%.1f KB", float64(n)/1024)
-	default:
-		return fmt.Sprintf("%.1f MB", float64(n)/1048576)
-	}
+	return fmt.Sprintf("deletes %d line%s, %s — text this op does not re-add", lines, plural(lines), stage.HumanSize(bytes))
 }

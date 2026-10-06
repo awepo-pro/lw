@@ -111,10 +111,8 @@ type turnStartedMsg struct {
 // turn used to ride "ask" with every other turn; 039 split them because the
 // same tag now chooses the prompt and the tool set, and a filing turn under
 // "ask" would have been refused the very stage.* tools it exists to call.
-const (
-	verbAsk  = "ask"
-	verbFile = "file"
-)
+// Since 054 the pane uses trace.VerbAsk and trace.VerbFile directly: the
+// spelling lives in trace's vocabulary alone.
 
 // startTurn launches one agent turn (backbone §9, C-105). sessionID is the
 // changeset id already known at submit time, or "" when none was open —
@@ -130,7 +128,7 @@ const (
 // changesetGone); Send closes its channel promptly on cancellation and
 // delivers no terminal event of its own (backbone §9, C-105).
 //
-// verb is the turn's ctx verb — verbAsk or verbFile (039): a plain value, like
+// verb is the turn's ctx verb — trace.VerbAsk or trace.VerbFile (039): a plain value, like
 // every other input the goroutine takes, so what the turn is called is decided
 // on the Update thread by whoever began it.
 func (m *Model) startTurn(sessionID, carryFrom, msg, verb string) tea.Cmd {
