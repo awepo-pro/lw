@@ -7,7 +7,10 @@
 // quietly "fixed" into something an old changeset never produced.
 package stage
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // hunkPosLegacyReplaceText is base 569c577's applyHunks output for the
 // replace_text shape — one Add-only hunk ("Alpha inserted line.", Section
@@ -268,4 +271,41 @@ func TestHunkAtZeroLegacyPlacement(t *testing.T) {
 			t.Fatalf("Lines without At was positioned:\n%s", got)
 		}
 	})
+}
+
+// TestHunkAtZeroIgnoresLinesAfterAnEarlierHunk is the guard behind "At == 0
+// means unknown, apply as before" (050/052 review L-1). applyWindow finds a
+// window's start as the output line whose origin is At-1, and a line an
+// earlier hunk produced has origin -1 — so a hunk with At == 0 but Lines that
+// happen to match that line would be positioned by accident if the guard were
+// only "Lines is non-empty". Here legacy hunk h1 replaces "Alpha first line."
+// with "X" (that line now has origin -1) and h2, At == 0, carries Lines
+// [" X", "+Y"]; h2 must take the legacy placement (the end of the file, as an
+// Add-only hunk with no Section), exactly as if it had no Lines at all.
+func TestHunkAtZeroIgnoresLinesAfterAnEarlierHunk(t *testing.T) {
+	replace := Hunk{ID: "h1", Path: hunkPosPath, Del: []string{"Alpha first line."}, Add: []string{"X"}}
+	withLines := Hunk{ID: "h2", Path: hunkPosPath, Add: []string{"Y"}, Lines: []string{" X", "+Y"}}
+	plain := Hunk{ID: "h2", Path: hunkPosPath, Add: []string{"Y"}}
+	if withLines.At != 0 || replace.At != 0 {
+		t.Fatal("the fixture hunks must be position-free")
+	}
+
+	want := string(applyHunks([]byte(hunkPosBefore), []Hunk{replace, plain}))
+	got := string(applyHunks([]byte(hunkPosBefore), []Hunk{replace, withLines}))
+	if got != want {
+		t.Fatalf("a hunk with At == 0 was positioned by its Lines:\n--- got ---\n%s\n--- want (the same hunk without Lines) ---\n%s", got, want)
+	}
+	if strings.Contains(got, "X\nY\n") {
+		t.Fatalf("Y landed right after X, where the At == 0 hunk's Lines point:\n%s", got)
+	}
+
+	// The mirror: the same two hunks WITH a position that does locate a
+	// window do land by it, so the assertions above can fail.
+	positioned := withLines
+	positioned.At = 18 // "Alpha second line."
+	positioned.Lines = []string{" Alpha second line.", "+Y"}
+	posOut := string(applyHunks([]byte(hunkPosBefore), []Hunk{replace, positioned}))
+	if !strings.Contains(posOut, "Alpha second line.\nY\nAlpha third line.\n") {
+		t.Fatalf("a positioned hunk was not placed by its window:\n%s", posOut)
+	}
 }

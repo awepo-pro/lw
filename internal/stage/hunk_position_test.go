@@ -513,26 +513,37 @@ func TestHunkAtSetByComputeHunks(t *testing.T) {
 	})
 }
 
-// TestHunkMergedWindowRoundTrip is 050's review M1: a frontmatter `sources:`
-// line and a body line 3 lines below it share one window (ComputeHunks
-// merges changes up to 7 ops apart). The flat Add list re-applied the body
-// line right after the sources line — inside the YAML. With the window's
-// interior context in Lines, Review's n then y is byte-identical and the body
-// line stays below the closing `---`.
+// TestHunkMergedWindowRoundTrip: two body changes 3 lines apart share ONE
+// window (ComputeHunks merges changes up to 7 ops apart), so the window has
+// interior context the flat Add/Del lists lose. This is 050's review M1 shape
+// — there a frontmatter `sources:` line and a body line shared the window and
+// the body line landed inside the YAML. The flat Add list re-applied the later
+// Add right after the earlier one (here: the inserted line took the place of
+// "Alpha first line." and the rewrite followed it). With the window's interior
+// context in Lines, Review's n then y is byte-identical and each line sits
+// where it was proposed.
+//
+// A-052-2 (052 S1b): the original fixture was a sources: line plus a body
+// line, which S1b's frontmatter split (TestHunkFrontmatterBodySplit) now cuts
+// into two hunks, so both changes moved into the body, three context lines
+// apart, to keep exercising ONE merged window. The frontmatter case lives in
+// the new test; every assertion here is otherwise the original's.
 func TestHunkMergedWindowRoundTrip(t *testing.T) {
 	e, _, page := hunkPosEngine(t)
 	if _, err := e.OpenChangeset("merged window", testAuthor); err != nil {
 		t.Fatalf("OpenChangeset: %v", err)
 	}
 	const (
-		oldSources = "sources: [raw/articles/kv-cache-explained.md]"
-		newSources = "sources: [raw/articles/kv-cache-explained.md, raw/papers/leviathan-2023.md]"
-		bodyLine   = "Inserted body line."
+		introLine = "Intro paragraph linking to [[kv-cache]] and [[gpt-4]]."
+		bodyLine  = "Inserted body line."
+		oldAlpha  = "Alpha first line."
+		newAlpha  = "Alpha first line, rewritten."
 	)
-	// confidence, "---" and the blank line sit between the two changes.
-	after := strings.Replace(hunkPosBefore, oldSources, newSources, 1)
-	after = strings.Replace(after, "---\n\n# Hunk Position Fixture\n", "---\n\n"+bodyLine+"\n# Hunk Position Fixture\n", 1)
-	if after == hunkPosBefore || !strings.Contains(after, bodyLine) {
+	// A blank line, "## Alpha" and another blank line sit between the two
+	// changes.
+	after := strings.Replace(hunkPosBefore, introLine+"\n", introLine+"\n"+bodyLine+"\n", 1)
+	after = strings.Replace(after, oldAlpha+"\n", newAlpha+"\n", 1)
+	if after == hunkPosBefore || !strings.Contains(after, bodyLine) || !strings.Contains(after, newAlpha) {
 		t.Fatal("the fixture edit did not apply")
 	}
 
@@ -541,7 +552,7 @@ func TestHunkMergedWindowRoundTrip(t *testing.T) {
 		t.Fatalf("ComputeHunks gave %d hunks, want exactly 1 merged window", len(hunks))
 	}
 	h := hunks[0]
-	if len(h.Del) != 1 || len(h.Add) != 2 || h.Add[1] != bodyLine {
+	if len(h.Del) != 1 || h.Del[0] != oldAlpha || len(h.Add) != 2 || h.Add[0] != bodyLine || h.Add[1] != newAlpha {
 		t.Fatalf("not M1's shape: Del=%q Add=%q", h.Del, h.Add)
 	}
 	if got := hunkPosInterior(h); got != 3 {
@@ -566,15 +577,10 @@ func TestHunkMergedWindowRoundTrip(t *testing.T) {
 		t.Fatalf("drop+undrop of the merged hunk is not byte-identical:\n--- got ---\n%s\n--- want ---\n%s", got, want)
 	}
 
-	// The body line is below the frontmatter's closing delimiter.
+	// The inserted line sits right under the intro paragraph, and the
+	// rewrite is where "Alpha first line." was — not swapped by pairing the
+	// first Add with the first Del.
 	lines := strings.Split(got, "\n")
-	closing := -1
-	for i := 1; i < len(lines); i++ {
-		if lines[i] == "---" {
-			closing = i
-			break
-		}
-	}
 	at := -1
 	for i, l := range lines {
 		if l == bodyLine {
@@ -582,11 +588,11 @@ func TestHunkMergedWindowRoundTrip(t *testing.T) {
 			break
 		}
 	}
-	if closing < 0 || at < 0 || at <= closing {
-		t.Fatalf("the body line (index %d) is not below the frontmatter's closing --- (index %d):\n%s", at, closing, got)
+	if at < 1 || lines[at-1] != introLine {
+		t.Fatalf("the inserted line (index %d) is not right under the intro paragraph:\n%s", at, got)
 	}
-	if strings.Contains(strings.Join(lines[:closing], "\n"), bodyLine) {
-		t.Fatalf("the body line landed inside the YAML:\n%s", got)
+	if strings.Count(got, oldAlpha+"\n") != 0 || strings.Count(got, newAlpha+"\n") != 1 {
+		t.Fatalf("the Alpha rewrite is not exactly where the old line was:\n%s", got)
 	}
 }
 

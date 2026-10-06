@@ -45,7 +45,9 @@ const (
 // section's end, and a merged window lost the context between its changes
 // (the 050 review's measured byte drift). Add, Del and Before stay filled
 // exactly as before; At 0 means unknown — a hunk staged before 052, or built
-// by hand — and keeps the legacy placement (applyHunksTraced).
+// by hand — and keeps the legacy placement (applyHunksTraced). ComputeHunks
+// never puts a frontmatter change and a body change in one window (052 S1b),
+// so a reviewer can drop either alone.
 type Hunk struct {
 	ID      string   `json:"id"`   // "h1", "h2", … unique within the op
 	Path    string   `json:"path"` // the file this hunk edits

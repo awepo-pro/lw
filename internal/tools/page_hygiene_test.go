@@ -657,7 +657,8 @@ func hygieneAssertSound(t *testing.T, e *stage.Engine, step string) []byte {
 // whose content repeats the find line (the first line of the intro
 // paragraph, six lines below the sources: line) and adds a second line that
 // cites a freshly staged source. The two changes sit close enough that one
-// ComputeHunks over the whole file merges them into a single hunk.
+// ComputeHunks window would hold both; 052 S1b splits it at the frontmatter
+// fence, so they are two hunks a reviewer can keep or drop apart.
 func hygieneSyncShape(t *testing.T) (*stage.Engine, stage.Op) {
 	t.Helper()
 	reg, e := hygieneSetup(t)
@@ -692,18 +693,18 @@ func hygieneHasSourcesLine(h stage.Hunk) bool {
 // sources: line, Add the new one plus the body line); re-applying that hunk
 // pairs its lines, which puts the BODY line after sources: inside the
 // frontmatter and leaves a page that does not parse (review M1). The root
-// cause is stage's flattened Hunk, which loses the interior context of a
-// merged window, so it is fixed there (052, hunks persist ordered diff lines
-// and a start position), not by splitting the diff here — and this test
-// waits for it.
+// cause is in stage, so it is fixed there, not by splitting the diff here,
+// and both halves were needed (A-050-3, 052 S1b): hunks persist ordered diff
+// lines and a start position (052), so a merged window re-applies
+// byte-exactly, and ComputeHunks never merges a frontmatter change with a
+// body change (the fence split), so the second subtest can keep the body edit
+// while the sources: hunk is dropped.
 //
 // Each subtest runs the review's shape: replace_text on "# KV Cache" whose
 // content repeats the find line (the first line of the intro paragraph, six
 // lines below the sources: line) and adds a second line citing a freshly
 // staged source.
 func TestPatchSyncHunksSurviveDropUndrop(t *testing.T) {
-	t.Skip("needs 052 hunk positions (TD-15)")
-
 	t.Run("every_hunk_n_then_y", func(t *testing.T) {
 		e, op := hygieneSyncShape(t)
 		if len(op.Hunks) == 0 {

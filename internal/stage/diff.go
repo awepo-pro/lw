@@ -443,12 +443,17 @@ func fileHeader(path, old, new string) string {
 // of the window's first line, and Lines, the window's diff lines in order
 // (" " context, "-" removed, "+" added) — so a window that merged two
 // changes keeps the context between them and applyHunksTraced can re-apply
-// it like patch, byte-exact (TD-15). Window boundaries and ids are unchanged.
+// it like patch, byte-exact (TD-15). Window boundaries and ids are the diff's
+// own, with one exception, 052 S1b (050's review M1/M-1): a window never holds
+// a frontmatter change and a body change together (splitWindowsAtFrontmatter),
+// so a reviewer can keep the body edit and drop the metadata change, or the
+// reverse. Only hunks computed from now on are affected; stored hunks are
+// never recomputed.
 func ComputeHunks(old, new string) []Hunk {
 	oldLines, _ := diffSplitLines(old)
 	newLines, _ := diffSplitLines(new)
 	ops := diffOps(oldLines, newLines)
-	windows := hunkWindows(ops, diffContext)
+	windows := splitWindowsAtFrontmatter(ops, hunkWindows(ops, diffContext), diffContext)
 	oldPos, _ := prefixCounts(ops)
 
 	hunks := make([]Hunk, 0, len(windows))
@@ -612,6 +617,75 @@ func hunkWindows(ops []diffOp, context int) []hunkWindow {
 		windows[i] = hunkWindow{lo: lo, hi: hi}
 	}
 	return windows
+}
+
+// frontmatterFenceOp returns the index into ops of the op that consumes the
+// closing "---" line of the OLD file's frontmatter, or -1 when the old file
+// has none: its first line must be exactly "---" and a later line exactly
+// "---", the same rule vault.ParseFrontmatter applies. Ops up to and
+// including that one are frontmatter; every later op, a "+" right after the
+// fence included, is body.
+func frontmatterFenceOp(ops []diffOp) int {
+	oldLine := 0 // old-side lines consumed so far
+	for k, op := range ops {
+		if op.kind == '+' {
+			continue
+		}
+		switch {
+		case oldLine == 0 && op.text != "---":
+			return -1
+		case oldLine > 0 && op.text == "---":
+			return k
+		}
+		oldLine++
+	}
+	return -1
+}
+
+// splitWindowsAtFrontmatter cuts every window that holds a change on both
+// sides of the old file's frontmatter fence (frontmatterFenceOp) into two:
+// one for the frontmatter changes, whose trailing context stops at the
+// closing "---", and one for the body changes, whose leading context starts
+// after it, so the two share no line. 052 S1b, 050's review M1/M-1: the
+// frontmatter is structured metadata and the body is prose, and a window
+// that merged a sources: change with a body edit a few lines below made it
+// impossible to drop one without the other. Each half keeps the context its
+// own changes would have had inside the window, so only the fence-side
+// context is trimmed; a window whose changes all sit on one side — and every
+// file without frontmatter — is returned exactly as hunkWindows made it.
+func splitWindowsAtFrontmatter(ops []diffOp, windows []hunkWindow, context int) []hunkWindow {
+	fence := frontmatterFenceOp(ops)
+	if fence < 0 {
+		return windows
+	}
+	out := make([]hunkWindow, 0, len(windows)+1)
+	for _, w := range windows {
+		lastFM, firstBody := -1, -1 // last changed op in the frontmatter, first below it
+		for k := w.lo; k <= w.hi; k++ {
+			if ops[k].kind == ' ' {
+				continue
+			}
+			if k <= fence {
+				lastFM = k
+			} else if firstBody < 0 {
+				firstBody = k
+			}
+		}
+		if lastFM < 0 || firstBody < 0 {
+			out = append(out, w)
+			continue
+		}
+		fmHi := lastFM + context
+		if fmHi > fence {
+			fmHi = fence
+		}
+		bodyLo := firstBody - context
+		if bodyLo < fence+1 {
+			bodyLo = fence + 1
+		}
+		out = append(out, hunkWindow{lo: w.lo, hi: fmHi}, hunkWindow{lo: bodyLo, hi: w.hi})
+	}
+	return out
 }
 
 // prefixCounts returns, for every op index 0..len(ops), how many old-side
