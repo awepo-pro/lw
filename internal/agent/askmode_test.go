@@ -169,7 +169,7 @@ func TestBuildUsesAskPromptForAsk(t *testing.T) {
 		{"ask", "ask", false, askPromptFor(false)},
 		{"ask_with_web", "ask", true, askPromptFor(true)},
 		{"ingest", "ingest", false, systemPromptFor(false)},
-		{"ingest_with_web", "ingest", true, systemPromptFor(true)},
+		{"ingest_with_web", "ingest", true, systemPromptFor(false)}, // 056: ingest is not offered web.search
 		{"lint", "lint", false, systemPromptFor(false)},
 		{"file", "file", true, systemPromptFor(true)},
 		{"no_verb", "", false, systemPromptFor(false)},
@@ -240,7 +240,7 @@ func TestToolSetsPerMode(t *testing.T) {
 		{"ask_without_web", "ask", false, wantQueryTools},
 		{"ask_with_web", "ask", true, wantAskWebTools},
 		{"curator_ingest", "ingest", false, wantCuratorTools},
-		{"curator_ingest_with_web", "ingest", true, wantCuratorWebTools},
+		{"curator_ingest_with_web", "ingest", true, wantCuratorTools}, // 056: web_search withheld from ingest
 		{"curator_lint", "lint", false, wantCuratorTools},
 		{"curator_file", "file", false, wantCuratorTools},
 		{"curator_file_with_web", "file", true, wantCuratorWebTools},
@@ -266,6 +266,15 @@ func TestToolSetsPerMode(t *testing.T) {
 			if modeFromVerb(tc.verb) == modeCurator {
 				// The curator set is Definitions() itself: schemas included.
 				full := m.reg.Definitions()
+				if tc.verb == "ingest" && tc.web { // 056: the one curator turn that is not Definitions() whole
+					kept := full[:0:0]
+					for _, d := range full {
+						if d.Name != "web_search" {
+							kept = append(kept, d)
+						}
+					}
+					full = kept
+				}
 				if len(full) != len(reqs[0].Tools) {
 					t.Fatalf("curator request carries %d tools, Definitions() has %d", len(reqs[0].Tools), len(full))
 				}

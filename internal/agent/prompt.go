@@ -252,15 +252,19 @@ func askOffersWeb(verb string) bool { return verb == trace.VerbAsk }
 // readBudget (048) is whether the turn's wiki reads are capped between page
 // changes: true for the ingest verb alone, and not for curator mode as a whole
 // — lint and a ctrl+s filing turn are curator turns that legitimately read
-// many pages and were never the crawl 048 measured.
+// many pages and were never the crawl 048 measured. noWeb (056, TD-16) is
+// whether web.search is withheld from the turn, and is the ingest verb's alone
+// for the same reason: an ingest compiles a source the user already supplied,
+// while lint and filing keep every tool they were always offered.
 type turnPlan struct {
 	mode       turnMode
 	web        bool
 	readBudget bool
+	noWeb      bool
 }
 
 // planFor resolves verb to its turnPlan. The zero turnPlan is the curator
 // turn, which is what ContextBuilder.Build — the pre-039 entry point — uses.
 func planFor(verb string) turnPlan {
-	return turnPlan{mode: modeFromVerb(verb), web: askOffersWeb(verb), readBudget: verb == trace.VerbIngest}
+	return turnPlan{mode: modeFromVerb(verb), web: askOffersWeb(verb), readBudget: verb == trace.VerbIngest, noWeb: verb == trace.VerbIngest}
 }
