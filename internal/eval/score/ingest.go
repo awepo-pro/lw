@@ -24,6 +24,21 @@ const readRefusalNeedle = "refused: this ingest has read 6 wiki pages"
 // result_bytes (ReadRefusals, A-049-5).
 const readRefusalFmt = "%s refused: this ingest has read 6 wiki pages since it last staged a change. Stage the pages for the source now (stage.create_page / stage.patch_page) from what you have read; wiki reads are allowed again after a change is staged."
 
+// searchRefusalNeedle is the start of 053's search-budget refusal, which no
+// other tool error can begin with: 051's refusal of an identical repeat is also
+// "wiki.search refused: " but goes on "this exact call", and 048's is about
+// reads. It is a COPY of the head of internal/agent.searchBudgetRefusalFmt;
+// TestSearchRefusalTracksAgentSource reads that file as text and fails when the
+// wording moves (053).
+const searchRefusalNeedle = "wiki.search refused: this ingest has searched the wiki"
+
+// searchRefusalText is the whole refusal with the budget, 10, filled in — a
+// COPY of internal/agent.searchBudgetRefusalFmt, pinned byte for byte by the
+// same test. Unlike 048's it names one tool and has no verb to fill, so a
+// fixed length is all a refusal whose text was never recovered needs to be
+// recognised by (SearchRefusals, as ReadRefusals does for 048).
+const searchRefusalText = "wiki.search refused: this ingest has searched the wiki 10 times since it last staged a change. The wiki has nothing closer than what you have found; stage the pages for the source now (stage.create_page / stage.patch_page) — a new page is right when nothing related exists. Searches are allowed again after a change is staged."
+
 // readTools are the tools that read a wiki page and so spend 048's budget,
 // by canonical name (agent.budgetedReads). wiki.search returns snippets and
 // raw.* reads the source: neither is a page read.
@@ -166,6 +181,44 @@ func ReadRefusals(dir, id string, t *trace.Turn) (int, error) {
 				n++
 			}
 		case f.ResultBytes == len(fmt.Sprintf(readRefusalFmt, name)):
+			n++
+		}
+	}
+	return n, nil
+}
+
+// IsSearchRefusal reports whether a tool result's text is 053's refusal of a
+// wiki.search over the ingest search budget. As with IsReadRefusal, ToolErrors
+// keeps only the first 200 runes and the needle sits in the first 55, so the
+// cut text still matches.
+func IsSearchRefusal(text string) bool {
+	return strings.Contains(text, searchRefusalNeedle)
+}
+
+// SearchRefusals counts the wiki.search calls of turn t that 053's budget
+// refused: the failed calls to wiki.search whose result is the refusal. It
+// reads the trace as ReadRefusals does, and for the same reason falls back to
+// the tool event's result_bytes — the length of the refusal — when the call was
+// its turn's last round, no next request exists and the text is "": a crawl
+// that ends on the refusal is the commonest way one ends. A call whose text WAS
+// recovered is judged by the text alone. search_calls counts every call, the
+// refused ones too; this is the part of it the engine said no to. (053.)
+func SearchRefusals(dir, id string, t *trace.Turn) (int, error) {
+	failed, err := failedCalls(dir, id, t)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, f := range failed {
+		if canonicalTool(f.Name) != "wiki.search" {
+			continue
+		}
+		switch {
+		case f.Text != "":
+			if IsSearchRefusal(f.Text) {
+				n++
+			}
+		case f.ResultBytes == len(searchRefusalText):
 			n++
 		}
 	}

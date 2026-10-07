@@ -174,6 +174,7 @@ func TestScoreRun(t *testing.T) {
 			"fact_recall": 0.5, "chunk_coverage": 0, "ops": 4, "pages_staged": 1, "lint_warns": float64(lf.Warns),
 			"pages_new": 1, "dup_pages": 0, "orphans_new": 1,
 			"reads_before_first_stage": 0, "read_refusals": 0, "closed": 0, "search_calls": 0,
+			"search_refusals": 0, // A-053-1: the 053 metric is a value (0) for any ingest run with a trace
 		})
 	}
 	wants := []want{
@@ -480,6 +481,7 @@ facts = [["speculative"], ["inference"], ["verifies them"]]
 		// refused — its one failing call is a raw.get.
 		"pages_new": 2, "dup_pages": 0, "orphans_new": 0,
 		"reads_before_first_stage": 0, "read_refusals": 0, "closed": 0, "search_calls": 0,
+		"search_refusals": 0, // A-053-1
 	})
 }
 

@@ -84,6 +84,9 @@ const maxConsecutiveBadCalls = 2
 // one per Send, so it never outlives the turn: a Loop the TUI reuses across
 // turns starts each of them at zero.
 //
+// Ingest search budget (053): the same turn is capped in how many wiki.search
+// calls it may make between page changes, counted on the same readBudget.
+//
 // Repeat-call guard (051): in every verb, a guarded read whose identical twin
 // already ran this turn and whose result is still above, un-elided and
 // unchanged by a stage call since, is refused instead of run (repeatGuard). The
@@ -685,14 +688,15 @@ func traceToolCalls(tcs []llm.ToolCall) []trace.ToolCall {
 // model-correctable and shares the one-retry budget in badCalls; a second
 // consecutive one aborts the turn. A refused tool is answered with an error
 // result too, but sits outside that budget (A-039-1), and so does a read the
-// ingest read budget refuses (048) and an identical repeat of a read whose
-// answer is still above (051). Every other non-nil error from Call
-// aborts immediately. On success it emits ToolResEv (and StageEv when
-// applicable), records the turn, resets badCalls to 0, and returns the
-// tool-result message for the next round. A stage.* call that came back
+// ingest read budget refuses (048), a search the ingest search budget refuses
+// (053) and an identical repeat of a read whose answer is still above (051).
+// Every other non-nil error from Call aborts immediately. On success it emits
+// ToolResEv (and StageEv when applicable), records the turn, resets badCalls to
+// 0, and returns the tool-result message for the next round. A stage.* call that came back
 // without IsError — the one that sets the record's Staged — is also marked in
 // stagedCalls (041, A-041-3), the only calls boundContext may stub; when it
-// changes a page it also resets the turn's ingest read count (048).
+// changes a page it also resets the turn's ingest read and search counts (048,
+// 053).
 //
 // It no longer builds an assistant message (C-120/D-DG): the round's one
 // assistant message — carrying every tool call and the round's shared text
@@ -772,6 +776,20 @@ func (l *Loop) dispatchToolCall(ctx context.Context, sessionID string, round int
 		return l.toolError(ctx, sessionID, round, tc, canonical, text, out, t0)
 	}
 
+	// 053: a wiki.search over the ingest search budget is refused here, after
+	// 051 (an identical repeat is not a search and must neither spend the budget
+	// nor be answered with the wrong reason) and after 048's read budget (the
+	// two counts are separate, and a read is never answered with the search
+	// text), and like them before the arguments are parsed. agent-memory-pair
+	// searched 38 and 54 times for a page the vault did not have, and 051 only
+	// taught it to vary the query. Feedback in the 039 sense again: through
+	// toolError, outside the two-in-a-row budget. budget is nil, and
+	// searchRefusal says no, for every verb but ingest.
+	if text, refused := budget.searchRefusal(canonical); refused {
+		slog.InfoContext(ctx, "agent search budget refusal", "searches", budget.searches)
+		return l.toolError(ctx, sessionID, round, tc, canonical, text, out, t0)
+	}
+
 	args := strings.TrimSpace(tc.Function.Arguments)
 	if args == "" {
 		args = "{}" // legal for a no-argument tool (backbone §9 item 7)
@@ -798,6 +816,7 @@ func (l *Loop) dispatchToolCall(ctx context.Context, sessionID string, round int
 	}
 	*badCalls = 0 // a dispatched call, whatever its result, resets the retry budget
 	budget.noteRead(canonical)
+	budget.noteSearch(canonical)
 	repeats.noteResult(tc.Function.Name, tc.Function.Arguments, tc.ID, round, res.IsError)
 
 	// 038 T4 (A7): one tool event per dispatched call, written the moment
