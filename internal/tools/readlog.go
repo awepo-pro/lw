@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/awepo-pro/lw/internal/vault"
 )
 
 // unreadSource is one source ingested in this registry whose chunks were not
@@ -66,6 +68,25 @@ func (l *readLog) noteIngest(path string, n int) {
 	l.ingested[path] = n
 	l.read[path] = map[int]bool{}
 	l.refused = ""
+}
+
+// seedRecompile records each of paths — committed raw sources the turn
+// compiles into pages without a stage.ingest_source (055) — as sources whose
+// chunks this registry must see read, at the count raw.get itself reports for
+// the committed body (RawChunkCount, the chunker's own number). Without it a
+// recompile turn could read one chunk of a long article and stage.close would
+// summarize in silence: the 040 failure, reached by a route 040 never saw. A
+// path the vault does not hold has no body to count and is skipped — raw.get
+// cannot serve it either, so the model could never satisfy a guard on it.
+func (l *readLog) seedRecompile(v *vault.Vault, paths []string) {
+	if l == nil || v == nil {
+		return
+	}
+	for _, p := range paths {
+		if r, ok := v.RawSource(p); ok {
+			l.noteIngest(p, RawChunkCount(r.Body))
+		}
+	}
 }
 
 // noteRead records that raw.get served chunk of path. A source this registry

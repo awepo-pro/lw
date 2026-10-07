@@ -199,13 +199,22 @@ func agentToolDeps(e *stage.Engine, cfg *config.Config, ex extract.Extractor) to
 // the scratch file and record the scratch path itself as the raw source's
 // provenance. Callers without a staged chain — query, lint --fix and the
 // TUI — pass agentExtractors() (U7) via newAgent below.
-var newIngestAgent = func(e *stage.Engine, cfg *config.Config, sessions agent.SessionStore, ex extract.Extractor) (agent.Agent, error) {
+//
+// recompile is the vault paths of the committed raw sources this turn writes
+// pages from (055: `lw ingest --recompile`), or nil. It rides tools.Deps so the
+// registry's stage.close holds those raws to 040's read-every-chunk rule — a
+// recompile turn stages no ingest_source, so nothing else would. It is set on
+// the Deps after agentToolDeps builds them, which keeps that function's
+// signature (and its callers') exactly as it was.
+var newIngestAgent = func(e *stage.Engine, cfg *config.Config, sessions agent.SessionStore, ex extract.Extractor, recompile []string) (agent.Agent, error) {
 	apiKey, err := cfg.ResolveAPIKey()
 	if err != nil {
 		return nil, fmt.Errorf("resolve api key: %w", err)
 	}
 	client := llm.New(ingestLLMConfig(cfg, apiKey))
-	reg := tools.NewRegistry(agentToolDeps(e, cfg, ex))
+	deps := agentToolDeps(e, cfg, ex)
+	deps.Recompile = recompile
+	reg := tools.NewRegistry(deps)
 	traceDir, traceKeep, traceMeta := traceLoopConfig(e.Vault().Root(), cfg)
 	loopCfg := agent.LoopConfig{
 		MaxToolRounds:  cfg.Limits.MaxToolRounds,
@@ -284,7 +293,7 @@ var newAgent = func(e *stage.Engine, cfg *config.Config, sessions agent.SessionS
 	if e != nil {
 		root = e.Vault().Root()
 	}
-	return newIngestAgent(e, cfg, sessions, agentExtractors(root, cfg))
+	return newIngestAgent(e, cfg, sessions, agentExtractors(root, cfg), nil)
 }
 
 // preExtracted is the extract.Extractor cmdIngest hands the agent's tools

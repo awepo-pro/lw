@@ -90,6 +90,11 @@ func stageCloseTool(d Deps) Tool {
 			// 040: the coverage guard. Only sources this registry ingested
 			// that the changeset still holds are checked; see readLog.
 			live := liveIngestPaths(cs)
+			// 055: a recompile turn's committed raws are live too — no
+			// ingest_source op names them, so the changeset cannot.
+			for _, p := range d.Recompile {
+				live[p] = true
+			}
 			unread, refuse := d.reads.closeVerdict(func(p string) bool { return live[p] })
 			if refuse {
 				return Result{IsError: true, Content: unreadRefusal(unread)}, nil

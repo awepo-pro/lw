@@ -78,11 +78,16 @@ func withFakeAgent(t *testing.T, fn func(e *stage.Engine, cfg *config.Config, se
 
 // withFakeIngestAgent swaps the package-level newIngestAgent seam — the
 // one cmdIngest itself calls (C-123) — for the duration of one test,
-// restoring the original on cleanup.
+// restoring the original on cleanup. fn keeps the pre-055 four-argument
+// shape every fake here was written against; the seam's trailing recompile
+// parameter (055, A-055-1) is dropped on the way in, and the tests that care
+// about it (ingest_recompile_test.go) assign the seam directly.
 func withFakeIngestAgent(t *testing.T, fn func(e *stage.Engine, cfg *config.Config, sessions agent.SessionStore, ex extract.Extractor) (agent.Agent, error)) {
 	t.Helper()
 	orig := newIngestAgent
-	newIngestAgent = fn
+	newIngestAgent = func(e *stage.Engine, cfg *config.Config, sessions agent.SessionStore, ex extract.Extractor, _ []string) (agent.Agent, error) {
+		return fn(e, cfg, sessions, ex)
+	}
 	t.Cleanup(func() { newIngestAgent = orig })
 }
 

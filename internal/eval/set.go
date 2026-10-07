@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -44,13 +45,18 @@ type AskCase struct {
 // file) or Inputs (several files handed to the SAME call, 049: the failure
 // the user hit was three articles in one `lw ingest`, which a single path
 // cannot express) — exactly one of the two. Paths are relative to the set's
-// directory; Facts are matched against the staged wiki pages.
+// directory — except for a Recompile case, whose paths are vault paths;
+// Facts are matched against the staged wiki pages.
 type IngestCase struct {
 	ID      string     `toml:"id"`
 	Input   string     `toml:"input"`
 	Inputs  []string   `toml:"inputs"`
 	Facts   [][]string `toml:"facts"`
 	Holdout bool       `toml:"holdout"`
+	// Recompile makes the case a `lw ingest --recompile` call (055): each
+	// input is then a vault path (raw/….md) of a source the snapshot already
+	// holds as a committed raw, not a file in the set directory.
+	Recompile bool `toml:"recompile"`
 }
 
 // Paths returns the files the case ingests, as written and in order: Inputs
@@ -258,7 +264,11 @@ func checkIngest(setDir string, c IngestCase) error {
 	}
 	seen := map[string]bool{}
 	for _, p := range c.Paths() {
-		if err := checkInput(setDir, who, p); err != nil {
+		check := checkInput
+		if c.Recompile {
+			check = checkRecompileInput
+		}
+		if err := check(setDir, who, p); err != nil {
 			return err
 		}
 		key := filepath.Clean(filepath.FromSlash(p))
@@ -289,6 +299,24 @@ func checkInput(setDir, who, p string) error {
 		return fmt.Errorf("cases.toml: %s: input %s: %w", who, p, err)
 	case !info.Mode().IsRegular():
 		return fmt.Errorf("cases.toml: %s: input %s is not a regular file", who, p)
+	}
+	return nil
+}
+
+// checkRecompileInput validates one input path of a recompile case (055): a
+// vault path of a source the snapshot already holds as a raw file, not a file
+// of the set. It must be a clean, local, slash-separated raw/….md path —
+// the same shape `lw ingest --recompile` reads as a vault path, so nothing the
+// runner passes on can be taken for a file or a path outside raw/. It is not
+// looked up in the snapshot here: the snapshot is a tarball, and a path it does
+// not hold fails the run with lw's own message.
+func checkRecompileInput(_, who, p string) error {
+	if p == "" {
+		return fmt.Errorf("cases.toml: %s: input is empty", who)
+	}
+	if !filepath.IsLocal(filepath.FromSlash(p)) || strings.ContainsRune(p, '\\') || path.Clean(p) != p ||
+		!strings.HasPrefix(p, "raw/") || !strings.HasSuffix(p, ".md") {
+		return fmt.Errorf("cases.toml: %s: recompile input %s must be a vault path raw/….md", who, p)
 	}
 	return nil
 }
