@@ -684,3 +684,54 @@ func TestOnTerminalConcurrentInstall(t *testing.T) {
 		t.Errorf("fn fired %d times for 20 rejects", n)
 	}
 }
+
+// TestOnTerminalPanicIsRecovered: the hook is the sync layer's code, and it
+// runs after the commit is durable. A panic in it must not unwind through
+// Commit or Reject into a verb or the TUI that would then report a failure
+// for work that landed; it is logged and the call returns its normal result.
+func TestOnTerminalPanicIsRecovered(t *testing.T) {
+	logDir := installFileLog(t)
+	e, _ := newTestEngine(t)
+	cs, err := e.OpenChangeset("hook: panic", testAuthor)
+	if err != nil {
+		t.Fatalf("OpenChangeset: %v", err)
+	}
+	stageKVCachePatch(t, e)
+
+	var calls int
+	e.OnTerminal(func(TerminalEvent) {
+		calls++
+		panic("sync layer blew up")
+	})
+
+	commitID, err := e.Commit("panicking hook")
+	if err != nil || commitID != "000001" {
+		t.Fatalf("Commit = %q, %v; want 000001, nil — a hook panic must not change the result", commitID, err)
+	}
+	if state, serr := e.ChangesetState(cs.ID); serr != nil || state != "committed" {
+		t.Errorf("changeset state = %q, %v; want committed", state, serr)
+	}
+
+	if _, err := e.OpenChangeset("hook: panic on reject", testAuthor); err != nil {
+		t.Fatalf("OpenChangeset: %v", err)
+	}
+	if err := e.Reject("panicking hook"); err != nil {
+		t.Fatalf("Reject = %v; want nil — a hook panic must not change the result", err)
+	}
+	if calls != 2 {
+		t.Errorf("hook ran %d times, want once per terminal event (2)", calls)
+	}
+
+	log := readLog(t, logDir)
+	for _, kind := range []string{"kind=commit", "kind=reject"} {
+		var found bool
+		for _, line := range strings.Split(log, "\n") {
+			if strings.Contains(line, "terminal hook panicked") && strings.Contains(line, kind) && strings.Contains(line, "sync layer blew up") {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("lw.log has no %q record carrying %q and the panic value:\n%s", "terminal hook panicked", kind, log)
+		}
+	}
+}

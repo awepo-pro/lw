@@ -6,6 +6,8 @@
 // loop watching the journal.
 package stage
 
+import "log/slog"
+
 // TerminalEvent describes one changeset that just reached a terminal state.
 type TerminalEvent struct {
 	Kind      string // "commit" | "reject"
@@ -35,6 +37,9 @@ const (
 // caller's to recover, not an event to announce. fn blocks the verb that
 // triggered it, so a slow consumer should hand the work to its own goroutine.
 //
+// A panic in fn is recovered and logged (lw.log, "terminal hook panicked");
+// the Commit or Reject that triggered it returns its normal result.
+//
 // OnTerminal is safe to call while other goroutines commit or reject; the
 // hook is read once per terminal event.
 func (e *Engine) OnTerminal(fn func(TerminalEvent)) {
@@ -49,8 +54,20 @@ func (e *Engine) OnTerminal(fn func(TerminalEvent)) {
 // only after releasing writeMu: the hook is user code and must never run
 // inside the single-writer lock (A-803), where a call back into any mutating
 // verb would deadlock.
+//
+// A panic in the hook is recovered and logged. By the time it runs the commit
+// or rejection is durable, so letting the panic unwind would crash a verb or
+// the TUI and report a failure for work that landed. The hook is the sync
+// layer's code and a bug there must cost a push, never the user's commit.
 func (e *Engine) fireTerminal(ev TerminalEvent) {
-	if fn := e.onTerminal.Load(); fn != nil {
-		(*fn)(ev)
+	fn := e.onTerminal.Load()
+	if fn == nil {
+		return
 	}
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("terminal hook panicked", "panic", r, "kind", ev.Kind)
+		}
+	}()
+	(*fn)(ev)
 }

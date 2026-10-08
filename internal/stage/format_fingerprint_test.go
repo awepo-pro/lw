@@ -47,10 +47,12 @@ package stage_test
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -75,28 +77,166 @@ const fingerprintGolden = "testdata/format-fingerprint.txt"
 // and is about to run -update without thinking; the order matters.
 const fingerprintMismatch = "the vault's on-disk shape changed: bump stage.FormatVersion and add a migration, then run go test ./internal/stage -run TestFormatFingerprint -update"
 
+// fingerprintLayoutHint is the second line of the failure when only the
+// [layout] section moved: a new file under .llmwiki/ is far more often
+// per-PC state (a cache, a lock) than a format change, and the fix for that
+// is the ignore list, not a version bump (042 D2).
+const fingerprintLayoutHint = "if the new path is per-PC state, add it to vaultsync.Ignore instead (042 D2)"
+
 // TestFormatFingerprint compares the vault's current on-disk shape with the
-// golden file. -update (the repo-wide testutil flag) rewrites the golden.
+// golden file. -update (the repo-wide testutil flag) rewrites the golden, but
+// only through planFingerprintUpdate: a changed shape needs a bumped
+// stage.FormatVersion first.
 func TestFormatFingerprint(t *testing.T) {
-	got := renderFingerprint(t)
+	body := renderFingerprintBody(t)
 
 	if testutil.UpdateEnabled() {
-		if err := os.MkdirAll(filepath.Dir(fingerprintGolden), 0o755); err != nil {
-			t.Fatalf("update %s: %v", fingerprintGolden, err)
-		}
-		if err := os.WriteFile(fingerprintGolden, []byte(got), 0o644); err != nil {
-			t.Fatalf("update %s: %v", fingerprintGolden, err)
+		if err := updateFingerprintGolden(fingerprintGolden, body, stage.FormatVersion); err != nil {
+			t.Fatal(err.Error())
 		}
 		return
 	}
 
+	got := fingerprintHeader(stage.FormatVersion) + body
 	want, err := os.ReadFile(fingerprintGolden)
 	if err != nil {
 		t.Fatalf("%s\n(cannot read %s: %v)", fingerprintMismatch, fingerprintGolden, err)
 	}
 	if string(want) != got {
-		t.Fatalf("%s\n%s", fingerprintMismatch, lineDiff(string(want), got))
+		t.Fatal(fingerprintFailure(string(want), got))
 	}
+}
+
+// updateFingerprintGolden is -update: it reads the golden at path (a missing
+// file is fine), asks planFingerprintUpdate what may be written, and writes
+// it. On refusal the file is left exactly as it was.
+func updateFingerprintGolden(path, body string, version int) error {
+	old, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("update %s: %w", path, err)
+	}
+	golden, err := planFingerprintUpdate(string(old), body, version)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("update %s: %w", path, err)
+	}
+	if err := os.WriteFile(path, []byte(golden), 0o644); err != nil {
+		return fmt.Errorf("update %s: %w", path, err)
+	}
+	return nil
+}
+
+// fingerprintFailure builds TestFormatFingerprint's failure text: the frozen
+// sentence, then — when [layout] is the only section that changed — the
+// per-PC hint on a second line, then what moved.
+func fingerprintFailure(want, got string) string {
+	var b strings.Builder
+	b.WriteString(fingerprintMismatch)
+	b.WriteString("\n")
+	if changed := changedSections(want, got); len(changed) == 1 && changed[0] == "layout" {
+		b.WriteString(fingerprintLayoutHint)
+		b.WriteString("\n")
+	}
+	b.WriteString(lineDiff(want, got))
+	return b.String()
+}
+
+// changedSections returns, sorted, the names of the golden sections whose
+// text differs between want and got. The text above the first "[section]"
+// line — the comment block and the format-version line — is the section
+// "header".
+func changedSections(want, got string) []string {
+	wantSections, gotSections := goldenSections(want), goldenSections(got)
+	names := map[string]bool{}
+	for n := range wantSections {
+		names[n] = true
+	}
+	for n := range gotSections {
+		names[n] = true
+	}
+	var changed []string
+	for n := range names {
+		if wantSections[n] != gotSections[n] {
+			changed = append(changed, n)
+		}
+	}
+	sort.Strings(changed)
+	return changed
+}
+
+// sectionLine matches a "[name]" section marker line of the golden file.
+var sectionLine = regexp.MustCompile(`^\[(.+)\]$`)
+
+// goldenSections splits golden text into its sections, keyed by name, each
+// value the section's lines including its marker.
+func goldenSections(text string) map[string]string {
+	sections := map[string]string{}
+	name := "header"
+	for _, line := range strings.SplitAfter(text, "\n") {
+		if m := sectionLine.FindStringSubmatch(strings.TrimSuffix(line, "\n")); m != nil {
+			name = m[1]
+		}
+		sections[name] += line
+	}
+	return sections
+}
+
+// fingerprintHeader is the golden file's header: the generated-file notice
+// and the FormatVersion the file was generated under. The notice repeats the
+// rule planFingerprintUpdate enforces, for the person who opens the file.
+func fingerprintHeader(version int) string {
+	var b strings.Builder
+	b.WriteString("# The vault's on-disk shape (042). Generated by TestFormatFingerprint; do not edit by hand.\n")
+	b.WriteString("# Changing anything below means a vault written by one lw may be misread by another:\n")
+	b.WriteString("# bump stage.FormatVersion, add a migration, then\n")
+	b.WriteString("#   go test ./internal/stage -run TestFormatFingerprint -update\n")
+	fmt.Fprintf(&b, "format-version: %d\n", version)
+	return b.String()
+}
+
+// versionLine is the golden header's format-version line.
+var versionLine = regexp.MustCompile(`(?m)^format-version: (.*)$`)
+
+// splitFingerprint splits a golden file into the FormatVersion in its header
+// and the body below the header line.
+func splitFingerprint(golden string) (version int, body string, err error) {
+	loc := versionLine.FindStringSubmatchIndex(golden)
+	if loc == nil {
+		return 0, "", fmt.Errorf("%s has no format-version line; if it is damaged, delete it and run -update to generate it afresh", fingerprintGolden)
+	}
+	version, err = strconv.Atoi(strings.TrimSpace(golden[loc[2]:loc[3]]))
+	if err != nil || version < 1 {
+		return 0, "", fmt.Errorf("%s: the format-version line %q is not a version number", fingerprintGolden, golden[loc[0]:loc[1]])
+	}
+	// The body starts after the header line's own newline.
+	return version, strings.TrimPrefix(golden[loc[1]:], "\n"), nil
+}
+
+// planFingerprintUpdate decides what -update may write. oldGolden is the file
+// on disk ("" when there is none yet), body the shape rendered now, version
+// stage.FormatVersion.
+//
+// The rule: a changed shape under an unchanged — or lowered — FormatVersion
+// is refused. Left to a bare "rewrite the file", -update turned the
+// fingerprint into advice: change a struct, run -update, commit, and a vault
+// written by the new lw is silently misread by the old one. The golden's own
+// header is what makes the rule checkable, since it remembers which version
+// the old shape belonged to. An unchanged shape, or a bumped version, writes
+// the new golden with the current version in its header.
+func planFingerprintUpdate(oldGolden, body string, version int) (string, error) {
+	if oldGolden == "" {
+		return fingerprintHeader(version) + body, nil
+	}
+	oldVersion, oldBody, err := splitFingerprint(oldGolden)
+	if err != nil {
+		return "", err
+	}
+	if body != oldBody && version <= oldVersion {
+		return "", fmt.Errorf("the vault's on-disk shape changed but stage.FormatVersion is still %d: bump it (and add a migration) before running -update", oldVersion)
+	}
+	return fingerprintHeader(version) + body, nil
 }
 
 // lineDiff says what changed between the golden file and the current shape.
@@ -173,17 +313,12 @@ func lineDiff(want, got string) string {
 	return strings.TrimSuffix(b.String(), "\n")
 }
 
-// renderFingerprint builds the whole golden text. Every section is sorted or
-// emitted in a fixed order, so the same code always renders the same bytes.
-func renderFingerprint(t *testing.T) string {
+// renderFingerprintBody renders everything in the golden file below its
+// header. Every section is sorted or emitted in a fixed order, so the same
+// code always renders the same bytes.
+func renderFingerprintBody(t *testing.T) string {
 	t.Helper()
 	var b strings.Builder
-	b.WriteString("# The vault's on-disk shape (042). Generated by TestFormatFingerprint; do not edit by hand.\n")
-	b.WriteString("# Changing anything below means a vault written by one lw may be misread by another:\n")
-	b.WriteString("# bump stage.FormatVersion, add a migration, then\n")
-	b.WriteString("#   go test ./internal/stage -run TestFormatFingerprint -update\n")
-	fmt.Fprintf(&b, "format-version: %d\n", stage.FormatVersion)
-
 	b.WriteString("\n[types]\n")
 	b.WriteString(renderTypes())
 
