@@ -61,12 +61,14 @@ func (t recompileTarget) announce() string {
 	return "recompiling " + t.raw
 }
 
-// recompileVaultPath reports whether arg, under --recompile, names a raw in
-// the vault rather than a file to read, and the vault-relative slash path it
-// names. After filepath.Clean it is one when it is relative and starts with
+// recompileVaultPath reports whether arg reads as a vault path — a raw in the
+// vault rather than a file to read — and the vault-relative slash path it
+// names. After filepath.Clean it does when it is relative and starts with
 // "raw/", or when it resolves (Abs, then Rel to root) to a path that does. A
-// URL is never one: a relative "https:/…" resolved under a working directory
-// that happens to be the vault's raw/ would otherwise look like it.
+// URL never does: a relative "https:/…" resolved under a working directory
+// that happens to be the vault's raw/ would otherwise look like one. Whether
+// the path names a COMMITTED raw is the caller's question, and what follows
+// from the answer depends on --recompile (cmdIngest).
 func recompileVaultPath(root, arg string) (string, bool) {
 	if isURLSource(arg) {
 		return "", false

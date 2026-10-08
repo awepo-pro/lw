@@ -219,7 +219,10 @@ func parseIngestSources(fs *flag.FlagSet, args []string) ([]string, error) {
 // argument that names a raw by its vault path is never extracted at all —
 // the turn writes pages from the raw as it is, stages no ingest_source and
 // never rewrites the raw. Without the flag a skipped source whose raw no page
-// cites says so, and names the flag.
+// cites says so, and names the flag; an argument that names a committed raw
+// by its vault path is skipped the same way, never extracted (S1b: its own
+// file carries the frontmatter its body hash leaves out, so extracting it
+// staged a second raw).
 func cmdIngest(args []string) error {
 	fs := flag.NewFlagSet("ingest", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -253,28 +256,42 @@ func cmdIngest(args []string) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
-	// 055: --recompile resolves its vault-path arguments first, against the
-	// committed vault, so a path that names no raw fails before a single
-	// source is extracted or fetched. This is the one case the engine opens
-	// ahead of extraction; it opens nothing else (no changeset, no agent, no
-	// key), and the opening below is then skipped.
+	// 055: an argument that reads as a vault path (recompileVaultPath) is
+	// resolved first, against the committed vault, before any source is
+	// extracted or fetched. One that names a committed raw is never extracted:
+	// with --recompile it is a recompile target; without, it is skipped like a
+	// source whose body matched that raw — extracting the raw's own file would
+	// stage a second raw whose body still carries the first one's frontmatter
+	// (the dedupe hashes the whole file, not the body the vault stores). One
+	// that names no committed raw fails under --recompile and, without it,
+	// stays a path like any other. This is the one case the engine opens ahead
+	// of extraction — only when an argument reads as a vault path, or under
+	// --recompile — and it opens nothing else (no changeset, no agent, no
+	// key); the opening below is then skipped.
 	var e *stage.Engine
 	vaultPaths := make(map[string]string) // argument → committed raw path it names
-	if *recompile {
+	candidates := make(map[string]string) // argument → vault path it reads as, committed or not
+	for _, arg := range sources {
+		if vp, ok := recompileVaultPath(root, arg); ok {
+			candidates[arg] = vp
+		}
+	}
+	if *recompile || len(candidates) > 0 {
 		e, err = stage.OpenEngine(root)
 		if err != nil {
 			return fmt.Errorf("open engine: %w", err)
 		}
 		defer e.Close()
 		for _, arg := range sources {
-			vp, ok := recompileVaultPath(root, arg)
+			vp, ok := candidates[arg]
 			if !ok {
 				continue
 			}
-			if _, found := e.Vault().RawSource(vp); !found {
+			if _, found := e.Vault().RawSource(vp); found {
+				vaultPaths[arg] = vp
+			} else if *recompile {
 				return fmt.Errorf("recompile %s: no committed raw source at that path", vp)
 			}
-			vaultPaths[arg] = vp
 		}
 	}
 
@@ -400,7 +417,9 @@ func cmdIngest(args []string) error {
 	// a recompile target for the raw that holds it (a vault-path argument is
 	// one by itself); a raw reached twice keeps the first argument and the
 	// later one prints the same duplicate line two equal new sources get.
-	// Without the flag the skip line says when no page cites the raw.
+	// Without the flag the skip line says when no page cites the raw — and a
+	// vault-path argument naming a committed raw is skipped with that same
+	// line, as if its content had matched.
 	citations := sync.OnceValue(func() map[string][]string { return rawCitations(e.Vault()) })
 	committed := e.Vault().RawSources()
 	seenBody := make(map[string]string)  // body sha -> the first source argument carrying it
@@ -427,6 +446,10 @@ func cmdIngest(args []string) error {
 	for i, src := range srcs {
 		if docs[i] == nil { // a vault-path argument: its raw was checked above
 			raw := vaultPaths[src]
+			if !*recompile {
+				fmt.Println(alreadyInVaultLine(src, raw, len(citations()[raw]) > 0))
+				continue
+			}
 			if first, dup := targetArg[raw]; dup {
 				fmt.Printf("skipped %s: same content as %s\n", src, first)
 				continue

@@ -660,28 +660,173 @@ func TestRecompileProposedNothing(t *testing.T) {
 	}
 }
 
-// TestRecompileFlagOffExtractsRawArgument pins D1's last bullet: without the
-// flag a raw/… argument is a path like any other — extracted, so a missing file
-// fails exactly as it did before 055 — and no agent is built.
-func TestRecompileFlagOffExtractsRawArgument(t *testing.T) {
+// rcSafeArg fails the test unless arg survives shell quoting unchanged, so a
+// test that expects the hint's <q> to equal the argument is not silently
+// wrong about a temp path with an odd byte in it.
+func rcSafeArg(t *testing.T, arg string) {
+	t.Helper()
+	if q := shellQuoteArg(arg); q != arg {
+		t.Fatalf("test path %q needs shell quoting (%s); pick another", arg, q)
+	}
+}
+
+// TestIngestRawPathWithoutFlagSkips pins 055 S1b. Without --recompile, an
+// argument that names a committed raw by its vault path is the raw's OWN file —
+// extracting it would stage a second raw whose body still carries the first
+// one's frontmatter (the dedupe hashes the whole file, which never equals the
+// body hash the vault stores). So it is never extracted: it is skipped exactly
+// like a source whose content matched that raw, with D4's lines and the
+// argument as typed. A skip does not count toward the limits, and a command
+// whose every argument is skipped opens nothing and builds no agent.
+func TestIngestRawPathWithoutFlagSkips(t *testing.T) {
+	const nothing = "nothing to ingest: every source is already in the vault\n"
+
+	t.Run("uncited_names_the_flag", func(t *testing.T) {
+		root, _ := rcVault(t)
+		chdir(t, t.TempDir()) // a relative raw/… must not depend on the working directory
+		spy := withRcSpy(t, nil)
+
+		stdout, stderr, code := rcRun(t, "--vault", root, rcRawA)
+		if code != 0 {
+			t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr, stdout)
+		}
+		want := "skipped raw/articles/a.md: already in the vault at raw/articles/a.md, cited by no page — run lw ingest --recompile raw/articles/a.md to write pages from it\n" + nothing
+		if stdout != want {
+			t.Errorf("stdout =\n%q\nwant\n%q", stdout, want)
+		}
+		if spy.built != 0 {
+			t.Errorf("newIngestAgent built %d time(s), want 0", spy.built)
+		}
+		noChangesetsAnywhere(t, root)
+	})
+
+	t.Run("cited_keeps_the_plain_line", func(t *testing.T) {
+		root, _ := rcVault(t)
+		rcWritePage(t, root, "wiki/concepts/cites-a.md", []string{rcRawA}, "A claim.^[raw/articles/a.md]\n")
+		chdir(t, t.TempDir())
+		spy := withRcSpy(t, nil)
+
+		stdout, stderr, code := rcRun(t, "--vault", root, rcRawA)
+		if code != 0 {
+			t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr, stdout)
+		}
+		want := "skipped raw/articles/a.md: already in the vault at raw/articles/a.md\n" + nothing
+		if stdout != want {
+			t.Errorf("stdout =\n%q\nwant\n%q", stdout, want)
+		}
+		if spy.built != 0 {
+			t.Errorf("newIngestAgent built %d time(s), want 0", spy.built)
+		}
+		noChangesetsAnywhere(t, root)
+	})
+
+	t.Run("argument_is_quoted_as_typed", func(t *testing.T) {
+		root, _ := rcVault(t)
+		chdir(t, t.TempDir())
+		withRcSpy(t, nil)
+
+		// The line names the argument the user typed, not the normalized path.
+		stdout, _, code := rcRun(t, "--vault", root, "./raw//articles/a.md")
+		want := "skipped ./raw//articles/a.md: already in the vault at raw/articles/a.md, cited by no page — run lw ingest --recompile ./raw//articles/a.md to write pages from it\n" + nothing
+		if code != 0 || stdout != want {
+			t.Errorf("code %d, stdout =\n%q\nwant\n%q", code, stdout, want)
+		}
+	})
+
+	t.Run("a_skip_counts_toward_no_limit_and_the_rest_ingests", func(t *testing.T) {
+		root := testutil.CopyFixture(t, "minimal")
+		ingestLimitsEnv(t, 40) // capBytes = 120
+		// 200 bytes: over the cap on its own, so counting the skip would refuse.
+		big := "# Big\n\n" + strings.Repeat("x", 192) + "\n"
+		rcCommitRaw(t, root, "raw/articles/big.md", big)
+		fresh := writtenSource(t, "fresh.md", "# Fresh\n\nFresh body.\n")
+		chdir(t, t.TempDir())
+		spy := withRcSpy(t, []stage.Op{rcPageOp("raw/articles/kv-cache-explained.md")})
+
+		stdout, stderr, code := rcRun(t, "--vault", root, "raw/articles/big.md", fresh)
+		if code != 0 {
+			t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr, stdout)
+		}
+		if want := "skipped raw/articles/big.md: already in the vault at raw/articles/big.md, cited by no page — run lw ingest --recompile raw/articles/big.md to write pages from it\n"; !strings.Contains(stdout, want) {
+			t.Errorf("stdout = %q, want it to contain %q", stdout, want)
+		}
+		wantSourcesEqual(t, originalSources(t, spy.message()), []string{fresh})
+		if len(spy.recompile) != 0 {
+			t.Errorf("recompile = %q, want none: a skip is not a target", spy.recompile)
+		}
+		if cs := rcOpenChangeset(t, root); cs.Intent != "ingest raw/articles/big.md, "+fresh {
+			// Today's intent lists every argument, skipped ones included.
+			t.Errorf("intent = %q, want today's ingestIntent over every argument", cs.Intent)
+		}
+	})
+}
+
+// TestIngestAbsRawPathWithoutFlagSkips: the same skip for an absolute path that
+// resolves into <root>/raw/ — what a shell completion or a file manager hands
+// over. The line names the argument as typed.
+func TestIngestAbsRawPathWithoutFlagSkips(t *testing.T) {
 	root, _ := rcVault(t)
-	chdir(t, t.TempDir())
 	spy := withRcSpy(t, nil)
 
-	_, stderr, code := rcRun(t, "--vault", root, rcRawA)
-	if code != 1 || !strings.Contains(stderr, "extract raw/articles/a.md:") {
-		t.Errorf("code %d, stderr %q, want the pre-055 extract failure", code, stderr)
+	abs := filepath.Join(root, "raw", "articles", "a.md")
+	rcSafeArg(t, abs)
+	stdout, stderr, code := rcRun(t, "--vault", root, abs)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr, stdout)
+	}
+	want := "skipped " + abs + ": already in the vault at raw/articles/a.md, cited by no page — run lw ingest --recompile " + abs + " to write pages from it\n" +
+		"nothing to ingest: every source is already in the vault\n"
+	if stdout != want {
+		t.Errorf("stdout =\n%q\nwant\n%q", stdout, want)
 	}
 	if spy.built != 0 {
 		t.Errorf("newIngestAgent built %d time(s), want 0", spy.built)
 	}
-	// The extract failed before the engine opened: no changeset directory can
-	// hold one (noChangesetsAnywhere needs the directories to exist).
-	for _, state := range []string{"open", "committed", "rejected"} {
-		if entries, err := os.ReadDir(filepath.Join(root, ".llmwiki", "changesets", state)); err == nil && len(entries) != 0 {
-			t.Errorf("changesets/%s holds %d entr(ies), want none", state, len(entries))
+	noChangesetsAnywhere(t, root)
+}
+
+// TestIngestUncommittedRawPathWithoutFlagExtracts: a raw/… argument that names
+// NO committed raw is not special without the flag — it is a path like any
+// other and extracted as one: a missing file fails exactly as before 055, and a
+// real file of that relative name in the working directory is ingested.
+func TestIngestUncommittedRawPathWithoutFlagExtracts(t *testing.T) {
+	t.Run("missing_file_fails_as_before", func(t *testing.T) {
+		root, _ := rcVault(t)
+		chdir(t, t.TempDir())
+		spy := withRcSpy(t, nil)
+
+		_, stderr, code := rcRun(t, "--vault", root, "raw/articles/nope.md")
+		if code != 1 || !strings.Contains(stderr, "extract raw/articles/nope.md:") {
+			t.Errorf("code %d, stderr %q, want the pre-055 extract failure", code, stderr)
 		}
-	}
+		if spy.built != 0 {
+			t.Errorf("newIngestAgent built %d time(s), want 0", spy.built)
+		}
+		// Nothing was opened: the engine may have been (the vault had to be
+		// asked), a changeset must not exist.
+		for _, state := range []string{"open", "committed", "rejected"} {
+			if entries, err := os.ReadDir(filepath.Join(root, ".llmwiki", "changesets", state)); err == nil && len(entries) != 0 {
+				t.Errorf("changesets/%s holds %d entr(ies), want none", state, len(entries))
+			}
+		}
+	})
+
+	t.Run("file_in_the_working_directory_is_ingested", func(t *testing.T) {
+		root, _ := rcVault(t)
+		cwd := t.TempDir()
+		dirFile(t, cwd, "raw/articles/notes.md", "# Local Notes\n\nA file that only looks like a vault path.\n")
+		chdir(t, cwd)
+		spy := withRcSpy(t, []stage.Op{rcPageOp("raw/articles/kv-cache-explained.md")})
+
+		stdout, stderr, code := rcRun(t, "--vault", root, "raw/articles/notes.md")
+		if code != 0 {
+			t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr, stdout)
+		}
+		wantSourcesEqual(t, originalSources(t, spy.message()), []string{"raw/articles/notes.md"})
+		if strings.Contains(stdout, "skipped") {
+			t.Errorf("stdout = %q, want no skip line for a path naming no committed raw", stdout)
+		}
+	})
 }
 
 // TestIngestSkipLineUncitedNamesFlag: without the flag, a source whose body is
