@@ -45,15 +45,41 @@ const logRotateThreshold = 500
 // ReloadIfChanged still does not take writeMu (it must never queue behind
 // a commit); its vault/index/changeset reads stay race-free through the
 // A-802 immutable snapshots and the openMu-guarded cache pointer.
+//
+// 042: once the commit has succeeded — writeMu released, the vault lock
+// released, commit_end durable — the OnTerminal hook is told. The hook runs
+// here, outside the locked body, because it is how lw sync pushes the new
+// commit, and a push must be free to call back into the engine.
 func (e *Engine) Commit(message string) (string, error) {
+	commitID, changesetID, err := e.commitLocked(message)
+	if err != nil {
+		return commitID, err
+	}
+	e.fireTerminal(TerminalEvent{
+		Kind:      terminalCommit,
+		Changeset: changesetID,
+		CommitID:  commitID,
+		Message:   message,
+	})
+	return commitID, nil
+}
+
+// commitLocked runs the ten steps under writeMu and returns the changeset
+// id beside the commit id, so Commit can name both in the terminal event
+// after the lock is gone. The deferred unlock is the point of the split: it
+// runs when this function returns, before Commit calls the hook.
+func (e *Engine) commitLocked(message string) (commitID, changesetID string, err error) {
 	e.writeMu.Lock()
 	defer e.writeMu.Unlock()
-	return e.commitWriteLocked(message)
+	commitID, err = e.commitWriteLocked(message, &changesetID)
+	return commitID, changesetID, err
 }
 
 // commitWriteLocked is Commit's body without writeMu — the exported Commit
 // holds the lock across the whole ten-step sequence (A-803), and step 2
-// calls Refresh's body directly so a holder never re-locks.
+// calls Refresh's body directly so a holder never re-locks. It stores the
+// open changeset's id in *changesetID as soon as step 2 has read it, for
+// the 042 terminal event.
 //
 // A-804 (F-806-2): every error return after step 1 releases the vault
 // lock — backbone §5.4 step 10 is "release the lock", and Close is
@@ -62,7 +88,7 @@ func (e *Engine) Commit(message string) (string, error) {
 // not defer Close (the TUI's review pane) wedged the engine for the life
 // of the process: every later Commit ErrLocked, every ReloadIfChanged a
 // no-op.
-func (e *Engine) commitWriteLocked(message string) (commitID string, err error) {
+func (e *Engine) commitWriteLocked(message string, changesetID *string) (commitID string, err error) {
 	// 029 T1 (F2): exactly one slog record per Commit call — success or
 	// failure — so every commit is visible in lw.log where nothing was
 	// logged before. The record never carries page content or the message
@@ -124,6 +150,7 @@ func (e *Engine) commitWriteLocked(message string) (commitID string, err error) 
 		return "", fmt.Errorf("stage: commit: %w", ErrNoChangeset)
 	}
 	csID = c.ID // set as soon as the open changeset is in hand, so an ErrStale refusal still traces its changeset
+	*changesetID = c.ID
 	if hasStaleOp(c.Ops) {
 		return "", ErrStale
 	}
@@ -879,6 +906,16 @@ func (e *Engine) vaultLintContext() *lint.Context {
 	return &lint.Context{Vault: e.vault, Index: e.index, Graph: e.vault.Graph()}
 }
 
+// commitEndPayload is the shape of commit_end's Data field. A named type —
+// it was an anonymous struct in commitEndData — so TestFormatFingerprint
+// can reflect over the real thing (042): the journal is synced, and these
+// keys are part of the on-disk format.
+type commitEndPayload struct {
+	LintErrors int  `json:"lint_errors"`
+	LintWarns  int  `json:"lint_warns"`
+	Forced     bool `json:"forced,omitempty"`
+}
+
 // commitEndData runs lint.Run over ctx and returns commit_end's Data
 // payload: {"lint_errors":N,"lint_warns":M}, plus "forced":true when this
 // commit overrode a lint-regression refusal (backbone §5.7 D-AG,
@@ -886,11 +923,7 @@ func (e *Engine) vaultLintContext() *lint.Context {
 // payload is byte-identical to what every earlier wave wrote.
 func commitEndData(ctx *lint.Context, forced bool) (json.RawMessage, error) {
 	report := lint.Run(ctx, nil)
-	b, err := json.Marshal(struct {
-		LintErrors int  `json:"lint_errors"`
-		LintWarns  int  `json:"lint_warns"`
-		Forced     bool `json:"forced,omitempty"`
-	}{report.Errors, report.Warns, forced})
+	b, err := json.Marshal(commitEndPayload{LintErrors: report.Errors, LintWarns: report.Warns, Forced: forced})
 	if err != nil {
 		return nil, fmt.Errorf("marshal commit_end data: %w", err)
 	}
