@@ -51,6 +51,14 @@ type Deps struct {
 	// §3). nil — no provider configured — means the verb is not offered at
 	// all, never offered-and-failing.
 	Search web.SearchProvider
+	// Recompile is the vault paths of the committed raw sources this turn
+	// compiles into wiki pages (055: `lw ingest --recompile`). Such a source
+	// reaches the turn without a stage.ingest_source, so the 040 read log
+	// would never hear of it and stage.close would let a skimmed one through;
+	// NewRegistry seeds the log with each path and stage.close treats them as
+	// live. Only the recompile turn sets it — every other registry (TUI, MCP,
+	// query, lint) leaves it nil and behaves exactly as before.
+	Recompile []string
 	// reads is the 040 read log shared by raw.get, stage.ingest_source and
 	// stage.close. It is not caller-supplied: NewRegistry makes a fresh one
 	// on its own copy of Deps, so a registry's reads belong to that registry
@@ -83,6 +91,11 @@ type Registry struct {
 // process, in 019's join) must not inherit what this one has read.
 func NewRegistry(d Deps) *Registry {
 	d.reads = newReadLog()
+	// 055: the recompile turn's committed raws are read-log sources from the
+	// first round. The slice is copied so the guard answers to the paths the
+	// registry was built with, not to a caller's later edit of its own.
+	d.Recompile = append([]string(nil), d.Recompile...)
+	d.reads.seedRecompile(d.Vault, d.Recompile)
 	r := &Registry{
 		deps:  d,
 		tools: make(map[string]Tool),

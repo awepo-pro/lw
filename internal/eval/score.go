@@ -404,6 +404,26 @@ func (s *scorer) scoreIngest(m map[string]float64, c IngestCase, dir string, tur
 		readTotal += read
 		total += n
 	}
+	// 055: a recompile case stages no ingest_source — its sources are the raws
+	// it names, committed in the snapshot — so they count here too, resolved
+	// the way a staged source is (the copy the runner kept in staged/, else the
+	// snapshot's own). Without this its chunk_coverage was absent whatever the
+	// model read, and a skimmed recompile scored like an untried one.
+	if c.Recompile {
+		for _, p := range c.Paths() {
+			if seen[p] {
+				continue
+			}
+			seen[p] = true
+			body, ok := resolve(p)
+			if !ok {
+				continue
+			}
+			read, n := score.ChunkCoverage(turns, p, body)
+			readTotal += read
+			total += n
+		}
+	}
 	m[MetricOps] = float64(live)
 	if total > 0 {
 		m[MetricChunkCoverage] = float64(readTotal) / float64(total)

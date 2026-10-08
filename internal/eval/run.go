@@ -181,8 +181,12 @@ type job struct {
 	id    string
 	verb  string   // "query" | "ingest"
 	kind  string   // ask kind, or "ingest"
-	args  []string // the question; or, for ingest, every absolute input path in order (049)
+	args  []string // the question; or, for ingest, every absolute input path in order (049) — or, when recompile, every vault path (055)
 	index int
+
+	// recompile marks an ingest job that runs `lw ingest --recompile` over
+	// args as vault paths of raws the snapshot already holds (055).
+	recompile bool
 }
 
 // runState is what every job of one Run shares.
@@ -341,9 +345,16 @@ func (r *Runner) selectJobs() ([]job, error) {
 	for _, c := range r.Set.Ingest {
 		var paths []string
 		for _, p := range c.Paths() {
+			if c.Recompile {
+				// 055: a vault path names a raw in the scratch vault, not a
+				// file beside cases.toml — joined onto the set directory it
+				// would name nothing lw could read.
+				paths = append(paths, p)
+				continue
+			}
 			paths = append(paths, filepath.Join(r.Set.Dir, filepath.FromSlash(p)))
 		}
-		all = append(all, entry{job{id: c.ID, verb: "ingest", kind: "ingest", args: paths}, c.Holdout, false})
+		all = append(all, entry{job{id: c.ID, verb: "ingest", kind: "ingest", args: paths, recompile: c.Recompile}, c.Holdout, false})
 	}
 
 	group := r.Only == "" || r.Only == "ask" || r.Only == "ingest"
@@ -460,7 +471,11 @@ func (r *Runner) runJob(ctx context.Context, st *runState, j job) error {
 		}
 		// One lw call per job, whatever its inputs: a multi-file ingest case
 		// is the files of ONE `lw ingest`, in the order the case lists them.
-		argv := append([]string{j.verb, "--vault", scratch}, j.args...)
+		argv := []string{j.verb, "--vault", scratch}
+		if j.recompile {
+			argv = append(argv, "--recompile")
+		}
+		argv = append(argv, j.args...)
 		res, err = st.exec(actx, Cmd{Path: r.LW, Args: argv, Env: st.env})
 		// A cut-off attempt is the job timeout, not a run error: the deadline
 		// fired on the attempt's own context while the run's was still live,
@@ -505,6 +520,11 @@ func (r *Runner) runJob(ctx context.Context, st *runState, j job) error {
 	if j.verb == "ingest" {
 		if err := collectIngest(scratch, caseDir); err != nil {
 			return err
+		}
+		if j.recompile {
+			if err := keepRecompiledRaws(scratch, caseDir, j.args); err != nil {
+				return err
+			}
 		}
 	}
 	return writeJSON(filepath.Join(caseDir, "meta.json"), RunMeta{
@@ -705,6 +725,38 @@ func collectIngest(scratch, caseDir string) error {
 		})
 	}
 	return writeJSON(filepath.Join(caseDir, "lint.json"), lf)
+}
+
+// keepRecompiledRaws copies each raw a recompile job was run over (055) from
+// the scratch vault into caseDir/staged/<path>, byte for byte — the place a
+// staged source's file lives, so scoring resolves a recompile target and an
+// ingest_source op the same way and chunk_coverage counts reads against the
+// bytes the model could have read. The raw is committed in the snapshot, so
+// nothing is staged: the copy is evidence, not a changeset file, and
+// changeset.json does not list it. A raw the scratch vault lacks is skipped —
+// lw then failed on the path and the job is scored as failed, and the
+// scorer's snapshot fallback still answers chunk_coverage.
+func keepRecompiledRaws(scratch, caseDir string, paths []string) error {
+	for _, p := range paths {
+		if !filepath.IsLocal(filepath.FromSlash(p)) {
+			return fmt.Errorf("recompile path %q escapes the case directory", p)
+		}
+		b, err := os.ReadFile(filepath.Join(scratch, filepath.FromSlash(p)))
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(caseDir, "staged", filepath.FromSlash(p))
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(target, b, 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // collectStagedPaths adds to into every path under wiki/ or raw/ that a

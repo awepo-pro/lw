@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/awepo-pro/lw/internal/agent"
@@ -19,6 +20,7 @@ import (
 	"github.com/awepo-pro/lw/internal/stage"
 	"github.com/awepo-pro/lw/internal/tools"
 	"github.com/awepo-pro/lw/internal/trace"
+	"github.com/awepo-pro/lw/internal/vault"
 )
 
 // httpTimeout bounds every fetch the CLI's HTML extractor makes —
@@ -211,12 +213,26 @@ func parseIngestSources(fs *flag.FlagSet, args []string) ([]string, error) {
 // hands it to the agent to ingest the raw content and compile wiki pages
 // from it — leaving the changeset open for human review
 // (/docs/design.md §9.4; nothing in this verb commits).
+//
+// 055: with --recompile a source the vault already holds as a committed raw
+// is not skipped but handed to the turn as a recompile target, and an
+// argument that names a raw by its vault path is never extracted at all —
+// the turn writes pages from the raw as it is, stages no ingest_source and
+// never rewrites the raw. Without the flag a skipped source whose raw no page
+// cites says so, and names the flag; an argument that names a committed raw
+// by its vault path is skipped the same way, never extracted (S1b: its own
+// file carries the frontmatter its body hash leaves out, so extracting it
+// staged a second raw). S1d: the same holds for the files a directory argument
+// walks into the vault's raw/ (`lw ingest --recompile raw/`), classified by
+// where they are, and every comparison of a path with the vault uses canonical
+// paths, so how the vault or the file is spelled does not change the answer.
 func cmdIngest(args []string) error {
 	fs := flag.NewFlagSet("ingest", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	vaultPath := fs.String("vault", "", "vault root (default: nearest ancestor directory containing SCHEMA.md)")
 	kindFlag := fs.String("kind", "", "override the detected kind for every source: article|paper|transcript")
 	dryRun := fs.Bool("dry-run", false, "report what would be ingested and the limit verdict, then exit — opens no changeset, constructs no agent (URL sources are still fetched, to size them)")
+	recompile := fs.Bool("recompile", false, "write pages from sources the vault already holds as committed raw files; stages no new raw")
 	sources, err := parseIngestSources(fs, args)
 	if err != nil {
 		return &exitError{code: 2}
@@ -243,6 +259,72 @@ func cmdIngest(args []string) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
+	// 055: an argument that reads as a vault path (recompileVaultPath) is
+	// resolved first, against the committed vault, before any source is
+	// extracted or fetched. One that names a committed raw is never extracted:
+	// with --recompile it is a recompile target; without, it is skipped like a
+	// source whose body matched that raw — extracting the raw's own file would
+	// stage a second raw whose body still carries the first one's frontmatter
+	// (the dedupe hashes the whole file, not the body the vault stores). One
+	// that names no committed raw fails under --recompile and, without it,
+	// stays a path like any other. This is the one case the engine opens ahead
+	// of extraction — only when an argument reads as a vault path, or under
+	// --recompile, or (below) when the walk reaches the vault's raw/ — and it
+	// opens nothing else (no changeset, no agent, no key).
+	//
+	// 055 S1d (review M1): every classification compares canonical paths. The
+	// root is made absolute with its symlinks resolved ONCE here; an argument
+	// is canonicalized where it is asked about (recompileVaultPath,
+	// fileOutsideVault, walkedRawPath). root itself stays as findVaultRoot gave
+	// it for everything that opens or logs the vault.
+	canonRoot := canonicalPath(root)
+	var e *stage.Engine
+	openEng := func() error {
+		if e != nil {
+			return nil
+		}
+		eng, oerr := stage.OpenEngine(root)
+		if oerr != nil {
+			return fmt.Errorf("open engine: %w", oerr)
+		}
+		e = eng
+		return nil
+	}
+	defer func() {
+		if e != nil {
+			e.Close()
+		}
+	}()
+	vaultPaths := make(map[string]string) // argument → committed raw path it names
+	candidates := make(map[string]string) // argument → vault path it reads as, committed or not
+	for _, arg := range sources {
+		// 055 S1d (review H1): a directory is walked, never a vault path — it
+		// may BE the vault's raw/ or a folder of it, and the walk's files are
+		// classified one by one below.
+		if isDirArg(arg) {
+			continue
+		}
+		if vp, ok := recompileVaultPath(canonRoot, arg); ok && (*recompile || !fileOutsideVault(canonRoot, arg)) {
+			candidates[arg] = vp
+		}
+	}
+	if *recompile || len(candidates) > 0 {
+		if err := openEng(); err != nil {
+			return err
+		}
+		for _, arg := range sources {
+			vp, ok := candidates[arg]
+			if !ok {
+				continue
+			}
+			if _, found := e.Vault().RawSource(vp); found {
+				vaultPaths[arg] = vp
+			} else if *recompile {
+				return fmt.Errorf("recompile %s: no committed raw source at that path", vp)
+			}
+		}
+	}
+
 	// Extract every source before touching the staging engine at all: a
 	// bad source fails the whole command with nothing opened, rather than
 	// leaving a changeset with only some of the requested sources in it.
@@ -267,6 +349,10 @@ func cmdIngest(args []string) error {
 	explicit := make(map[string]bool) // arguments named outright — an explicit naming wins over the folder the file also rode in through
 	expandedSrcs := make([]string, 0, len(sources))
 	for _, arg := range sources {
+		if _, isVaultPath := vaultPaths[arg]; isVaultPath {
+			expandedSrcs = append(expandedSrcs, arg) // never stat, walked or extracted
+			continue
+		}
 		if info, serr := os.Stat(arg); serr == nil && info.IsDir() {
 			files, skipped, werr := extract.Walk(arg, ex)
 			if werr != nil {
@@ -292,9 +378,55 @@ func cmdIngest(args []string) error {
 	}
 	sources = expandedSrcs
 
+	// 055 S1d (review H1): a file the WALK selected inside the vault's raw/ is
+	// not a source to extract. A committed raw source is the same thing an
+	// argument naming it is — a recompile target under --recompile, the A-807
+	// skip without — and anything else under raw/ (a PDF original beside its raw,
+	// a stray) is passed over with one line, flag or not: extracting either
+	// stages a second raw whose body carries the first one's frontmatter. The
+	// walk's files are classified by where they are (walkedRawPath), after the
+	// walk, because a directory argument never read as a vault path. A file
+	// named outright as well keeps the rules of an explicit argument, and the
+	// walk's own pass-overs (hidden, not text…) have already printed.
+	if len(expanded) > 0 {
+		kept := make([]string, 0, len(sources))
+		for _, src := range sources {
+			if !expanded[src] || explicit[src] {
+				kept = append(kept, src)
+				continue
+			}
+			if _, named := vaultPaths[src]; named {
+				kept = append(kept, src)
+				continue
+			}
+			vp, under := walkedRawPath(canonRoot, src)
+			if !under {
+				kept = append(kept, src)
+				continue
+			}
+			if err := openEng(); err != nil {
+				return err
+			}
+			if _, found := e.Vault().RawSource(vp); !found {
+				fmt.Printf("skipped %s: inside the vault's raw/ but not a committed raw source\n", src)
+				continue
+			}
+			vaultPaths[src] = vp
+			kept = append(kept, src)
+		}
+		sources = kept
+	}
+
 	docs := make([]*extract.Doc, 0, len(sources))
 	srcs := make([]string, 0, len(sources)) // the arguments docs carries — shorter than sources when F.I2 drops one
 	for _, src := range sources {
+		if _, isVaultPath := vaultPaths[src]; isVaultPath {
+			// 055: a committed raw has nothing to extract. Its slot in docs
+			// stays nil so the dedupe pass below sees it in argument order.
+			docs = append(docs, nil)
+			srcs = append(srcs, src)
+			continue
+		}
 		doc, err := ex.Extract(ctx, src)
 		if err != nil {
 			// 004 F.I2, extended by 007 F.W4 (correction #6): for a
@@ -333,12 +465,11 @@ func cmdIngest(args []string) error {
 	// The engine opens before the agent is built (A-807): the duplicate
 	// pre-check below reads the committed raw sources, and a vault that
 	// already holds everything must exit 0 without ever resolving an API
-	// key.
-	e, err := stage.OpenEngine(root)
-	if err != nil {
-		return fmt.Errorf("open engine: %w", err)
+	// key. (An argument that read as a vault path, --recompile and a walk that
+	// reached the vault's raw/ opened it earlier, above.)
+	if err := openEng(); err != nil {
+		return err
 	}
-	defer e.Close()
 
 	// A-807 (BUG-2): drop every source whose body the vault already holds,
 	// or that an earlier source of this command already carried, BEFORE
@@ -347,20 +478,72 @@ func cmdIngest(args []string) error {
 	// to end in "agent proposed nothing". The hash is tools.SourceBodySHA,
 	// the same number stage.ingest_source records, so this check and the
 	// tool can never disagree about what the vault holds.
+	//
+	// 055: with --recompile a body the vault holds is not dropped but becomes
+	// a recompile target for the raw that holds it (a vault-path argument is
+	// one by itself); a raw reached twice keeps the first argument and the
+	// later one prints the same duplicate line two equal new sources get.
+	// Without the flag the skip line says when no page cites the raw — and a
+	// vault-path argument naming a committed raw is skipped with that same
+	// line, as if its content had matched.
+	citations := sync.OnceValue(func() map[string][]string { return rawCitations(e.Vault()) })
 	committed := e.Vault().RawSources()
-	seenBody := make(map[string]string) // body sha -> the first source argument carrying it
+	seenBody := make(map[string]string)  // body sha -> the first source argument carrying it
+	targetArg := make(map[string]string) // committed raw path -> the first argument that reached it
+	var targets []recompileTarget
 	keptSrcs := make([]string, 0, len(sources))
 	keptDocs := make([]*extract.Doc, 0, len(docs))
+	// sized is every kept source and every target in argument order, with the
+	// bytes it adds toward the F.W2 cap: the limit check below counts them
+	// together and names the largest of them.
+	type sizedEntry struct {
+		name string
+		n    int
+	}
+	var sized []sizedEntry
+	addTarget := func(src string, r *vault.RawSource, byContent bool) {
+		targetArg[r.Path] = src
+		targets = append(targets, recompileTarget{
+			raw: r.Path, arg: src, byContent: byContent,
+			title: r.Title, chunks: tools.RawChunkCount(r.Body),
+		})
+		sized = append(sized, sizedEntry{src, len(r.Body)})
+	}
 	for i, src := range srcs {
+		if docs[i] == nil { // a vault-path argument: its raw was checked above
+			raw := vaultPaths[src]
+			if !*recompile {
+				fmt.Println(alreadyInVaultLine(src, raw, len(citations()[raw]) > 0))
+				continue
+			}
+			if first, dup := targetArg[raw]; dup {
+				fmt.Printf("skipped %s: same content as %s\n", src, first)
+				continue
+			}
+			r, _ := e.Vault().RawSource(raw)
+			addTarget(src, r, false)
+			continue
+		}
 		sha := tools.SourceBodySHA(docs[i].Markdown)
-		skip := ""
+		var held *vault.RawSource
 		for _, r := range committed {
 			if r.SHA256 == sha {
-				skip = fmt.Sprintf("skipped %s: already in the vault at %s", src, r.Path)
+				held = r
 				break
 			}
 		}
-		if skip == "" {
+		skip := ""
+		switch {
+		case held != nil && *recompile:
+			if first, dup := targetArg[held.Path]; dup {
+				skip = fmt.Sprintf("skipped %s: same content as %s", src, first)
+				break
+			}
+			addTarget(src, held, true)
+			continue
+		case held != nil:
+			skip = alreadyInVaultLine(src, held.Path, len(citations()[held.Path]) > 0)
+		default:
 			if first, dup := seenBody[sha]; dup {
 				skip = fmt.Sprintf("skipped %s: same content as %s", src, first)
 			}
@@ -372,8 +555,9 @@ func cmdIngest(args []string) error {
 		seenBody[sha] = src
 		keptSrcs = append(keptSrcs, src)
 		keptDocs = append(keptDocs, docs[i])
+		sized = append(sized, sizedEntry{src, len(docs[i].Markdown)})
 	}
-	if len(keptSrcs) == 0 {
+	if len(keptSrcs) == 0 && len(targets) == 0 {
 		fmt.Println("nothing to ingest: every source is already in the vault")
 		return nil
 	}
@@ -387,20 +571,25 @@ func cmdIngest(args []string) error {
 	// ingestCapBytes). Over either cap the command fails here — no
 	// changeset, no agent, no key resolved — naming the largest kept
 	// source, the one to split out first (first wins on ties).
+	//
+	// 055: a recompile target counts as a file and its raw body's bytes count
+	// toward the cap, exactly like a kept source — the turn reads it all the
+	// same — and it can be the one named as largest.
+	fileCount := len(sized)
 	ingestBytes := 0
-	for _, doc := range keptDocs {
-		ingestBytes += len(doc.Markdown)
+	for _, it := range sized {
+		ingestBytes += it.n
 	}
 	capBytes := ingestCapBytes(cfg.Limits.ContextTokens)
-	if len(keptSrcs) > ingestMaxFiles || ingestBytes > capBytes {
-		largest, largestBytes := keptSrcs[0], len(keptDocs[0].Markdown)
-		for i := 1; i < len(keptDocs); i++ {
-			if len(keptDocs[i].Markdown) > largestBytes {
-				largest, largestBytes = keptSrcs[i], len(keptDocs[i].Markdown)
+	if fileCount > ingestMaxFiles || ingestBytes > capBytes {
+		largest, largestBytes := sized[0].name, sized[0].n
+		for _, it := range sized[1:] {
+			if it.n > largestBytes {
+				largest, largestBytes = it.name, it.n
 			}
 		}
 		return fmt.Errorf("%d files (%d KB) to ingest; the limit is %d files and %d KB per ingest (llm.limits.context_tokens %d × 4 × 75%%); largest: %s (%d KB). Nothing was opened — ingest fewer files, or raise llm.limits.context_tokens.",
-			len(keptSrcs), ingestKB(ingestBytes), ingestMaxFiles, ingestKB(capBytes), cfg.Limits.ContextTokens, filepath.Base(largest), ingestKB(largestBytes))
+			fileCount, ingestKB(ingestBytes), ingestMaxFiles, ingestKB(capBytes), cfg.Limits.ContextTokens, filepath.Base(largest), ingestKB(largestBytes))
 	}
 
 	// 004 F.I5: --dry-run stops here — expansion, extraction, dedupe and
@@ -413,8 +602,11 @@ func cmdIngest(args []string) error {
 		for _, src := range keptSrcs {
 			fmt.Println("would ingest " + src)
 		}
+		for _, t := range targets {
+			fmt.Println("would recompile " + t.raw)
+		}
 		fmt.Printf("within limits: %d files, %d KB (limit %d files, %d KB)\n",
-			len(keptSrcs), ingestKB(ingestBytes), ingestMaxFiles, ingestKB(capBytes))
+			fileCount, ingestKB(ingestBytes), ingestMaxFiles, ingestKB(capBytes))
 		return nil
 	}
 
@@ -482,7 +674,7 @@ func cmdIngest(args []string) error {
 	// preExtracted above.
 	sessions := agent.NewFileSessions(e.Vault().Root())
 	toolExtract := extract.Chain(pre, agentExtractors(e.Vault().Root(), cfg))
-	ag, err := newIngestAgent(e, cfg, sessions, toolExtract)
+	ag, err := newIngestAgent(e, cfg, sessions, toolExtract, recompilePaths(targets))
 	if err != nil {
 		return fmt.Errorf("construct agent: %w", err)
 	}
@@ -491,7 +683,14 @@ func cmdIngest(args []string) error {
 	// op count this verb found at open/join: on a failure its scoped
 	// rollback drops only the ops past this index, never the other work in
 	// the changeset.
-	cs, joined, err := e.OpenOrJoin(ingestIntent(sources), stage.Author{Kind: "agent", Model: cfg.LLM.Model})
+	intent := ingestIntent(sources)
+	msg := buildIngestMessage(items)
+	if len(targets) > 0 {
+		// 055: the intent and the message describe both halves of the work.
+		intent = recompileIntent(keptSrcs, targets)
+		msg = buildRecompileMessage(items, targets, citations())
+	}
+	cs, joined, err := e.OpenOrJoin(intent, stage.Author{Kind: "agent", Model: cfg.LLM.Model})
 	if err != nil {
 		return fmt.Errorf("open changeset: %w", err)
 	}
@@ -505,7 +704,10 @@ func cmdIngest(args []string) error {
 		return ingestRollback(e, joined, cs.ID, n0, fmt.Errorf("create session: %w", err))
 	}
 
-	sendErr := runAgentTurn(ctx, ag, sess.ID, buildIngestMessage(items), os.Stdout)
+	for _, t := range targets {
+		fmt.Println(t.announce())
+	}
+	sendErr := runAgentTurn(ctx, ag, sess.ID, msg, os.Stdout)
 
 	final, curErr := e.Current()
 	if curErr != nil {

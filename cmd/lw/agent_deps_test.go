@@ -22,7 +22,7 @@ func captureExtractor(t *testing.T) *extract.Extractor {
 	t.Helper()
 	got := new(extract.Extractor)
 	orig := newIngestAgent
-	newIngestAgent = func(e *stage.Engine, cfg *config.Config, sessions agent.SessionStore, ex extract.Extractor) (agent.Agent, error) {
+	newIngestAgent = func(e *stage.Engine, cfg *config.Config, sessions agent.SessionStore, ex extract.Extractor, recompile []string) (agent.Agent, error) {
 		*got = ex
 		return nil, nil
 	}

@@ -115,3 +115,109 @@ func TestLoadSetIngestInputs(t *testing.T) {
 		})
 	}
 }
+
+// TestLoadSetRecompileCase pins 055 D6's set half: an ingest case with
+// `recompile = true` names VAULT paths — raw/….md files the snapshot already
+// holds — not files in the set directory, so it loads without any such file
+// existing beside cases.toml; a path that is not a clean raw/….md vault path
+// is refused in the frozen words, naming the case and the path. Everything
+// else a case is checked for (one of input/inputs, no repeats, facts) still
+// applies, and a case without the flag is checked as it always was.
+func TestLoadSetRecompileCase(t *testing.T) {
+	const head = "version = 1\nsnapshot = \"vault-20261005.tar.gz\"\nsnapshot_sha256 = \"{{SHA}}\"\n"
+	ingest := func(body string) string { return head + "\n[[ingest]]\nid = \"i\"\n" + body }
+
+	t.Run("a recompile case loads", func(t *testing.T) {
+		dir := setFixture(t, "vault-20261005.tar.gz", ingest("recompile = true\ninput = \"raw/articles/llm-wiki.md\"\nfacts = [[\"memex\"]]\n"))
+		set, err := LoadSet(dir)
+		if err != nil {
+			t.Fatalf("LoadSet: %v", err)
+		}
+		c := set.Ingest[0]
+		if !c.Recompile || !reflect.DeepEqual(c.Paths(), []string{"raw/articles/llm-wiki.md"}) {
+			t.Errorf("case = %+v, want recompile on with Paths() [raw/articles/llm-wiki.md]", c)
+		}
+		if _, statErr := os.Stat(filepath.Join(dir, "raw")); statErr == nil {
+			t.Error("the test set holds a raw/ directory; the case must load without one")
+		}
+	})
+
+	t.Run("several raws load in order", func(t *testing.T) {
+		dir := setFixture(t, "vault-20261005.tar.gz", ingest("recompile = true\ninputs = [\"raw/papers/b.md\", \"raw/articles/a.md\"]\n"))
+		set, err := LoadSet(dir)
+		if err != nil {
+			t.Fatalf("LoadSet: %v", err)
+		}
+		if got := set.Ingest[0].Paths(); !reflect.DeepEqual(got, []string{"raw/papers/b.md", "raw/articles/a.md"}) {
+			t.Errorf("Paths() = %q, want the list as written", got)
+		}
+	})
+
+	t.Run("a case without the flag is not a recompile case", func(t *testing.T) {
+		dir := setFixture(t, "vault-20261005.tar.gz", ingest("input = \"inputs/paper.txt\"\n"))
+		set, err := LoadSet(dir)
+		if err != nil {
+			t.Fatalf("LoadSet: %v", err)
+		}
+		if set.Ingest[0].Recompile {
+			t.Error("Recompile is on for a case that never set it")
+		}
+	})
+
+	tests := []struct {
+		name  string
+		cases string
+		want  string
+	}{
+		{"no raw/ prefix",
+			ingest("recompile = true\ninput = \"articles/x.md\"\n"),
+			`cases.toml: ingest "i": recompile input articles/x.md must be a vault path raw/….md`},
+		{"not .md",
+			ingest("recompile = true\ninput = \"raw/articles/x.txt\"\n"),
+			`cases.toml: ingest "i": recompile input raw/articles/x.txt must be a vault path raw/….md`},
+		{"escapes with ../",
+			ingest("recompile = true\ninput = \"../raw/x.md\"\n"),
+			`cases.toml: ingest "i": recompile input ../raw/x.md must be a vault path raw/….md`},
+		{"escapes after raw/",
+			ingest("recompile = true\ninput = \"raw/../../x.md\"\n"),
+			`cases.toml: ingest "i": recompile input raw/../../x.md must be a vault path raw/….md`},
+		{"leaves raw/ and lands elsewhere",
+			ingest("recompile = true\ninput = \"raw/../wiki/x.md\"\n"),
+			`cases.toml: ingest "i": recompile input raw/../wiki/x.md must be a vault path raw/….md`},
+		{"absolute",
+			ingest("recompile = true\ninput = \"/raw/x.md\"\n"),
+			`cases.toml: ingest "i": recompile input /raw/x.md must be a vault path raw/….md`},
+		{"a set-directory file is not a vault path",
+			ingest("recompile = true\ninput = \"inputs/paper.txt\"\n"),
+			`cases.toml: ingest "i": recompile input inputs/paper.txt must be a vault path raw/….md`},
+		{"one bad element among good ones",
+			ingest("recompile = true\ninputs = [\"raw/articles/a.md\", \"raw/articles/b.html\"]\n"),
+			`cases.toml: ingest "i": recompile input raw/articles/b.html must be a vault path raw/….md`},
+		{"a repeated raw",
+			ingest("recompile = true\ninputs = [\"raw/articles/a.md\", \"raw/articles/a.md\"]\n"),
+			`cases.toml: ingest "i": input raw/articles/a.md is listed twice`},
+		{"no input at all",
+			ingest("recompile = true\nfacts = [[\"x\"]]\n"),
+			`cases.toml: ingest "i": input is empty`},
+		{"a bad fact still counts",
+			ingest("recompile = true\ninput = \"raw/articles/a.md\"\nfacts = [[\"re:[\"]]\n"),
+			`cases.toml: ingest "i": fact 1: bad regexp`},
+		{"the flag off keeps the set-directory check",
+			ingest("input = \"raw/articles/a.md\"\n"),
+			`cases.toml: ingest "i": input raw/articles/a.md: no such file`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := LoadSet(setFixture(t, "vault-20261005.tar.gz", tc.cases))
+			if err == nil {
+				t.Fatalf("LoadSet succeeded (%#v); want an error containing %q", got, tc.want)
+			}
+			if got != nil {
+				t.Errorf("LoadSet returned a Set alongside its error: %#v", got)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error %q does not contain %q", err, tc.want)
+			}
+		})
+	}
+}

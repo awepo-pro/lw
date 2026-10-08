@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,7 +12,9 @@ import (
 
 	"github.com/awepo-pro/lw/internal/llm"
 	"github.com/awepo-pro/lw/internal/testutil"
+	"github.com/awepo-pro/lw/internal/tools"
 	"github.com/awepo-pro/lw/internal/trace"
+	"github.com/awepo-pro/lw/internal/vault"
 )
 
 // scRefusalText is 048's refusal of a wiki read over the ingest budget, as
@@ -448,4 +451,194 @@ func TestIngestMetricNames(t *testing.T) {
 			t.Errorf("%s is a count and must not be bounded", m)
 		}
 	}
+}
+
+// scWriteRawGetTrace writes one ingest turn with the real Recorder whose first
+// round asks raw.get for each of calls (JSON argument objects) and whose second
+// round answers, and returns the turn id.
+func scWriteRawGetTrace(t *testing.T, caseDir string, calls ...string) string {
+	t.Helper()
+	dir := filepath.Join(caseDir, "traces")
+	id := "20260101T000002Z-0001"
+	_, rec := trace.Start(context.Background(), dir, id, trace.Meta{
+		Verb: "ingest", Session: "ingest", Version: "v9.9.9-test", Model: "glm-test", MaxRounds: 6,
+	}, 0)
+	if rec == nil {
+		t.Fatal("trace.Start returned no recorder")
+	}
+	body, err := json.Marshal(map[string]any{
+		"model": "glm-test", "stream": true,
+		"messages": []llm.Message{{Role: "system", Content: "You are the curator."}, {Role: "user", Content: "recompile"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tcs []trace.ToolCall
+	rec.BeginRequest(1, 1, 2, 0)
+	rec.Request(body)
+	for i, args := range calls {
+		cid := fmt.Sprintf("c%d", i+1)
+		rec.Tool(trace.Tool{Round: 1, ID: cid, Name: "raw.get"})
+		tcs = append(tcs, trace.ToolCall{ID: cid, Name: "raw_get", Arguments: args})
+	}
+	rec.Response(trace.Response{Round: 1, Attempt: 1, Finish: "tool_calls", ToolCalls: tcs})
+	rec.BeginRequest(2, 1, 4, 0)
+	rec.Request(body)
+	rec.Response(trace.Response{Round: 2, Attempt: 1, Finish: "stop", Text: "done"})
+	rec.Done(trace.Done{Reason: "stop", Rounds: 2, WallMS: 20})
+	return id
+}
+
+// TestScoreRecompileChunkCoverage pins 055 D6's scoring half. A recompile case
+// stages no ingest_source, so its chunk_coverage used to be absent whatever the
+// model read; now its raw paths count — the body is the committed raw the
+// runner kept in the case directory, or the snapshot's when none was kept.
+// Reading chunks 1 and 3 of a three-chunk raw scores 2/3, an ingest_source op
+// in the same run adds to the same fraction, and a plain case is unchanged.
+func TestScoreRecompileChunkCoverage(t *testing.T) {
+	const rcPath = "raw/articles/rc-source.md"
+	body := strings.Repeat("a", 40000) // 40 000 runes: three chunks of 16 000
+	if n := tools.RawChunkCount(body); n != 3 {
+		t.Fatalf("fixture body has %d chunks, want 3", n)
+	}
+	ingested, _ := vault.ParseDate("2026-10-05")
+	rawFile := func(b string) string {
+		return string((&vault.RawSource{SourceURL: "https://example.test/rc", Ingested: ingested, SHA256: vault.BodySHA256(b), Body: b}).Serialize())
+	}
+	coverage := func(t *testing.T, res *Results, id string) (float64, bool) {
+		t.Helper()
+		v, ok := scResult(t, res, id, 1).Metrics[MetricChunkCoverage]
+		return v, ok
+	}
+
+	t.Run("two of three chunks", func(t *testing.T) {
+		set := newRunSet(t)
+		scRewriteCases(t, set, "[[ingest]]\nid = \"rc\"\nrecompile = true\ninput = \""+rcPath+"\"\nfacts = [[\"x\"]]\n")
+		run := scNewRun(t, set, "r1")
+		caseDir := filepath.Join(run, "rc", "1")
+		turn := scWriteRawGetTrace(t, caseDir,
+			`{"source":"`+rcPath+`","chunk":1}`, `{"source":"`+rcPath+`","chunk":3}`, `{"source":"raw/articles/other.md"}`)
+		scWriteCase(t, run, scAnsweredMeta("rc", "ingest", "ingest", 1, turn), map[string]string{
+			"stdout.txt":       "recompiled\n",
+			"staged/" + rcPath: rawFile(body),
+		})
+
+		res, err := Score(run)
+		if err != nil {
+			t.Fatalf("Score: %v", err)
+		}
+		got, ok := coverage(t, res, "rc")
+		if !ok || math.Abs(got-2.0/3) > 1e-9 {
+			t.Errorf("chunk_coverage = %v (present %v), want 2/3", got, ok)
+		}
+	})
+
+	t.Run("nothing read is zero, not absent", func(t *testing.T) {
+		set := newRunSet(t)
+		scRewriteCases(t, set, "[[ingest]]\nid = \"rc\"\nrecompile = true\ninput = \""+rcPath+"\"\nfacts = [[\"x\"]]\n")
+		run := scNewRun(t, set, "r1")
+		caseDir := filepath.Join(run, "rc", "1")
+		turn := scWriteRawGetTrace(t, caseDir, `{"source":"raw/articles/other.md"}`)
+		scWriteCase(t, run, scAnsweredMeta("rc", "ingest", "ingest", 1, turn), map[string]string{
+			"stdout.txt":       "recompiled\n",
+			"staged/" + rcPath: rawFile(body),
+		})
+		res, err := Score(run)
+		if err != nil {
+			t.Fatalf("Score: %v", err)
+		}
+		if got, ok := coverage(t, res, "rc"); !ok || got != 0 {
+			t.Errorf("chunk_coverage = %v (present %v), want 0", got, ok)
+		}
+	})
+
+	t.Run("a raw only the snapshot holds", func(t *testing.T) {
+		set := newRunSet(t)
+		const snapRaw = "raw/articles/kv-cache-explained.md" // one chunk in the snapshot vault
+		scRewriteCases(t, set, "[[ingest]]\nid = \"rc\"\nrecompile = true\ninput = \""+snapRaw+"\"\nfacts = [[\"x\"]]\n")
+		run := scNewRun(t, set, "r1")
+		caseDir := filepath.Join(run, "rc", "1")
+		turn := scWriteRawGetTrace(t, caseDir, `{"source":"`+snapRaw+`"}`)
+		scWriteCase(t, run, scAnsweredMeta("rc", "ingest", "ingest", 1, turn), map[string]string{"stdout.txt": "recompiled\n"})
+		res, err := Score(run)
+		if err != nil {
+			t.Fatalf("Score: %v", err)
+		}
+		if got, ok := coverage(t, res, "rc"); !ok || got != 1 {
+			t.Errorf("chunk_coverage = %v (present %v), want 1", got, ok)
+		}
+	})
+
+	t.Run("an ingest_source op adds to the same fraction", func(t *testing.T) {
+		set := newRunSet(t)
+		scRewriteCases(t, set, "[[ingest]]\nid = \"rc\"\nrecompile = true\ninput = \""+rcPath+"\"\nfacts = [[\"x\"]]\n")
+		run := scNewRun(t, set, "r1")
+		caseDir := filepath.Join(run, "rc", "1")
+		two := scIngestBody(t) // two chunks
+		const newPath = "raw/articles/new-source.md"
+		turn := scWriteRawGetTrace(t, caseDir,
+			`{"source":"`+rcPath+`","chunk":1}`, `{"source":"`+rcPath+`","chunk":2}`, `{"source":"`+newPath+`","chunk":1}`)
+		scWriteCase(t, run, scAnsweredMeta("rc", "ingest", "ingest", 1, turn), map[string]string{
+			"stdout.txt":        "recompiled\n",
+			"staged/" + rcPath:  rawFile(body),
+			"staged/" + newPath: rawFile(two),
+		})
+		if err := writeJSON(filepath.Join(caseDir, "changeset.json"), changesetFile{ID: "cs1", Ops: []changesetOp{
+			{ID: "op1", Op: "ingest_source", Path: newPath, State: "proposed"},
+		}}); err != nil {
+			t.Fatal(err)
+		}
+		res, err := Score(run)
+		if err != nil {
+			t.Fatalf("Score: %v", err)
+		}
+		// rc-source: chunks 1, 2 of 3; new-source: chunk 1 of 2 -> 3 of 5.
+		if got, ok := coverage(t, res, "rc"); !ok || math.Abs(got-3.0/5) > 1e-9 {
+			t.Errorf("chunk_coverage = %v (present %v), want 3/5", got, ok)
+		}
+	})
+
+	t.Run("a raw both recompiled and staged counts once", func(t *testing.T) {
+		set := newRunSet(t)
+		scRewriteCases(t, set, "[[ingest]]\nid = \"rc\"\nrecompile = true\ninput = \""+rcPath+"\"\nfacts = [[\"x\"]]\n")
+		run := scNewRun(t, set, "r1")
+		caseDir := filepath.Join(run, "rc", "1")
+		const newPath = "raw/articles/new-source.md"
+		turn := scWriteRawGetTrace(t, caseDir,
+			`{"source":"`+rcPath+`","chunk":1}`, `{"source":"`+rcPath+`","chunk":2}`, `{"source":"`+newPath+`","chunk":1}`)
+		scWriteCase(t, run, scAnsweredMeta("rc", "ingest", "ingest", 1, turn), map[string]string{
+			"stdout.txt":        "recompiled\n",
+			"staged/" + rcPath:  rawFile(body),
+			"staged/" + newPath: rawFile(scIngestBody(t)),
+		})
+		if err := writeJSON(filepath.Join(caseDir, "changeset.json"), changesetFile{ID: "cs1", Ops: []changesetOp{
+			{ID: "op1", Op: "ingest_source", Path: rcPath, State: "proposed"},
+			{ID: "op2", Op: "ingest_source", Path: newPath, State: "proposed"},
+		}}); err != nil {
+			t.Fatal(err)
+		}
+		res, err := Score(run)
+		if err != nil {
+			t.Fatalf("Score: %v", err)
+		}
+		// rc-source is both an op and a recompile input: 2 of 3 once, not twice.
+		if got, ok := coverage(t, res, "rc"); !ok || math.Abs(got-3.0/5) > 1e-9 {
+			t.Errorf("chunk_coverage = %v (present %v), want 3/5", got, ok)
+		}
+	})
+
+	t.Run("a plain case does not count its input as a raw", func(t *testing.T) {
+		set := newRunSet(t)
+		run := scNewRun(t, set, "r1")
+		caseDir := filepath.Join(run, "paper-text", "1")
+		turn := scWriteRawGetTrace(t, caseDir, `{"source":"inputs/paper.txt"}`)
+		scWriteCase(t, run, scAnsweredMeta("paper-text", "ingest", "ingest", 1, turn), map[string]string{"stdout.txt": "ingested\n"})
+		res, err := Score(run)
+		if err != nil {
+			t.Fatalf("Score: %v", err)
+		}
+		if got, ok := coverage(t, res, "paper-text"); ok {
+			t.Errorf("chunk_coverage = %v for a plain case that staged no source, want absent", got)
+		}
+	})
 }
