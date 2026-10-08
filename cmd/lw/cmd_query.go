@@ -64,7 +64,7 @@ func cmdQuery(args []string) error {
 	}
 	initLoggingAt(root)
 
-	e, err := stage.OpenEngine(root)
+	e, err := openVaultEngine(root, nil)
 	if err != nil {
 		return fmt.Errorf("open engine: %w", err)
 	}

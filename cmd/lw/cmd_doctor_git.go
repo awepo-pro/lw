@@ -38,6 +38,15 @@ func checkTracked(root string) doctorCheck {
 		return skippedTracked("git is not installed")
 	}
 
+	// 042: a vault under lw sync tracks .llmwiki/ on purpose — the journal,
+	// the object store and the committed changesets are what a sync carries,
+	// session transcripts included, to a remote the user owns — and its
+	// managed .gitignore keeps the per-PC parts out. Warning that "session
+	// transcripts would be committed" there would be wrong every time.
+	if underLWSync(root) {
+		return doctorCheck{Name: name, OK: true, Detail: "the vault is under lw sync; .llmwiki/ is tracked on purpose and its managed .gitignore keeps per-PC state out"}
+	}
+
 	git := func(args ...string) (string, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), doctorGitTimeout)
 		defer cancel()

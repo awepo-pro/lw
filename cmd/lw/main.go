@@ -40,6 +40,7 @@ var verbs = []verb{
 	{"lint", cmdLint},
 	{"mcp", cmdMCP},
 	{"doctor", cmdDoctor},
+	{"sync", cmdSync},
 	{"tui", cmdTUI},
 	{"stage", cmdStage},
 	{"version", cmdVersion},
@@ -137,6 +138,11 @@ commands:
   mcp                          run the MCP server over stdio
   doctor [--unlock] [--rebuild-index] [--discard-changeset] [--json]
                                check vault and lock health
+  sync [--take-remote]         pull then push the vault through its [sync] remotes
+  sync status                  show ahead/behind against the remote, without changing anything
+  sync init <remote>           put this vault under lw sync and push it to an empty remote
+  sync clone <remote> <dir>    copy a synced vault from its remote to this PC
+                               (lw sync owns the vault's .gitignore and rewrites it)
   tui                          launch the terminal UI (default with no command)
   version                      print the build version and exit
 

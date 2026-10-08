@@ -242,7 +242,13 @@ func cmdIngest(args []string) error {
 		return &exitError{code: 2}
 	}
 
-	root, err := findVaultRoot(*vaultPath)
+	// 042: a dry run changes nothing, so it is neither refused while a
+	// checkout collision is unresolved nor synced; every other ingest is both.
+	rootOf := writableVaultRoot
+	if *dryRun {
+		rootOf = findVaultRoot
+	}
+	root, err := rootOf(*vaultPath)
 	if err != nil {
 		return err
 	}
@@ -278,12 +284,21 @@ func cmdIngest(args []string) error {
 	// fileOutsideVault, walkedRawPath). root itself stays as findVaultRoot gave
 	// it for everything that opens or logs the vault.
 	canonRoot := canonicalPath(root)
+
+	// 042: with remotes configured, take the newest vault before anything
+	// reads it, and push a rejection (a failed turn) before the verb exits.
+	var auto *autoSync
+	if !*dryRun {
+		auto = newAutoSync(root, cfg)
+		auto.pull()
+	}
+
 	var e *stage.Engine
 	openEng := func() error {
 		if e != nil {
 			return nil
 		}
-		eng, oerr := stage.OpenEngine(root)
+		eng, oerr := openVaultEngine(root, auto)
 		if oerr != nil {
 			return fmt.Errorf("open engine: %w", oerr)
 		}

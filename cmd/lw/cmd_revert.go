@@ -30,13 +30,17 @@ func cmdRevert(args []string) error {
 	}
 	commitID := fs.Arg(0)
 
-	root, err := findVaultRoot(*vaultPath)
+	root, err := writableVaultRoot(*vaultPath)
 	if err != nil {
 		return err
 	}
 	initLoggingAt(root)
 
-	e, err := stage.OpenEngine(root)
+	// 042: take the newest vault before the engine opens.
+	auto := loadAutoSync(root)
+	auto.pull()
+
+	e, err := openVaultEngine(root, auto)
 	if err != nil {
 		return fmt.Errorf("open engine: %w", err)
 	}

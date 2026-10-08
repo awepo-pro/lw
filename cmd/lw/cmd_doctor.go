@@ -235,17 +235,30 @@ func cmdDoctor(args []string) error {
 		return &exitError{code: 2}
 	}
 
-	root, err := findVaultRoot(*vaultPath)
+	// 042: --discard-changeset rejects a changeset — a write to tracked state,
+	// so it is refused while a checkout collision is unresolved and, with
+	// remotes configured, pushed like any rejection. The other flags and the
+	// plain check touch nothing a sync carries.
+	rootOf := findVaultRoot
+	if *discard {
+		rootOf = writableVaultRoot
+	}
+	root, err := rootOf(*vaultPath)
 	if err != nil {
 		return err
 	}
 	attachLoggingAt(root) // read-only: join the trail, never create it
 
+	var auto *autoSync
+	if *discard {
+		auto = loadAutoSync(root)
+	}
 	rep := runDoctor(context.Background(), root, doctorOptions{
 		unlock:           *unlock,
 		rebuildIndex:     *rebuild,
 		discardChangeset: *discard,
 		probe:            true,
+		sync:             auto,
 	})
 
 	if *asJSON {
@@ -273,6 +286,12 @@ type doctorOptions struct {
 	rebuildIndex     bool // rebuild and save the index before checking
 	discardChangeset bool // move the open changeset to changesets/rejected before checking
 	probe            bool // run the provider check (false in tests)
+
+	// sync is the auto-sync (042) the engine runDoctor opens gets its terminal
+	// hook from: --discard-changeset rejects, and a rejection is pushed. nil
+	// when auto-sync does not apply, which is every run without
+	// --discard-changeset.
+	sync *autoSync
 }
 
 // runDoctor performs the repairs the flags ask for, then runs every check in
@@ -312,7 +331,7 @@ func runDoctor(ctx context.Context, root string, o doctorOptions) doctorReport {
 
 	rep.Checks = append(rep.Checks, checkIndex(root, v))
 
-	if e, err := stage.OpenEngine(root); err != nil {
+	if e, err := openVaultEngine(root, o.sync); err != nil {
 		rep.Checks = append(rep.Checks, doctorCheck{
 			Name:   "state",
 			Detail: fmt.Sprintf("%s could not be opened: %v", stateRel, err),

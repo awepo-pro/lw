@@ -153,6 +153,67 @@ func (c *Config) TraceKeepBytes() int64 {
 	return int64(*c.Trace.KeepMB) << 20
 }
 
+// Vault names the vault lw falls back to when nothing more specific does
+// (042 D1): the last step of discovery, after --vault, $LW_VAULT and the
+// nearest ancestor of the working directory that holds a SCHEMA.md. It is
+// what lets `lw tui` start from any directory on a PC whose one vault lives
+// in a fixed place.
+type Vault struct {
+	Path string `toml:"path"` // "~" and "~/" expand; see ResolvedPath
+}
+
+// ResolvedPath returns Path with a leading "~" or "~/" replaced by the home
+// directory (042 D1). Anything else is the user's own spelling: "~name" is
+// another user's home, which lw does not guess, and a relative path stays
+// relative to wherever lw runs. An empty Path stays empty.
+func (v Vault) ResolvedPath() string {
+	p := v.Path
+	if p != "~" && !strings.HasPrefix(p, "~/") {
+		return p
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return p
+	}
+	return filepath.Join(home, p[1:])
+}
+
+// Sync is the [sync] table (042 D1): the remotes lw sync moves the vault
+// through, and whether the verbs do it on their own. Remotes are tried in
+// order and the first that answers wins — one server is often reachable by
+// two names (a LAN or Tailscale host, a Cloudflare one). Auto is a pointer so
+// "the key is absent" (on, whenever there is a remote) stays distinct from
+// "the key is false" (off), the rule Trace.KeepMB follows for its zero.
+//
+// Config holds it by pointer (Config.Sync), not by value, because a slice
+// would make Config incomparable and the config tests compare whole Configs
+// with != (TestConfigRoundTrip, TestLoadMissingFileReturnsDefault,
+// TestLoadMergeRoundTripsThroughSave, cmd/lw's TestConfigSetCoercionErrors).
+// A nil *Sync is the config that names no [sync] table, and every method
+// here is safe on it.
+type Sync struct {
+	Remotes []string
+	Auto    *bool
+}
+
+// AutoSync reports whether the verbs sync on their own: there is at least
+// one remote, and the auto key is not false. It is the one gate auto-sync
+// code consults (042 D1), so a vault with no remotes configured behaves
+// exactly as it did before 042.
+func (s *Sync) AutoSync() bool {
+	return s != nil && len(s.Remotes) > 0 && (s.Auto == nil || *s.Auto)
+}
+
+// RemoteList returns a copy of the remotes, in the order they were written,
+// or nil for a nil or empty table. A copy, so a caller that edits the list
+// cannot edit the config it came from.
+func (s *Sync) RemoteList() []string {
+	if s == nil || len(s.Remotes) == 0 {
+		return nil
+	}
+	return append([]string(nil), s.Remotes...)
+}
+
 // ErrNoPDFViewer is what Open.Argv returns for a template that names no
 // viewer: there is nothing to compile, and inventing a default would exec
 // a program the user never chose. (034 T5.)
@@ -218,7 +279,8 @@ type Web struct {
 // /docs/design.md §11.2 documents. Load and Save therefore marshal through the
 // private shadowConfig below instead of decoding/encoding Config directly;
 // see toShadow/fromShadow. The [web] table is the one post-v1 addition,
-// amended by workflow 010 (C-1001).
+// amended by workflow 010 (C-1001); 042 adds [vault] and [sync], both omitted
+// from the file while empty.
 type Config struct {
 	LLM     LLM     `toml:"llm"`
 	Limits  Limits  `toml:"llm.limits"`
@@ -227,6 +289,11 @@ type Config struct {
 	Open    Open    `toml:"open"`
 	Theme   string  `toml:"theme"`
 	Trace   Trace   `toml:"trace"`
+	// Vault and Sync are the 042 tables. Both are omitted on Save while
+	// they are empty, so a config that never named them round-trips
+	// byte-identically (see shadowConfig).
+	Vault Vault `toml:"vault"`
+	Sync  *Sync `toml:"sync"`
 }
 
 // shadowLLM is LLM with Limits nested inside it as "limits", so encoding
@@ -255,6 +322,14 @@ type shadowExtract struct {
 	Timeout string `toml:"timeout,omitempty"`
 }
 
+// shadowSync is Sync with the on-disk tags (042 D1): omitempty on both keys,
+// so a table that carries only remotes does not write "auto" and one that
+// carries only auto does not write an empty "remotes".
+type shadowSync struct {
+	Remotes []string `toml:"remotes,omitempty"`
+	Auto    *bool    `toml:"auto,omitempty"`
+}
+
 // shadowConfig is the on-disk shape of Config: the same fields, with Limits
 // relocated under LLM. It exists solely so Load/Save can hand BurntSushi a
 // struct whose tags actually produce the documented nested table; Config
@@ -276,6 +351,12 @@ type shadowConfig struct {
 	// reads a nil pointer as empty — so a file that never named the key
 	// round-trips byte-identically.
 	Trace Trace `toml:"trace,omitempty"`
+	// omitempty keeps a vaultless, remoteless config that way on Save (042
+	// D1): both tables are skipped while empty — a Vault with no path, a
+	// shadowSync with no remotes and no auto — so a file that never named
+	// them round-trips byte-identically, the rule [open] and [trace] follow.
+	Vault Vault      `toml:"vault,omitempty"`
+	Sync  shadowSync `toml:"sync,omitempty"`
 }
 
 // toShadow converts a Config to its on-disk shape, for Save.
@@ -296,7 +377,19 @@ func toShadow(c *Config) shadowConfig {
 		Open:    c.Open,
 		Theme:   c.Theme,
 		Trace:   c.Trace,
+		Vault:   c.Vault,
+		Sync:    syncToShadow(c.Sync),
 	}
+}
+
+// syncToShadow converts Config.Sync to its on-disk shape. A nil table and a
+// table with nothing in it both become the zero shadowSync, which Save omits:
+// an empty [sync] header would be a table the user never wrote.
+func syncToShadow(s *Sync) shadowSync {
+	if s == nil {
+		return shadowSync{}
+	}
+	return shadowSync{Remotes: s.RemoteList(), Auto: s.Auto}
 }
 
 // fromShadow converts a decoded on-disk shape back to the public Config, for
@@ -318,7 +411,18 @@ func fromShadow(s shadowConfig) *Config {
 		Open:    s.Open,
 		Theme:   s.Theme,
 		Trace:   s.Trace,
+		Vault:   s.Vault,
+		Sync:    syncFromShadow(s.Sync),
 	}
+}
+
+// syncFromShadow converts the decoded [sync] table back to Config.Sync: nil
+// when the file named neither key, so "no table" survives a Load unchanged.
+func syncFromShadow(s shadowSync) *Sync {
+	if len(s.Remotes) == 0 && s.Auto == nil {
+		return nil
+	}
+	return &Sync{Remotes: append([]string(nil), s.Remotes...), Auto: s.Auto}
 }
 
 // Load reads <ConfigDir()>/config.toml. A missing config file is not an
@@ -479,6 +583,14 @@ func mergeOverDefault(def, file *Config, md toml.MetaData) *Config {
 	}
 	if md.IsDefined("trace", "keep_mb") {
 		def.Trace.KeepMB = file.Trace.KeepMB
+	}
+	if md.IsDefined("vault", "path") {
+		def.Vault.Path = file.Vault.Path
+	}
+	// The [sync] table is taken whole: Default() ships none, so there is
+	// nothing to keep from it, and a file that names only auto still says so.
+	if md.IsDefined("sync", "remotes") || md.IsDefined("sync", "auto") {
+		def.Sync = file.Sync
 	}
 	return def
 }
