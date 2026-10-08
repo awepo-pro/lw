@@ -305,7 +305,7 @@ func newPair(t *testing.T) pair {
 		t.Fatalf("Init: %v", err)
 	}
 	p.b = filepath.Join(t.TempDir(), "pc-b")
-	if err := Clone(ctx, opts(p.b, p.remote)); err != nil {
+	if err := Clone(ctx, opts(p.b, p.remote), 1); err != nil {
 		t.Fatalf("Clone: %v", err)
 	}
 	return p

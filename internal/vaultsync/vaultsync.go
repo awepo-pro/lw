@@ -27,8 +27,12 @@ import (
 // index is derived and rebuilt after a pull, the cache, tmp, lock, logs and
 // traces belong to the machine that produced them, an open changeset is
 // work in progress on the PC that staged it, and sync.json is this very
-// package's bookkeeping (042 D2). CommitWork rewrites the file whenever its
-// bytes differ, so every PC agrees on what is excluded.
+// package's bookkeeping (042 D2). Obsidian rewrites its workspace files
+// whenever the vault is open, and macOS drops .DS_Store in every folder it
+// shows; synced, either would leave each such PC "ahead" and diverged on
+// every sync (A-042-3). Obsidian's settings and plugins still sync.
+// CommitWork rewrites the file whenever its bytes differ, so every PC agrees
+// on what is excluded.
 const Ignore = "# managed by lw sync: per-PC state, never synced\n" +
 	"/.llmwiki/index.gob\n" +
 	"/.llmwiki/cache/\n" +
@@ -37,7 +41,11 @@ const Ignore = "# managed by lw sync: per-PC state, never synced\n" +
 	"/.llmwiki/logs/\n" +
 	"/.llmwiki/traces/\n" +
 	"/.llmwiki/changesets/open/\n" +
-	"/.llmwiki/sync.json\n"
+	"/.llmwiki/sync.json\n" +
+	"/.obsidian/workspace.json\n" +
+	"/.obsidian/workspace-mobile.json\n" +
+	"/.obsidian/cache\n" +
+	".DS_Store\n"
 
 // Branch is the one branch lw sync uses, locally and on the remote.
 const Branch = "main"

@@ -351,13 +351,16 @@ func (r *runner) pushTo(ctx context.Context, spec string) error {
 // (local time), then makes HEAD and the work tree the remote's tip. Nothing
 // is lost: uncommitted work is committed onto the backup first, and the
 // branch name is returned. It refuses a remote with no commit — there is
-// nothing to take.
-func TakeRemote(ctx context.Context, o Options) (backup string, st State, err error) {
-	return takeRemoteAt(ctx, o, time.Now())
+// nothing to take — and a remote whose format is newer than maxFormat, with a
+// *FormatError, before it commits, branches or resets anything (A-042-5):
+// checking out a format this lw cannot write would leave the PC's own work on
+// a backup branch and a vault it then refuses to open.
+func TakeRemote(ctx context.Context, o Options, maxFormat int) (backup string, st State, err error) {
+	return takeRemoteAt(ctx, o, maxFormat, time.Now())
 }
 
 // takeRemoteAt is TakeRemote with the clock injected for the branch name.
-func takeRemoteAt(ctx context.Context, o Options, now time.Time) (string, State, error) {
+func takeRemoteAt(ctx context.Context, o Options, maxFormat int, now time.Time) (string, State, error) {
 	r, err := newRunner(o)
 	if err != nil {
 		return "", State{}, err
@@ -371,6 +374,9 @@ func takeRemoteAt(ctx context.Context, o Options, now time.Time) (string, State,
 	}
 	if st.RemoteFormat == 0 {
 		return "", st, fmt.Errorf("remote %s has no commit to take", st.Remote)
+	}
+	if st.RemoteFormat > maxFormat {
+		return "", st, &FormatError{Remote: st.Remote, Have: st.RemoteFormat, Max: maxFormat}
 	}
 	if _, err := r.commitWork(ctx, "lw sync: save before take-remote"); err != nil {
 		return "", st, err

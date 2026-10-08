@@ -107,9 +107,9 @@ func TestNoGit(t *testing.T) {
 	_, perr := Pull(ctx, o, 1)
 	_, uerr := Push(ctx, o)
 	_, serr := Status(ctx, o)
-	_, _, terr := TakeRemote(ctx, o)
+	_, _, terr := TakeRemote(ctx, o, 1)
 	_, cerr := CommitWork(o, "x")
-	for name, err := range map[string]error{"Init": ierr, "Clone": Clone(ctx, o), "CommitWork": cerr,
+	for name, err := range map[string]error{"Init": ierr, "Clone": Clone(ctx, o, 1), "CommitWork": cerr,
 		"Pull": perr, "Push": uerr, "Status": serr, "TakeRemote": terr} {
 		if !errors.Is(err, ErrNoGit) {
 			t.Errorf("%s err = %v, want ErrNoGit", name, err)
@@ -146,7 +146,7 @@ func TestErrNotRepo(t *testing.T) {
 		_, perr := Pull(ctx, o, 1)
 		_, uerr := Push(ctx, o)
 		_, serr := Status(ctx, o)
-		_, _, terr := TakeRemote(ctx, o)
+		_, _, terr := TakeRemote(ctx, o, 1)
 		for op, err := range map[string]error{"Pull": perr, "Push": uerr, "Status": serr, "TakeRemote": terr} {
 			if !errors.Is(err, ErrNotRepo) {
 				t.Errorf("%s: %s err = %v, want ErrNotRepo", name, op, err)
@@ -188,7 +188,7 @@ func TestNoRemotesAndNoDir(t *testing.T) {
 		"Pull":   func() error { _, err := Pull(ctx, opts(p.a), 1); return err }(),
 		"Push":   func() error { _, err := Push(ctx, opts(p.a)); return err }(),
 		"Init":   func() error { _, err := Init(ctx, opts(makeVault(t))); return err }(),
-		"Clone":  Clone(ctx, opts(filepath.Join(t.TempDir(), "c"))),
+		"Clone":  Clone(ctx, opts(filepath.Join(t.TempDir(), "c")), 1),
 	} {
 		var re *RemoteError
 		if err == nil || errors.As(err, &re) {
@@ -269,7 +269,7 @@ func TestCancelledContextIsNotARemoteFailure(t *testing.T) {
 		"Status": func() error { _, err := Status(ctx, opts(p.a, p.remote)); return err }(),
 		"Pull":   func() error { _, err := Pull(ctx, opts(p.a, p.remote), 1); return err }(),
 		"Push":   func() error { _, err := Push(ctx, opts(p.a, p.remote)); return err }(),
-		"Clone":  Clone(ctx, opts(filepath.Join(t.TempDir(), "c"), p.remote)),
+		"Clone":  Clone(ctx, opts(filepath.Join(t.TempDir(), "c"), p.remote), 1),
 	} {
 		var re *RemoteError
 		if !errors.Is(err, context.Canceled) || errors.As(err, &re) {
@@ -298,7 +298,7 @@ func TestEmptyRemoteAnsweredEmpty(t *testing.T) {
 	if err != nil || st.Pulled != 0 || st.Ahead != 1 {
 		t.Fatalf("Pull from an empty remote = %+v, %v; want a no-op", st, err)
 	}
-	if _, _, err := TakeRemote(ctx, opts(p.a, empty)); err == nil || !strings.Contains(err.Error(), "no commit to take") {
+	if _, _, err := TakeRemote(ctx, opts(p.a, empty), 1); err == nil || !strings.Contains(err.Error(), "no commit to take") {
 		t.Fatalf("TakeRemote on an empty remote = %v, want a refusal", err)
 	}
 	if got := git(t, p.a, "branch", "--list", "lw-diverged-*"); got != "" {
@@ -430,7 +430,7 @@ func TestRawBytesSurviveAutocrlf(t *testing.T) {
 		t.Fatal(err)
 	}
 	clone := filepath.Join(t.TempDir(), "pc-b")
-	if err := Clone(ctx, opts(clone, remote)); err != nil {
+	if err := Clone(ctx, opts(clone, remote), 1); err != nil {
 		t.Fatal(err)
 	}
 	for rel, want := range map[string]string{"raw/crlf.md": "line one\r\nline two\r\n", "raw/bin.dat": "\x00\x01\r\n\x02"} {
@@ -511,7 +511,7 @@ func TestTakeRemoteBackupNameAndUncommittedWork(t *testing.T) {
 
 	// B also has an edit it never committed: the backup must hold it.
 	put(t, p.b, "notes/unsaved.md", "unsaved\n")
-	name, _, err := takeRemoteAt(ctx, opts(p.b, p.remote), at)
+	name, _, err := takeRemoteAt(ctx, opts(p.b, p.remote), 1, at)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -531,7 +531,7 @@ func TestTakeRemoteBackupNameAndUncommittedWork(t *testing.T) {
 	if _, err := CommitWork(opts(p.b, p.remote), "lw again"); err != nil {
 		t.Fatal(err)
 	}
-	name2, st, err := takeRemoteAt(ctx, opts(p.b, p.remote), at)
+	name2, st, err := takeRemoteAt(ctx, opts(p.b, p.remote), 1, at)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -546,7 +546,7 @@ func TestTakeRemoteBackupNameAndUncommittedWork(t *testing.T) {
 	}
 	// And the real clock names it the same way.
 	put(t, p.b, "wiki/third.md", "3\n")
-	name3, _, err := TakeRemote(ctx, opts(p.b, p.remote))
+	name3, _, err := TakeRemote(ctx, opts(p.b, p.remote), 1)
 	if err != nil || !strings.HasPrefix(name3, "lw-diverged-") {
 		t.Fatalf("TakeRemote = %q, %v", name3, err)
 	}
@@ -561,7 +561,7 @@ func TestCloneRules(t *testing.T) {
 	t.Run("refuses a non-empty directory", func(t *testing.T) {
 		dir := t.TempDir()
 		put(t, dir, "mine.txt", "keep\n")
-		err := Clone(ctx, opts(dir, p.remote))
+		err := Clone(ctx, opts(dir, p.remote), 1)
 		want := dir + " is not empty — lw sync clone needs a new or empty directory"
 		if err == nil || err.Error() != want {
 			t.Fatalf("err = %v, want %q", err, want)
@@ -573,13 +573,13 @@ func TestCloneRules(t *testing.T) {
 	t.Run("refuses a file", func(t *testing.T) {
 		file := filepath.Join(t.TempDir(), "f")
 		put(t, filepath.Dir(file), "f", "x\n")
-		if err := Clone(ctx, opts(file, p.remote)); err == nil {
+		if err := Clone(ctx, opts(file, p.remote), 1); err == nil {
 			t.Fatal("cloned onto a file")
 		}
 	})
 	t.Run("accepts an existing empty directory", func(t *testing.T) {
 		dir := t.TempDir()
-		if err := Clone(ctx, opts(dir, p.remote)); err != nil {
+		if err := Clone(ctx, opts(dir, p.remote), 1); err != nil {
 			t.Fatal(err)
 		}
 		if got := readFile(t, filepath.Join(dir, "SCHEMA.md")); got != "synced SCHEMA.md\n" {
@@ -591,7 +591,7 @@ func TestCloneRules(t *testing.T) {
 	})
 	t.Run("falls back and leaves nothing behind", func(t *testing.T) {
 		dir := filepath.Join(t.TempDir(), "deep", "pc")
-		if err := Clone(ctx, opts(dir, "dead:/srv/none", p.remote)); err != nil {
+		if err := Clone(ctx, opts(dir, "dead:/srv/none", p.remote), 1); err != nil {
 			t.Fatal(err)
 		}
 		if got := git(t, dir, "rev-parse", "HEAD"); got != git(t, p.a, "rev-parse", "HEAD") {
@@ -600,7 +600,7 @@ func TestCloneRules(t *testing.T) {
 	})
 	t.Run("an empty remote cannot be cloned, and the directory is cleaned", func(t *testing.T) {
 		fresh := filepath.Join(t.TempDir(), "pc")
-		err := Clone(ctx, opts(fresh, bareRemote(t)))
+		err := Clone(ctx, opts(fresh, bareRemote(t)), 1)
 		var re *RemoteError
 		if !errors.As(err, &re) {
 			t.Fatalf("err = %v, want *RemoteError", err)
@@ -609,7 +609,7 @@ func TestCloneRules(t *testing.T) {
 			t.Error("a failed Clone left the directory it created")
 		}
 		existing := t.TempDir()
-		if err := Clone(ctx, opts(existing, bareRemote(t))); err == nil {
+		if err := Clone(ctx, opts(existing, bareRemote(t)), 1); err == nil {
 			t.Fatal("cloned an empty remote")
 		}
 		if entries, _ := os.ReadDir(existing); len(entries) != 0 {
@@ -618,7 +618,7 @@ func TestCloneRules(t *testing.T) {
 	})
 	t.Run("all dead", func(t *testing.T) {
 		dir := filepath.Join(t.TempDir(), "pc")
-		err := Clone(ctx, opts(dir, "dead:/a", "dead:/b"))
+		err := Clone(ctx, opts(dir, "dead:/a", "dead:/b"), 1)
 		var re *RemoteError
 		if !errors.As(err, &re) || len(re.Tried) != 2 {
 			t.Fatalf("err = %v, want a *RemoteError naming both", err)
@@ -733,7 +733,7 @@ func TestRemoteForms(t *testing.T) {
 			t.Fatalf("Status = %+v, %v", st, err)
 		}
 		clone := filepath.Join(t.TempDir(), "c")
-		if err := Clone(ctx, opts(clone, spec)); err != nil {
+		if err := Clone(ctx, opts(clone, spec), 1); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -758,7 +758,7 @@ func TestRemoteForms(t *testing.T) {
 			t.Error("nothing reached the remote")
 		}
 		clone := filepath.Join(t.TempDir(), "c")
-		if err := Clone(ctx, opts(clone, spec)); err != nil {
+		if err := Clone(ctx, opts(clone, spec), 1); err != nil {
 			t.Fatal(err)
 		}
 	})

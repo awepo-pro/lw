@@ -15,7 +15,9 @@ import (
 // "Expected results (frozen)"). Their names are the contract; none may be
 // deleted, weakened or renamed.
 
-// TestIgnoreBytes pins D2: the managed .gitignore is exactly these bytes.
+// TestIgnoreBytes pins D2: the managed .gitignore is exactly these bytes. The
+// last four lines are amendment A-042-3 (Obsidian's workspace files and
+// macOS's .DS_Store).
 func TestIgnoreBytes(t *testing.T) {
 	want := "# managed by lw sync: per-PC state, never synced\n" +
 		"/.llmwiki/index.gob\n" +
@@ -25,7 +27,11 @@ func TestIgnoreBytes(t *testing.T) {
 		"/.llmwiki/logs/\n" +
 		"/.llmwiki/traces/\n" +
 		"/.llmwiki/changesets/open/\n" +
-		"/.llmwiki/sync.json\n"
+		"/.llmwiki/sync.json\n" +
+		"/.obsidian/workspace.json\n" +
+		"/.obsidian/workspace-mobile.json\n" +
+		"/.obsidian/cache\n" +
+		".DS_Store\n"
 	if Ignore != want {
 		t.Fatalf("Ignore = %q\nwant     %q", Ignore, want)
 	}
@@ -422,11 +428,11 @@ func TestPushRaceBecomesDiverged(t *testing.T) {
 		t.Fatalf("Init: %v", err)
 	}
 	b := filepath.Join(t.TempDir(), "pc-b")
-	if err := Clone(ctx, opts(b, remote)); err != nil {
+	if err := Clone(ctx, opts(b, remote), 1); err != nil {
 		t.Fatalf("Clone b: %v", err)
 	}
 	c := filepath.Join(t.TempDir(), "pc-c")
-	if err := Clone(ctx, opts(c, bare)); err != nil {
+	if err := Clone(ctx, opts(c, bare), 1); err != nil {
 		t.Fatalf("Clone c: %v", err)
 	}
 	put(t, c, "wiki/from-c.md", "c\n")
@@ -592,7 +598,7 @@ func TestTakeRemote(t *testing.T) {
 	ctx := t.Context()
 	aTip, bTip := diverge(t, p)
 
-	name, st, err := TakeRemote(ctx, opts(p.b, p.remote))
+	name, st, err := TakeRemote(ctx, opts(p.b, p.remote), 1)
 	if err != nil {
 		t.Fatalf("TakeRemote: %v", err)
 	}
@@ -702,5 +708,188 @@ func TestGitIdentityAndNoSign(t *testing.T) {
 		if got != want {
 			t.Errorf("%s: %q, want %q", rev, got, want)
 		}
+	}
+}
+
+// TestIgnoreObsidianAndDSStore (A-042-3): Obsidian rewrites its workspace
+// files constantly and macOS drops .DS_Store everywhere; synced, they would
+// make every PC that has the vault open "ahead" and diverge on every sync.
+// Obsidian's settings and plugins still sync.
+func TestIgnoreObsidianAndDSStore(t *testing.T) {
+	hermetic(t)
+	vault := makeVault(t)
+	synced := []string{".obsidian/app.json", ".obsidian/plugins/foo/data.json"}
+	ignored := []string{
+		".obsidian/workspace.json", ".obsidian/workspace-mobile.json",
+		".obsidian/cache/blob", ".DS_Store", "sub/.DS_Store",
+		"wiki/.DS_Store", ".obsidian/plugins/foo/.DS_Store",
+	}
+	for _, rel := range append(append([]string{}, synced...), ignored...) {
+		put(t, vault, rel, "content of "+rel+"\n")
+	}
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	if _, err := Init(t.Context(), opts(vault, remote)); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	want := append([]string{".gitignore"}, syncedFiles...)
+	want = append(want, synced...)
+	sort.Strings(want)
+	if got := treeNames(t, remote, "main"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("remote main tree:\n got %v\nwant %v", got, want)
+	}
+
+	// Obsidian rewriting its workspace on this PC is not work to sync.
+	put(t, vault, ".obsidian/workspace.json", "{\"opened\": \"another page\"}\n")
+	put(t, vault, "deep/er/.DS_Store", "x")
+	if committed, err := CommitWork(opts(vault, remote), "lw sync"); err != nil || committed {
+		t.Fatalf("CommitWork after an Obsidian rewrite = %v, %v; want false, nil", committed, err)
+	}
+	if st, err := Status(t.Context(), opts(vault, remote)); err != nil || st.Ahead != 0 {
+		t.Fatalf("Status = %+v, %v; want Ahead 0", st, err)
+	}
+	// The second PC gets the settings but none of the per-PC files.
+	clone := filepath.Join(t.TempDir(), "pc-b")
+	if err := Clone(t.Context(), opts(clone, remote), 1); err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range synced {
+		if _, err := os.Stat(filepath.Join(clone, rel)); err != nil {
+			t.Errorf("clone lacks %s: %v", rel, err)
+		}
+	}
+	for _, rel := range ignored {
+		if _, err := os.Stat(filepath.Join(clone, rel)); err == nil {
+			t.Errorf("clone carries the per-PC file %s", rel)
+		}
+	}
+}
+
+// TestCloneFormatTooNew (A-042-5): a remote newer than this lw supports is
+// refused before anything is left on disk — no directory, no leading
+// directories, an existing empty directory still empty.
+func TestCloneFormatTooNew(t *testing.T) {
+	hermetic(t)
+	installFakeSSH(t)
+	p := newPair(t)
+	ctx := t.Context()
+	put(t, p.a, ".llmwiki/format", "{\"version\": 2}\n")
+	if _, err := CommitWork(opts(p.a, p.remote), "lw 000002: format 2"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Push(ctx, opts(p.a, p.remote)); err != nil {
+		t.Fatal(err)
+	}
+	wantText := "the remote vault is format 2; this lw supports 1 — upgrade lw on this PC, then lw sync"
+
+	check := func(t *testing.T, err error) {
+		t.Helper()
+		var fe *FormatError
+		if !errors.As(err, &fe) {
+			t.Fatalf("err = %v, want *FormatError", err)
+		}
+		if err.Error() != wantText {
+			t.Fatalf("err = %q\nwant  %q", err.Error(), wantText)
+		}
+		if fe.Have != 2 || fe.Max != 1 || fe.Remote != p.remote {
+			t.Fatalf("FormatError = %+v, want Have 2, Max 1, Remote %q", *fe, p.remote)
+		}
+	}
+
+	t.Run("new directory is not created", func(t *testing.T) {
+		base := t.TempDir()
+		dir := filepath.Join(base, "deep", "pc")
+		check(t, Clone(ctx, opts(dir, p.remote), 1))
+		if entries, _ := os.ReadDir(base); len(entries) != 0 {
+			t.Fatalf("the refused Clone left %d entries under %s", len(entries), base)
+		}
+	})
+	t.Run("existing empty directory stays empty", func(t *testing.T) {
+		dir := t.TempDir()
+		check(t, Clone(ctx, opts(dir, p.remote), 1))
+		if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+			t.Fatalf("the refused Clone left %d entries in the directory", len(entries))
+		}
+	})
+	t.Run("a refusal is an answer: the next remote is not tried", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "pc")
+		check(t, Clone(ctx, opts(dir, "dead:/srv/none", p.remote), 1))
+		if _, err := os.Stat(dir); err == nil {
+			t.Fatal("the refused Clone created the directory")
+		}
+	})
+	t.Run("a supported format clones", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "pc")
+		if err := Clone(ctx, opts(dir, p.remote), 2); err != nil {
+			t.Fatalf("Clone with maxFormat 2: %v", err)
+		}
+		if got := readFile(t, filepath.Join(dir, ".llmwiki/format")); got != "{\"version\": 2}\n" {
+			t.Fatalf(".llmwiki/format = %q", got)
+		}
+		if got := git(t, dir, "status", "--porcelain"); got != "" {
+			t.Fatalf("a gated Clone leaves the work tree dirty:\n%s", got)
+		}
+		if a, b := git(t, dir, "rev-parse", "HEAD"), git(t, p.a, "rev-parse", "HEAD"); a != b {
+			t.Fatalf("HEAD = %s, want %s", a, b)
+		}
+		if a, b := git(t, dir, "rev-parse", "refs/remotes/lw/main"), git(t, dir, "rev-parse", "HEAD"); a != b {
+			t.Fatalf("refs/remotes/lw/main = %s, want HEAD %s", a, b)
+		}
+	})
+}
+
+// TestTakeRemoteFormatTooNew (A-042-5): TakeRemote on a newer remote changes
+// nothing: no save commit, no backup branch, no reset, and uncommitted work
+// stays exactly as it was.
+func TestTakeRemoteFormatTooNew(t *testing.T) {
+	hermetic(t)
+	p := newPair(t)
+	ctx := t.Context()
+	diverge(t, p)
+	put(t, p.a, ".llmwiki/format", "{\"version\": 2}\n")
+	if _, err := CommitWork(opts(p.a, p.remote), "lw 000003: format 2"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Push(ctx, opts(p.a, p.remote)); err != nil {
+		t.Fatal(err)
+	}
+	put(t, p.b, "notes/unsaved.md", "unsaved\n")
+
+	head := git(t, p.b, "rev-parse", "HEAD")
+	commits := git(t, p.b, "rev-list", "--count", "--branches")
+	branches := git(t, p.b, "branch", "--list")
+	tree := workTree(t, p.b)
+
+	name, st, err := TakeRemote(ctx, opts(p.b, p.remote), 1)
+	var fe *FormatError
+	if !errors.As(err, &fe) {
+		t.Fatalf("err = %v, want *FormatError", err)
+	}
+	if want := "the remote vault is format 2; this lw supports 1 — upgrade lw on this PC, then lw sync"; err.Error() != want {
+		t.Fatalf("err = %q\nwant  %q", err.Error(), want)
+	}
+	if fe.Have != 2 || fe.Max != 1 || fe.Remote != p.remote || name != "" || st.RemoteFormat != 2 {
+		t.Fatalf("FormatError = %+v, name %q, State %+v", *fe, name, st)
+	}
+	if got := git(t, p.b, "rev-parse", "HEAD"); got != head {
+		t.Fatalf("HEAD moved to %s from %s", got, head)
+	}
+	if got := git(t, p.b, "rev-list", "--count", "--branches"); got != commits {
+		t.Fatalf("commit count %s -> %s: something was committed", commits, got)
+	}
+	if got := git(t, p.b, "branch", "--list"); got != branches {
+		t.Fatalf("branches changed:\n%s\nwas:\n%s", got, branches)
+	}
+	sameTree(t, workTree(t, p.b), tree, "B work tree after the refused TakeRemote")
+	if got := git(t, p.b, "status", "--porcelain"); got != "?? notes/unsaved.md" {
+		t.Fatalf("uncommitted work was touched; status:\n%s", got)
+	}
+
+	// A lw that supports format 2 takes it.
+	name, _, err = TakeRemote(ctx, opts(p.b, p.remote), 2)
+	if err != nil || name == "" {
+		t.Fatalf("TakeRemote with maxFormat 2 = %q, %v", name, err)
+	}
+	if got := readFile(t, filepath.Join(p.b, ".llmwiki/format")); got != "{\"version\": 2}\n" {
+		t.Fatalf("B .llmwiki/format = %q", got)
 	}
 }

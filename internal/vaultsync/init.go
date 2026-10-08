@@ -81,16 +81,25 @@ func Init(ctx context.Context, o Options) (State, error) {
 
 // Clone copies a synced vault to Dir, which must not exist or must be empty
 // (a PC joining the vault, 042). Remotes are tried in order; the first that
-// clones wins and a failed attempt is cleaned up so the next starts from the
-// same empty Dir.
+// answers wins. A failed attempt is cleaned up so the next starts from the
+// same state as the first.
+//
+// A remote whose .llmwiki/format is newer than maxFormat is refused with a
+// *FormatError before any file is checked out, and the refusal leaves Dir as
+// it was — absent (with any leading directories git made), or still empty
+// (A-042-5). Without it a format-2 remote could be checked out under an older
+// lw, which would then rewrite changesets and drop the fields it does not
+// know. The format lives in the remote's tree, so the clone is made without a
+// checkout, the tip's format is read from it, and only then are the files
+// written; one download serves both. A refusal is an answer, not an outage:
+// the remaining remotes are not tried.
 //
 // git clone is run with --origin lw so the clone itself creates
 // refs/remotes/lw/main, then the "lw" remote is removed and the ref kept:
 // the vault ends up with exactly the state a Pull/Push cycle expects and no
 // configured git remote, in one network round trip instead of clone plus a
-// fetch. It does not know which format the remote holds — the caller's
-// engine open or a following Pull refuses one it cannot read.
-func Clone(ctx context.Context, o Options) error {
+// fetch.
+func Clone(ctx context.Context, o Options, maxFormat int) error {
 	r, err := newRunner(o)
 	if err != nil {
 		return err
@@ -102,14 +111,22 @@ func Clone(ctx context.Context, o Options) error {
 	if err != nil {
 		return err
 	}
+	created := "" // what this call may remove again: everything git makes for a Dir that did not exist
+	if !existed {
+		created = topMissing(r.o.Dir)
+	}
 	re := &RemoteError{}
 	for _, spec := range r.o.Remotes {
 		re.Tried = append(re.Tried, spec)
-		err := r.cloneOne(ctx, spec)
+		err := r.cloneOne(ctx, spec, maxFormat)
 		if err == nil {
 			return nil
 		}
-		resetDir(r.o.Dir, existed)
+		resetDir(r.o.Dir, created)
+		var fe *FormatError
+		if errors.As(err, &fe) {
+			return err
+		}
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -118,19 +135,27 @@ func Clone(ctx context.Context, o Options) error {
 	return re
 }
 
-// cloneOne clones one remote into Dir and leaves refs/remotes/lw/main set.
-func (r *runner) cloneOne(ctx context.Context, spec string) error {
+// cloneOne clones one remote into Dir, gates on its format, checks the files
+// out and leaves refs/remotes/lw/main set.
+func (r *runner) cloneOne(ctx context.Context, spec string, maxFormat int) error {
 	rem, err := parseRemote(spec)
 	if err != nil {
 		return err
 	}
-	args := []string{"clone", "--branch", Branch, "--origin", "lw", "--no-tags"}
+	args := []string{"clone", "--no-checkout", "--branch", Branch, "--origin", "lw", "--no-tags"}
 	if r.progress() {
 		args = append(args, "--progress")
 	}
 	args = append(args, "--", rem.arg, r.o.Dir)
 	if _, err := r.gitCall(ctx, call{args: args, net: true, noDir: true}); err != nil {
 		return err
+	}
+	format, err := r.remoteFormat(ctx)
+	if err != nil {
+		return err
+	}
+	if format > maxFormat {
+		return &FormatError{Remote: spec, Have: format, Max: maxFormat}
 	}
 	tip, err := r.out(ctx, "rev-parse", trackRef)
 	if err != nil {
@@ -139,7 +164,12 @@ func (r *runner) cloneOne(ctx context.Context, spec string) error {
 	if _, err := r.out(ctx, "remote", "remove", "lw"); err != nil {
 		return err
 	}
-	_, err = r.out(ctx, "update-ref", trackRef, tip)
+	if _, err := r.out(ctx, "update-ref", trackRef, tip); err != nil {
+		return err
+	}
+	// The clone was made without a checkout; HEAD is main and the index is
+	// empty, so this writes every file of the tip.
+	_, err = r.out(ctx, "reset", "--hard", "--quiet", "HEAD")
 	return err
 }
 
@@ -159,12 +189,26 @@ func emptyOrMissing(dir string) (existed bool, err error) {
 	return true, nil
 }
 
-// resetDir undoes a failed clone attempt: a Dir the attempt created is
-// removed, a Dir that existed (empty) is emptied again. git cleans up after
-// an ordinary failure, but not after the SIGKILL of a timeout.
-func resetDir(dir string, existed bool) {
-	if !existed {
-		os.RemoveAll(dir)
+// topMissing is the highest ancestor of dir (or dir itself) that does not
+// exist yet: git clone creates all of them, so a failed clone removes all of
+// them.
+func topMissing(dir string) string {
+	top := dir
+	for p := filepath.Dir(dir); ; p = filepath.Dir(p) {
+		if _, err := os.Stat(p); err == nil || filepath.Dir(p) == p {
+			return top
+		}
+		top = p
+	}
+}
+
+// resetDir undoes a failed clone attempt: what the attempt created (created,
+// non-empty) is removed, and a Dir that existed (empty) is emptied again. git
+// cleans up after an ordinary failure, but not after the SIGKILL of a
+// timeout, and not after a refusal that came once the clone had finished.
+func resetDir(dir, created string) {
+	if created != "" {
+		os.RemoveAll(created)
 		return
 	}
 	entries, err := os.ReadDir(dir)
