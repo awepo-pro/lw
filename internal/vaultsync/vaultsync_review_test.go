@@ -895,3 +895,244 @@ func TestPullDoesNotDependOnCommitWorkForAttributes(t *testing.T) {
 		}
 	}
 }
+
+// ---- S1d: the collision marker (.git/lw-collision) ----
+
+func collisionRefusal(paths string) string {
+	return "a checkout collision is unresolved (" + paths + ") — rename the clashing files on the PC that created them, sync there, then run lw sync --take-remote here"
+}
+
+func collisionText(paths string) string {
+	return "checkout collision: " + paths + " differ from the commit (case-insensitive filesystem?) — nothing will be committed until this is fixed"
+}
+
+// execPair is a synced pair whose vault is root-level files only, one of them
+// executable: the shape installUmaskGit needs to make a checkout come out
+// different from its commit.
+func execPair(t *testing.T) pair {
+	t.Helper()
+	ctx := t.Context()
+	a := filepath.Join(t.TempDir(), "vault")
+	put(t, a, "SCHEMA.md", "s\n")
+	addExec(t, a, "run.sh")
+	p := pair{a: a, bare: filepath.Join(t.TempDir(), "remote.git")}
+	p.remote = p.bare
+	if _, err := Init(ctx, opts(a, p.remote)); err != nil {
+		t.Fatal(err)
+	}
+	p.b = filepath.Join(t.TempDir(), "pc-b")
+	if err := Clone(ctx, opts(p.b, p.remote), 1); err != nil {
+		t.Fatalf("Clone: %v", err)
+	}
+	return p
+}
+
+func addExec(t *testing.T, dir, name string) {
+	t.Helper()
+	put(t, dir, name, "#!/bin/sh\n")
+	if err := os.Chmod(filepath.Join(dir, name), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// collide makes B's Pull produce a collision on tool.sh (the umask wrapper
+// strips its exec bit) and returns with the marker in place and the umask
+// still active.
+func collide(t *testing.T, p pair) {
+	t.Helper()
+	ctx := t.Context()
+	addExec(t, p.a, "tool.sh")
+	if _, err := CommitWork(opts(p.a, p.remote), "lw tool"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Push(ctx, opts(p.a, p.remote)); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKE_GIT_UMASK", "0111")
+	if _, err := Pull(ctx, opts(p.b, p.remote), 1); err == nil || err.Error() != collisionText("tool.sh") {
+		t.Fatalf("Pull err = %v, want the collision", err)
+	}
+}
+
+type repoState struct {
+	head, index, remote, refs string
+	tree                      map[string]string
+}
+
+func snapshot(t *testing.T, p pair) repoState {
+	t.Helper()
+	return repoState{
+		head:   git(t, p.b, "rev-parse", "HEAD"),
+		index:  git(t, p.b, "ls-files", "-s"),
+		remote: git(t, p.bare, "rev-parse", "main"),
+		refs:   git(t, p.b, "for-each-ref"),
+		tree:   workTree(t, p.b),
+	}
+}
+
+func (s repoState) mustEqual(t *testing.T, got repoState, what string) {
+	t.Helper()
+	if s.head != got.head || s.index != got.index || s.remote != got.remote || s.refs != got.refs {
+		t.Errorf("%s changed the repository:\nhead %s -> %s\nindex:\n%s\n->\n%s\nremote %s -> %s\nrefs:\n%s\n->\n%s",
+			what, s.head, got.head, s.index, got.index, s.remote, got.remote, s.refs, got.refs)
+	}
+	sameTree(t, got.tree, s.tree, what)
+}
+
+// A collision persists as .git/lw-collision. While it exists CommitWork, Pull
+// and Push refuse, and change nothing: the next CommitWork would otherwise
+// read the collided tree as the user's edit and commit a deletion, and the
+// push would carry it to every PC.
+func TestCollisionMarkerBlocksSyncUntilTakeRemote(t *testing.T) {
+	hermetic(t)
+	installUmaskGit(t)
+	ctx := t.Context()
+	p := execPair(t)
+	collide(t, p)
+
+	marker := filepath.Join(p.b, ".git", "lw-collision")
+	if got := readFile(t, marker); got != "tool.sh\n" {
+		t.Fatalf(".git/lw-collision = %q, want %q", got, "tool.sh\n")
+	}
+	// Something other than lw sync committed (the engine does), and the tree
+	// has unsaved work and a changed .gitignore.
+	git(t, p.b, "commit", "--allow-empty", "-m", "engine commit")
+	put(t, p.b, "notes.md", "unsaved\n")
+	put(t, p.b, ".gitignore", "junk\n")
+	before := snapshot(t, p)
+
+	want := collisionRefusal("tool.sh")
+	committed, err := CommitWork(opts(p.b, p.remote), "lw x")
+	if err == nil || err.Error() != want || committed {
+		t.Fatalf("CommitWork = %v, %v; want false, %q", committed, err, want)
+	}
+	if _, err := Pull(ctx, opts(p.b, p.remote), 1); err == nil || err.Error() != want {
+		t.Fatalf("Pull err = %v, want %q", err, want)
+	}
+	if st, err := Push(ctx, opts(p.b, p.remote)); err == nil || err.Error() != want || st.Pushed != 0 {
+		t.Fatalf("Push = %+v, %v; want a refusal %q", st, err, want)
+	}
+	before.mustEqual(t, snapshot(t, p), "a refused CommitWork, Pull and Push")
+	if got := readFile(t, marker); got != "tool.sh\n" {
+		t.Fatalf("the marker changed: %q", got)
+	}
+	// Reading stays possible.
+	if st, err := Status(ctx, opts(p.b, p.remote)); err != nil || st.Ahead != 1 {
+		t.Fatalf("Status = %+v, %v", st, err)
+	}
+
+	// The clashing file is fixed on the PC that made it, and synced there.
+	if err := os.Chmod(filepath.Join(p.a, "tool.sh"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if committed, err := CommitWork(opts(p.a, p.remote), "lw fix tool"); err != nil || !committed {
+		t.Fatalf("A CommitWork = %v, %v", committed, err)
+	}
+	if _, err := Push(ctx, opts(p.a, p.remote)); err != nil {
+		t.Fatal(err)
+	}
+
+	// take-remote is the way out. It does not commit the collided tree.
+	name, st, err := TakeRemote(ctx, opts(p.b, p.remote), 1)
+	if err != nil {
+		t.Fatalf("TakeRemote: %v", err)
+	}
+	if got := git(t, p.b, "rev-parse", "refs/heads/"+name); got != before.head {
+		t.Fatalf("backup branch %s is at %s, want the HEAD before (%s): the collided tree was committed onto it", name, got, before.head)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("the marker survived a clean take-remote")
+	}
+	if got, want := git(t, p.b, "rev-parse", "HEAD"), git(t, p.bare, "rev-parse", "main"); got != want {
+		t.Fatalf("HEAD = %s, want the remote tip %s", got, want)
+	}
+	if got := git(t, p.b, "status", "--porcelain", "--untracked-files=no"); got != "" {
+		t.Fatalf("work tree is dirty after take-remote:\n%s", got)
+	}
+	if st.Ahead != 0 || st.Behind != 0 {
+		t.Fatalf("State = %+v", st)
+	}
+	if _, err := os.Stat(filepath.Join(p.b, "notes.md")); err != nil {
+		t.Fatalf("untracked work was removed: %v", err)
+	}
+
+	// Normal service resumes.
+	t.Setenv("FAKE_GIT_UMASK", "")
+	put(t, p.a, "wiki.md", "from A\n")
+	if _, err := CommitWork(opts(p.a, p.remote), "lw a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Push(ctx, opts(p.a, p.remote)); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := Pull(ctx, opts(p.b, p.remote), 1); err != nil || st.Pulled != 1 {
+		t.Fatalf("Pull = %+v, %v", st, err)
+	}
+	put(t, p.b, "from-b.md", "from B\n")
+	if committed, err := CommitWork(opts(p.b, p.remote), "lw b"); err != nil || !committed {
+		t.Fatalf("B CommitWork = %v, %v", committed, err)
+	}
+	if st, err := Push(ctx, opts(p.b, p.remote)); err != nil || st.Pushed != 1 {
+		t.Fatalf("B Push = %+v, %v", st, err)
+	}
+}
+
+// take-remote that still collides must neither clear the marker nor commit
+// the collided tree; the guard stays until a take-remote comes out clean.
+func TestTakeRemoteKeepsMarkerWhileStillColliding(t *testing.T) {
+	hermetic(t)
+	installUmaskGit(t)
+	ctx := t.Context()
+	p := execPair(t)
+	collide(t, p)
+	marker := filepath.Join(p.b, ".git", "lw-collision")
+	head := git(t, p.b, "rev-parse", "HEAD")
+
+	// The remote still holds the executable tool.sh, so the umask still
+	// breaks the checkout take-remote makes.
+	name, _, err := TakeRemote(ctx, opts(p.b, p.remote), 1)
+	if err == nil || err.Error() != collisionText("tool.sh") {
+		t.Fatalf("TakeRemote err = %v, want the collision", err)
+	}
+	if name == "" || git(t, p.b, "rev-parse", "refs/heads/"+name) != head {
+		t.Fatalf("backup %q is not at the HEAD before (%s)", name, head)
+	}
+	if got := readFile(t, marker); got != "tool.sh\n" {
+		t.Fatalf("the marker after a still-colliding take-remote = %q, want it kept", got)
+	}
+	if _, err := CommitWork(opts(p.b, p.remote), "lw x"); err == nil || err.Error() != collisionRefusal("tool.sh") {
+		t.Fatalf("CommitWork err = %v, want the refusal", err)
+	}
+
+	// Once the checkout comes out right, take-remote clears it.
+	t.Setenv("FAKE_GIT_UMASK", "")
+	if _, _, err := TakeRemote(ctx, opts(p.b, p.remote), 1); err != nil {
+		t.Fatalf("second TakeRemote: %v", err)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("the marker survived a clean take-remote")
+	}
+	if got := git(t, p.b, "status", "--porcelain", "--untracked-files=no"); got != "" {
+		t.Fatalf("work tree is dirty:\n%s", got)
+	}
+	if _, err := CommitWork(opts(p.b, p.remote), "lw x"); err != nil {
+		t.Fatalf("CommitWork after the marker went: %v", err)
+	}
+}
+
+// The refusal lists every path in the marker, joined by ", ".
+func TestCollisionRefusalListsEveryPath(t *testing.T) {
+	hermetic(t)
+	p := newPair(t)
+	put(t, p.a, ".git/lw-collision", "Wiki/A.md\nwiki/a.md\n")
+	want := collisionRefusal("Wiki/A.md, wiki/a.md")
+	if _, err := CommitWork(opts(p.a, p.remote), "x"); err == nil || err.Error() != want {
+		t.Fatalf("CommitWork err = %v, want %q", err, want)
+	}
+	if _, err := Pull(t.Context(), opts(p.a, p.remote), 1); err == nil || err.Error() != want {
+		t.Fatalf("Pull err = %v, want %q", err, want)
+	}
+	if _, err := Push(t.Context(), opts(p.a, p.remote)); err == nil || err.Error() != want {
+		t.Fatalf("Push err = %v, want %q", err, want)
+	}
+}

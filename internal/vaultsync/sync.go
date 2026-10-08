@@ -37,6 +37,9 @@ func CommitWork(o Options, message string) (bool, error) {
 	if !r.isRepo() {
 		return false, ErrNotRepo
 	}
+	if err := r.refuseIfCollided(ctx); err != nil {
+		return false, err
+	}
 	return r.commitWork(ctx, message)
 }
 
@@ -334,6 +337,9 @@ func Pull(ctx context.Context, o Options, maxFormat int) (State, error) {
 	if err := r.requireRepo(ctx); err != nil {
 		return State{}, err
 	}
+	if err := r.refuseIfCollided(ctx); err != nil {
+		return State{}, err
+	}
 	if dirty, err := r.out(ctx, "status", "--porcelain", "--untracked-files=no"); err != nil {
 		return State{}, err
 	} else if dirty != "" {
@@ -366,60 +372,6 @@ func Pull(ctx context.Context, o Options, maxFormat int) (State, error) {
 	return st, nil
 }
 
-// checkoutCollision means the files a checkout wrote differ from the commit
-// it checked out — the symptom of two paths that differ only in case landing
-// on one file on a case-insensitive filesystem (a Mac). The next CommitWork
-// would read the difference as an edit and commit a deletion, so the step that
-// produced it reports it instead of carrying on.
-type checkoutCollision struct{ paths []string }
-
-func (e *checkoutCollision) Error() string {
-	shown := e.paths
-	more := ""
-	if len(shown) > 5 {
-		more = fmt.Sprintf(" and %d more", len(shown)-5)
-		shown = shown[:5]
-	}
-	return "checkout collision: " + strings.Join(shown, ", ") + more +
-		" differ from the commit (case-insensitive filesystem?) — nothing will be committed until this is fixed"
-}
-
-// collisionError builds the error for the given differing paths.
-func collisionError(paths []string) error { return &checkoutCollision{paths: paths} }
-
-// verifyCheckout requires the work tree to match HEAD after a checkout that
-// lw itself made (Clone, a fast-forward Pull, TakeRemote).
-func (r *runner) verifyCheckout(ctx context.Context) error {
-	// gitCall, not out: the -z output must not be trimmed.
-	out, err := r.gitCall(ctx, call{args: []string{"status", "--porcelain=v1", "-z", "--untracked-files=no"}})
-	if err != nil {
-		return wrap("status", err)
-	}
-	if paths := statusPaths(out); len(paths) > 0 {
-		return collisionError(paths)
-	}
-	return nil
-}
-
-// statusPaths lists the paths in `git status --porcelain=v1 -z` output. An
-// entry is "XY path"; a rename or copy is followed by one more entry, the
-// path it came from, which is skipped.
-func statusPaths(z string) []string {
-	var paths []string
-	entries := strings.Split(z, "\x00")
-	for i := 0; i < len(entries); i++ {
-		e := entries[i]
-		if len(e) < 4 {
-			continue
-		}
-		paths = append(paths, e[3:])
-		if strings.ContainsAny(e[:2], "RC") {
-			i++
-		}
-	}
-	return paths
-}
-
 // Push fetches, then pushes HEAD to the remote's main when the remote has
 // nothing this PC lacks. A divergence is refused with its counts. A push
 // that git rejects because the remote moved after our fetch (a race with
@@ -431,6 +383,9 @@ func Push(ctx context.Context, o Options) (State, error) {
 		return State{}, err
 	}
 	if err := r.requireRepo(ctx); err != nil {
+		return State{}, err
+	}
+	if err := r.refuseIfCollided(ctx); err != nil {
 		return State{}, err
 	}
 	st, err := r.fetch(ctx)
@@ -505,6 +460,10 @@ func (r *runner) pushTo(ctx context.Context, spec string) error {
 // *FormatError, before it commits, branches or resets anything (A-042-5):
 // checking out a format this lw cannot write would leave the PC's own work on
 // a backup branch and a vault it then refuses to open.
+//
+// It is also the way out of an unresolved checkout collision (.git/lw-collision):
+// it runs while the marker exists, without committing the collided tree, and
+// removes the marker only when the work tree matches the remote tip afterwards.
 func TakeRemote(ctx context.Context, o Options, maxFormat int) (backup string, st State, err error) {
 	return takeRemoteAt(ctx, o, maxFormat, time.Now())
 }
@@ -528,8 +487,17 @@ func takeRemoteAt(ctx context.Context, o Options, maxFormat int, now time.Time) 
 	if st.RemoteFormat > maxFormat {
 		return "", st, &FormatError{Remote: st.Remote, Have: st.RemoteFormat, Max: maxFormat}
 	}
-	if _, err := r.commitWork(ctx, "lw sync: save before take-remote"); err != nil {
+	// A marked tree is the collision itself, not work: committing it onto the
+	// backup would record the clashing files as deleted or changed. The
+	// backup is HEAD as it stands.
+	_, marked, err := r.collisionPaths(ctx)
+	if err != nil {
 		return "", st, err
+	}
+	if !marked {
+		if _, err := r.commitWork(ctx, "lw sync: save before take-remote"); err != nil {
+			return "", st, err
+		}
 	}
 	name := "lw-diverged-" + now.Format("20060102-150405")
 	for n := 2; r.hasRef(ctx, "refs/heads/"+name); n++ {
@@ -543,7 +511,12 @@ func takeRemoteAt(ctx context.Context, o Options, maxFormat int, now time.Time) 
 	}
 	st.Pulled, st.Ahead, st.Behind = st.Behind, 0, 0
 	if err := r.verifyCheckout(ctx); err != nil {
-		return name, st, err
+		return name, st, err // verifyCheckout has rewritten the marker
+	}
+	if marked {
+		if err := r.clearCollision(ctx); err != nil {
+			return name, st, err
+		}
 	}
 	return name, st, nil
 }
