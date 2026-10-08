@@ -52,7 +52,7 @@ func Init(ctx context.Context, o Options) (State, error) {
 	}
 
 	if !r.isRepo() {
-		if _, err := r.out(ctx, "init", "--quiet", "-b", Branch); err != nil {
+		if _, err := r.out(ctx, "init", "--quiet", "--template=", "-b", Branch); err != nil {
 			return State{}, err
 		}
 	}
@@ -124,8 +124,9 @@ func Clone(ctx context.Context, o Options, maxFormat int) error {
 		}
 		resetDir(r.o.Dir, created)
 		var fe *FormatError
-		if errors.As(err, &fe) {
-			return err
+		var co *checkoutCollision
+		if errors.As(err, &fe) || errors.As(err, &co) {
+			return err // the same content on every remote; trying another changes nothing
 		}
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -142,7 +143,9 @@ func (r *runner) cloneOne(ctx context.Context, spec string, maxFormat int) error
 	if err != nil {
 		return err
 	}
-	args := []string{"clone", "--no-checkout", "--branch", Branch, "--origin", "lw", "--no-tags"}
+	// --template=: no template directory, so a user's init.templateDir cannot
+	// plant an info/exclude or hooks in the vault's repository.
+	args := []string{"clone", "--no-checkout", "--template=", "--branch", Branch, "--origin", "lw", "--no-tags"}
 	if r.progress() {
 		args = append(args, "--progress")
 	}
@@ -167,10 +170,16 @@ func (r *runner) cloneOne(ctx context.Context, spec string, maxFormat int) error
 	if _, err := r.out(ctx, "update-ref", trackRef, tip); err != nil {
 		return err
 	}
+	// The attribute override must be in place before the files are written.
+	if err := r.ensureAttributes(ctx); err != nil {
+		return err
+	}
 	// The clone was made without a checkout; HEAD is main and the index is
 	// empty, so this writes every file of the tip.
-	_, err = r.out(ctx, "reset", "--hard", "--quiet", "HEAD")
-	return err
+	if _, err := r.out(ctx, "reset", "--hard", "--quiet", "HEAD", "--"); err != nil {
+		return err
+	}
+	return r.verifyCheckout(ctx)
 }
 
 // emptyOrMissing checks Clone's precondition and reports whether Dir already

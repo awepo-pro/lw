@@ -44,7 +44,13 @@ func (r *runner) commitWork(ctx context.Context, message string) (bool, error) {
 	if err := r.writeIgnore(); err != nil {
 		return false, err
 	}
+	if err := r.ensureAttributes(ctx); err != nil {
+		return false, err
+	}
 	if _, err := r.out(ctx, "add", "-A"); err != nil {
+		return false, err
+	}
+	if err := r.refuseLinks(ctx); err != nil {
 		return false, err
 	}
 	// status, not diff --cached: it also answers for a repo with no commit.
@@ -64,6 +70,70 @@ func (r *runner) commitWork(ctx context.Context, message string) (bool, error) {
 	return true, nil
 }
 
+// infoAttributes is written to .git/info/attributes, the attribute source that
+// outranks every other: no text conversion, no eol rewrite, no clean/smudge
+// filter, no $Id$ expansion, no re-encoding. A vault's bytes — a CRLF raw, a
+// PDF — must reach the other PC exactly as they are, whatever the user's
+// global attributes or a .gitattributes inside the vault say (H1 of the S1
+// review: `* text=auto` rewrote CRLF).
+const infoAttributes = "* -text -eol -filter -ident -working-tree-encoding\n"
+
+// ensureAttributes keeps .git/info/attributes at infoAttributes.
+func (r *runner) ensureAttributes(ctx context.Context) error {
+	rel, err := r.out(ctx, "rev-parse", "--git-path", "info/attributes")
+	if err != nil {
+		return err
+	}
+	path := rel
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(r.o.Dir, path)
+	}
+	if cur, err := os.ReadFile(path); err == nil && string(cur) == infoAttributes {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("vaultsync: %w", err)
+	}
+	if err := os.WriteFile(path, []byte(infoAttributes), 0o644); err != nil {
+		return fmt.Errorf("vaultsync: write .git/info/attributes: %w", err)
+	}
+	return nil
+}
+
+// refuseLinks fails when the index holds a symlink or a nested git repository
+// (a gitlink): git stores the first as its target text and the second as a
+// bare commit id, so the other PC would get a dangling link or an empty
+// directory, never the content. lw sync copies files only. The index is read
+// after `git add -A`, so ignored paths (a symlink in .llmwiki/cache) never
+// count; on a refusal the staging is undone so a failed CommitWork leaves the
+// index as it found it.
+func (r *runner) refuseLinks(ctx context.Context) error {
+	out, err := r.gitCall(ctx, call{args: []string{"ls-files", "-s", "-z"}})
+	if err != nil {
+		return wrap("ls-files", err)
+	}
+	for _, entry := range strings.Split(out, "\x00") {
+		meta, path, ok := strings.Cut(entry, "\t")
+		if !ok {
+			continue
+		}
+		var kind string
+		switch {
+		case strings.HasPrefix(meta, "120000 "):
+			kind = "symlink"
+		case strings.HasPrefix(meta, "160000 "):
+			kind = "nested git repo"
+		default:
+			continue
+		}
+		if _, rerr := r.out(ctx, "reset", "--quiet"); rerr != nil {
+			return rerr
+		}
+		return fmt.Errorf("cannot sync %s: %s — lw sync copies files only", path, kind)
+	}
+	return nil
+}
+
 // writeIgnore keeps the managed .gitignore at exactly Ignore.
 func (r *runner) writeIgnore() error {
 	path := filepath.Join(r.o.Dir, ".gitignore")
@@ -81,26 +151,44 @@ func (r *runner) writeIgnore() error {
 }
 
 // fetch tries each remote in order and returns the State of the first that
-// answers. A remote with no main yet (an empty bare repo) answers "empty":
-// Behind 0, RemoteFormat 0, and any stale tracking ref is dropped so the
-// counts agree with the server. When none answers the error is a
+// answers with commits. A remote with no main yet (an empty bare repo)
+// answers "empty": Behind 0, RemoteFormat 0, and any stale tracking ref is
+// dropped so the counts agree with the server. An empty answer does not win
+// while a later remote may hold the vault — otherwise the next push would
+// send the whole vault to the wrong place — but when every answering remote
+// is empty the first of them is used. When none answers the error is a
 // *RemoteError naming them all.
 func (r *runner) fetch(ctx context.Context) (State, error) {
 	if len(r.o.Remotes) == 0 {
 		return State{}, errNoRemotes
 	}
 	re := &RemoteError{}
+	firstEmpty := ""
 	for _, spec := range r.o.Remotes {
 		re.Tried = append(re.Tried, spec)
 		empty, err := r.fetchOne(ctx, spec)
 		if err != nil {
-			if ctx.Err() != nil {
-				return State{}, ctx.Err()
+			var le *lockError
+			if ctx.Err() != nil || errors.As(err, &le) {
+				if ctx.Err() != nil {
+					return State{}, ctx.Err()
+				}
+				return State{}, err // a local problem, not this remote's
 			}
 			re.Errs = append(re.Errs, err)
 			continue
 		}
-		return r.state(ctx, spec, empty)
+		if empty {
+			if firstEmpty == "" {
+				firstEmpty = spec
+			}
+			re.Errs = append(re.Errs, errors.New("has no commit"))
+			continue
+		}
+		return r.state(ctx, spec, false)
+	}
+	if firstEmpty != "" {
+		return r.state(ctx, firstEmpty, true)
 	}
 	return State{}, re
 }
@@ -165,7 +253,7 @@ func (r *runner) state(ctx context.Context, spec string, empty bool) (State, err
 
 // countHead is the number of commits reachable from HEAD.
 func (r *runner) countHead(ctx context.Context) (int, error) {
-	out, err := r.out(ctx, "rev-list", "--count", "HEAD")
+	out, err := r.out(ctx, "rev-list", "--count", "HEAD", "--")
 	if err != nil {
 		return 0, err
 	}
@@ -174,7 +262,7 @@ func (r *runner) countHead(ctx context.Context) (int, error) {
 
 // counts is Ahead and Behind of HEAD against trackRef.
 func (r *runner) counts(ctx context.Context) (ahead, behind int, err error) {
-	out, err := r.out(ctx, "rev-list", "--left-right", "--count", "HEAD..."+trackRef)
+	out, err := r.out(ctx, "rev-list", "--left-right", "--count", "HEAD..."+trackRef, "--")
 	if err != nil {
 		return 0, 0, err
 	}
@@ -262,12 +350,74 @@ func Pull(ctx context.Context, o Options, maxFormat int) (State, error) {
 		return st, ErrDiverged
 	}
 	if st.Behind > 0 && st.Ahead == 0 {
+		// Normally CommitWork has just written it; a Pull on its own must
+		// not depend on that.
+		if err := r.ensureAttributes(ctx); err != nil {
+			return st, err
+		}
 		if _, err := r.out(ctx, "merge", "--ff-only", "--quiet", trackRef); err != nil {
 			return st, err
 		}
 		st.Pulled, st.Behind = st.Behind, 0
+		if err := r.verifyCheckout(ctx); err != nil {
+			return st, err
+		}
 	}
 	return st, nil
+}
+
+// checkoutCollision means the files a checkout wrote differ from the commit
+// it checked out — the symptom of two paths that differ only in case landing
+// on one file on a case-insensitive filesystem (a Mac). The next CommitWork
+// would read the difference as an edit and commit a deletion, so the step that
+// produced it reports it instead of carrying on.
+type checkoutCollision struct{ paths []string }
+
+func (e *checkoutCollision) Error() string {
+	shown := e.paths
+	more := ""
+	if len(shown) > 5 {
+		more = fmt.Sprintf(" and %d more", len(shown)-5)
+		shown = shown[:5]
+	}
+	return "checkout collision: " + strings.Join(shown, ", ") + more +
+		" differ from the commit (case-insensitive filesystem?) — nothing will be committed until this is fixed"
+}
+
+// collisionError builds the error for the given differing paths.
+func collisionError(paths []string) error { return &checkoutCollision{paths: paths} }
+
+// verifyCheckout requires the work tree to match HEAD after a checkout that
+// lw itself made (Clone, a fast-forward Pull, TakeRemote).
+func (r *runner) verifyCheckout(ctx context.Context) error {
+	// gitCall, not out: the -z output must not be trimmed.
+	out, err := r.gitCall(ctx, call{args: []string{"status", "--porcelain=v1", "-z", "--untracked-files=no"}})
+	if err != nil {
+		return wrap("status", err)
+	}
+	if paths := statusPaths(out); len(paths) > 0 {
+		return collisionError(paths)
+	}
+	return nil
+}
+
+// statusPaths lists the paths in `git status --porcelain=v1 -z` output. An
+// entry is "XY path"; a rename or copy is followed by one more entry, the
+// path it came from, which is skipped.
+func statusPaths(z string) []string {
+	var paths []string
+	entries := strings.Split(z, "\x00")
+	for i := 0; i < len(entries); i++ {
+		e := entries[i]
+		if len(e) < 4 {
+			continue
+		}
+		paths = append(paths, e[3:])
+		if strings.ContainsAny(e[:2], "RC") {
+			i++
+		}
+	}
+	return paths
 }
 
 // Push fetches, then pushes HEAD to the remote's main when the remote has
@@ -388,9 +538,12 @@ func takeRemoteAt(ctx context.Context, o Options, maxFormat int, now time.Time) 
 	if _, err := r.out(ctx, "branch", name, "HEAD"); err != nil {
 		return "", st, err
 	}
-	if _, err := r.out(ctx, "reset", "--hard", "--quiet", trackRef); err != nil {
+	if _, err := r.out(ctx, "reset", "--hard", "--quiet", trackRef, "--"); err != nil {
 		return "", st, err
 	}
 	st.Pulled, st.Ahead, st.Behind = st.Behind, 0, 0
+	if err := r.verifyCheckout(ctx); err != nil {
+		return name, st, err
+	}
 	return name, st, nil
 }

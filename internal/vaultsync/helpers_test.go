@@ -55,7 +55,10 @@ func writeGlobalGitConfig(t *testing.T, body string) {
 // names, drops ssh's options and the host, then runs the remaining command
 // locally with sh -c — which is exactly what an ssh server's login shell
 // would do with it. A host named dead* fails like an unreachable machine;
-// FAKE_SSH_SLEEP makes it hang; FAKE_SSH_BG leaves a background process
+// FAKE_SSH_SLEEP makes it hang (FAKE_SSH_IGNORE_TERM: ignoring SIGTERM;
+// FAKE_SSH_TERM_MARK: writing that file when SIGTERM arrives);
+// FAKE_SSH_BADREPLY answers every command with a stdout line and a stderr
+// line instead of running it; FAKE_SSH_BG leaves a background process
 // holding its pipes after it exits (an ssh ControlPersist master);
 // FAKE_SSH_BEFORE_RECEIVE names a script run
 // once just before a git-receive-pack starts (a push race in the real
@@ -81,7 +84,17 @@ shift
 case "$host" in
   dead*) echo "ssh: Could not resolve hostname $host: Name or service not known" >&2; exit 255 ;;
 esac
-if [ -n "$FAKE_SSH_SLEEP" ]; then exec sleep "$FAKE_SSH_SLEEP"; fi
+if [ -n "$FAKE_SSH_BADREPLY" ]; then echo hello; echo "some warning" >&2; exit 0; fi
+if [ -n "$FAKE_SSH_SLEEP" ]; then
+  if [ -n "$FAKE_SSH_TERM_MARK" ]; then
+    trap 'echo term > "$FAKE_SSH_TERM_MARK"; exit 0' TERM
+    sleep "$FAKE_SSH_SLEEP" &
+    wait
+    exit 0
+  fi
+  if [ -n "$FAKE_SSH_IGNORE_TERM" ]; then trap '' TERM; sleep "$FAKE_SSH_SLEEP"; exit 0; fi
+  exec sleep "$FAKE_SSH_SLEEP"
+fi
 if [ -n "$FAKE_SSH_BG" ]; then sleep "$FAKE_SSH_BG" & fi
 case "$*" in
   *git-receive-pack*)
@@ -106,6 +119,9 @@ func installFakeSSH(t *testing.T) string {
 	t.Setenv("FAKE_SSH_LOG", logPath)
 	t.Setenv("FAKE_SSH_SLEEP", "")
 	t.Setenv("FAKE_SSH_BG", "")
+	t.Setenv("FAKE_SSH_BADREPLY", "")
+	t.Setenv("FAKE_SSH_IGNORE_TERM", "")
+	t.Setenv("FAKE_SSH_TERM_MARK", "")
 	t.Setenv("FAKE_SSH_BEFORE_RECEIVE", "")
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	return logPath
@@ -309,4 +325,59 @@ func newPair(t *testing.T) pair {
 		t.Fatalf("Clone: %v", err)
 	}
 	return p
+}
+
+// gitRaw is git without TrimSpace on stdout, for comparing blob bytes.
+func gitRaw(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	full := append([]string{"-c", "user.name=test", "-c", "user.email=test@test",
+		"-c", "commit.gpgsign=false"}, args...)
+	cmd := exec.Command("git", full...)
+	cmd.Dir = dir
+	var out, errb bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &errb
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("git %s (in %s): %v: %s", strings.Join(args, " "), dir, err, errb.String())
+	}
+	return out.String()
+}
+
+// installUmaskGit puts a git wrapper first on PATH that runs `reset` and
+// `merge` — the two commands that write a checkout — under the umask in
+// FAKE_GIT_UMASK. A umask of 0111 strips the owner's exec bit from every file
+// the checkout creates, so an executable file in the commit comes out
+// different from the commit: the same observable as a case collision on a
+// case-insensitive filesystem, which a case-sensitive test machine cannot
+// produce (core.ignorecase=true does not). Directories are only created by
+// other commands, so the 0111 never breaks them.
+func installUmaskGit(t *testing.T) {
+	t.Helper()
+	real, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	script := "#!/bin/sh\nfor a in \"$@\"; do case \"$a\" in reset|merge) [ -n \"$FAKE_GIT_UMASK\" ] && umask \"$FAKE_GIT_UMASK\" ;; esac; done\nexec '" + real + "' \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKE_GIT_UMASK", "")
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// waitGone polls until no process command line contains pattern, or fails the
+// test after a few seconds.
+func waitGone(t *testing.T, pattern string) {
+	t.Helper()
+	deadline := time.Now().Add(4 * time.Second)
+	for {
+		if err := exec.Command("pgrep", "-f", pattern).Run(); err != nil {
+			return // pgrep exits 1 when nothing matches
+		}
+		if time.Now().After(deadline) {
+			exec.Command("pkill", "-f", pattern).Run()
+			t.Fatalf("a process matching %q outlived the call", pattern)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }

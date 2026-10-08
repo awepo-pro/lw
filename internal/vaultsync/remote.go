@@ -125,10 +125,15 @@ func absLocal(p string) (string, error) {
 // with shell meaning is refused instead of quoted (042 D3).
 var pathRe = regexp.MustCompile(`^[A-Za-z0-9._/~-]+$`)
 
-// validatePath is the rule above, with its byte-exact message.
+// validatePath is the rule above, with its byte-exact message, plus one more:
+// a path that starts with "-" would be an option to the remote's sh or git
+// (host:-x).
 func (rem remote) validatePath() error {
 	if !pathRe.MatchString(rem.path) {
 		return fmt.Errorf("remote path %q: only letters, digits and . _ / ~ - are allowed", rem.path)
+	}
+	if strings.HasPrefix(rem.path, "-") {
+		return fmt.Errorf("remote path %q: must not start with \"-\"", rem.path)
 	}
 	return nil
 }
@@ -174,8 +179,8 @@ echo created
 // the remote at all is a *RemoteError, like every other network step.
 func (r *runner) ensureRemote(ctx context.Context, rem remote) error {
 	var (
-		out string
-		err error
+		out, stderr string
+		err         error
 	)
 	switch rem.kind {
 	case kindLocal:
@@ -183,7 +188,7 @@ func (r *runner) ensureRemote(ctx context.Context, rem remote) error {
 		if aerr != nil {
 			return aerr
 		}
-		out, err = r.proc(ctx, "sh", call{args: []string{"-c", remoteScript, "sh", abs}})
+		out, stderr, err = r.procErr(ctx, "sh", call{args: []string{"-c", remoteScript, "sh", abs}})
 	case kindSSH:
 		var args []string
 		if !r.o.Interactive {
@@ -196,7 +201,7 @@ func (r *runner) ensureRemote(ctx context.Context, rem remote) error {
 		// remote login shell parses it. The path is regex-safe, and unquoted
 		// so the shell expands a leading ~.
 		args = append(args, "--", rem.dest, "sh -c '"+remoteScript+"' sh "+rem.path)
-		out, err = r.proc(ctx, "ssh", call{args: args, net: true})
+		out, stderr, err = r.runSSH(ctx, args)
 	default:
 		return fmt.Errorf("remote %s: lw sync init needs an ssh or local path remote", rem.raw)
 	}
@@ -215,6 +220,22 @@ func (r *runner) ensureRemote(ctx context.Context, rem remote) error {
 	case "refused":
 		return fmt.Errorf("remote %s is not empty and not a bare git repo", rem.raw)
 	default:
-		return &RemoteError{Tried: []string{rem.raw}, Errs: []error{fmt.Errorf("unexpected reply from the remote: %q", verdict)}}
+		// Whatever the remote said besides the verdict (a login banner, a
+		// missing git) is the only clue to why there is none.
+		msg := fmt.Sprintf("unexpected reply from the remote: %q", verdict)
+		if detail := tidy(stderr); detail != "" {
+			msg += " (stderr: " + detail + ")"
+		}
+		return &RemoteError{Tried: []string{rem.raw}, Errs: []error{errors.New(msg)}}
 	}
+}
+
+// runSSH runs the user's ssh command (see sshCommand) with args. Plain "ssh" is
+// executed directly; anything else is a command line for sh, which keeps the
+// quoting the user wrote in GIT_SSH_COMMAND or core.sshCommand.
+func (r *runner) runSSH(ctx context.Context, args []string) (stdout, stderr string, err error) {
+	if base := r.sshCommand(ctx); base != "ssh" {
+		return r.procErr(ctx, "sh", call{args: append([]string{"-c", base + ` "$@"`, "sh"}, args...), net: true})
+	}
+	return r.procErr(ctx, "ssh", call{args: args, net: true})
 }

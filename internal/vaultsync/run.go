@@ -10,7 +10,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -19,10 +21,15 @@ const (
 	// defaultTimeout bounds one network git call when Options.Timeout is 0.
 	defaultTimeout = 30 * time.Second
 
-	// batchSSH is GIT_SSH_COMMAND for a non-interactive call: never ask a
-	// question (BatchMode) and give up on an unreachable host in 5 s, so a
-	// laptop on a train does not hang `lw tui` at startup (042 D3).
-	batchSSH = "ssh -o BatchMode=yes -o ConnectTimeout=5"
+	// batchOpts is appended to the user's ssh command (plain "ssh" when they
+	// have none) for a non-interactive call: never ask a question (BatchMode)
+	// and give up on an unreachable host in 5 s, so a laptop on a train does
+	// not hang `lw tui` at startup (042 D3).
+	batchOpts = " -o BatchMode=yes -o ConnectTimeout=5"
+
+	// killGrace is how long a timed-out or cancelled child has to exit on
+	// SIGTERM — git removes its own .lock files on it — before SIGKILL.
+	killGrace = 1500 * time.Millisecond
 
 	// waitDelay bounds how long a finished or killed git may keep its pipes
 	// open through a grandchild (git spawns ssh, ssh spawns a ProxyCommand).
@@ -41,6 +48,15 @@ const (
 //     bytes whose sha no longer matches the raw's frontmatter.
 //   - core.hooksPath=/dev/null: a vault commit never runs the user's global
 //     hooks (a pre-commit linter, a husky install).
+//   - core.excludesFile=/dev/null (and the XDG ~/.config/git/ignore it
+//     replaces) and core.attributesFile=/dev/null: the managed .gitignore is
+//     the only thing that may keep a vault file out of a sync, and the
+//     bytes of a raw source must reach the other PC untouched. A user's
+//     global "*.pdf" or "* text=auto" would otherwise drop or rewrite them
+//     silently. CommitWork also writes .git/info/attributes (see
+//     ensureAttributes) to outrank a .gitattributes inside the vault.
+//   - push.gpgSign=false: a global push.gpgSign=true fails every push to a
+//     server that cannot verify a signature.
 //   - gc.autoDetach=false, maintenance.autoDetach=false: an automatic gc
 //     runs in the foreground when it runs at all, so no background process
 //     outlives the call and holds its pipes or the temp dir.
@@ -49,6 +65,9 @@ var gitFlags = []string{
 	"-c", "core.quotepath=off",
 	"-c", "core.autocrlf=false",
 	"-c", "core.hooksPath=/dev/null",
+	"-c", "core.excludesFile=/dev/null",
+	"-c", "core.attributesFile=/dev/null",
+	"-c", "push.gpgSign=false",
 	"-c", "gc.autoDetach=false",
 	"-c", "maintenance.autoDetach=false",
 }
@@ -76,6 +95,8 @@ var scrubbed = map[string]bool{
 type runner struct {
 	o   Options
 	git string // the resolved git binary
+
+	ssh string // the user's ssh command line, once looked up
 }
 
 // newRunner validates o and finds git. Dir is made absolute so every later
@@ -129,9 +150,15 @@ func (r *runner) timeout() time.Duration {
 }
 
 // env builds the child environment: the caller's, minus the variables that
-// redirect git, plus the non-interactive pair when !Interactive, plus extra
-// (KEY=VALUE, last wins).
-func (r *runner) env(extra []string) []string {
+// redirect git, with git's repository search stopped at the vault's parent,
+// plus the non-interactive settings when !Interactive, plus extra (KEY=VALUE,
+// last wins). sshCmd, when not empty, becomes GIT_SSH_COMMAND.
+//
+// GIT_CEILING_DIRECTORIES: a vault whose .git is empty or invalid would
+// otherwise make git walk up, find the repository the vault happens to sit
+// in, and commit that repository's files (M1 of the S1 review). With the
+// ceiling git looks at the vault itself and fails closed.
+func (r *runner) env(extra []string, sshCmd string) []string {
 	var out []string
 	for _, kv := range os.Environ() {
 		name, _, _ := strings.Cut(kv, "=")
@@ -139,14 +166,40 @@ func (r *runner) env(extra []string) []string {
 			out = append(out, kv)
 		}
 	}
+	out = setEnv(out, "GIT_CEILING_DIRECTORIES="+filepath.Dir(r.o.Dir))
 	if !r.o.Interactive {
 		out = setEnv(out, "GIT_TERMINAL_PROMPT=0")
-		out = setEnv(out, "GIT_SSH_COMMAND="+batchSSH)
+	}
+	if sshCmd != "" {
+		out = setEnv(out, "GIT_SSH_COMMAND="+sshCmd)
 	}
 	for _, kv := range extra {
 		out = setEnv(out, kv)
 	}
 	return out
+}
+
+// sshCommand is the ssh command line git would use: GIT_SSH_COMMAND, else
+// core.sshCommand, else plain ssh. A non-interactive call appends batchOpts
+// to it instead of replacing it, so a user's key, jump host or config file
+// survives (M4 of the S1 review); Init's own ssh call runs the same command.
+func (r *runner) sshCommand(ctx context.Context) string {
+	if r.ssh != "" {
+		return r.ssh
+	}
+	cmd := strings.TrimSpace(os.Getenv("GIT_SSH_COMMAND"))
+	if cmd == "" {
+		_, statErr := os.Stat(r.o.Dir)
+		out, err := r.proc(ctx, r.git, call{args: []string{"config", "--get", "core.sshCommand"}, noDir: statErr != nil})
+		if err == nil {
+			cmd = strings.TrimSpace(out)
+		}
+	}
+	if cmd == "" {
+		cmd = "ssh"
+	}
+	r.ssh = cmd
+	return cmd
 }
 
 func setEnv(env []string, kv string) []string {
@@ -230,11 +283,23 @@ lines:
 	return strings.Join(keep, " ")
 }
 
-// proc runs bin with c, returning stdout. A network call that outlives the
-// timeout is killed with its whole process group (git's ssh child would
-// otherwise survive it) and reported as a timeout; a cancelled ctx wins over
-// both.
+// proc runs bin with c, returning stdout.
 func (r *runner) proc(ctx context.Context, bin string, c call) (string, error) {
+	out, _, err := r.procErr(ctx, bin, c)
+	return out, err
+}
+
+// procErr is proc that also returns stderr, which a successful child may use
+// to say why it did not do what was asked.
+//
+// A cancelled or timed-out child is sent SIGTERM and, killGrace later,
+// SIGKILL: git removes its own .lock files on SIGTERM, whereas SIGKILL leaves
+// refs/remotes/lw/main.lock behind and every later sync fails on it (M2). A
+// non-interactive network call runs in its own process group so the signals
+// reach ssh and its ProxyCommand too; an interactive one cannot (a background
+// group may not read the tty ssh prompts on, SIGTTIN), so git and every
+// descendant found at that moment are signalled one by one.
+func (r *runner) procErr(ctx context.Context, bin string, c call) (string, string, error) {
 	timed := c.net && !r.o.Interactive
 	pctx := ctx
 	if timed {
@@ -242,11 +307,15 @@ func (r *runner) proc(ctx context.Context, bin string, c call) (string, error) {
 		pctx, cancel = context.WithTimeout(ctx, r.timeout())
 		defer cancel()
 	}
+	sshCmd := ""
+	if timed {
+		sshCmd = r.sshCommand(ctx) + batchOpts
+	}
 	cmd := exec.CommandContext(pctx, bin, c.args...)
 	if !c.noDir {
 		cmd.Dir = r.o.Dir
 	}
-	cmd.Env = r.env(c.env)
+	cmd.Env = r.env(c.env, sshCmd)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	if c.net && r.o.Interactive && r.o.Stderr != nil {
@@ -256,19 +325,45 @@ func (r *runner) proc(ctx context.Context, bin string, c call) (string, error) {
 	}
 	cmd.WaitDelay = waitDelay
 	if timed {
-		// A new group so the kill below reaches ssh too. Not for an
-		// interactive call: a background group cannot read the tty that
-		// ssh prompts on (SIGTTIN).
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-		cmd.Cancel = func() error {
-			err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-			if err != nil && !errors.Is(err, syscall.ESRCH) {
-				return err
-			}
-			return nil
+	}
+	var (
+		mu   sync.Mutex // Cancel runs on another goroutine
+		done bool       // the child has been reaped: its pid may be recycled
+	)
+	cmd.Cancel = func() error {
+		leader := cmd.Process.Pid
+		var pids []int // everything to signal, leader first
+		if timed {
+			pids = []int{-leader} // the whole group
+		} else {
+			pids = append([]int{leader}, descendants(leader)...)
 		}
+		signalled := false
+		for _, pid := range pids {
+			if err := syscall.Kill(pid, syscall.SIGTERM); err == nil {
+				signalled = true
+			}
+		}
+		if !signalled {
+			return os.ErrProcessDone
+		}
+		time.AfterFunc(killGrace, func() {
+			mu.Lock()
+			defer mu.Unlock()
+			for i, pid := range pids {
+				if i == 0 && done && !timed {
+					continue // the leader is gone; its pid is not ours any more
+				}
+				syscall.Kill(pid, syscall.SIGKILL) // ESRCH when already gone
+			}
+		})
+		return nil
 	}
 	err := cmd.Run()
+	mu.Lock()
+	done = true
+	mu.Unlock()
 	// A grandchild that outlives its parent while holding the pipes (an ssh
 	// ControlPersist master, a ProxyCommand) makes Wait give up after
 	// waitDelay with ErrWaitDelay even though git exited 0. Its work is done
@@ -277,15 +372,15 @@ func (r *runner) proc(ctx context.Context, bin string, c call) (string, error) {
 		err = nil
 	}
 	if err == nil {
-		return stdout.String(), nil
+		return stdout.String(), stderr.String(), nil
 	}
 	if ctx.Err() != nil {
-		return "", ctx.Err()
+		return "", "", ctx.Err()
 	}
 	if timed && errors.Is(pctx.Err(), context.DeadlineExceeded) {
-		return "", &cmdError{err: err, timeout: r.timeout()}
+		return "", "", &cmdError{err: err, timeout: r.timeout()}
 	}
-	return stdout.String(), &cmdError{stderr: stderr.String(), err: err}
+	return stdout.String(), stderr.String(), &cmdError{stderr: stderr.String(), err: err}
 }
 
 // gitCall runs one git call with the lw identity and flags and returns stdout.
@@ -295,7 +390,62 @@ func (r *runner) gitCall(ctx context.Context, c call) (string, error) {
 		"-c", "user.email=lw@" + commitHost(),
 	}, gitFlags...)
 	c.args = append(args, c.args...)
-	return r.proc(ctx, r.git, c)
+	out, err := r.proc(ctx, r.git, c)
+	var ce *cmdError
+	if errors.As(err, &ce) {
+		if p := r.lockPath(ce.stderr); p != "" {
+			return out, &lockError{path: p}
+		}
+	}
+	return out, err
+}
+
+// lockError is a stale .lock file in the vault's .git: a previous sync was
+// killed between creating it and removing it, and git will not proceed until
+// it is gone.
+type lockError struct{ path string }
+
+func (e *lockError) Error() string {
+	return "a previous sync was interrupted and left " + e.path + "; remove it and run lw sync again"
+}
+
+var (
+	lockRe     = regexp.MustCompile(`Unable to create '([^']+\.lock)'`)
+	fetchRefRe = regexp.MustCompile(`fetching ref (\S+) failed: reference already exists`)
+)
+
+// lockPath finds the stale lock a git failure complains about, or "". Two
+// shapes: "Unable to create '<path>.lock': File exists" (index, update-ref)
+// and, for a fetch that cannot take refs/remotes/lw/main.lock, "fetching ref
+// <ref> failed: reference already exists". Only a lock inside this vault's own
+// repository counts — a lock on the remote's side is the remote's business.
+func (r *runner) lockPath(stderr string) string {
+	var path string
+	if m := lockRe.FindStringSubmatch(stderr); m != nil {
+		path = m[1]
+	} else if m := fetchRefRe.FindStringSubmatch(stderr); m != nil {
+		guess := filepath.Join(r.o.Dir, ".git", filepath.FromSlash(m[1])+".lock")
+		if _, err := os.Stat(guess); err == nil {
+			path = guess
+		}
+	}
+	if path == "" {
+		return ""
+	}
+	for _, root := range []string{r.o.Dir, realPath(r.o.Dir)} {
+		if strings.HasPrefix(path, root+string(filepath.Separator)) {
+			return path
+		}
+	}
+	return ""
+}
+
+// realPath resolves symlinks, falling back to p itself.
+func realPath(p string) string {
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	return p
 }
 
 // out runs a local git call and returns its trimmed stdout. A failure is
@@ -310,7 +460,8 @@ func (r *runner) out(ctx context.Context, args ...string) (string, error) {
 
 // wrap names the git subcommand in a failure, leaving context errors bare.
 func wrap(verb string, err error) error {
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	var le *lockError
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.As(err, &le) {
 		return err
 	}
 	return fmt.Errorf("git %s: %w", verb, err)
@@ -346,4 +497,23 @@ func (r *runner) requireRepo(ctx context.Context) error {
 		return ErrNotRepo
 	}
 	return nil
+}
+
+// descendants lists the pids below pid, children first, using pgrep -P (on
+// Linux and macOS alike). Without pgrep it finds none.
+func descendants(pid int) []int {
+	out, err := exec.Command("pgrep", "-P", strconv.Itoa(pid)).Output()
+	if err != nil {
+		return nil
+	}
+	var all []int
+	for _, f := range strings.Fields(string(out)) {
+		child, err := strconv.Atoi(f)
+		if err != nil {
+			continue
+		}
+		all = append(all, child)
+		all = append(all, descendants(child)...)
+	}
+	return all
 }
