@@ -16,6 +16,7 @@ package main
 import (
 	"fmt"
 	"maps"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -69,6 +70,23 @@ func (t recompileTarget) announce() string {
 // that happens to be the vault's raw/ would otherwise look like one. Whether
 // the path names a COMMITTED raw is the caller's question, and what follows
 // from the answer depends on --recompile (cmdIngest).
+// fileOutsideVault reports whether arg, read from the working directory,
+// names a real file outside root. Without --recompile such an argument is that
+// file, never the vault's raw/ path it happens to spell: a second vault's
+// raw/articles/a.md is not the first vault's, and skipping it as "already in
+// the vault" would be false (S1c).
+func fileOutsideVault(root, arg string) bool {
+	if _, err := os.Stat(arg); err != nil {
+		return false
+	}
+	abs, err := filepath.Abs(arg)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(root, abs)
+	return err != nil || !filepath.IsLocal(rel)
+}
+
 func recompileVaultPath(root, arg string) (string, bool) {
 	if isURLSource(arg) {
 		return "", false

@@ -1053,3 +1053,50 @@ func TestRecompileCitedByLine(t *testing.T) {
 		}
 	}
 }
+
+// TestIngestRawPathShadowedByLocalFile pins 055 S1c. The working directory is
+// a second vault holding its own raw/articles/a.md, with content the target
+// vault does not have. Without --recompile that argument is the local file:
+// it is ingested as a new source, not skipped as "already in the vault" (the
+// target vault's raw at the same path holds different bytes). With the flag,
+// D1 holds: a relative raw/… is the target vault's path whatever the cwd.
+func TestIngestRawPathShadowedByLocalFile(t *testing.T) {
+	t.Run("no_flag_ingests_the_local_file", func(t *testing.T) {
+		root, _ := rcVault(t)
+		cwd := t.TempDir()
+		dirFile(t, cwd, rcRawA, "# Other Vault\n\nNot the target vault's a.md.\n")
+		chdir(t, cwd)
+		spy := withRcSpy(t, []stage.Op{rcPageOp("raw/articles/kv-cache-explained.md")})
+
+		stdout, stderr, code := rcRun(t, "--vault", root, rcRawA)
+		if code != 0 {
+			t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr, stdout)
+		}
+		if strings.Contains(stdout, "skipped") {
+			t.Errorf("stdout = %q, want no skip line: the local file is not the vault's raw", stdout)
+		}
+		wantSourcesEqual(t, originalSources(t, spy.message()), []string{rcRawA})
+		if len(spy.recompile) != 0 {
+			t.Errorf("recompile = %q, want none without the flag", spy.recompile)
+		}
+	})
+
+	t.Run("flag_still_names_the_vault_raw", func(t *testing.T) {
+		root, _ := rcVault(t)
+		cwd := t.TempDir()
+		dirFile(t, cwd, rcRawA, "# Other Vault\n\nNot the target vault's a.md.\n")
+		chdir(t, cwd)
+		spy := withRcSpy(t, []stage.Op{rcPageOp(rcRawA)})
+
+		stdout, stderr, code := rcRun(t, "--vault", root, "--recompile", rcRawA)
+		if code != 0 {
+			t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr, stdout)
+		}
+		if !strings.Contains(stdout, "recompiling "+rcRawA+"\n") {
+			t.Errorf("stdout = %q, want the recompiling line", stdout)
+		}
+		if got := strings.Join(spy.recompile, ","); got != rcRawA {
+			t.Errorf("recompile = %q, want [%s]", spy.recompile, rcRawA)
+		}
+	})
+}

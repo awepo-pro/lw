@@ -272,7 +272,7 @@ func cmdIngest(args []string) error {
 	vaultPaths := make(map[string]string) // argument → committed raw path it names
 	candidates := make(map[string]string) // argument → vault path it reads as, committed or not
 	for _, arg := range sources {
-		if vp, ok := recompileVaultPath(root, arg); ok {
+		if vp, ok := recompileVaultPath(root, arg); ok && (*recompile || !fileOutsideVault(root, arg)) {
 			candidates[arg] = vp
 		}
 	}
