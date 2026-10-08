@@ -62,31 +62,75 @@ func (t recompileTarget) announce() string {
 	return "recompiling " + t.raw
 }
 
-// recompileVaultPath reports whether arg reads as a vault path — a raw in the
-// vault rather than a file to read — and the vault-relative slash path it
-// names. After filepath.Clean it does when it is relative and starts with
-// "raw/", or when it resolves (Abs, then Rel to root) to a path that does. A
-// URL never does: a relative "https:/…" resolved under a working directory
-// that happens to be the vault's raw/ would otherwise look like one. Whether
-// the path names a COMMITTED raw is the caller's question, and what follows
-// from the answer depends on --recompile (cmdIngest).
+// canonicalPath is p made absolute and, when it exists, with every symlink
+// resolved: the one spelling of a path two spellings of the same file share
+// (055 S1d, review M1). A path that does not exist (yet) stays absolute and
+// cleaned. cmdIngest canonicalizes the vault root once with it and every
+// classification below canonicalizes the path it asks about, because Rel of a
+// relative root and an absolute argument fails and Rel across a symlink does
+// not see the link's target — `--vault .`, `--vault ../v` and a symlinked vault
+// each made a raw's own file read as a stranger.
+func canonicalPath(p string) string {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return p
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return resolved
+	}
+	return abs
+}
+
+// rawPathUnder reports whether the canonical path canon lies under
+// canonRoot/raw/ and, if so, the vault-relative slash path it names. Both
+// arguments are canonical (canonicalPath); the answer is purely about where the
+// file is, not about whether a committed raw source lives there.
+func rawPathUnder(canonRoot, canon string) (string, bool) {
+	rel, err := filepath.Rel(canonRoot, canon)
+	if err != nil || !filepath.IsLocal(rel) {
+		return "", false
+	}
+	rel = filepath.ToSlash(rel)
+	if !strings.HasPrefix(rel, "raw/") {
+		return "", false
+	}
+	return rel, true
+}
+
 // fileOutsideVault reports whether arg, read from the working directory,
-// names a real file outside root. Without --recompile such an argument is that
-// file, never the vault's raw/ path it happens to spell: a second vault's
-// raw/articles/a.md is not the first vault's, and skipping it as "already in
-// the vault" would be false (S1c).
+// names a real file outside root (canonical). Without --recompile such an
+// argument is that file, never the vault's raw/ path it happens to spell: a
+// second vault's raw/articles/a.md is not the first vault's, and skipping it as
+// "already in the vault" would be false (S1c). 055 S1d (M1): compared on
+// canonical paths, so a file reached through a symlink into the vault, or a
+// vault given as a relative path, is inside.
 func fileOutsideVault(root, arg string) bool {
 	if _, err := os.Stat(arg); err != nil {
 		return false
 	}
-	abs, err := filepath.Abs(arg)
-	if err != nil {
-		return false
-	}
-	rel, err := filepath.Rel(root, abs)
+	rel, err := filepath.Rel(root, canonicalPath(arg))
 	return err != nil || !filepath.IsLocal(rel)
 }
 
+// isDirArg reports whether arg names an existing directory — one cmdIngest
+// walks and never reads as a vault path (055 S1d, review H1: `raw/articles`
+// starts with "raw/", so it was read as a vault path naming no raw and
+// `--recompile raw/articles` died on it).
+func isDirArg(arg string) bool {
+	info, err := os.Stat(arg)
+	return err == nil && info.IsDir()
+}
+
+// recompileVaultPath reports whether arg reads as a vault path — a raw in the
+// vault rather than a file to read — and the vault-relative slash path it
+// names. After filepath.Clean it does when it is relative and starts with
+// "raw/", or when its canonical path (canonicalPath: absolute, symlinks
+// resolved) lies under root/raw/. root must be canonical too — cmdIngest
+// canonicalizes it once. A URL never reads as one: a relative "https:/…"
+// resolved under a working directory that happens to be the vault's raw/ would
+// otherwise look like one. Whether the path names a COMMITTED raw is the
+// caller's question, and what follows from the answer depends on --recompile
+// (cmdIngest).
 func recompileVaultPath(root, arg string) (string, bool) {
 	if isURLSource(arg) {
 		return "", false
@@ -94,19 +138,15 @@ func recompileVaultPath(root, arg string) (string, bool) {
 	if clean := filepath.ToSlash(filepath.Clean(arg)); strings.HasPrefix(clean, "raw/") {
 		return clean, true
 	}
-	abs, err := filepath.Abs(arg)
-	if err != nil {
-		return "", false
-	}
-	rel, err := filepath.Rel(root, abs)
-	if err != nil {
-		return "", false
-	}
-	rel = filepath.ToSlash(rel)
-	if strings.HasPrefix(rel, "raw/") {
-		return rel, true
-	}
-	return "", false
+	return rawPathUnder(root, canonicalPath(arg))
+}
+
+// walkedRawPath is recompileVaultPath for a file the directory walk selected
+// (055 S1d, review H1): the walk spells it relative to the directory typed, so
+// the relative "raw/" shortcut does not apply — only where the file really is
+// does. A file under another tree's raw/ is just a file.
+func walkedRawPath(root, walked string) (string, bool) {
+	return rawPathUnder(root, canonicalPath(walked))
 }
 
 // rawCitations maps each raw path some committed wiki page cites to the paths

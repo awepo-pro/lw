@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -69,6 +70,11 @@ func stageIngestSourceTool(d Deps) Tool {
 		uri := strings.TrimSpace(a.URI)
 		if uri == "" {
 			return Result{IsError: true, Content: "uri is required: provide a local file path or an http(s) URL"}, nil
+		}
+		// 055 S1d (review M2): a local file under the vault's own raw/ is a
+		// raw source already; see inVaultRaw.
+		if inVaultRaw(d.Vault, uri) {
+			return Result{IsError: true, Content: fmt.Sprintf("stage.ingest_source: %s is already in the vault as a raw source — read it with raw.get and cite its raw/ path; a raw is never ingested twice", uri)}, nil
 		}
 		// 010's un-defer (contract §3): a URL flows to d.Extract exactly
 		// like a local file — same dedupe, naming, validator and
@@ -241,6 +247,49 @@ func stageIngestSourceTool(d Deps) Tool {
 		}
 		return res, nil
 	}}
+}
+
+// inVaultRaw reports whether uri is a local file that lies under v's own raw/
+// directory, however it is spelled — absolute, relative to the working
+// directory, or through a symlink (both sides are made absolute and have their
+// symlinks resolved before they are compared). raw is immutable, and ingesting
+// a file out of it stages a raw-of-a-raw: the file carries the frontmatter its
+// body hash leaves out, so it never matches the dedupe and lands as a second
+// raw. A `lw ingest --recompile` turn tells the model "do not call
+// stage.ingest_source" for exactly such files, and nothing enforced it (055
+// S1d, review M2), so the tool refuses, in every registry. An http(s) URL is
+// never a vault path, and a vault with no directory (vault.OpenFS: Root() is
+// "") has nothing on disk to compare against.
+func inVaultRaw(v *vault.Vault, uri string) bool {
+	if v == nil || v.Root() == "" {
+		return false
+	}
+	if u, err := url.Parse(uri); err == nil && (u.Scheme == "http" || u.Scheme == "https") {
+		return false
+	}
+	root, err := canonicalPath(v.Root())
+	if err != nil {
+		return false
+	}
+	local, err := canonicalPath(uri)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(root, local)
+	return err == nil && filepath.IsLocal(rel) && strings.HasPrefix(filepath.ToSlash(rel), "raw/")
+}
+
+// canonicalPath is p made absolute and, when it exists, with every symlink
+// resolved; a path that does not exist stays absolute and cleaned.
+func canonicalPath(p string) (string, error) {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return "", err
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return resolved, nil
+	}
+	return abs, nil
 }
 
 // stagedBodySHA returns the sha to compare the incoming body against for

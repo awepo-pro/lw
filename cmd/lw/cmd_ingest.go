@@ -222,7 +222,10 @@ func parseIngestSources(fs *flag.FlagSet, args []string) ([]string, error) {
 // cites says so, and names the flag; an argument that names a committed raw
 // by its vault path is skipped the same way, never extracted (S1b: its own
 // file carries the frontmatter its body hash leaves out, so extracting it
-// staged a second raw).
+// staged a second raw). S1d: the same holds for the files a directory argument
+// walks into the vault's raw/ (`lw ingest --recompile raw/`), classified by
+// where they are, and every comparison of a path with the vault uses canonical
+// paths, so how the vault or the file is spelled does not change the answer.
 func cmdIngest(args []string) error {
 	fs := flag.NewFlagSet("ingest", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -266,22 +269,49 @@ func cmdIngest(args []string) error {
 	// that names no committed raw fails under --recompile and, without it,
 	// stays a path like any other. This is the one case the engine opens ahead
 	// of extraction — only when an argument reads as a vault path, or under
-	// --recompile — and it opens nothing else (no changeset, no agent, no
-	// key); the opening below is then skipped.
+	// --recompile, or (below) when the walk reaches the vault's raw/ — and it
+	// opens nothing else (no changeset, no agent, no key).
+	//
+	// 055 S1d (review M1): every classification compares canonical paths. The
+	// root is made absolute with its symlinks resolved ONCE here; an argument
+	// is canonicalized where it is asked about (recompileVaultPath,
+	// fileOutsideVault, walkedRawPath). root itself stays as findVaultRoot gave
+	// it for everything that opens or logs the vault.
+	canonRoot := canonicalPath(root)
 	var e *stage.Engine
+	openEng := func() error {
+		if e != nil {
+			return nil
+		}
+		eng, oerr := stage.OpenEngine(root)
+		if oerr != nil {
+			return fmt.Errorf("open engine: %w", oerr)
+		}
+		e = eng
+		return nil
+	}
+	defer func() {
+		if e != nil {
+			e.Close()
+		}
+	}()
 	vaultPaths := make(map[string]string) // argument → committed raw path it names
 	candidates := make(map[string]string) // argument → vault path it reads as, committed or not
 	for _, arg := range sources {
-		if vp, ok := recompileVaultPath(root, arg); ok && (*recompile || !fileOutsideVault(root, arg)) {
+		// 055 S1d (review H1): a directory is walked, never a vault path — it
+		// may BE the vault's raw/ or a folder of it, and the walk's files are
+		// classified one by one below.
+		if isDirArg(arg) {
+			continue
+		}
+		if vp, ok := recompileVaultPath(canonRoot, arg); ok && (*recompile || !fileOutsideVault(canonRoot, arg)) {
 			candidates[arg] = vp
 		}
 	}
 	if *recompile || len(candidates) > 0 {
-		e, err = stage.OpenEngine(root)
-		if err != nil {
-			return fmt.Errorf("open engine: %w", err)
+		if err := openEng(); err != nil {
+			return err
 		}
-		defer e.Close()
 		for _, arg := range sources {
 			vp, ok := candidates[arg]
 			if !ok {
@@ -348,6 +378,45 @@ func cmdIngest(args []string) error {
 	}
 	sources = expandedSrcs
 
+	// 055 S1d (review H1): a file the WALK selected inside the vault's raw/ is
+	// not a source to extract. A committed raw source is the same thing an
+	// argument naming it is — a recompile target under --recompile, the A-807
+	// skip without — and anything else under raw/ (a PDF original beside its raw,
+	// a stray) is passed over with one line, flag or not: extracting either
+	// stages a second raw whose body carries the first one's frontmatter. The
+	// walk's files are classified by where they are (walkedRawPath), after the
+	// walk, because a directory argument never read as a vault path. A file
+	// named outright as well keeps the rules of an explicit argument, and the
+	// walk's own pass-overs (hidden, not text…) have already printed.
+	if len(expanded) > 0 {
+		kept := make([]string, 0, len(sources))
+		for _, src := range sources {
+			if !expanded[src] || explicit[src] {
+				kept = append(kept, src)
+				continue
+			}
+			if _, named := vaultPaths[src]; named {
+				kept = append(kept, src)
+				continue
+			}
+			vp, under := walkedRawPath(canonRoot, src)
+			if !under {
+				kept = append(kept, src)
+				continue
+			}
+			if err := openEng(); err != nil {
+				return err
+			}
+			if _, found := e.Vault().RawSource(vp); !found {
+				fmt.Printf("skipped %s: inside the vault's raw/ but not a committed raw source\n", src)
+				continue
+			}
+			vaultPaths[src] = vp
+			kept = append(kept, src)
+		}
+		sources = kept
+	}
+
 	docs := make([]*extract.Doc, 0, len(sources))
 	srcs := make([]string, 0, len(sources)) // the arguments docs carries — shorter than sources when F.I2 drops one
 	for _, src := range sources {
@@ -396,13 +465,10 @@ func cmdIngest(args []string) error {
 	// The engine opens before the agent is built (A-807): the duplicate
 	// pre-check below reads the committed raw sources, and a vault that
 	// already holds everything must exit 0 without ever resolving an API
-	// key. (--recompile opened it earlier, above.)
-	if e == nil {
-		e, err = stage.OpenEngine(root)
-		if err != nil {
-			return fmt.Errorf("open engine: %w", err)
-		}
-		defer e.Close()
+	// key. (An argument that read as a vault path, --recompile and a walk that
+	// reached the vault's raw/ opened it earlier, above.)
+	if err := openEng(); err != nil {
+		return err
 	}
 
 	// A-807 (BUG-2): drop every source whose body the vault already holds,
