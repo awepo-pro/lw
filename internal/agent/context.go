@@ -54,7 +54,8 @@ func NewContextBuilder(v *vault.Vault, r *tools.Registry, budget int) *ContextBu
 // in backbone §9's exact order (/docs/design.md §11.3):
 //
 //  1. the system prompt (prompt.go — its web-lookup paragraphs only when
-//     this builder's registry offers web.search, 012 D-12B). Build is the
+//     this builder's registry offers web.search, 012 D-12B, and the turn is
+//     not an ingest, which is not offered it, 056). Build is the
 //     curator turn: Send, which knows the turn's verb, calls buildFor with
 //     the plan that verb decides (039);
 //  2. curator-memory.md, verbatim;
@@ -90,9 +91,13 @@ func (b *ContextBuilder) buildFor(s *Session, userMsg string, plan turnPlan) ([]
 	// The registry is the truth about what the vault can do: the prompt
 	// promises web.search only when the registry itself offers the verb
 	// (012 contract §1) — never a constructor parameter, never a stored
-	// field.
+	// field. 056 (TD-16): and only to a turn that is offered it. An ingest turn
+	// is not (toolsFor withholds the tool), so it gets the prompt of a vault
+	// with no web provider, byte for byte: the 010/017 "search the web with
+	// web.search before you answer" paragraphs are an instruction for answering,
+	// and the user's real ingest turns were sent them 8 times in 8.
 	_, hasSearch := b.r.Get("web.search")
-	system := systemPromptFor(hasSearch)
+	system := systemPromptFor(hasSearch && !plan.noWeb)
 	if plan.mode == modeAsk {
 		// 039: the ask prompt promises web.search only to a turn that is
 		// offered it — the registry has the verb AND the verb allows it.

@@ -87,6 +87,12 @@ const maxConsecutiveBadCalls = 2
 // Ingest search budget (053): the same turn is capped in how many wiki.search
 // calls it may make between page changes, counted on the same readBudget.
 //
+// Ingest web withholding (056, TD-16): the same turn is not offered web.search
+// at all — it is left out of the request's tools, the system prompt drops its
+// web paragraphs (buildFor) and a call to it is refused before dispatch
+// (toolsFor, dispatchToolCall). The tool is unbudgeted and bills per call, and
+// an ingest compiles a source the user already supplied.
+//
 // Repeat-call guard (051): in every verb, a guarded read whose identical twin
 // already ran this turn and whose result is still above, un-elided and
 // unchanged by a stage call since, is refused instead of run (repeatGuard). The
@@ -637,18 +643,51 @@ type turnTools struct {
 	// names is the offered canonical names, sorted and comma-separated: the
 	// tail of a refusal message. Empty for a curator turn.
 	names string
+
+	// withheld is the canonical names a curator turn leaves out of its request
+	// and refuses a call to (056), nil when it withholds nothing. It is not an
+	// offered set: offered stays nil, so a name no tool is registered under still
+	// reaches the registry and fails there as tools.ErrUnknownTool.
+	withheld map[string]bool
 }
 
+// webSearchName is the one tool an ingest turn withholds (056, TD-16), by
+// canonical name.
+const webSearchName = "web.search"
+
+// ingestWithheldRefusalFmt is the refusal a call to a withheld tool gets, with
+// the canonical tool name as its one verb. It says what to do instead — the
+// source is in hand, read it and stage pages from it — because a model told only
+// "no" kept calling the same tool. The wording is a frozen contract: the bytes
+// ride the wire and are pinned by ingestnoweb_test.go.
+const ingestWithheldRefusalFmt = "tool %s is not available in an ingest turn: the source is already in hand — read it with raw.get and stage pages from it"
+
 // toolsFor resolves plan to the turn's tool surface, once per Send (039).
-// A curator turn is offered everything, exactly Definitions() as before; an
-// ask turn is offered askTools, plus askWebTools when the plan allows web and
-// the registry has web.search. Names no tool is registered under are skipped
-// by DefinitionsOf, and the offered set and names are read back off the
-// definitions themselves, so what the request advertises, what dispatch allows
-// and what a refusal lists cannot disagree.
+// A curator turn is offered everything, exactly Definitions() as before — except
+// that an ingest turn (plan.noWeb, 056) has web.search taken out of it, in the
+// same order and otherwise byte for byte, and withheld records that it was; a
+// registry with no web provider has nothing to take out and the request is
+// untouched. An ask turn is offered askTools, plus askWebTools when the plan
+// allows web and the registry has web.search. Names no tool is registered under
+// are skipped by DefinitionsOf, and the offered set and names are read back off
+// the definitions themselves, so what the request advertises, what dispatch
+// allows and what a refusal lists cannot disagree.
 func (l *Loop) toolsFor(plan turnPlan) turnTools {
 	if plan.mode != modeAsk {
-		return turnTools{defs: l.tools.Definitions()}
+		defs := l.tools.Definitions()
+		if !plan.noWeb {
+			return turnTools{defs: defs}
+		}
+		kept := make([]llm.ToolDef, 0, len(defs))
+		for _, d := range defs {
+			if tools.CanonicalName(d.Name) != webSearchName {
+				kept = append(kept, d)
+			}
+		}
+		if len(kept) == len(defs) {
+			return turnTools{defs: defs}
+		}
+		return turnTools{defs: kept, withheld: map[string]bool{webSearchName: true}}
 	}
 	want := append([]string(nil), askTools...)
 	if _, ok := l.tools.Get("web.search"); ok && plan.web {
@@ -681,15 +720,16 @@ func traceToolCalls(tcs []llm.ToolCall) []trace.ToolCall {
 }
 
 // dispatchToolCall handles one complete llm.ToolCall: it always emits
-// ToolCallEv, then refuses a tool this turn was not offered (039), then
-// validates the arguments parse as a JSON object before
+// ToolCallEv, then refuses a tool this turn was not offered (039) or withholds
+// (056), then validates the arguments parse as a JSON object before
 // ever calling the registry (backbone §9 item 7). A parse failure, or a
 // Call error wrapping tools.ErrUnknownTool (item 8, D-CT), is
 // model-correctable and shares the one-retry budget in badCalls; a second
 // consecutive one aborts the turn. A refused tool is answered with an error
-// result too, but sits outside that budget (A-039-1), and so does a read the
-// ingest read budget refuses (048), a search the ingest search budget refuses
-// (053) and an identical repeat of a read whose answer is still above (051).
+// result too, but sits outside that budget (A-039-1), and so does a withheld
+// one, a read the ingest read budget refuses (048), a search the ingest search
+// budget refuses (053) and an identical repeat of a read whose answer is still
+// above (051).
 // Every other non-nil error from Call aborts immediately. On success it emits
 // ToolResEv (and StageEv when applicable), records the turn, resets badCalls to
 // 0, and returns the tool-result message for the next round. A stage.* call that came back
@@ -744,6 +784,22 @@ func (l *Loop) dispatchToolCall(ctx context.Context, sessionID string, round int
 	if tt.offered != nil && !tt.offered[canonical] {
 		return l.toolError(ctx, sessionID, round, tc, canonical,
 			fmt.Sprintf("tool %s is not available in this turn; use one of: %s", canonical, tt.names),
+			out, t0)
+	}
+
+	// 056: a tool this turn withholds is refused here, right after the offered
+	// check and before anything else looks at the call. An ingest turn is not
+	// offered web.search, but the model can still name it — it saw it in session
+	// history, where a joined changeset replays earlier turns' calls — and the
+	// tool bills per call (Tavily: 1,000 credits a month) with no bound of its
+	// own, which is why the loop does not let the call through. Feedback in the
+	// 039 sense: through toolError, outside the two-in-a-row budget, and the
+	// registry never hears of it. tt.withheld is nil for every turn that
+	// withholds nothing.
+	if tt.withheld[canonical] {
+		slog.InfoContext(ctx, "agent withheld tool refusal", "name", canonical)
+		return l.toolError(ctx, sessionID, round, tc, canonical,
+			fmt.Sprintf(ingestWithheldRefusalFmt, canonical),
 			out, t0)
 	}
 

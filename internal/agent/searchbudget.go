@@ -40,7 +40,8 @@ const searchBudgetRefusalFmt = "wiki.search refused: this ingest has searched th
 
 // budgetedSearch is the one tool that spends the search budget, by canonical
 // name. web.search is another tool: it reaches the outside web, not this vault,
-// and is not the hunt that was measured, so it stays unbudgeted.
+// and is not the hunt that was measured, so it is not budgeted here; since 056
+// an ingest turn is not offered it at all.
 const budgetedSearch = "wiki.search"
 
 // searchRefusal reports whether canonical is a search the budget no longer

@@ -9,8 +9,9 @@ package agent
 // Since 012 (D-12B) the prompt is assembled, not one static const: the two
 // 010 §5 web-lookup paragraphs are sent only when the registry actually
 // offers web.search, so the prompt never promises a tool the vault does not
-// have. systemPromptFor does the assembling; ContextBuilder.Build derives
-// the flag from its own registry. 017 §5 (TS-17A) later amended the search
+// have. systemPromptFor does the assembling; ContextBuilder derives the flag
+// from its own registry and the turn's plan (an ingest turn is not offered
+// web.search, 056). 017 §5 (TS-17A) later amended the search
 // rule's bytes; the injection rule's bytes are unchanged. Only the assembly
 // is conditional. 034 T4 added the page-citation paragraph to the base, so
 // a paged raw.get header and the prompt's citation rule are taught
@@ -133,7 +134,7 @@ human reviewing your hunk needs to know why, not only what.`
 const promptTail = promptTailHead + "\n\n" + abstractRuleParagraph + "\n\n" + promptTailRest
 
 // systemPromptFor assembles the turn's system prompt: the opening half,
-// then — only when the registry offers web.search — the two web-lookup
+// then — only when the turn is offered web.search — the two web-lookup
 // paragraphs, then the closing half. Paragraphs join with exactly one blank
 // line, so hasSearch=true reproduces the pre-012 const byte for byte.
 func systemPromptFor(hasSearch bool) string {
@@ -248,19 +249,24 @@ func askOffersWeb(verb string) bool { return verb == trace.VerbAsk }
 
 // turnPlan is everything a turn's verb decides, resolved once at the top of
 // Send: the mode, and — for an ask-mode turn — whether web lookup is allowed.
-// web is meaningless in curator mode, which offers whatever the registry has.
+// web is meaningless in curator mode, which offers whatever the registry has
+// (less web.search for an ingest turn, noWeb below).
 // readBudget (048) is whether the turn's wiki reads are capped between page
 // changes: true for the ingest verb alone, and not for curator mode as a whole
 // — lint and a ctrl+s filing turn are curator turns that legitimately read
-// many pages and were never the crawl 048 measured.
+// many pages and were never the crawl 048 measured. noWeb (056, TD-16) is
+// whether web.search is withheld from the turn, and is the ingest verb's alone
+// for the same reason: an ingest compiles a source the user already supplied,
+// while lint and filing keep every tool they were always offered.
 type turnPlan struct {
 	mode       turnMode
 	web        bool
 	readBudget bool
+	noWeb      bool
 }
 
 // planFor resolves verb to its turnPlan. The zero turnPlan is the curator
 // turn, which is what ContextBuilder.Build — the pre-039 entry point — uses.
 func planFor(verb string) turnPlan {
-	return turnPlan{mode: modeFromVerb(verb), web: askOffersWeb(verb), readBudget: verb == trace.VerbIngest}
+	return turnPlan{mode: modeFromVerb(verb), web: askOffersWeb(verb), readBudget: verb == trace.VerbIngest, noWeb: verb == trace.VerbIngest}
 }
