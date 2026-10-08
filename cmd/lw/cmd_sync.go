@@ -197,7 +197,13 @@ func syncSetup(vaultPath string, mode syncMode) (root string, o vaultsync.Option
 	if !underLWSync(root) {
 		return "", o, vaultsync.ErrNotRepo
 	}
-	return root, vaultsync.Options{Dir: root, Remotes: remotes, Interactive: true, Stderr: os.Stderr}, nil
+	return root, vaultsync.Options{
+		Dir:         root,
+		Remotes:     orderedRemotes(root, remotes),
+		Interactive: true,
+		Stderr:      os.Stderr,
+		AppendOnly:  syncAppendOnly,
+	}, nil
 }
 
 // syncExplicitErr is the error an explicit sync shows for a vaultsync error: a
@@ -231,6 +237,14 @@ func syncGuard(root string) (release func(), err error) {
 }
 
 // syncRun is `lw sync` and `lw sync --take-remote`.
+//
+// The plain verb pulls first (A-042-7 b): a PC whose only uncommitted change is
+// journal lines takes the remote's commits with those lines carried across. A
+// work tree with anything else uncommitted comes back ErrDirty, and only then is
+// it committed and the pull tried again — which may diverge, correctly, because
+// by then there is a local commit. Whatever is left uncommitted after the pull
+// (the carried lines) is committed, and the commit pushed. The vault lock covers
+// the commit-work and pull; the push runs without it (A-042-7 d).
 func syncRun(vaultPath string, takeRemote bool) error {
 	mode := syncModeWrite
 	if takeRemote {
@@ -242,45 +256,87 @@ func syncRun(vaultPath string, takeRemote bool) error {
 	}
 	ctx, stop := syncContext()
 	defer stop()
-	release, err := syncGuard(root)
-	if err != nil {
-		return err
-	}
-	defer release()
 
 	if takeRemote {
+		release, err := syncGuard(root)
+		if err != nil {
+			return err
+		}
+		defer release()
 		return syncTake(ctx, root, o)
 	}
 
-	if _, err := syncCommitWork(o, syncCommitMessage(root)); err != nil {
-		recordSync(root, "", err)
-		return err
-	}
-	st, err := syncPull(ctx, o, stage.FormatVersion)
+	st, committed, err := syncPullLocked(ctx, root, o)
 	if err != nil {
 		recordSync(root, "", err)
 		return syncExplicitErr(err, st)
 	}
-	// Pull left nothing the remote lacks unless HEAD is ahead; only then is
-	// there anything to push (and a second fetch to pay for).
-	if st.Pulled == 0 && st.Ahead > 0 {
-		if st, err = syncPush(ctx, o); err != nil {
-			recordSync(root, "", err)
-			return syncExplicitErr(err, st)
+	pulled := st.Pulled
+	remote := st.Remote
+	if pulled > 0 {
+		fmt.Printf("pulled %d commit(s) from %s\n", pulled, remote)
+		if err := printIndexRebuild(root); err != nil {
+			return err
 		}
 	}
-	recordSync(root, st.Remote, nil)
+
+	// Only a commit this run made, or one that was already waiting (Ahead), has
+	// anything to push — and a second fetch to pay for.
+	pushed := 0
+	if committed || st.Ahead > 0 {
+		pst, err := syncPush(ctx, o)
+		if err != nil {
+			recordSync(root, "", err)
+			return syncExplicitErr(err, pst)
+		}
+		pushed, remote = pst.Pushed, pst.Remote
+	}
+	recordSync(root, remote, nil)
 
 	switch {
-	case st.Pulled > 0:
-		fmt.Printf("pulled %d commit(s) from %s\n", st.Pulled, st.Remote)
-		return printIndexRebuild(root)
-	case st.Pushed > 0:
-		fmt.Printf("pushed %d commit(s) to %s\n", st.Pushed, st.Remote)
-	default:
-		fmt.Printf("up to date with %s\n", st.Remote)
+	case pushed > 0:
+		fmt.Printf("pushed %d commit(s) to %s\n", pushed, remote)
+	case pulled == 0:
+		fmt.Printf("up to date with %s\n", remote)
 	}
 	return nil
+}
+
+// syncPullLocked is the locked half of an explicit sync: under the vault lock,
+// with no commit half-applied, pull; on ErrDirty commit the work tree and pull
+// again; then commit what the pull left (carried journal lines). It reports
+// whether it committed anything. The lock is released before it returns, so
+// the push that follows is not under it.
+func syncPullLocked(ctx context.Context, root string, o vaultsync.Options) (st vaultsync.State, committed bool, err error) {
+	release, err := syncGuard(root)
+	if err != nil {
+		return st, false, err
+	}
+	defer release()
+
+	st, err = syncPull(ctx, o, stage.FormatVersion)
+	if errors.Is(err, vaultsync.ErrDirty) {
+		if committed, err = syncCommitWork(o, syncCommitMessage(root)); err != nil {
+			return st, false, err
+		}
+		if st.Behind > 0 {
+			// The remote had news the edit stood in the way of; now that the
+			// edit is a commit, the pull is a fast-forward or a divergence.
+			if st, err = syncPull(ctx, o, stage.FormatVersion); err != nil {
+				return st, committed, err
+			}
+		} else {
+			err = nil // the fetch showed nothing to take: committing was all it needed
+		}
+	}
+	if err != nil {
+		return st, false, err
+	}
+	c, err := syncCommitWork(o, syncCommitMessage(root))
+	if err != nil {
+		return st, committed, err
+	}
+	return st, committed || c, nil
 }
 
 // syncTake is `lw sync --take-remote`: the escape hatch for a divergence. The

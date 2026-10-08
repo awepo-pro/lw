@@ -56,7 +56,14 @@ type Options struct {
 	Remotes     []string      // tried in order: scp-like "host:path", ssh:// URL, or a local path (no ':' before the first '/', or file://)
 	Interactive bool          // false ⇒ ssh -o BatchMode=yes -o ConnectTimeout=5, and Timeout bounds each network git call
 	Timeout     time.Duration // per network git call when !Interactive; 0 ⇒ 30 s
-	Stderr      io.Writer     // git/ssh progress and prompts when Interactive; nil ⇒ discarded
+	Stderr      io.Writer     // git/ssh progress and prompts when Interactive; nil ⇒ discarded; git is asked for progress only when it is a terminal
+
+	// AppendOnly lists vault-relative, slash-separated paths of files that are
+	// only ever appended to — the journal. Pull may carry uncommitted lines of
+	// such a file across a fast-forward instead of refusing (A-042-7 a): an
+	// open changeset has appended to the journal, and the PC that holds one
+	// must still be able to take another PC's commits.
+	AppendOnly []string
 }
 
 // State is what one call learned about the vault and the remote, and what it
@@ -79,6 +86,21 @@ var ErrNoGit = errors.New("git not found on PATH")
 
 // ErrNotRepo is returned when the vault has not been put under lw sync.
 var ErrNotRepo = errors.New("the vault is not under lw sync yet — run lw sync init <remote> or lw sync clone")
+
+// ErrDirty is what Pull's refusal wraps when the work tree has uncommitted
+// changes it cannot carry over: callers commit (CommitWork) and pull again, or
+// tell the user. The State returned beside it is the fetched one, so a caller
+// can see whether the remote had anything to pull at all.
+var ErrDirty = errors.New("the vault has uncommitted changes")
+
+// dirtyError is ErrDirty with the sentence the user acts on.
+type dirtyError struct{ dir string }
+
+func (e *dirtyError) Error() string {
+	return fmt.Sprintf("%s — run git -C %s status", ErrDirty.Error(), e.dir)
+}
+
+func (e *dirtyError) Unwrap() error { return ErrDirty }
 
 // ErrDiverged is returned by Pull and Push when both sides have commits the
 // other lacks. The State returned beside it carries the counts; nothing was

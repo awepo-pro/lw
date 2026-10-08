@@ -4,10 +4,12 @@ package main
 // when the user has asked for nothing — and has configured [sync] remotes.
 //
 // Two moments. At the START of a writing verb (tui, ingest, lint --fix,
-// revert, commit, note) the vault is committed to git and fast-forwarded to
-// the remote, before the engine opens, so the verb works on the newest vault.
-// AFTER a change — a commit or a rejection, or the end of lw note — the vault
-// is committed to git and pushed. Both are non-interactive and bounded
+// revert, commit, note) the vault is fast-forwarded to the remote, before the
+// engine opens, so the verb works on the newest vault — a pull and nothing
+// else: committing the work tree here would make a commit the remote lacks, and
+// the PC that does it while another pushes has diverged (A-042-7 b). AFTER a
+// change — a commit or a rejection, or the end of lw note — the vault is
+// committed to git and pushed. Both are non-interactive and bounded
 // (syncAutoTimeout in all), and both are the same promise: a failure warns on
 // one line and the command carries on with the local vault. Auto-sync never
 // makes a verb fail and never changes what it prints when nothing is wrong.
@@ -108,10 +110,22 @@ func loadTUIAutoSync(root string) *autoSync {
 
 // options is vaultsync's view of this vault: non-interactive (BatchMode, a
 // bounded connect, no prompts), with every git call bounded by the same
-// deadline the whole step has.
+// deadline the whole step has. The remotes are tried last-answering first, and
+// the journal is the append-only file a pull carries across (A-042-7).
 func (a *autoSync) options() vaultsync.Options {
-	return vaultsync.Options{Dir: a.root, Remotes: a.remotes, Timeout: syncAutoTimeout}
+	return vaultsync.Options{
+		Dir:        a.root,
+		Remotes:    orderedRemotes(a.root, a.remotes),
+		Timeout:    syncAutoTimeout,
+		AppendOnly: syncAppendOnly,
+	}
 }
+
+// syncAppendOnly is the vault's one append-only file: the journal. An open
+// changeset has appended to it, so a PC in the middle of one still has to be
+// able to take another PC's commits; vaultsync.Pull carries the uncommitted
+// lines across the fast-forward (A-042-7 a).
+var syncAppendOnly = []string{journalRel}
 
 // syncReason turns a sync error into the words a warning uses, and says
 // whether they are one of the reasons the spec names (so the caller adds no
@@ -127,6 +141,8 @@ func syncReason(err error, st vaultsync.State) (text string, named bool) {
 		return fmt.Sprintf("diverged from %s — run lw sync", st.Remote), true
 	case errors.As(err, &fe):
 		return fe.Error(), true
+	case errors.Is(err, vaultsync.ErrDirty):
+		return "the vault has uncommitted changes — run lw sync", true
 	}
 	return oneLine(err.Error()), false
 }
@@ -155,9 +171,14 @@ func pushFailureLine(res syncPushResult) string {
 }
 
 // pull is the start-of-verb step: take the vault lock, make sure no commit is
-// half-applied, commit what is in the work tree to git, and fast-forward to the
-// remote. Called before the engine opens, so the engine opens on the pulled
-// vault. Any failure is one warning on stderr and the verb goes on.
+// half-applied, and fast-forward to the remote. It only pulls (A-042-7 b): a
+// verb's start never commits the work tree to git, because a commit made here
+// is a commit the remote lacks, and the first PC to do it while the other
+// pushes has diverged. What stands in the way of a pull — uncommitted lines in
+// the journal — vaultsync carries across it; what it cannot carry (a tracked
+// file edited) it refuses, and the verb says so only if the remote had news.
+// Called before the engine opens, so the engine opens on the pulled vault. Any
+// failure is one warning on stderr and the verb goes on.
 func (a *autoSync) pull() {
 	if a == nil {
 		return
@@ -176,13 +197,13 @@ func (a *autoSync) pull() {
 		return
 	}
 
-	o := a.options()
-	if _, err := syncCommitWork(o, syncCommitMessage(a.root)); err != nil {
-		recordSync(a.root, "", err)
-		a.warnStart("commit", err, vaultsync.State{})
+	st, err := syncPull(ctx, a.options(), stage.FormatVersion)
+	if errors.Is(err, vaultsync.ErrDirty) && st.Behind == 0 {
+		// Nothing to pull, so nothing the edit stands in the way of: the fetch
+		// worked and the remote is quiet.
+		recordSync(a.root, st.Remote, nil)
 		return
 	}
-	st, err := syncPull(ctx, o, stage.FormatVersion)
 	if err != nil {
 		recordSync(a.root, "", err)
 		a.warnStart("pull", err, st)
@@ -205,8 +226,8 @@ func (a *autoSync) warnStart(step string, err error, st vaultsync.State) {
 	fmt.Fprintln(os.Stderr, startWarning(step, err, st))
 }
 
-// pushOnce is the whole push after a change: lock the vault, make sure no
-// commit is half-applied, commit the work tree to git, push. Any failure ends
+// pushOnce is the whole push after a change: commit the work tree to git (under
+// the vault lock, with no commit half-applied), then push. Any failure ends
 // it — Push is never tried after a failed commit-work. It is what the CLI runs
 // in place and what the TUI's pusher runs in the background; either way it logs
 // its result to lw.log, never to a screen.
@@ -217,27 +238,39 @@ func (a *autoSync) pushOnce(ctx context.Context) syncPushResult {
 }
 
 func (a *autoSync) push(ctx context.Context) syncPushResult {
-	release, err := lockVault(a.root)
-	if err != nil {
+	if err := a.commitWork(); err != nil {
 		return syncPushResult{Err: err}
 	}
-	defer release()
-	if err := noInterruptedCommit(a.root); err != nil {
-		return syncPushResult{Err: err}
-	}
-
-	o := a.options()
-	if _, err := syncCommitWork(o, syncCommitMessage(a.root)); err != nil {
-		recordSync(a.root, "", err)
-		return syncPushResult{Err: err}
-	}
-	st, err := syncPush(ctx, o)
+	// The lock is gone: the push touches no file of the vault (it sends HEAD),
+	// and holding the lock across a network round trip would make a foreground
+	// commit fail with "vault is locked" for as long as the server is slow
+	// (A-042-7 d).
+	st, err := syncPush(ctx, a.options())
 	if err != nil {
 		recordSync(a.root, "", err)
 		return syncPushResult{Remote: st.Remote, Err: err}
 	}
 	recordSync(a.root, st.Remote, nil)
 	return syncPushResult{Remote: st.Remote, Pushed: st.Pushed}
+}
+
+// commitWork is the local half of a push: under the vault lock, and only when
+// no commit is half-applied, commit the work tree to git — the one place auto
+// sync commits (A-042-7 b).
+func (a *autoSync) commitWork() error {
+	release, err := lockVault(a.root)
+	if err != nil {
+		return err
+	}
+	defer release()
+	if err := noInterruptedCommit(a.root); err != nil {
+		return err
+	}
+	if _, err := syncCommitWork(a.options(), syncCommitMessage(a.root)); err != nil {
+		recordSync(a.root, "", err)
+		return err
+	}
+	return nil
 }
 
 // pushInline is the CLI's push after a change: synchronous, before the verb

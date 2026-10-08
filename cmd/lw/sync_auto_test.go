@@ -245,7 +245,12 @@ func TestAutoDivergedWarns(t *testing.T) {
 	if _, _, code := a.lw("sync"); code != 0 {
 		t.Fatal("A could not push")
 	}
-	b.write("notes/20261009-130000-b.md", "from b, uncommitted\n")
+	// B's earlier push failed (it was offline): its work is committed, safe
+	// locally, and the remote has moved on. (A merely uncommitted change would
+	// not diverge: a verb's start only pulls, A-042-7 b.)
+	b.write("notes/20261009-130000-b.md", "from b, committed locally\n")
+	b.git("add", "-A")
+	b.git("commit", "--quiet", "-m", "lw notes")
 
 	stdout, stderr, code := b.lw("lint", "--fix", "--vault", b.root)
 	if want := "sync: diverged from " + remote + " — run lw sync; working on the local vault\n"; code != 0 || stdout != "clean\n" || stderr != want {
@@ -404,18 +409,17 @@ func TestAutoSyncCoversTheWritingVerbs(t *testing.T) {
 		}
 	})
 
-	t.Run("a changeset open on this PC makes the next pull diverge", func(t *testing.T) {
-		// Opening a changeset appends to the journal, which is synced: the PC
-		// that holds one has local commits the moment the next verb commits it
-		// to git, so a remote that moved meanwhile is a divergence — refused and
-		// named, the verb still runs. This is the design (042: no merge in v1),
-		// pinned here so nobody is surprised by it.
+	t.Run("a changeset open on this PC does not stop the pull", func(t *testing.T) {
+		// Opening a changeset appends to the journal, which is synced. Before
+		// A-042-7 the next verb committed those lines to git first and the
+		// remote having moved meanwhile was a divergence; now a verb's start
+		// only pulls, and the uncommitted journal lines are carried across it.
 		b, remote := newBehind(t)
 		openCreatePageChangeset(t, b.root, "wiki/concepts/from-b.md", "From B")
 		_, stderr, code := b.lw("commit", "--vault", b.root, "-m", "b's page")
-		want := "sync: diverged from " + remote + " — run lw sync; working on the local vault\n"
-		if code != 0 || !strings.HasPrefix(stderr, want) {
-			t.Fatalf("exit %d stderr %q; want the commit to land after the diverged warning", code, stderr)
+		want := pulled(remote) + "sync: pushed 1 commit(s) to " + remote + "\n"
+		if code != 0 || stderr != want {
+			t.Fatalf("exit %d stderr %q; want the pull, the commit and its push — no divergence", code, stderr)
 		}
 	})
 
@@ -514,7 +518,7 @@ func TestSyncAbortsOnTheFirstFailure(t *testing.T) {
 		if _, _, code := a.lw("sync"); code != 0 {
 			t.Fatal("A could not push")
 		}
-		b.write("notes/20261009-130000-b.md", "b\n")
+		b.appendTo("index.md", "\nedited on B\n") // a tracked edit: only a committed one can diverge
 		pushes := stub(t)
 		if _, _, code := b.lw("sync"); code != 1 {
 			t.Fatalf("exit %d, want 1", code)

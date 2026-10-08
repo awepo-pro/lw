@@ -100,7 +100,9 @@ func TestSyncVerbOutputs(t *testing.T) {
 		if _, _, code := a.lw("sync"); code != 0 {
 			t.Fatal("A could not push")
 		}
-		b.write("notes/20261009-130000-b.md", "from b\n")
+		// B edited a tracked page (A-042-7: an untracked or journal-only change
+		// no longer stops a pull, so only a committed edit can diverge).
+		b.appendTo("index.md", "\nedited on B\n")
 		stdout, stderr, code := b.lw("sync")
 		want := "lw: sync: diverged from " + remote + ": this PC has 1 commit(s) the remote lacks, the remote has 1 this PC lacks; " +
 			"nothing was changed — lw sync --take-remote keeps the remote and saves this PC's commits on a backup branch\n"
@@ -110,7 +112,7 @@ func TestSyncVerbOutputs(t *testing.T) {
 		if strings.Contains(b.read(kvPage), "Edited on A.") {
 			t.Error("a refused sync merged A's edit")
 		}
-		if !strings.Contains(b.read("notes/20261009-130000-b.md"), "from b") {
+		if !strings.Contains(b.read("index.md"), "edited on B") {
 			t.Error("a refused sync lost B's own work")
 		}
 
@@ -125,7 +127,7 @@ func TestSyncVerbOutputs(t *testing.T) {
 		if !strings.Contains(b.read(kvPage), "Edited on A.") {
 			t.Error("--take-remote did not make B's tree the remote's")
 		}
-		if got := b.git("show", m[1]+":notes/20261009-130000-b.md"); !strings.Contains(got, "from b") {
+		if got := b.git("show", m[1]+":index.md"); !strings.Contains(got, "edited on B") {
 			t.Errorf("the backup branch %s does not hold B's work", m[1])
 		}
 		if stdout, _, code = b.lw("sync"); code != 0 || stdout != "up to date with "+remote+"\n" {

@@ -352,6 +352,32 @@ func firstLine(s string) string {
 // line, whatever multi-line text git put in the error.
 func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
 
+// orderedRemotes is the configured remotes with the one that answered last put
+// first (A-042-7 c): sync.json records it, and trying it first means a remote
+// that is unreachable from this PC — the LAN name when away from home — costs
+// its connect timeout once, not on every step. The rest keep the order the
+// user wrote, and a recorded remote that is no longer configured is ignored.
+// The result is a new slice; configured is not edited.
+func orderedRemotes(root string, configured []string) []string {
+	last := readSyncState(root).Remote
+	out := make([]string, 0, len(configured))
+	found := false
+	for _, r := range configured {
+		if r == last && last != "" {
+			found = true
+		}
+	}
+	if found {
+		out = append(out, last)
+	}
+	for _, r := range configured {
+		if !(found && r == last) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 // syncState is .llmwiki/sync.json (042 D5): per-PC bookkeeping, listed in the
 // managed .gitignore so it never travels. It records when this PC last synced
 // successfully, with which remote, and why the last step failed, if it did.

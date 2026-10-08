@@ -229,9 +229,12 @@ func (r *runner) fetchOne(ctx context.Context, spec string) (empty bool, err err
 	return false, err
 }
 
-// progress reports whether git should print transfer progress: only a person
-// watching (Interactive with somewhere to write).
-func (r *runner) progress() bool { return r.o.Interactive && r.o.Stderr != nil }
+// progress reports whether git should be told to print transfer progress:
+// only when a person is watching — an interactive call whose Stderr is a
+// terminal. git draws progress with carriage returns, so into a pipe or a log
+// file (lw sync 2>log, a test, a wrapper) it is a wall of noise; git's other
+// stderr lines are still passed through (A-042-7 e).
+func (r *runner) progress() bool { return r.o.Interactive && isTerminal(r.o.Stderr) }
 
 // state builds the State for a remote that answered.
 func (r *runner) state(ctx context.Context, spec string, empty bool) (State, error) {
@@ -327,10 +330,24 @@ func Status(ctx context.Context, o Options) (State, error) {
 // Pull fetches, then fast-forwards HEAD to the remote tip when this PC has
 // nothing the remote lacks. A remote format newer than maxFormat is refused
 // before anything is merged, and a divergence is reported with its counts and
-// changes nothing. The work tree must have no uncommitted tracked changes:
-// callers CommitWork first (042 D3).
+// changes nothing.
+//
+// The work tree need not be clean (A-042-7 a), but what is in it must be
+// something Pull can carry over a fast-forward. Uncommitted lines at the end of
+// an Options.AppendOnly file are: they are set aside, the file is restored,
+// the merge is made, and they are appended to the new version. Untracked files
+// at paths the incoming commits create are removed first when byte-identical
+// and refused when not ("untracked files would be overwritten by the pull").
+// Any other uncommitted change to a tracked file returns an error wrapping
+// ErrDirty — after the fetch, so the State beside it says whether the remote
+// had anything to pull — and nothing is changed; callers CommitWork and pull
+// again (042 D3).
 func Pull(ctx context.Context, o Options, maxFormat int) (State, error) {
 	r, err := newRunner(o)
+	if err != nil {
+		return State{}, err
+	}
+	appendOnly, err := cleanAppendOnly(o.AppendOnly)
 	if err != nil {
 		return State{}, err
 	}
@@ -340,14 +357,19 @@ func Pull(ctx context.Context, o Options, maxFormat int) (State, error) {
 	if err := r.refuseIfCollided(ctx); err != nil {
 		return State{}, err
 	}
-	if dirty, err := r.out(ctx, "status", "--porcelain", "--untracked-files=no"); err != nil {
-		return State{}, err
-	} else if dirty != "" {
-		return State{}, fmt.Errorf("the vault has uncommitted changes — run git -C %s status", r.o.Dir)
+	carry, dirtyErr := r.dirtyCarry(ctx, appendOnly)
+	if dirtyErr != nil {
+		var de *dirtyError
+		if !errors.As(dirtyErr, &de) {
+			return State{}, dirtyErr
+		}
 	}
 	st, err := r.fetch(ctx)
 	if err != nil {
 		return st, err
+	}
+	if dirtyErr != nil {
+		return st, dirtyErr
 	}
 	if st.RemoteFormat > maxFormat {
 		return st, &FormatError{Remote: st.Remote, Have: st.RemoteFormat, Max: maxFormat}
@@ -361,12 +383,23 @@ func Pull(ctx context.Context, o Options, maxFormat int) (State, error) {
 		if err := r.ensureAttributes(ctx); err != nil {
 			return st, err
 		}
+		carry, undo, err := r.prepareFastForward(ctx, carry, appendOnly)
+		if err != nil {
+			return st, err
+		}
 		if _, err := r.out(ctx, "merge", "--ff-only", "--quiet", trackRef); err != nil {
+			undo()
 			return st, err
 		}
 		st.Pulled, st.Behind = st.Behind, 0
-		if err := r.verifyCheckout(ctx); err != nil {
-			return st, err
+		// Checked before the tails go back: they are uncommitted changes, and
+		// verifyCheckout reads every difference from the commit as a collision.
+		checkoutErr := r.verifyCheckout(ctx)
+		if err := r.reappend(carry); err != nil {
+			return st, errors.Join(checkoutErr, err)
+		}
+		if checkoutErr != nil {
+			return st, checkoutErr
 		}
 	}
 	return st, nil
