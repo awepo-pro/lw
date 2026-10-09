@@ -21,6 +21,9 @@ func hermetic(t *testing.T) string {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	// ssh control sockets (mux.go) go under the cache directory, whose path
+	// must be short: t.TempDir() carries the test's name and is not.
+	t.Setenv("XDG_CACHE_HOME", shortTemp(t))
 	cfg := filepath.Join(home, "gitconfig")
 	if err := os.WriteFile(cfg, nil, 0o644); err != nil {
 		t.Fatal(err)
@@ -60,20 +63,27 @@ func writeGlobalGitConfig(t *testing.T, body string) {
 // FAKE_SSH_BADREPLY answers every command with a stdout line and a stderr
 // line instead of running it; FAKE_SSH_BG leaves a background process
 // holding its pipes after it exits (an ssh ControlPersist master);
-// FAKE_SSH_BEFORE_RECEIVE names a script run
+// `ssh -G <host>` (the multiplexing probe, mux.go) prints "controlpath none" —
+// or FAKE_SSH_CONTROLPATH, or fails under FAKE_SSH_G_FAIL — and is logged to
+// $FAKE_SSH_LOG.G, never to $FAKE_SSH_LOG, so the tests that read the transport
+// calls there do not see it. FAKE_SSH_BEFORE_RECEIVE names a script run
 // once just before a git-receive-pack starts (a push race in the real
 // protocol, no seam in the code under test).
 const fakeSSHScript = `#!/bin/sh
 PATH="$(git --exec-path):$PATH"
+LOG="$FAKE_SSH_LOG"
+for a in "$@"; do if [ "$a" = "-G" ]; then LOG="$FAKE_SSH_LOG.G"; fi; done
 {
   printf 'argv:'
   for a in "$@"; do printf ' [%s]' "$a"; done
   printf '\n'
   printf 'env: GIT_TERMINAL_PROMPT=%s\n' "${GIT_TERMINAL_PROMPT-unset}"
-} >> "$FAKE_SSH_LOG"
+} >> "$LOG"
+G=
 while [ $# -gt 0 ]; do
   case "$1" in
     --) shift; break ;;
+    -G) G=1; shift ;;
     -o|-p|-i|-l|-F|-J|-L|-R|-D|-b|-c|-E|-e|-m|-O|-Q|-S|-W|-w) shift 2 ;;
     -*) shift ;;
     *) break ;;
@@ -81,6 +91,12 @@ while [ $# -gt 0 ]; do
 done
 host="$1"
 shift
+if [ -n "$G" ]; then
+  # ssh -G prints the configuration it would use, locally. FAKE_SSH_G_FAIL makes it fail.
+  if [ -n "$FAKE_SSH_G_FAIL" ]; then echo "ssh: unknown option -- G" >&2; exit 255; fi
+  printf 'hostname %s\ncontrolpath %s\n' "$host" "${FAKE_SSH_CONTROLPATH:-none}"
+  exit 0
+fi
 case "$host" in
   dead*) echo "ssh: Could not resolve hostname $host: Name or service not known" >&2; exit 255 ;;
 esac
@@ -117,6 +133,8 @@ func installFakeSSH(t *testing.T) string {
 	}
 	logPath := filepath.Join(t.TempDir(), "ssh.log")
 	t.Setenv("FAKE_SSH_LOG", logPath)
+	t.Setenv("FAKE_SSH_CONTROLPATH", "")
+	t.Setenv("FAKE_SSH_G_FAIL", "")
 	t.Setenv("FAKE_SSH_SLEEP", "")
 	t.Setenv("FAKE_SSH_BG", "")
 	t.Setenv("FAKE_SSH_BADREPLY", "")
@@ -380,4 +398,21 @@ func waitGone(t *testing.T, pattern string) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+}
+
+// shortTemp is a fresh directory with a short path (/tmp/lwv-123456): a unix
+// socket path must fit in 104 bytes, and t.TempDir() puts the test's name in
+// its.
+func shortTemp(t *testing.T) string {
+	t.Helper()
+	base := "/tmp"
+	if fi, err := os.Stat(base); err != nil || !fi.IsDir() {
+		base = os.TempDir()
+	}
+	dir, err := os.MkdirTemp(base, "lwv-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return dir
 }

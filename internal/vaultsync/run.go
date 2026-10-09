@@ -219,6 +219,11 @@ type call struct {
 	net   bool     // a network call: bounded by Timeout when !Interactive; stderr streams to Options.Stderr when Interactive
 	env   []string // extra KEY=VALUE
 	noDir bool     // do not run inside the vault (clone creates it)
+
+	// sshDest and sshPort name the ssh destination of a network call, so its
+	// connection can be multiplexed (mux.go); empty for a remote that is not
+	// reached over ssh.
+	sshDest, sshPort string
 }
 
 // cmdError is a failed child process. Error() is the one-line reason a user
@@ -310,6 +315,16 @@ func (r *runner) procErr(ctx context.Context, bin string, c call) (string, strin
 	sshCmd := ""
 	if timed {
 		sshCmd = r.sshCommand(ctx) + batchOpts
+	}
+	// An ssh remote's connection is shared with the next step's and the next
+	// verb's (042 S3c). The options are appended to the user's own command, as
+	// batchOpts are, and an interactive call that gains none keeps the
+	// environment git was given.
+	if mux := r.muxOpts(ctx, c.sshDest, c.sshPort); mux != "" {
+		if sshCmd == "" {
+			sshCmd = r.sshCommand(ctx)
+		}
+		sshCmd += mux
 	}
 	cmd := exec.CommandContext(pctx, bin, c.args...)
 	if !c.noDir {

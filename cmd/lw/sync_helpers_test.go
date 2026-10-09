@@ -35,6 +35,9 @@ func syncHermetic(t *testing.T) string {
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+	// ssh control sockets go under the cache directory, whose path must be
+	// short (a unix socket path fits 104 bytes): not under the test's long name.
+	t.Setenv("XDG_CACHE_HOME", syncTemp(t))
 	gitCfg := filepath.Join(home, "gitconfig")
 	if err := os.WriteFile(gitCfg, nil, 0o644); err != nil {
 		t.Fatal(err)
@@ -331,14 +334,18 @@ func captureCombined(t *testing.T, fn func() int) (out string, code int) {
 // server's login shell does with it. FAKE_SSH_SLEEP makes it hang.
 const fakeSSHScript = `#!/bin/sh
 PATH="$(git --exec-path):$PATH"
+LOG="$FAKE_SSH_LOG"
+for a in "$@"; do if [ "$a" = "-G" ]; then LOG="$FAKE_SSH_LOG.G"; fi; done
 {
   printf 'argv:'
   for a in "$@"; do printf ' [%s]' "$a"; done
   printf '\n'
-} >> "$FAKE_SSH_LOG"
+} >> "$LOG"
+G=
 while [ $# -gt 0 ]; do
   case "$1" in
     --) shift; break ;;
+    -G) G=1; shift ;;
     -o|-p|-i|-l|-F|-J|-L|-R|-D|-b|-c|-E|-e|-m|-O|-Q|-S|-W|-w) shift 2 ;;
     -*) shift ;;
     *) break ;;
@@ -346,6 +353,10 @@ while [ $# -gt 0 ]; do
 done
 host="$1"
 shift
+if [ -n "$G" ]; then
+  printf 'hostname %s\ncontrolpath %s\n' "$host" "${FAKE_SSH_CONTROLPATH:-none}"
+  exit 0
+fi
 case "$host" in
   dead*) echo "ssh: Could not resolve hostname $host: Name or service not known" >&2; exit 255 ;;
 esac
@@ -364,6 +375,7 @@ func installFakeSSH(t *testing.T) string {
 	logPath := filepath.Join(t.TempDir(), "ssh.log")
 	t.Setenv("FAKE_SSH_LOG", logPath)
 	t.Setenv("FAKE_SSH_SLEEP", "")
+	t.Setenv("FAKE_SSH_CONTROLPATH", "")
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	return logPath
 }

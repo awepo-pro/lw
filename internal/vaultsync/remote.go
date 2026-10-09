@@ -86,6 +86,14 @@ func parseRemote(spec string) (remote, error) {
 	return rem, nil
 }
 
+// sshDest is the ssh destination of an ssh remote, "" for any other kind.
+func (rem remote) sshDest() string {
+	if rem.kind == kindSSH {
+		return rem.dest
+	}
+	return ""
+}
+
 // splitSCP splits "host:path" (git's scp-like syntax) at the colon, which
 // must come before any slash. [::1]:path keeps IPv6 hosts workable.
 func splitSCP(spec string) (dest, path string, ok bool) {
@@ -194,6 +202,7 @@ func (r *runner) ensureRemote(ctx context.Context, rem remote) error {
 		if !r.o.Interactive {
 			args = append(args, "-o", "BatchMode=yes", "-o", "ConnectTimeout=5")
 		}
+		args = append(args, r.muxArgs(ctx, rem.dest, rem.port)...)
 		if rem.port != "" {
 			args = append(args, "-p", rem.port)
 		}

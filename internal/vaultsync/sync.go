@@ -213,7 +213,7 @@ func (r *runner) fetchOne(ctx context.Context, spec string) (empty bool, err err
 	// failure and an empty remote would never be accepted. One round trip
 	// instead of a separate ls-remote matters when each costs a Cloudflare
 	// handshake and the first remote may be the dead one.
-	_, err = r.gitCall(ctx, call{args: args, net: true, env: []string{"LC_ALL=C"}})
+	_, err = r.gitCall(ctx, call{args: args, net: true, env: []string{"LC_ALL=C"}, sshDest: rem.sshDest(), sshPort: rem.port})
 	if err == nil {
 		return false, nil
 	}
@@ -480,7 +480,7 @@ func (r *runner) pushTo(ctx context.Context, spec string) error {
 		args = append(args, "--progress")
 	}
 	args = append(args, "--", rem.arg, "HEAD:"+remoteHead)
-	_, err = r.gitCall(ctx, call{args: args, net: true})
+	_, err = r.gitCall(ctx, call{args: args, net: true, sshDest: rem.sshDest(), sshPort: rem.port})
 	return err
 }
 

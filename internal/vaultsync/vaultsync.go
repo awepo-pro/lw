@@ -6,7 +6,9 @@
 // refusal when the remote moved, and transport over the user's own ssh.
 //
 // lw shells out to the user's git and ssh. It links no git library and
-// stores no credentials; ssh does the authentication. Divergence (both
+// stores no credentials; ssh does the authentication, and shares one
+// authenticated connection between the steps of a sync and the verbs that
+// follow it (mux.go) unless the user's ssh configuration already does. Divergence (both
 // sides committed since the last sync) is detected and refused, never
 // resolved: every operation here is fast-forward only, and TakeRemote is
 // the escape hatch that keeps a backup branch of whatever it discards.

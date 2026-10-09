@@ -150,7 +150,7 @@ func (r *runner) cloneOne(ctx context.Context, spec string, maxFormat int) error
 		args = append(args, "--progress")
 	}
 	args = append(args, "--", rem.arg, r.o.Dir)
-	if _, err := r.gitCall(ctx, call{args: args, net: true, noDir: true}); err != nil {
+	if _, err := r.gitCall(ctx, call{args: args, net: true, noDir: true, sshDest: rem.sshDest(), sshPort: rem.port}); err != nil {
 		return err
 	}
 	format, err := r.remoteFormat(ctx)
