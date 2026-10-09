@@ -800,9 +800,9 @@ func TestRemoteForms(t *testing.T) {
 		if _, err := Init(ctx, o); err != nil {
 			t.Fatal(err)
 		}
-		// A prompt may need the user, so no BatchMode and no short connect limit;
-		// the mux's own bound (ConnectTimeout=10) is a different thing (A-042-9 e).
-		if log := readFile(t, logPath); strings.Contains(log, "BatchMode") || strings.Contains(log, "ConnectTimeout=5") {
+		// A prompt may need the user — and so may a ProxyCommand that logs in
+		// first — so no BatchMode and no connect limit of any length (A-042-10).
+		if log := readFile(t, logPath); strings.Contains(log, "BatchMode") || strings.Contains(log, "ConnectTimeout") {
 			t.Errorf("interactive init imposed batch options:\n%s", log)
 		}
 		if !strings.Contains(stderr.String(), "->") {

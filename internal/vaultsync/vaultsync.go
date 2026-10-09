@@ -72,10 +72,12 @@ type Options struct {
 	// carrying a tail, a fast-forward, a rebase, take-remote's reset, a
 	// recovery — and the function it returns is called to let them go. It is
 	// never held across a network call, and never nested: a mutation takes it
-	// once. cmd/lw wires it to the exclusive side of the journal lock
-	// (stage.QuiesceJournal), which every journal append takes shared; without
-	// it a line another lw process appends while the tail is set aside is
-	// overwritten (A-042-9).
+	// once, after the fetch that decides whether there is one. An error from it
+	// stops the step before anything has changed. cmd/lw wires it to the
+	// exclusive side of the journal lock (stage.QuiesceJournal), which every
+	// journal append takes shared, together with the vault lock that keeps a
+	// commit from landing in the middle (A-042-10); without it a line another
+	// lw process appends while the tail is set aside is overwritten (A-042-9).
 	Quiesce func() (release func(), err error)
 }
 

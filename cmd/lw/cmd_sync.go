@@ -207,7 +207,7 @@ func syncSetup(vaultPath string, mode syncMode) (root string, o vaultsync.Option
 		Interactive: true,
 		Stderr:      os.Stderr,
 		AppendOnly:  syncAppendOnly,
-		Quiesce:     quiesceJournal(root),
+		Quiesce:     quiesceVault(root),
 	}, nil
 }
 
@@ -215,6 +215,14 @@ func syncSetup(vaultPath string, mode syncMode) (root string, o vaultsync.Option
 // divergence gets the long sentence that names the way out; every other error
 // (the format, the remotes, the repo) already reads as the message.
 func syncExplicitErr(err error, st vaultsync.State) error {
+	switch {
+	case errors.Is(err, errSyncBusy):
+		// The vault became busy between the check and the quiesce; vaultsync
+		// wraps what the quiesce says.
+		return errBusyTryAgain
+	case errors.Is(err, errCommitInterrupted):
+		return errCommitInterrupted
+	}
 	if errors.Is(err, vaultsync.ErrDiverged) {
 		return fmt.Errorf("diverged from %s: this PC has %d commit(s) the remote lacks, the remote has %d this PC lacks; "+
 			"nothing was changed — lw sync --take-remote keeps the remote and saves this PC's commits on a backup branch",
@@ -233,14 +241,17 @@ func syncRecover(ctx context.Context, o vaultsync.Options) error {
 	return err
 }
 
+// errBusyTryAgain is what an explicit sync says of a vault whose lock is held.
+var errBusyTryAgain = errors.New("vault is busy (a commit is in progress) — try again")
+
 // syncGuard takes the vault lock and checks no commit is half-applied — the two
-// things every explicit sync step does before it changes the vault. The
-// returned release is a no-op after a refusal.
+// things a sync step that holds the lock throughout (init, clone) does before it
+// changes the vault. The returned release is a no-op after a refusal.
 func syncGuard(root string) (release func(), err error) {
 	release, err = lockVault(root)
 	if err != nil {
 		if errors.Is(err, errSyncBusy) {
-			return nil, errors.New("vault is busy (a commit is in progress) — try again")
+			return nil, errBusyTryAgain
 		}
 		return nil, err
 	}
@@ -251,6 +262,19 @@ func syncGuard(root string) (release func(), err error) {
 	return release, nil
 }
 
+// syncPreflight is the check an explicit sync makes before it starts: the vault
+// is not busy and no commit is half-applied. The lock is held only to ask; the
+// local mutation takes it for itself, inside vaultsync's quiesce, so the fetch
+// that comes first is not under it (A-042-10).
+func syncPreflight(root string) error {
+	release, err := syncGuard(root)
+	if err != nil {
+		return err
+	}
+	release()
+	return nil
+}
+
 // syncRun is `lw sync` and `lw sync --take-remote`.
 //
 // The plain verb pulls first (A-042-7 b): a PC whose only uncommitted change is
@@ -259,7 +283,8 @@ func syncGuard(root string) (release func(), err error) {
 // it committed and the pull tried again — which may diverge, correctly, because
 // by then there is a local commit. Whatever is left uncommitted after the pull
 // (the carried lines) is committed, and the commit pushed. The vault lock covers
-// the commit-work and pull; the push runs without it (A-042-7 d).
+// each commit, and the pull's local mutation inside its quiesce; the fetch and
+// the push run without it (A-042-7 d, A-042-10).
 func syncRun(vaultPath string, takeRemote bool) error {
 	mode := syncModeWrite
 	if takeRemote {
@@ -273,18 +298,19 @@ func syncRun(vaultPath string, takeRemote bool) error {
 	defer stop()
 
 	if takeRemote {
-		release, err := syncGuard(root)
-		if err != nil {
+		if err := syncPreflight(root); err != nil {
 			return err
 		}
-		defer release()
 		if err := syncRecover(ctx, o); err != nil {
 			return err
 		}
-		return syncTake(ctx, root, o)
+		if err := syncTake(ctx, root, o); err != nil {
+			return syncExplicitErr(err, vaultsync.State{})
+		}
+		return nil
 	}
 
-	st, committed, err := syncPullLocked(ctx, root, o)
+	st, committed, err := syncPullAndCommit(ctx, root, o)
 	if err != nil {
 		recordSyncAhead(root, "", err, st.Ahead)
 		return syncExplicitErr(err, st)
@@ -325,24 +351,22 @@ func syncRun(vaultPath string, takeRemote bool) error {
 	return nil
 }
 
-// syncPullLocked is the locked half of an explicit sync: under the vault lock,
-// with no commit half-applied, pull; on ErrDirty commit the work tree and pull
-// again; then commit what the pull left (carried journal lines). It reports
-// whether it committed anything. The lock is released before it returns, so
-// the push that follows is not under it.
-func syncPullLocked(ctx context.Context, root string, o vaultsync.Options) (st vaultsync.State, committed bool, err error) {
-	release, err := syncGuard(root)
-	if err != nil {
+// syncPullAndCommit is the local half of an explicit sync: with no commit
+// half-applied, pull; on ErrDirty commit the work tree and pull again; then
+// commit what the pull left (carried journal lines). It reports whether it
+// committed anything. The vault lock is held for each commit and, by vaultsync,
+// for the pull's local mutation — never across a fetch or the push that follows.
+func syncPullAndCommit(ctx context.Context, root string, o vaultsync.Options) (st vaultsync.State, committed bool, err error) {
+	if err := syncPreflight(root); err != nil {
 		return st, false, err
 	}
-	defer release()
 	if err := syncRecover(ctx, o); err != nil {
 		return st, false, err
 	}
 
 	st, err = syncPull(ctx, o, stage.FormatVersion)
 	if errors.Is(err, vaultsync.ErrDirty) {
-		if committed, err = syncCommitWork(o, syncCommitMessage(root)); err != nil {
+		if committed, err = commitWorkLocked(root, o); err != nil {
 			return st, false, err
 		}
 		if st.Behind > 0 {
@@ -358,7 +382,7 @@ func syncPullLocked(ctx context.Context, root string, o vaultsync.Options) (st v
 	if err != nil {
 		return st, false, err
 	}
-	c, err := syncCommitWork(o, syncCommitMessage(root))
+	c, err := commitWorkLocked(root, o)
 	if err != nil {
 		return st, committed, err
 	}

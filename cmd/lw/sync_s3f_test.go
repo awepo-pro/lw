@@ -85,7 +85,7 @@ func TestPushPathIsCommitThenPullThenPush(t *testing.T) {
 		}
 	})
 
-	t.Run("a tree that is dirty after the commit does not stop the push", func(t *testing.T) {
+	t.Run("a tree that is dirty after the commit is committed too and the push goes on", func(t *testing.T) {
 		auto, _ := newAuto(t)
 		order, mu := record(t)
 		syncPull = func(ctx context.Context, o vaultsync.Options, f int) (vaultsync.State, error) {
@@ -98,8 +98,8 @@ func TestPushPathIsCommitThenPullThenPush(t *testing.T) {
 		mu.Lock()
 		got := strings.Join(*order, ",")
 		mu.Unlock()
-		if got != "commit,pull,push" || res.Err != nil {
-			t.Errorf("calls = %s, res = %+v; want the push to go on", got, res)
+		if got != "commit,pull,commit,push" || res.Err != nil {
+			t.Errorf("calls = %s, res = %+v; want the late write committed (nothing to take, so no second pull) and the push to go on", got, res)
 		}
 	})
 

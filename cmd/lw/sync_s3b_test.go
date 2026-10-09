@@ -368,9 +368,11 @@ func foregroundCommit(t *testing.T, root string) {
 	}
 }
 
-// TestPushDoesNotHoldTheVaultLock (A-042-7 d): the lock covers the commit to
-// git and the pull — local work — and is gone before the network is touched, so
-// a foreground commit succeeds while a push is blocked on the wire.
+// TestPushDoesNotHoldTheVaultLock (A-042-7 d): the lock covers local work only
+// — each commit to git, and the pull's mutation inside its quiesce (A-042-10) —
+// and is gone before the network is touched, so a foreground commit succeeds
+// while a push is blocked on the wire. (The fetch before the pull is covered by
+// TestSlowFetchDoesNotHoldTheVaultLock.)
 func TestPushDoesNotHoldTheVaultLock(t *testing.T) {
 	t.Run("a background push", func(t *testing.T) {
 		a, _, _ := syncPair(t)
@@ -419,35 +421,6 @@ func TestPushDoesNotHoldTheVaultLock(t *testing.T) {
 			t.Errorf("exit %d stdout %q stderr %q", code, stdout, stderr)
 		}
 	})
-}
-
-// TestPullHoldsTheVaultLock: the other half of (d) — while the pull runs the
-// lock is held, so a commit cannot land in the middle of a fast-forward.
-func TestPullHoldsTheVaultLock(t *testing.T) {
-	a, _, _ := syncPair(t)
-	a.act()
-	started := make(chan struct{})
-	release := make(chan struct{})
-	orig := syncPull
-	syncPull = func(ctx context.Context, o vaultsync.Options, maxFormat int) (vaultsync.State, error) {
-		close(started)
-		<-release
-		return vaultsync.State{Remote: o.Remotes[0]}, nil
-	}
-	t.Cleanup(func() { syncPull = orig })
-	auto := loadAutoSync(a.root)
-	done := make(chan struct{})
-	go func() {
-		captureRun(t, func() int { auto.pull(); return 0 })
-		close(done)
-	}()
-	<-started
-	if rel, err := stage.AcquireLock(filepath.Join(a.root, ".llmwiki")); err == nil {
-		rel()
-		t.Error("the vault lock was free while the pull ran")
-	}
-	close(release)
-	<-done
 }
 
 // TestExplicitSyncPushesWhatIsWaiting: a commit made earlier and never pushed

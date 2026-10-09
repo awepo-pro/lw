@@ -79,8 +79,10 @@ func TestSyncMultiplexesSSH(t *testing.T) {
 			}
 		}
 		for _, l := range explicit {
-			if strings.Contains(l, "BatchMode") {
-				t.Errorf("explicit sync was made batch: %s", l)
+			// Interactive: nothing that gives up on a slow login (a ProxyCommand
+			// that opens a browser) — not BatchMode, not a connect limit.
+			if strings.Contains(l, "BatchMode") || strings.Contains(l, "ConnectTimeout") {
+				t.Errorf("explicit sync was given batch limits: %s", l)
 			}
 		}
 		for _, l := range auto {

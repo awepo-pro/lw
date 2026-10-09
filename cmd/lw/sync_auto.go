@@ -161,7 +161,7 @@ func (a *autoSync) options() vaultsync.Options {
 		Remotes:    orderedRemotes(a.root, a.remotes),
 		Timeout:    remoteBudget(syncAutoTimeout, len(a.remotes)),
 		AppendOnly: syncAppendOnly,
-		Quiesce:    quiesceJournal(a.root),
+		Quiesce:    quiesceVault(a.root),
 	}
 }
 
@@ -186,13 +186,60 @@ func remoteBudget(total time.Duration, n int) time.Duration {
 	return share
 }
 
-// quiesceJournal is Options.Quiesce for the vault at root: the exclusive side of
-// the lock every journal append takes shared (A-042-9), so no line is appended
-// while the work tree is taken apart.
-func quiesceJournal(root string) func() (func(), error) {
+// quiesceVault is Options.Quiesce for the vault at root: what vaultsync holds
+// while it changes the work tree, and not a moment before or after (A-042-9,
+// A-042-10). It takes the vault lock — so a commit cannot land in the middle of
+// a fast-forward or a rebase — checks that no commit is half-applied, and then
+// the exclusive side of the lock every journal append takes shared, so no line
+// is appended meanwhile. Both are given back together. vaultsync asks for it
+// after its fetch and gives it back before its push, so the network is never
+// under the vault lock: a foreground commit fails "busy" for the length of a
+// local git command, not of a round trip to a far-away server.
+func quiesceVault(root string) func() (func(), error) {
 	return func() (func(), error) {
-		return stage.QuiesceJournal(filepath.Join(root, stateDirName))
+		unlock, err := lockVault(root)
+		if err != nil {
+			return nil, err
+		}
+		if err := noInterruptedCommit(root); err != nil {
+			unlock()
+			return nil, err
+		}
+		release, err := stage.QuiesceJournal(filepath.Join(root, stateDirName))
+		if err != nil {
+			unlock()
+			return nil, err
+		}
+		return func() { release(); unlock() }, nil
 	}
+}
+
+// guardVault is the check a sync step makes before it starts: the vault is not
+// busy and no commit is half-applied. It holds the vault lock only to ask — the
+// lock proper is taken, for the local mutation, by the quiesce — so a step that
+// has nothing to change still says why it cannot go on.
+func guardVault(root string) error {
+	release, err := lockVault(root)
+	if err != nil {
+		return err
+	}
+	defer release()
+	return noInterruptedCommit(root)
+}
+
+// commitWorkLocked is the commit of the work tree to git: under the vault lock
+// for that commit alone, with no commit half-applied. The commit message is
+// read under it, from the same journal the commit sees.
+func commitWorkLocked(root string, o vaultsync.Options) (bool, error) {
+	release, err := lockVault(root)
+	if err != nil {
+		return false, err
+	}
+	defer release()
+	if err := noInterruptedCommit(root); err != nil {
+		return false, err
+	}
+	return syncCommitWork(o, syncCommitMessage(root))
 }
 
 // syncAppendOnly is the vault's one append-only file: the journal. An open
@@ -246,8 +293,10 @@ func pushFailureLine(res syncPushResult) string {
 	return "sync: push failed (" + text + "); the commit is safe locally — lw sync will retry"
 }
 
-// pull is the start-of-verb step: take the vault lock, make sure no commit is
-// half-applied, and fast-forward to the remote. It only pulls (A-042-7 b): a
+// pull is the start-of-verb step: make sure the vault is not busy and no commit
+// is half-applied, and fast-forward to the remote. The vault lock is taken by
+// vaultsync's quiesce for the fast-forward itself and not for the fetch before
+// it (A-042-10). It only pulls (A-042-7 b): a
 // verb's start never commits the work tree to git, because a commit made here
 // is a commit the remote lacks, and the first PC to do it while the other
 // pushes has diverged. What stands in the way of a pull — uncommitted lines in
@@ -262,13 +311,7 @@ func (a *autoSync) pull() {
 	ctx, cancel := context.WithTimeout(context.Background(), syncAutoTimeout)
 	defer cancel()
 
-	release, err := lockVault(a.root)
-	if err != nil {
-		a.warnStart("", err, vaultsync.State{})
-		return
-	}
-	defer release()
-	if err := noInterruptedCommit(a.root); err != nil {
+	if err := guardVault(a.root); err != nil {
 		a.warnStart("", err, vaultsync.State{})
 		return
 	}
@@ -379,10 +422,12 @@ func (a *autoSync) push(ctx context.Context) syncPushResult {
 			slog.Warn("sync: rebuild index after push", "err", ierr)
 		}
 	}
-	// The lock is gone: the push touches no file of the vault (it sends HEAD),
-	// and holding the lock across a network round trip would make a foreground
+	// No lock is held: the push touches no file of the vault (it sends HEAD),
+	// and holding one across a network round trip would make a foreground
 	// commit fail with "vault is locked" for as long as the server is slow
-	// (A-042-7 d).
+	// (A-042-7 d). The fetch before the pull is no different, which is why the
+	// vault lock is taken inside the pull's quiesce and not around it
+	// (A-042-10).
 	st, err := syncPush(ctx, a.options())
 	res := syncPushResult{Remote: st.Remote, Pushed: st.Pushed, Pulled: pulled.Pulled, Rebased: pulled.Rebased}
 	if err != nil {
@@ -394,34 +439,51 @@ func (a *autoSync) push(ctx context.Context) syncPushResult {
 	return res
 }
 
-// commitAndPull is the local half of a push, all under the vault lock and with
-// no commit half-applied: commit the work tree to git — the one place auto-sync
-// commits (A-042-7 b) — then pull, which replays those commits on the remote's
-// when the remote has moved and nothing conflicts (A-042-8). The rebase lives
-// here and not in Push because it takes the work tree apart, and only Pull does
-// that under the vault lock and the journal quiesce (A-042-9 c). A tree that
-// became dirty after the commit (a session record landing) is not an error:
-// nothing is taken and Push goes on; a divergence it cannot reach is refused
-// there.
+// commitAndPull is the local half of a push: commit the work tree to git — the
+// one place auto-sync commits (A-042-7 b) — then pull, which replays those
+// commits on the remote's when the remote has moved and nothing conflicts
+// (A-042-8). The rebase lives here and not in Push because it takes the work
+// tree apart, and only Pull does that under the journal quiesce (A-042-9 c).
+//
+// Locks are held for local work only (A-042-10): the commit takes the vault lock
+// for itself, and the pull takes it, together with the journal, inside its
+// quiesce — after the fetch, not across it. A tree that became dirty after the
+// commit (a session record landing) makes the pull refuse with ErrDirty; that
+// record is committed and, if the remote had news, the pull tried once more, so
+// the commits it brings in are not reported as a divergence. A tree that is
+// dirty again after that is not an error: nothing is taken and Push goes on,
+// which refuses a divergence it cannot reach.
 func (a *autoSync) commitAndPull(ctx context.Context) (vaultsync.State, error) {
-	release, err := lockVault(a.root)
-	if err != nil {
-		return vaultsync.State{}, err
-	}
-	defer release()
-	if err := noInterruptedCommit(a.root); err != nil {
+	if err := guardVault(a.root); err != nil {
 		return vaultsync.State{}, err
 	}
 	if err := a.recoverRebase(context.Background()); err != nil {
 		return vaultsync.State{}, err
 	}
-	if _, err := syncCommitWork(a.options(), syncCommitMessage(a.root)); err != nil {
-		recordSync(a.root, "", err)
+	commit := func() error {
+		if _, err := commitWorkLocked(a.root, a.options()); err != nil {
+			recordSync(a.root, "", err)
+			return err
+		}
+		return nil
+	}
+	if err := commit(); err != nil {
 		return vaultsync.State{}, err
 	}
 	st, err := syncPull(ctx, a.options(), stage.FormatVersion)
 	if errors.Is(err, vaultsync.ErrDirty) {
-		return st, nil
+		if err := commit(); err != nil {
+			return st, err
+		}
+		if st.Behind == 0 {
+			// The fetch showed nothing to take, so the late write stood in the
+			// way of nothing: it is committed now and the push sends it.
+			return st, nil
+		}
+		st, err = syncPull(ctx, a.options(), stage.FormatVersion)
+		if errors.Is(err, vaultsync.ErrDirty) {
+			return st, nil
+		}
 	}
 	return st, err
 }

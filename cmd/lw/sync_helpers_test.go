@@ -365,6 +365,15 @@ case "$host" in
   dead*) echo "ssh: Could not resolve hostname $host: Name or service not known" >&2; exit 255 ;;
 esac
 if [ -n "$FAKE_SSH_SLEEP" ] && { [ -z "$FAKE_SSH_SLEEP_HOST" ] || [ "$host" = "$FAKE_SSH_SLEEP_HOST" ]; }; then exec sleep "$FAKE_SSH_SLEEP"; fi
+# FAKE_SSH_DELAY_ONCE=S: the first git transport call (a fetch, a push) is slow —
+# S seconds before it runs — and says so by creating $FAKE_SSH_MARK first.
+case "$*" in
+  *git-upload-pack*|*git-receive-pack*)
+    if [ -n "$FAKE_SSH_DELAY_ONCE" ] && [ -n "$FAKE_SSH_MARK" ] && [ ! -e "$FAKE_SSH_MARK" ]; then
+      : > "$FAKE_SSH_MARK"
+      sleep "$FAKE_SSH_DELAY_ONCE"
+    fi ;;
+esac
 cd "$HOME" || exit 1
 exec sh -c "$*"
 `
@@ -380,6 +389,8 @@ func installFakeSSH(t *testing.T) string {
 	t.Setenv("FAKE_SSH_LOG", logPath)
 	t.Setenv("FAKE_SSH_SLEEP", "")
 	t.Setenv("FAKE_SSH_SLEEP_HOST", "")
+	t.Setenv("FAKE_SSH_DELAY_ONCE", "")
+	t.Setenv("FAKE_SSH_MARK", "")
 	t.Setenv("FAKE_SSH_CONTROLPATH", "")
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	return logPath

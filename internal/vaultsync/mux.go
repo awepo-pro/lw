@@ -48,11 +48,14 @@ const (
 	maxControlPath = 100
 
 	// muxAliveInterval and muxAliveCount are ServerAliveInterval and
-	// ServerAliveCountMax; muxInteractiveConnect is the ConnectTimeout an
-	// interactive call gets (a non-interactive one has batchOpts').
-	muxAliveInterval      = 15
-	muxAliveCount         = 2
-	muxInteractiveConnect = 10
+	// ServerAliveCountMax. An interactive call gets no ConnectTimeout at all
+	// (A-042-10): ssh applies it to the whole of the connection set-up, banner
+	// included, and a ProxyCommand that logs in first (a Cloudflare Access
+	// browser login) can take longer than any limit worth having. A dead
+	// master is what ServerAlive is for; a non-interactive call keeps the
+	// batchOpts' 5 s.
+	muxAliveInterval = 15
+	muxAliveCount    = 2
 
 	// sshExitTimeout bounds `ssh -O exit`.
 	sshExitTimeout = 3 * time.Second
@@ -225,11 +228,6 @@ func (r *runner) muxArgs(ctx context.Context, dest, port string) []string {
 		// 2 x 15 s instead of never (A-042-9 e).
 		"-o", "ServerAliveInterval=" + strconv.Itoa(muxAliveInterval),
 		"-o", "ServerAliveCountMax=" + strconv.Itoa(muxAliveCount),
-	}
-	if r.o.Interactive {
-		// The batch options bound the connect for a non-interactive call; an
-		// interactive one had none, and a stopped master would hang it.
-		args = append(args, "-o", "ConnectTimeout="+strconv.Itoa(muxInteractiveConnect))
 	}
 	return args
 }

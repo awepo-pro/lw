@@ -20,7 +20,11 @@
 // excludes nobody. The file exists only in a vault that syncs: appenders do not
 // create it (a vault that never runs lw sync gains no file and no cost beyond
 // one failed open), and a sync creates it before its first mutation
-// (EnsureJournalLock; lw sync init and clone make it up front).
+// (EnsureJournalLock; lw sync init and clone make it up front). A vault that was
+// put under sync by an lw without the lock, or restored from a backup (tmp/ is
+// not in one), is found by its git: OpenEngine makes the lock whenever lw's
+// tracking ref is there (OpenEngine, SyncedVault), so even the first append of
+// such a vault takes its side.
 //
 // Nothing about the journal changes: same bytes, same single O_APPEND write,
 // same fsync.
@@ -32,6 +36,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -48,6 +53,32 @@ var journalLockWait = 10 * time.Second
 
 // journalLockPoll is how often a waiting acquisition tries again.
 const journalLockPoll = 2 * time.Millisecond
+
+// SyncTrackingRef is the ref lw sync fetches the remote's branch into: its
+// presence in a vault's git is what says the vault syncs. internal/vaultsync
+// has the same constant (a test keeps the two equal); stage cannot import it.
+const SyncTrackingRef = "refs/remotes/lw/main"
+
+// SyncedVault reports whether the vault at root has been put under lw sync —
+// whether its git has lw's tracking ref, as a file or packed by git gc. Any
+// doubt (no git, an unreadable file) answers false: the vault is then left as a
+// vault that never syncs is.
+func SyncedVault(root string) bool {
+	gitDir := filepath.Join(root, ".git")
+	if info, err := os.Stat(filepath.Join(gitDir, filepath.FromSlash(SyncTrackingRef))); err == nil && info.Mode().IsRegular() {
+		return true
+	}
+	packed, err := os.ReadFile(filepath.Join(gitDir, "packed-refs"))
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(packed), "\n") {
+		if strings.HasSuffix(line, " "+SyncTrackingRef) {
+			return true
+		}
+	}
+	return false
+}
 
 // journalLockPath is where the lock of the journal under llmwikiDir lives.
 func journalLockPath(llmwikiDir string) string {

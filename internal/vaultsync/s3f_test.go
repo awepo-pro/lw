@@ -17,6 +17,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/awepo-pro/lw/internal/stage"
 )
 
 // --- (b) the quiesce: held for local mutations, never for the network ------------
@@ -517,8 +519,8 @@ func TestPutBackNeverOverwrites(t *testing.T) {
 // --- (e) ssh liveness limits and the master exit ----------------------------------
 
 // TestMuxHasLivenessLimits: a master whose connection died is noticed in about
-// 30 s, not never; an interactive call gains a bounded connect (10 s, long
-// enough for a person to type a passphrase after it); and a user's own
+// 30 s, not never; an interactive call gains NO connect limit (a ProxyCommand
+// that logs in first can take longer than any we would pick); and a user's own
 // ControlPath leaves all of it alone.
 func TestMuxHasLivenessLimits(t *testing.T) {
 	t.Run("batch", func(t *testing.T) {
@@ -529,7 +531,7 @@ func TestMuxHasLivenessLimits(t *testing.T) {
 		}
 		line := transportLine(t, readFile(t, logPath))
 		order(t, line, "-o", "ControlPersist=600", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=2")
-		if !strings.Contains(line, "[ConnectTimeout=5]") || strings.Contains(line, "[ConnectTimeout=10]") {
+		if !strings.Contains(line, "[ConnectTimeout=5]") || strings.Count(line, "ConnectTimeout") != 1 {
 			t.Errorf("a batch call must keep its 5 s connect and no other: %s", line)
 		}
 	})
@@ -542,9 +544,9 @@ func TestMuxHasLivenessLimits(t *testing.T) {
 			t.Fatal(err)
 		}
 		line := transportLine(t, readFile(t, logPath))
-		order(t, line, "-o", "ControlPersist=600", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=2", "-o", "ConnectTimeout=10")
-		if strings.Contains(line, "BatchMode") || strings.Contains(line, "[ConnectTimeout=5]") {
-			t.Errorf("an interactive call took batch limits: %s", line)
+		order(t, line, "-o", "ControlPersist=600", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=2")
+		if strings.Contains(line, "BatchMode") || strings.Contains(line, "ConnectTimeout") {
+			t.Errorf("an interactive call took connect limits: %s", line)
 		}
 	})
 	t.Run("the user's own ControlPath is left alone", func(t *testing.T) {
@@ -561,6 +563,31 @@ func TestMuxHasLivenessLimits(t *testing.T) {
 			if strings.Contains(line, "ServerAlive") || (interactive && strings.Contains(line, "ConnectTimeout")) {
 				t.Errorf("interactive=%v: lw added liveness options to the user's multiplexing: %s", interactive, line)
 			}
+		}
+	})
+}
+
+// TestSlowBannerSurvivesAnInteractiveCall: an ssh whose banner arrives after
+// 12 s (a ProxyCommand delivering an Access login) works interactively and is
+// still given up on in batch mode, which promised a short connect.
+func TestSlowBannerSurvivesAnInteractiveCall(t *testing.T) {
+	t.Run("interactive", func(t *testing.T) {
+		muxEnv(t)
+		p := newPair(t)
+		t.Setenv("FAKE_SSH_BANNER_DELAY", "12")
+		o := opts(p.a, "fake:"+p.bare)
+		o.Interactive = true
+		if _, err := Status(t.Context(), o); err != nil {
+			t.Fatalf("an interactive Status died on a slow banner: %v", err)
+		}
+	})
+	t.Run("batch", func(t *testing.T) {
+		muxEnv(t)
+		p := newPair(t)
+		t.Setenv("FAKE_SSH_BANNER_DELAY", "12")
+		_, err := Status(t.Context(), opts(p.a, "fake:"+p.bare))
+		if err == nil || !strings.Contains(err.Error(), "banner exchange") {
+			t.Fatalf("batch Status err = %v, want the connect limit to give up on the banner", err)
 		}
 	})
 }
@@ -661,4 +688,12 @@ func TestTimedOutMuxedCallExitsTheMaster(t *testing.T) {
 			t.Errorf("ssh -O exit after a plain failure:\n%s", strings.Join(calls, "\n"))
 		}
 	})
+}
+
+// TestTrackingRefsAgree: stage finds a synced vault by the ref vaultsync
+// fetches into (A-042-10); the two spellings must not drift apart.
+func TestTrackingRefsAgree(t *testing.T) {
+	if stage.SyncTrackingRef != trackRef {
+		t.Errorf("stage.SyncTrackingRef = %q, vaultsync's trackRef = %q", stage.SyncTrackingRef, trackRef)
+	}
 }

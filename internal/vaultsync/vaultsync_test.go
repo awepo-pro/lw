@@ -676,15 +676,10 @@ func TestNonInteractiveEnv(t *testing.T) {
 	if log == "" {
 		t.Fatal("the interactive call never reached ssh")
 	}
-	for _, unwanted := range []string{"BatchMode", "ConnectTimeout=5"} {
+	for _, unwanted := range []string{"BatchMode", "ConnectTimeout"} {
 		if strings.Contains(log, unwanted) {
 			t.Errorf("interactive: ssh log has %s:\n%s", unwanted, log)
 		}
-	}
-	// ... but a hung connect is bounded, at a length a person can answer a
-	// passphrase prompt within (A-042-9 e).
-	if !strings.Contains(log, "[ConnectTimeout=10]") {
-		t.Errorf("interactive: ssh log lacks ConnectTimeout=10:\n%s", log)
 	}
 	if !strings.Contains(log, "GIT_TERMINAL_PROMPT=unset") {
 		t.Errorf("interactive: git was told not to prompt:\n%s", log)

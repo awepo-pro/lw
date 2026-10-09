@@ -371,6 +371,14 @@ func OpenEngine(vaultRoot string, opts ...Option) (*Engine, error) {
 		}
 	}
 
+	// A vault that syncs has the journal lock from the first append, however it
+	// came to sync (A-042-10); one that does not gains nothing.
+	if SyncedVault(root) {
+		if err := EnsureJournalLock(dir); err != nil {
+			return nil, fmt.Errorf("stage: open engine: %w", err)
+		}
+	}
+
 	journalPath := filepath.Join(dir, "journal.ndjson")
 	jf, err := os.OpenFile(journalPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {

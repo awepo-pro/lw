@@ -81,12 +81,14 @@ for a in "$@"; do if [ "$a" = "-G" ]; then LOG="$FAKE_SSH_LOG.G"; fi; done
 } >> "$LOG"
 G=
 O=
+CT=
 while [ $# -gt 0 ]; do
   case "$1" in
     --) shift; break ;;
     -G) G=1; shift ;;
     -O) O=1; shift 2 ;;
-    -o|-p|-i|-l|-F|-J|-L|-R|-D|-b|-c|-E|-e|-m|-Q|-S|-W|-w) shift 2 ;;
+    -o) case "$2" in ConnectTimeout=*) [ -z "$CT" ] && CT="${2#ConnectTimeout=}" ;; esac; shift 2 ;;
+    -p|-i|-l|-F|-J|-L|-R|-D|-b|-c|-E|-e|-m|-Q|-S|-W|-w) shift 2 ;;
     -*) shift ;;
     *) break ;;
   esac
@@ -108,6 +110,17 @@ fi
 case "$host" in
   dead*) echo "ssh: Could not resolve hostname $host: Name or service not known" >&2; exit 255 ;;
 esac
+# FAKE_SSH_BANNER_DELAY=S: the server's banner (a ProxyCommand that logs in
+# first, an Access token that needs a browser) arrives S seconds in. ssh gives
+# up on it only if a ConnectTimeout shorter than that was asked for, which is
+# what ssh does ("Connection timed out during banner exchange", 255).
+if [ -n "$FAKE_SSH_BANNER_DELAY" ]; then
+  if [ -n "$CT" ] && [ "$CT" -lt "$FAKE_SSH_BANNER_DELAY" ]; then
+    echo "Connection timed out during banner exchange" >&2
+    exit 255
+  fi
+  sleep 0.2
+fi
 if [ -n "$FAKE_SSH_BADREPLY" ]; then echo hello; echo "some warning" >&2; exit 0; fi
 if [ -n "$FAKE_SSH_SLEEP" ]; then
   if [ -n "$FAKE_SSH_TERM_MARK" ]; then
@@ -149,6 +162,7 @@ func installFakeSSH(t *testing.T) string {
 	t.Setenv("FAKE_SSH_IGNORE_TERM", "")
 	t.Setenv("FAKE_SSH_TERM_MARK", "")
 	t.Setenv("FAKE_SSH_BEFORE_RECEIVE", "")
+	t.Setenv("FAKE_SSH_BANNER_DELAY", "")
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	return logPath
 }
