@@ -94,7 +94,11 @@ shift
 if [ -n "$G" ]; then
   # ssh -G prints the configuration it would use, locally. FAKE_SSH_G_FAIL makes it fail.
   if [ -n "$FAKE_SSH_G_FAIL" ]; then echo "ssh: unknown option -- G" >&2; exit 255; fi
-  printf 'hostname %s\ncontrolpath %s\n' "$host" "${FAKE_SSH_CONTROLPATH:-none}"
+  case "$FAKE_SSH_CONTROLPATH" in
+    omit) printf 'hostname %s\n' "$host" ;;   # real OpenSSH omits controlpath when none is set
+    garbage) printf 'not an ssh -G answer\n' ;;
+    *) printf 'hostname %s\ncontrolpath %s\n' "$host" "${FAKE_SSH_CONTROLPATH:-none}" ;;
+  esac
   exit 0
 fi
 case "$host" in

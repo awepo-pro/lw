@@ -131,11 +131,16 @@ func resetSSHConfigAnswers() {
 // path. ssh prints option names in lower case.
 var controlPathLine = regexp.MustCompile(`(?m)^controlpath[ \t]+(\S.*)$`)
 
+// sshGAnswer recognises a real `ssh -G` answer: it always names the resolved
+// hostname. Output without it (a wrapper that prints nothing useful) is not
+// trusted to mean "no ControlPath".
+var sshGAnswer = regexp.MustCompile(`(?m)^hostname[ \t]+\S`)
+
 // userMultiplexes reports whether the user's effective ssh configuration for
 // dest already sets a ControlPath (anything but none). `ssh -G` is run with the
 // user's own ssh command, so a -F config file or -o options in their
 // GIT_SSH_COMMAND count. When ssh cannot say — it is missing, it predates -G
-// (before OpenSSH 6.8), or its answer has no controlpath line — the answer is
+// (before OpenSSH 6.8), or its answer is not a real -G answer (no hostname line) — the answer is
 // "yes": adding nothing is the safe way to fail.
 func (r *runner) userMultiplexes(ctx context.Context, dest, port string) bool {
 	base := r.sshCommand(ctx)
@@ -170,6 +175,12 @@ func (r *runner) userMultiplexes(ctx context.Context, dest, port string) bool {
 	if err == nil {
 		if m := controlPathLine.FindStringSubmatch(out); m != nil {
 			multiplexes = strings.TrimSpace(m[1]) != "none"
+		} else if sshGAnswer.MatchString(out) {
+			// Real OpenSSH (checked against 10.x, 2026-10-09) omits the
+			// controlpath line when none is set, so a well-formed answer
+			// without it means "not multiplexing" — reading it as "yes" left
+			// every Cloudflare sync at one 5 s connect per git call.
+			multiplexes = false
 		}
 	} else if ctx.Err() != nil {
 		return true // cancelled: say nothing, and cache nothing

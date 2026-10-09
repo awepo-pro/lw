@@ -156,6 +156,30 @@ func TestMuxAbsentWhenSSHCannotSay(t *testing.T) {
 	}
 }
 
+// TestMuxWhenSSHOmitsTheControlPathLine pins the live finding (042 acceptance,
+// 2026-10-09): real OpenSSH prints no controlpath line when none is set, so a
+// well-formed -G answer without one must still multiplex — while output that is
+// not a -G answer at all (no hostname line) is not trusted and adds nothing.
+func TestMuxWhenSSHOmitsTheControlPathLine(t *testing.T) {
+	for _, tc := range []struct {
+		mode    string
+		wantMux bool
+	}{{"omit", true}, {"garbage", false}} {
+		t.Run(tc.mode, func(t *testing.T) {
+			logPath, _ := muxEnv(t)
+			t.Setenv("FAKE_SSH_CONTROLPATH", tc.mode)
+			p := newPair(t)
+			if _, err := Status(t.Context(), opts(p.a, "fake:"+p.bare)); err != nil {
+				t.Fatalf("Status: %v", err)
+			}
+			line := transportLine(t, readFile(t, logPath))
+			if line == "" || anyMux(line) != tc.wantMux {
+				t.Errorf("-G %s: transport = %q; want multiplexing %v", tc.mode, line, tc.wantMux)
+			}
+		})
+	}
+}
+
 // TestMuxNotForLocalRemotesOrGITSSH: a local-path remote has no ssh to share,
 // and a GIT_SSH program is not an ssh command line to append to.
 func TestMuxNotForLocalRemotesOrGITSSH(t *testing.T) {
