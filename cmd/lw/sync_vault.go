@@ -14,11 +14,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/awepo-pro/lw/internal/stage"
@@ -149,11 +151,31 @@ func syncGitEnv(root string) []string {
 // repository is not) that holds the remote-tracking ref. Anything weaker would
 // let auto-sync commit a repository that is the user's own.
 func underLWSync(root string) bool {
+	ok, _ := underLWSyncErr(root)
+	return ok
+}
+
+// underLWSyncErr is underLWSync with the reason git could not say. "Not under
+// lw sync" is a plain false — no .git, or the ref is missing (rev-parse exits
+// 1). Anything else — git not installed, a .git that is not a repository, a
+// timeout — is false with the error, because a caller that announces "not
+// syncing" should be able to log why.
+func underLWSyncErr(root string) (bool, error) {
 	if _, err := os.Stat(filepath.Join(root, ".git")); err != nil {
-		return false
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
 	}
 	_, err := syncGit(root, "rev-parse", "--verify", "--quiet", trackRef)
-	return err == nil
+	if err == nil {
+		return true, nil
+	}
+	var ee *exec.ExitError
+	if errors.As(err, &ee) && ee.ExitCode() == 1 {
+		return false, nil
+	}
+	return false, err
 }
 
 // syncNeedsPush reports whether a final push could have something to send:
@@ -385,6 +407,10 @@ type syncState struct {
 	LastOK    string `json:"last_ok"`
 	Remote    string `json:"remote"`
 	LastError string `json:"last_error"`
+
+	// Unpushed is how many commits the last step found HEAD ahead of the
+	// remote by, while that was more than none. The key is absent otherwise.
+	Unpushed int `json:"unpushed,omitempty"`
 }
 
 // syncStatePath is where the vault's sync.json lives.
@@ -400,21 +426,39 @@ func readSyncState(root string) syncState {
 	return st
 }
 
-// recordSync stamps sync.json after a sync step. A success sets last_ok to
-// now (UTC, RFC 3339), remote to the one that answered and clears last_error;
-// a failure sets last_error and leaves the rest as the last success wrote it.
+// recordSync stamps sync.json after a sync step that leaves nothing unpushed.
+func recordSync(root, remote string, stepErr error) { recordSyncAhead(root, remote, stepErr, 0) }
+
+// recordSyncAhead stamps sync.json after a sync step. ahead is how many commits
+// HEAD is ahead of the remote when the step ended.
+//
+// A success sets last_ok to now (UTC, RFC 3339) and remote to the one that
+// answered, and — only when nothing waits to be pushed — clears last_error: a
+// pull that worked while a commit is still not on the server has not mended
+// the push that failed, so the error stays and unpushed says how many commits
+// are waiting (S3d H1). A failure sets last_error and leaves the rest as the
+// last success wrote it, noting the commits waiting if it knows of any.
+//
 // It is best effort — the step already did its work, and a bookkeeping file
 // that cannot be written is logged, never a reason to fail it.
-func recordSync(root, remote string, stepErr error) {
+func recordSyncAhead(root, remote string, stepErr error, ahead int) {
 	st := readSyncState(root)
 	if stepErr != nil {
 		st.LastError = oneLine(stepErr.Error())
+		if ahead > 0 {
+			st.Unpushed = ahead
+		}
 	} else {
 		st.LastOK = syncNow().UTC().Format(time.RFC3339)
 		if remote != "" {
 			st.Remote = remote
 		}
-		st.LastError = ""
+		if ahead > 0 {
+			st.Unpushed = ahead
+		} else {
+			st.Unpushed = 0
+			st.LastError = ""
+		}
 	}
 	b, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
@@ -446,5 +490,29 @@ func recordSync(root, remote string, stepErr error) {
 	if werr != nil {
 		os.Remove(tmp.Name())
 		slog.Warn("sync: write sync.json", "err", werr)
+	}
+}
+
+// slowNotice prints "sync: <what>…" to w if the step it brackets is still
+// running after syncSlowAfter, and returns what ends the bracket. One line,
+// whether w is a terminal or not: a pull that goes quiet for seconds (a slow
+// tunnel, a remote that is not answering) is otherwise a verb that looks hung.
+// The returned stop waits for a line already being written, so nothing is
+// printed after it returns.
+func slowNotice(w io.Writer, what string) (stop func()) {
+	var mu sync.Mutex
+	stopped := false
+	t := time.AfterFunc(syncSlowAfter, func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if !stopped {
+			fmt.Fprintf(w, "sync: %s…\n", what)
+		}
+	})
+	return func() {
+		t.Stop()
+		mu.Lock()
+		stopped = true
+		mu.Unlock()
 	}
 }

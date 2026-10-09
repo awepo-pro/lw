@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 	"time"
 )
 
@@ -91,6 +92,15 @@ func run(args []string) int {
 // its output is not followed by a spurious "lw: <verb>: ..." line. A bare
 // error keeps the original behaviour exactly.
 func dispatch(name string, fn func(args []string) error, args []string) int {
+	code := dispatchVerb(name, fn, args)
+	// 042: whatever the verb asked to be done once it has said its piece — the
+	// auto-sync push — runs after its result, or its error, is on the screen.
+	runVerbEnd()
+	return code
+}
+
+// dispatchVerb runs one verb and prints its error, if any.
+func dispatchVerb(name string, fn func(args []string) error, args []string) int {
 	err := fn(args)
 	if err == nil {
 		return 0
@@ -103,6 +113,43 @@ func dispatch(name string, fn func(args []string) error, args []string) int {
 
 	fmt.Fprintf(os.Stderr, "lw: %s: %v\n", name, err)
 	return 1
+}
+
+// verbEnd holds what verbs have asked to run after dispatch has printed their
+// result (042 M2). The one user is auto-sync: a commit's hook runs inside
+// Engine.Commit, long before `lw commit` prints "committed <id>", and a push
+// over a slow tunnel must not come between the user and that line.
+var verbEnd struct {
+	sync.Mutex
+	fns []func()
+}
+
+// atVerbEnd registers fn to run when the current verb has finished and
+// dispatch has printed what it had to say.
+func atVerbEnd(fn func()) {
+	verbEnd.Lock()
+	defer verbEnd.Unlock()
+	verbEnd.fns = append(verbEnd.fns, fn)
+}
+
+// runVerbEnd runs and clears the registered functions, in order.
+func runVerbEnd() {
+	verbEnd.Lock()
+	fns := verbEnd.fns
+	verbEnd.fns = nil
+	verbEnd.Unlock()
+	for _, fn := range fns {
+		fn()
+	}
+}
+
+// discardVerbEnd drops what is registered without running it: tests that call
+// a step directly, with no verb around it, must not leave a push for the next
+// test's dispatch to run.
+func discardVerbEnd() {
+	verbEnd.Lock()
+	verbEnd.fns = nil
+	verbEnd.Unlock()
 }
 
 // exitError lets a verb choose the process exit code and suppress the

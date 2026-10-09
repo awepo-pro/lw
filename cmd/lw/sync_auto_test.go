@@ -294,8 +294,9 @@ func TestAutoSyncStaysOutOfTheWay(t *testing.T) {
 		pc.setConfig("[sync]\nremotes = [\"" + deadRemote(t) + "\"]\n")
 		noteAt(t, 0)
 		stdout, stderr, code := pc.lw("note", "-m", "scratch", "--vault", pc.root)
-		if code != 0 || stdout != "noted notes/20261009-120000-scratch.md\n" || stderr != "" {
-			t.Fatalf("exit %d stdout %q stderr %q; want only the note", code, stdout, stderr)
+		// S3d M1: it does nothing to the vault, and says so once.
+		if code != 0 || stdout != "noted notes/20261009-120000-scratch.md\n" || stderr != notSyncing {
+			t.Fatalf("exit %d stdout %q stderr %q; want the note and the not-syncing line", code, stdout, stderr)
 		}
 		if _, err := os.Stat(filepath.Join(pc.root, ".git")); err == nil {
 			t.Error("auto-sync made a repository out of a vault nobody put under lw sync")
@@ -312,8 +313,9 @@ func TestAutoSyncStaysOutOfTheWay(t *testing.T) {
 		pc.setConfig("[sync]\nremotes = [\"" + deadRemote(t) + "\"]\n")
 		noteAt(t, 0)
 		stdout, stderr, code := pc.lw("note", "-m", "scratch", "--vault", pc.root)
-		if code != 0 || stdout != "noted notes/20261009-120000-scratch.md\n" || stderr != "" {
-			t.Fatalf("exit %d stdout %q stderr %q; want only the note", code, stdout, stderr)
+		// S3d M1: it does nothing to the repository, and says so once.
+		if code != 0 || stdout != "noted notes/20261009-120000-scratch.md\n" || stderr != notSyncing {
+			t.Fatalf("exit %d stdout %q stderr %q; want the note and the not-syncing line", code, stdout, stderr)
 		}
 		if got := pc.git("log", "--format=%s"); got != "my own history" {
 			t.Errorf("history = %q, want the user's one commit untouched", got)

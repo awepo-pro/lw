@@ -47,12 +47,23 @@ func Init(ctx context.Context, o Options) (State, error) {
 	if r.isRepo() && r.hasRef(ctx, trackRef) {
 		return State{}, errors.New("already under lw sync")
 	}
+	// A repository with commits that this Init did not make is the user's own
+	// history: committing the work tree onto their branch and pushing all of it
+	// as main is not something lw sync init does unasked (S3d M4). It is told
+	// apart from the repository a failed Init left behind — whose retry is the
+	// reason Init orders its work as it does — by a marker in .git.
+	if r.isRepo() && r.hasHead(ctx) && !r.hasRef(ctx, trackRef) && !r.initMarked(ctx) {
+		return State{}, fmt.Errorf("%s is already a git repository with its own history — lw sync init will not adopt it; move its .git aside or start from a copy", r.o.Dir)
+	}
 	if err := r.ensureRemote(ctx, rem); err != nil {
 		return State{}, err
 	}
 
 	if !r.isRepo() {
 		if _, err := r.out(ctx, "init", "--quiet", "--template=", "-b", Branch); err != nil {
+			return State{}, err
+		}
+		if err := r.markInit(ctx); err != nil {
 			return State{}, err
 		}
 	}
@@ -72,11 +83,60 @@ func Init(ctx context.Context, o Options) (State, error) {
 	if _, err := r.out(ctx, "update-ref", trackRef, "HEAD"); err != nil {
 		return State{}, err
 	}
+	r.clearInitMark(ctx) // under lw sync now: the ref says so
 	st := State{Remote: spec, Pushed: n}
 	if st.RemoteFormat, err = r.remoteFormat(ctx); err != nil {
 		return st, err
 	}
 	return st, nil
+}
+
+// initMarker is the file in .git that says this repository was made by Init
+// and has not finished: a retry of Init may carry on with it. It is never
+// tracked or synced (it is inside .git), and it is gone once the tracking ref
+// exists.
+const initMarker = "lw-init"
+
+// initMarkerPath is where the marker lives for this vault.
+func (r *runner) initMarkerPath(ctx context.Context) (string, error) {
+	rel, err := r.out(ctx, "rev-parse", "--git-path", initMarker)
+	if err != nil {
+		return "", err
+	}
+	if filepath.IsAbs(rel) {
+		return rel, nil
+	}
+	return filepath.Join(r.o.Dir, rel), nil
+}
+
+// initMarked reports whether Init made this repository.
+func (r *runner) initMarked(ctx context.Context) bool {
+	path, err := r.initMarkerPath(ctx)
+	if err != nil {
+		return false
+	}
+	_, err = os.Stat(path)
+	return err == nil
+}
+
+// markInit records that Init made the repository it just created.
+func (r *runner) markInit(ctx context.Context) error {
+	path, err := r.initMarkerPath(ctx)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, []byte("lw sync init\n"), 0o644); err != nil {
+		return fmt.Errorf("vaultsync: write %s: %w", initMarker, err)
+	}
+	return nil
+}
+
+// clearInitMark removes the marker once Init has finished. Best effort: a
+// marker left behind in a repository that is under lw sync does nothing.
+func (r *runner) clearInitMark(ctx context.Context) {
+	if path, err := r.initMarkerPath(ctx); err == nil {
+		os.Remove(path)
+	}
 }
 
 // Clone copies a synced vault to Dir, which must not exist or must be empty

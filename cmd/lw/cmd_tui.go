@@ -56,6 +56,12 @@ func cmdTUI(args []string) error {
 	// finish waits for it at exit, which is deferred here so it runs after the
 	// program (p.Kill below) has put the terminal back: the CLI's push line
 	// lands on the shell, not in the alternate screen.
+	//
+	// A hangup (the terminal closing) must not kill the process before that
+	// flush: the signals are caught from here to the end of cmdTUI, and the
+	// program is told to quit when it exists (S3d H1).
+	sig := quitOnSignals()
+	defer sig.stop()
 	auto := loadTUIAutoSync(root)
 	auto.pull()
 	defer auto.finish(os.Stderr)
@@ -119,6 +125,8 @@ func cmdTUI(args []string) error {
 	app := ui.NewApp(opts)
 
 	p := tea.NewProgram(app)
+	sig.attach(p)
+	defer sig.detach()
 	// Kill restores the terminal unconditionally, so a panic inside
 	// Update/View — or Run returning early on its own panic recovery —
 	// can never leave the terminal in raw mode (s4-tui.md S4-T2 item 5).

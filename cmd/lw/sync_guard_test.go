@@ -327,10 +327,57 @@ func TestTUIWiresAutoSync(t *testing.T) {
 		}
 		return true
 	})
-	for _, want := range []string{"writableVaultRoot", "loadTUIAutoSync", "pull", "openVaultEngine"} {
+	for _, want := range []string{"writableVaultRoot", "loadTUIAutoSync", "pull", "openVaultEngine", "quitOnSignals", "attach", "stop"} {
 		if _, ok := pos[want]; !ok {
 			t.Errorf("cmdTUI never calls %s", want)
 		}
+	}
+	// The engine must be opened with the TUI's own auto-sync: the hook is how a
+	// commit made in the review pane gets pushed, and openVaultEngine(root, nil)
+	// compiles, runs and syncs nothing (S3d M3).
+	var autoVar string
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		as, ok := n.(*ast.AssignStmt)
+		if !ok || len(as.Lhs) != 1 || len(as.Rhs) != 1 {
+			return true
+		}
+		if call, ok := as.Rhs[0].(*ast.CallExpr); ok && name(call) == "loadTUIAutoSync" {
+			if id, ok := as.Lhs[0].(*ast.Ident); ok {
+				autoVar = id.Name
+			}
+		}
+		return true
+	})
+	if autoVar == "" {
+		t.Fatal("cmdTUI does not keep the result of loadTUIAutoSync")
+	}
+	hookArg := ""
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		if call, ok := n.(*ast.CallExpr); ok && name(call) == "openVaultEngine" && len(call.Args) == 2 {
+			if id, ok := call.Args[1].(*ast.Ident); ok {
+				hookArg = id.Name
+			}
+		}
+		return true
+	})
+	if hookArg != autoVar {
+		t.Errorf("cmdTUI opens the engine with %q, want the auto-sync it loaded (%q)", hookArg, autoVar)
+	}
+	// Likewise the pull is the loaded auto-sync's.
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		if call, ok := n.(*ast.CallExpr); ok && name(call) == "pull" {
+			if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
+				if id, ok := sel.X.(*ast.Ident); !ok || id.Name != autoVar {
+					t.Errorf("cmdTUI pulls with something other than %q", autoVar)
+				}
+			}
+		}
+		return true
+	})
+	// And the signal catcher is stopped after the flush has run: deferred
+	// earlier than finish, so LIFO runs it later.
+	if stop, fin := deferred["stop"], deferred["finish"]; stop == 0 || stop > fin {
+		t.Error("cmdTUI must defer the signal catcher's stop before the exit flush's finish: signals have to stay caught while the flush runs")
 	}
 	if pos["pull"] > pos["openVaultEngine"] {
 		t.Error("cmdTUI opens the engine before the auto-pull: the engine would open on the old vault")

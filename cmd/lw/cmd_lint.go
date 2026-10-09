@@ -425,6 +425,10 @@ func discoverVaultRoot(explicit string) (string, error) {
 	// verbs that load it say so, and falling through keeps today's message.
 	if cfg, err := config.Load(); err == nil && cfg.Vault.Path != "" {
 		path := cfg.Vault.ResolvedPath()
+		// A relative path would mean whichever directory lw happens to run in.
+		if !filepath.IsAbs(path) {
+			return "", fmt.Errorf("[vault] path %s: must be absolute or start with ~/", cfg.Vault.Path)
+		}
 		if info, err := os.Stat(filepath.Join(path, "SCHEMA.md")); err != nil || info.IsDir() {
 			return "", fmt.Errorf("[vault] path %s: no SCHEMA.md there", path)
 		}

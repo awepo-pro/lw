@@ -346,6 +346,11 @@ func runDoctor(ctx context.Context, root string, o doctorOptions) doctorReport {
 			res := discardChangeset(e, root)
 			rep.Actions = append(rep.Actions, res.line)
 			rep.discardNothing = res.nothing
+			if res.unreadable {
+				// The unreadable changeset is moved and journalled without
+				// Engine.Reject, so the terminal hook never fired for it.
+				o.sync.requestPush()
+			}
 		}
 		rep.Checks = append(rep.Checks,
 			checkObjects(root, e),
@@ -367,7 +372,13 @@ func runDoctor(ctx context.Context, root string, o doctorOptions) doctorReport {
 	}
 	rep.Checks = append(rep.Checks, checkLLMBudget(cfg, cfgErr))
 	if o.probe {
-		rep.Checks = append(rep.Checks, checkProvider(ctx, cfg))
+		if cfgErr != nil {
+			// The config check above already failed with the parse error; there
+			// is no endpoint to probe (and no Config to read one from).
+			rep.Checks = append(rep.Checks, doctorCheck{Name: "provider", OK: true, Skipped: true, Detail: "skipped: the configuration did not load"})
+		} else {
+			rep.Checks = append(rep.Checks, checkProvider(ctx, cfg))
+		}
 	}
 	return rep
 }
@@ -381,6 +392,11 @@ const discardReason = "discarded by lw doctor --discard-changeset"
 type discardResult struct {
 	line    string
 	nothing bool
+
+	// unreadable is true when the changeset was moved aside without the
+	// engine's Reject (its changeset.json could not be read) and journalled
+	// directly: the case where the caller has to ask for the sync push itself.
+	unreadable bool
 }
 
 // discardChangeset is the --discard-changeset repair (TD-7): the open
@@ -425,7 +441,7 @@ func discardChangeset(e *stage.Engine, root string) discardResult {
 		}); jErr != nil {
 			return discardResult{line: fmt.Sprintf("discard failed: %s moved to %s but journalling it did not: %v", id, rejectedChangesetsRel, jErr)}
 		}
-		return discardResult{line: fmt.Sprintf("discarded unreadable open changeset %s (%s -> %s); it had no readable changeset.json",
+		return discardResult{unreadable: true, line: fmt.Sprintf("discarded unreadable open changeset %s (%s -> %s); it had no readable changeset.json",
 			id, openChangesetsRel, rejectedChangesetsRel)}
 	}
 }

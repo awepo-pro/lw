@@ -268,7 +268,7 @@ func syncRun(vaultPath string, takeRemote bool) error {
 
 	st, committed, err := syncPullLocked(ctx, root, o)
 	if err != nil {
-		recordSync(root, "", err)
+		recordSyncAhead(root, "", err, st.Ahead)
 		return syncExplicitErr(err, st)
 	}
 	pulled := st.Pulled
@@ -286,7 +286,7 @@ func syncRun(vaultPath string, takeRemote bool) error {
 	if committed || st.Ahead > 0 {
 		pst, err := syncPush(ctx, o)
 		if err != nil {
-			recordSync(root, "", err)
+			recordSyncAhead(root, "", err, pst.Ahead)
 			return syncExplicitErr(err, pst)
 		}
 		pushed, remote = pst.Pushed, pst.Remote
@@ -379,12 +379,18 @@ func syncStatus(vaultPath string) error {
 	if err != nil {
 		return err
 	}
-	last := readSyncState(root).LastOK
+	rec := readSyncState(root)
+	last := rec.LastOK
 	if last == "" {
 		last = "never"
 	}
 	fmt.Printf("remote   %s\nahead    %d\nbehind   %d\nformat   %d (this lw: %d)\nlast     %s\n",
 		st.Remote, st.Ahead, st.Behind, st.RemoteFormat, stage.FormatVersion, last)
+	if rec.Unpushed > 0 {
+		// What the last sync step found waiting; the push that sends it clears
+		// the line (and sync.json's last_error with it).
+		fmt.Printf("unpushed %d\n", rec.Unpushed)
+	}
 	if st.Diverged() {
 		fmt.Println("diverged — run lw sync for details")
 	}

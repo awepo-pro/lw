@@ -46,9 +46,14 @@ var (
 	syncNow          = time.Now
 	syncAutoTimeout  = 15 * time.Second // ONE deadline for an auto-sync step; vaultsync's Timeout is per git call
 	syncPushDebounce = time.Second
-	syncPull         = vaultsync.Pull
-	syncPush         = vaultsync.Push
-	syncCommitWork   = vaultsync.CommitWork
+
+	// syncMinRemoteBudget is the least each remote gets of the step's deadline
+	// (remoteBudget), and syncSlowAfter how long a step runs before it says so.
+	syncMinRemoteBudget = 5 * time.Second
+	syncSlowAfter       = time.Second
+	syncPull            = vaultsync.Pull
+	syncPush            = vaultsync.Push
+	syncCommitWork      = vaultsync.CommitWork
 )
 
 // autoSync is one verb's auto-sync, nil when auto-sync does not apply to its
@@ -59,17 +64,44 @@ type autoSync struct {
 	remotes []string
 	pusher  *syncPusher // the TUI's; nil for a CLI verb, which pushes in place
 
-	mu sync.Mutex // one CLI push at a time
+	mu     sync.Mutex // one CLI push at a time
+	queued bool       // a CLI verb has asked for its push at the end (atVerbEnd)
 }
+
+// notSyncingLine is what a writing verb says when [sync] remotes are
+// configured and the vault is not under lw sync, or git cannot say whether it
+// is. Silence there would leave a user who set sync up believing a vault is
+// being synced when nothing is (S3d M1).
+const notSyncingLine = "sync: this vault is not under lw sync — run lw sync init or lw sync clone; not syncing"
 
 // newAutoSync returns the auto-sync for root, or nil unless the config asks
 // for it (remotes configured, auto not false) AND the vault is under lw sync.
-func newAutoSync(root string, cfg *config.Config) *autoSync {
+// When remotes are configured and the vault is not under lw sync it says so
+// once on stderr (notSyncingLine) and logs why — this is for the verbs that
+// write; newQuietAutoSync is for the ones that only need the hook.
+func newAutoSync(root string, cfg *config.Config) *autoSync { return buildAutoSync(root, cfg, true) }
+
+// newQuietAutoSync is newAutoSync for a verb that is not a writing verb: it
+// would only attach the hook (a rejection it makes), so a vault that is not
+// under lw sync is not worth a line.
+func newQuietAutoSync(root string, cfg *config.Config) *autoSync {
+	return buildAutoSync(root, cfg, false)
+}
+
+func buildAutoSync(root string, cfg *config.Config, announce bool) *autoSync {
 	if cfg == nil || !cfg.Sync.AutoSync() {
 		return nil
 	}
 	abs, err := filepath.Abs(root)
-	if err != nil || !underLWSync(abs) {
+	if err != nil {
+		return nil
+	}
+	ok, why := underLWSyncErr(abs)
+	if !ok {
+		slog.Warn("sync: this vault is not under lw sync; not syncing", "vault", abs, "err", why)
+		if announce {
+			fmt.Fprintln(os.Stderr, notSyncingLine)
+		}
 		return nil
 	}
 	return &autoSync{root: abs, remotes: cfg.Sync.RemoteList()}
@@ -86,6 +118,16 @@ func loadAutoSync(root string) *autoSync {
 		return nil
 	}
 	return newAutoSync(root, cfg)
+}
+
+// loadQuietAutoSync is loadAutoSync for a verb that only needs the hook.
+func loadQuietAutoSync(root string) *autoSync {
+	cfg, err := config.Load()
+	if err != nil {
+		slog.Warn("sync: config not loaded; no auto-sync", "err", err)
+		return nil
+	}
+	return newQuietAutoSync(root, cfg)
 }
 
 // newTUIAutoSync is newAutoSync for the TUI: pushes go through an
@@ -109,16 +151,38 @@ func loadTUIAutoSync(root string) *autoSync {
 }
 
 // options is vaultsync's view of this vault: non-interactive (BatchMode, a
-// bounded connect, no prompts), with every git call bounded by the same
-// deadline the whole step has. The remotes are tried last-answering first, and
-// the journal is the append-only file a pull carries across (A-042-7).
+// bounded connect, no prompts), each remote's network call bounded by its share
+// of the step's deadline (remoteBudget). The remotes are tried last-answering
+// first, and the journal is the append-only file a pull carries across
+// (A-042-7).
 func (a *autoSync) options() vaultsync.Options {
 	return vaultsync.Options{
 		Dir:        a.root,
 		Remotes:    orderedRemotes(a.root, a.remotes),
-		Timeout:    syncAutoTimeout,
+		Timeout:    remoteBudget(syncAutoTimeout, len(a.remotes)),
 		AppendOnly: syncAppendOnly,
 	}
+}
+
+// remoteBudget is how long one remote may take out of total, the step's whole
+// deadline: total divided among the n remotes, but never less than
+// syncMinRemoteBudget, and the whole of it for a single remote. With the share
+// a remote that stalls — a LAN name when away from home — costs its share and
+// no more, and the remote behind it still gets its turn (S3d M2). vaultsync
+// applies a Timeout to each git call; the step's context still ends the lot at
+// total.
+func remoteBudget(total time.Duration, n int) time.Duration {
+	if n <= 1 {
+		return total
+	}
+	share := total / time.Duration(n)
+	if share < syncMinRemoteBudget {
+		share = syncMinRemoteBudget
+	}
+	if share > total {
+		share = total
+	}
+	return share
 }
 
 // syncAppendOnly is the vault's one append-only file: the journal. An open
@@ -197,20 +261,24 @@ func (a *autoSync) pull() {
 		return
 	}
 
+	endNotice := slowNotice(os.Stderr, "pulling")
 	st, err := syncPull(ctx, a.options(), stage.FormatVersion)
+	endNotice()
 	if errors.Is(err, vaultsync.ErrDirty) && st.Behind == 0 {
 		// Nothing to pull, so nothing the edit stands in the way of: the fetch
 		// worked and the remote is quiet.
-		recordSync(a.root, st.Remote, nil)
+		recordSyncAhead(a.root, st.Remote, nil, st.Ahead)
+		a.retryIfAhead(st)
 		return
 	}
 	if err != nil {
-		recordSync(a.root, "", err)
+		recordSyncAhead(a.root, "", err, st.Ahead)
 		a.warnStart("pull", err, st)
 		return
 	}
-	recordSync(a.root, st.Remote, nil)
-	slog.Info("sync pull", "remote", st.Remote, "pulled", st.Pulled)
+	recordSyncAhead(a.root, st.Remote, nil, st.Ahead)
+	slog.Info("sync pull", "remote", st.Remote, "pulled", st.Pulled, "ahead", st.Ahead)
+	a.retryIfAhead(st)
 	if st.Pulled == 0 {
 		return
 	}
@@ -218,6 +286,37 @@ func (a *autoSync) pull() {
 		slog.Warn("sync: rebuild index after pull", "err", err)
 	}
 	fmt.Fprintf(os.Stderr, "sync: pulled %d commit(s) from %s\n", st.Pulled, st.Remote)
+}
+
+// retryIfAhead asks for a push when the pull found commits in git that the
+// remote lacks (S3d H1). A push that failed, or a process killed between the
+// commit and the push, leaves exactly that, and until now nothing looked again:
+// the commit waited for the next change to push it alongside. The TUI's pusher
+// is triggered; a CLI verb pushes once it has finished.
+func (a *autoSync) retryIfAhead(st vaultsync.State) {
+	if st.Ahead > 0 {
+		slog.Info("sync: commits waiting to be pushed", "ahead", st.Ahead)
+		a.requestPush()
+	}
+}
+
+// requestPush asks for the vault to be pushed: the TUI's pusher is triggered,
+// and a CLI verb gets its push after dispatch has printed the verb's own
+// result (M2) — once, however many times it is asked.
+func (a *autoSync) requestPush() {
+	if a == nil {
+		return
+	}
+	if a.pusher != nil {
+		a.pusher.Trigger()
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.queued {
+		a.queued = true
+		atVerbEnd(a.pushInline)
+	}
 }
 
 // warnStart prints a start-of-verb warning and logs it.
@@ -247,10 +346,10 @@ func (a *autoSync) push(ctx context.Context) syncPushResult {
 	// (A-042-7 d).
 	st, err := syncPush(ctx, a.options())
 	if err != nil {
-		recordSync(a.root, "", err)
+		recordSyncAhead(a.root, "", err, st.Ahead)
 		return syncPushResult{Remote: st.Remote, Err: err}
 	}
-	recordSync(a.root, st.Remote, nil)
+	recordSyncAhead(a.root, st.Remote, nil, st.Ahead)
 	return syncPushResult{Remote: st.Remote, Pushed: st.Pushed}
 }
 
@@ -273,17 +372,23 @@ func (a *autoSync) commitWork() error {
 	return nil
 }
 
-// pushInline is the CLI's push after a change: synchronous, before the verb
-// exits, under the auto-sync deadline, reporting on stderr.
+// pushInline is the CLI's push after a change: run when the verb has finished
+// and printed its result (requestPush registers it with dispatch), under the
+// auto-sync deadline, reporting on stderr. A push still running after a second
+// says so.
 func (a *autoSync) pushInline() {
 	if a == nil {
 		return
 	}
 	a.mu.Lock()
-	defer a.mu.Unlock()
+	a.queued = false
+	a.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), syncAutoTimeout)
 	defer cancel()
-	a.report(os.Stderr, a.pushOnce(ctx))
+	endNotice := slowNotice(os.Stderr, "pushing")
+	res := a.pushOnce(ctx)
+	endNotice()
+	a.report(os.Stderr, res)
 }
 
 // report prints a push's outcome as the CLI line: the success line when it
@@ -309,20 +414,18 @@ func (a *autoSync) attach(e *stage.Engine) {
 }
 
 // onTerminal is the hook. It may run on any goroutine and holds no lock of the
-// engine's; the TUI hands the work to its pusher and returns at once, a CLI
-// verb pushes in place.
+// engine's, and it never waits on the network: the TUI hands the work to its
+// pusher, a CLI verb to the end of the verb — after Commit has returned and the
+// verb has printed "committed <id>".
 func (a *autoSync) onTerminal(ev stage.TerminalEvent) {
 	slog.Info("sync trigger", "kind", ev.Kind, "changeset", ev.Changeset)
-	if a.pusher != nil {
-		a.pusher.Trigger()
-		return
-	}
-	a.pushInline()
+	a.requestPush()
 }
 
-// afterNote is lw note's push: the note is already on disk, so the vault is
-// committed to git and pushed before the verb exits.
-func (a *autoSync) afterNote() { a.pushInline() }
+// afterNote is lw note's push: the note is already on disk and named on
+// stdout, so the vault is committed to git and pushed once the verb has
+// finished.
+func (a *autoSync) afterNote() { a.requestPush() }
 
 // finish is the TUI's exit: wait for the push in flight, send what is left,
 // and print the CLI's success or failure line to w — called after the terminal
@@ -331,7 +434,10 @@ func (a *autoSync) finish(w io.Writer) {
 	if a == nil || a.pusher == nil {
 		return
 	}
-	a.report(w, a.pusher.Flush(syncFlushBudget, func() bool { return syncNeedsPush(a.root) }))
+	endNotice := slowNotice(w, "pushing")
+	res := a.pusher.Flush(syncFlushBudget, func() bool { return syncNeedsPush(a.root) })
+	endNotice()
+	a.report(w, res)
 }
 
 // openVaultEngine is the one way a verb opens the vault's engine (A-042-4 M3).

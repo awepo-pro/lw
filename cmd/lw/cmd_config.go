@@ -492,6 +492,18 @@ func configRows(cfg, def *config.Config) []configRow {
 		}
 		rows = append(rows, row)
 	}
+	// 042: [vault] and [sync] are read from the file only (there is no
+	// `lw config set` key for them: sync init writes them), and a default of
+	// "unset" has nothing to show, so they get a row when they are set (S3d L5).
+	if cfg.Vault.Path != "" {
+		rows = append(rows, configRow{key: "vault.path", value: cfg.Vault.Path, source: "file"})
+	}
+	if remotes := cfg.Sync.RemoteList(); len(remotes) > 0 {
+		rows = append(rows, configRow{key: "sync.remotes", value: strings.Join(remotes, ", "), source: "file"})
+	}
+	if cfg.Sync != nil && cfg.Sync.Auto != nil {
+		rows = append(rows, configRow{key: "sync.auto", value: strconv.FormatBool(*cfg.Sync.Auto), source: "file"})
+	}
 	return rows
 }
 
