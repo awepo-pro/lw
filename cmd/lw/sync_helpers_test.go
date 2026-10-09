@@ -342,17 +342,21 @@ for a in "$@"; do if [ "$a" = "-G" ]; then LOG="$FAKE_SSH_LOG.G"; fi; done
   printf '\n'
 } >> "$LOG"
 G=
+O=
 while [ $# -gt 0 ]; do
   case "$1" in
     --) shift; break ;;
     -G) G=1; shift ;;
-    -o|-p|-i|-l|-F|-J|-L|-R|-D|-b|-c|-E|-e|-m|-O|-Q|-S|-W|-w) shift 2 ;;
+    -O) O=1; shift 2 ;;
+    -o|-p|-i|-l|-F|-J|-L|-R|-D|-b|-c|-E|-e|-m|-Q|-S|-W|-w) shift 2 ;;
     -*) shift ;;
     *) break ;;
   esac
 done
 host="$1"
 shift
+# ssh -O exit: a control-master command, answered at once, whatever else is faked.
+if [ -n "$O" ]; then exit 0; fi
 if [ -n "$G" ]; then
   printf 'hostname %s\ncontrolpath %s\n' "$host" "${FAKE_SSH_CONTROLPATH:-none}"
   exit 0

@@ -320,11 +320,13 @@ func (r *runner) procErr(ctx context.Context, bin string, c call) (string, strin
 	// verb's (042 S3c). The options are appended to the user's own command, as
 	// batchOpts are, and an interactive call that gains none keeps the
 	// environment git was given.
+	muxed := false
 	if mux := r.muxOpts(ctx, c.sshDest, c.sshPort); mux != "" {
 		if sshCmd == "" {
 			sshCmd = r.sshCommand(ctx)
 		}
 		sshCmd += mux
+		muxed = true
 	}
 	cmd := exec.CommandContext(pctx, bin, c.args...)
 	if !c.noDir {
@@ -393,6 +395,9 @@ func (r *runner) procErr(ctx context.Context, bin string, c call) (string, strin
 		return "", "", ctx.Err()
 	}
 	if timed && errors.Is(pctx.Err(), context.DeadlineExceeded) {
+		if muxed {
+			r.exitMaster(c.sshDest, c.sshPort) // a stuck master would hang the next call too
+		}
 		return "", "", &cmdError{err: err, timeout: r.timeout()}
 	}
 	return stdout.String(), stderr.String(), &cmdError{stderr: stderr.String(), err: err}

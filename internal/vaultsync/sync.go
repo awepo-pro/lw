@@ -369,18 +369,31 @@ func Pull(ctx context.Context, o Options, maxFormat int) (State, error) {
 	if err := r.refuseIfCollided(ctx); err != nil {
 		return State{}, err
 	}
-	carry, dirtyErr := r.dirtyCarry(ctx, appendOnly)
-	if dirtyErr != nil {
-		var de *dirtyError
-		if !errors.As(dirtyErr, &de) {
-			return State{}, dirtyErr
-		}
-	}
 	st, err := r.fetch(ctx)
 	if err != nil {
 		return st, err
 	}
+
+	// What follows changes, or reads in order to change, the work tree: the
+	// journal's tail is read now, not before the fetch, and no other lw process
+	// may append between that read and the moment the tail is back (A-042-9).
+	// The network is behind us. A Pull with nothing to take only looks, and a
+	// look that races an append loses nothing, so it holds nobody off.
+	release := func() {}
+	if st.Diverged() || (st.Behind > 0 && st.Ahead == 0) {
+		var err error
+		if release, err = r.quiesce(); err != nil {
+			return st, err
+		}
+	}
+	defer release()
+
+	carry, dirtyErr := r.dirtyCarry(ctx, appendOnly)
 	if dirtyErr != nil {
+		var de *dirtyError
+		if !errors.As(dirtyErr, &de) {
+			return st, dirtyErr
+		}
 		return st, dirtyErr
 	}
 	if st.RemoteFormat > maxFormat {
@@ -427,19 +440,15 @@ func Pull(ctx context.Context, o Options, maxFormat int) (State, error) {
 }
 
 // Push fetches, then pushes HEAD to the remote's main when the remote has
-// nothing this PC lacks. A divergence is resolved by rebasing the local commits
-// onto the remote's tip when they replay without a conflict (A-042-8; see Pull)
-// and pushing them in the same call, State.Rebased saying how many; otherwise
-// it is refused with its counts. A push
+// nothing this PC lacks. A divergence is refused with its counts: Push never
+// touches the work tree — resolving a divergence by rebasing is Pull's job, run
+// under the caller's locks (A-042-9 c) — so a caller that wants the local
+// commits to ride on the remote's calls Pull first. A push
 // that git rejects because the remote moved after our fetch (a race with
 // another PC) is turned into the same ErrDiverged with fresh counts, never
 // surfaced as a raw git error (042 D3).
 func Push(ctx context.Context, o Options) (State, error) {
 	r, err := newRunner(o)
-	if err != nil {
-		return State{}, err
-	}
-	appendOnly, err := cleanAppendOnly(o.AppendOnly)
 	if err != nil {
 		return State{}, err
 	}
@@ -457,31 +466,7 @@ func Push(ctx context.Context, o Options) (State, error) {
 		return st, err
 	}
 	if st.Diverged() {
-		// A-042-8: the remote moved while this PC committed. If the local
-		// commits replay cleanly on its tip they go on top and are pushed in
-		// this call; otherwise this is the refusal it always was.
-		if st.RemoteFormat > o.maxFormat() {
-			return st, &FormatError{Remote: st.Remote, Have: st.RemoteFormat, Max: o.maxFormat()}
-		}
-		carry, dirtyErr := r.dirtyCarry(ctx, appendOnly)
-		if dirtyErr != nil {
-			var de *dirtyError
-			if !errors.As(dirtyErr, &de) {
-				return st, dirtyErr
-			}
-			return st, ErrDiverged // a tree with uncommitted changes cannot be rebased
-		}
-		rebased, ok, err := r.rebaseDiverged(ctx, st, carry, appendOnly)
-		if !ok {
-			if err != nil {
-				return st, err
-			}
-			return st, ErrDiverged
-		}
-		if err != nil {
-			return rebased, err
-		}
-		st = rebased
+		return st, ErrDiverged
 	}
 	if st.Ahead == 0 {
 		return st, nil // nothing to push; Behind > 0 is Pull's business
@@ -578,6 +563,14 @@ func takeRemoteAt(ctx context.Context, o Options, maxFormat int, now time.Time) 
 	if st.RemoteFormat > maxFormat {
 		return "", st, &FormatError{Remote: st.Remote, Have: st.RemoteFormat, Max: maxFormat}
 	}
+	// The save, the backup branch and the reset are one local mutation: a line
+	// another lw process appended between the save and the reset would be in
+	// neither the backup nor the new tree (A-042-9).
+	release, err := r.quiesce()
+	if err != nil {
+		return "", st, err
+	}
+	defer release()
 	// A marked tree is the collision itself, not work: committing it onto the
 	// backup would record the clashing files as deleted or changed. The
 	// backup is HEAD as it stands.

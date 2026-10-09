@@ -161,7 +161,7 @@ func (a *autoSync) options() vaultsync.Options {
 		Remotes:    orderedRemotes(a.root, a.remotes),
 		Timeout:    remoteBudget(syncAutoTimeout, len(a.remotes)),
 		AppendOnly: syncAppendOnly,
-		MaxFormat:  stage.FormatVersion,
+		Quiesce:    quiesceJournal(a.root),
 	}
 }
 
@@ -184,6 +184,15 @@ func remoteBudget(total time.Duration, n int) time.Duration {
 		share = total
 	}
 	return share
+}
+
+// quiesceJournal is Options.Quiesce for the vault at root: the exclusive side of
+// the lock every journal append takes shared (A-042-9), so no line is appended
+// while the work tree is taken apart.
+func quiesceJournal(root string) func() (func(), error) {
+	return func() (func(), error) {
+		return stage.QuiesceJournal(filepath.Join(root, stateDirName))
+	}
 }
 
 // syncAppendOnly is the vault's one append-only file: the journal. An open
@@ -358,49 +367,63 @@ func (a *autoSync) pushOnce(ctx context.Context) syncPushResult {
 }
 
 func (a *autoSync) push(ctx context.Context) syncPushResult {
-	if err := a.commitWork(); err != nil {
-		return syncPushResult{Err: err}
+	pulled, err := a.commitAndPull(ctx)
+	if err != nil {
+		recordSyncAhead(a.root, "", err, pulled.Ahead)
+		return syncPushResult{Remote: pulled.Remote, Err: err}
+	}
+	if pulled.Pulled > 0 {
+		// The remote's commits are in the tree now (a divergence was rebased):
+		// the pages may have changed under the search index.
+		if _, ierr := rebuildIndexIfStale(a.root); ierr != nil {
+			slog.Warn("sync: rebuild index after push", "err", ierr)
+		}
 	}
 	// The lock is gone: the push touches no file of the vault (it sends HEAD),
 	// and holding the lock across a network round trip would make a foreground
 	// commit fail with "vault is locked" for as long as the server is slow
 	// (A-042-7 d).
 	st, err := syncPush(ctx, a.options())
-	if st.Pulled > 0 {
-		// A push that had to rebase has taken the remote's commits into the
-		// tree: the pages may have changed under the search index.
-		if _, ierr := rebuildIndexIfStale(a.root); ierr != nil {
-			slog.Warn("sync: rebuild index after push", "err", ierr)
-		}
-	}
+	res := syncPushResult{Remote: st.Remote, Pushed: st.Pushed, Pulled: pulled.Pulled, Rebased: pulled.Rebased}
 	if err != nil {
 		recordSyncAhead(a.root, "", err, st.Ahead)
-		return syncPushResult{Remote: st.Remote, Pulled: st.Pulled, Rebased: st.Rebased, Err: err}
+		res.Err = err
+		return res
 	}
 	recordSyncAhead(a.root, st.Remote, nil, st.Ahead)
-	return syncPushResult{Remote: st.Remote, Pushed: st.Pushed, Pulled: st.Pulled, Rebased: st.Rebased}
+	return res
 }
 
-// commitWork is the local half of a push: under the vault lock, and only when
-// no commit is half-applied, commit the work tree to git — the one place auto
-// sync commits (A-042-7 b).
-func (a *autoSync) commitWork() error {
+// commitAndPull is the local half of a push, all under the vault lock and with
+// no commit half-applied: commit the work tree to git — the one place auto-sync
+// commits (A-042-7 b) — then pull, which replays those commits on the remote's
+// when the remote has moved and nothing conflicts (A-042-8). The rebase lives
+// here and not in Push because it takes the work tree apart, and only Pull does
+// that under the vault lock and the journal quiesce (A-042-9 c). A tree that
+// became dirty after the commit (a session record landing) is not an error:
+// nothing is taken and Push goes on; a divergence it cannot reach is refused
+// there.
+func (a *autoSync) commitAndPull(ctx context.Context) (vaultsync.State, error) {
 	release, err := lockVault(a.root)
 	if err != nil {
-		return err
+		return vaultsync.State{}, err
 	}
 	defer release()
 	if err := noInterruptedCommit(a.root); err != nil {
-		return err
+		return vaultsync.State{}, err
 	}
 	if err := a.recoverRebase(context.Background()); err != nil {
-		return err
+		return vaultsync.State{}, err
 	}
 	if _, err := syncCommitWork(a.options(), syncCommitMessage(a.root)); err != nil {
 		recordSync(a.root, "", err)
-		return err
+		return vaultsync.State{}, err
 	}
-	return nil
+	st, err := syncPull(ctx, a.options(), stage.FormatVersion)
+	if errors.Is(err, vaultsync.ErrDirty) {
+		return st, nil
+	}
+	return st, err
 }
 
 // pushInline is the CLI's push after a change: run when the verb has finished

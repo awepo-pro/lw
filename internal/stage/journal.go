@@ -97,12 +97,24 @@ func OpenJournal(path string) (*Journal, error) {
 // time.Now(): e.TS is written exactly as handed to it, because the caller
 // (Engine.Append, Commit) owns the injected clock (00-conventions.md §3)
 // and its own tests must be able to freeze it.
+//
+// 042: in a vault that syncs, the append holds the journal lock (see
+// journal_lock.go) shared; the record and the way it is written are unchanged.
 func (j *Journal) Append(e Event) error {
 	b, err := json.Marshal(e)
 	if err != nil {
 		return fmt.Errorf("stage: journal append: %w", err)
 	}
 	b = append(b, '\n')
+
+	// 042 A-042-9: a sync that is taking the work tree apart holds this
+	// exclusively; an append waits for it, and is held off no longer than the
+	// write and the sync below.
+	unlock, err := lockJournalShared(j.path)
+	if err != nil {
+		return fmt.Errorf("stage: journal append: %w", err)
+	}
+	defer unlock()
 
 	f, err := os.OpenFile(j.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {

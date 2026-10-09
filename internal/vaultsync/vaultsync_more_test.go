@@ -800,7 +800,9 @@ func TestRemoteForms(t *testing.T) {
 		if _, err := Init(ctx, o); err != nil {
 			t.Fatal(err)
 		}
-		if log := readFile(t, logPath); strings.Contains(log, "BatchMode") || strings.Contains(log, "ConnectTimeout") {
+		// A prompt may need the user, so no BatchMode and no short connect limit;
+		// the mux's own bound (ConnectTimeout=10) is a different thing (A-042-9 e).
+		if log := readFile(t, logPath); strings.Contains(log, "BatchMode") || strings.Contains(log, "ConnectTimeout=5") {
 			t.Errorf("interactive init imposed batch options:\n%s", log)
 		}
 		if !strings.Contains(stderr.String(), "->") {

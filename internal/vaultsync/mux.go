@@ -47,6 +47,16 @@ const (
 	// 100 keeps a margin.
 	maxControlPath = 100
 
+	// muxAliveInterval and muxAliveCount are ServerAliveInterval and
+	// ServerAliveCountMax; muxInteractiveConnect is the ConnectTimeout an
+	// interactive call gets (a non-interactive one has batchOpts').
+	muxAliveInterval      = 15
+	muxAliveCount         = 2
+	muxInteractiveConnect = 10
+
+	// sshExitTimeout bounds `ssh -O exit`.
+	sshExitTimeout = 3 * time.Second
+
 	// sshGTimeout bounds `ssh -G`. It touches no network, so only a broken
 	// ssh makes it slow.
 	sshGTimeout = 5 * time.Second
@@ -206,11 +216,46 @@ func (r *runner) muxArgs(ctx context.Context, dest, port string) []string {
 	if !ok {
 		return nil
 	}
-	return []string{
+	args := []string{
 		"-o", "ControlMaster=auto",
 		"-o", "ControlPath=" + filepath.Join(dir, "%C"),
 		"-o", "ControlPersist=" + strconv.Itoa(muxPersist),
+		// A master whose connection died (a laptop that slept, a tunnel that
+		// dropped) must not hold every later call hostage: ssh notices in about
+		// 2 x 15 s instead of never (A-042-9 e).
+		"-o", "ServerAliveInterval=" + strconv.Itoa(muxAliveInterval),
+		"-o", "ServerAliveCountMax=" + strconv.Itoa(muxAliveCount),
 	}
+	if r.o.Interactive {
+		// The batch options bound the connect for a non-interactive call; an
+		// interactive one had none, and a stopped master would hang it.
+		args = append(args, "-o", "ConnectTimeout="+strconv.Itoa(muxInteractiveConnect))
+	}
+	return args
+}
+
+// exitMaster asks the control master for dest to exit (`ssh -O exit`). A call
+// through it that timed out means the master is stuck or dead; leaving it
+// would make the next call hang on it too, whereas a fresh call starts a new
+// one. It is best effort and bounded, and it only touches the socket lw made
+// for this destination.
+func (r *runner) exitMaster(dest, port string) {
+	dir, ok := controlDir()
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), sshExitTimeout)
+	defer cancel()
+	args := []string{"-O", "exit", "-o", "ControlPath=" + filepath.Join(dir, "%C")}
+	if port != "" {
+		args = append(args, "-p", port)
+	}
+	args = append(args, dest)
+	if base := r.sshCommand(ctx); base != "ssh" {
+		r.procErr(ctx, "sh", call{args: append([]string{"-c", base + ` "$@"`, "sh"}, args...), noDir: true})
+		return
+	}
+	r.procErr(ctx, "ssh", call{args: args, noDir: true})
 }
 
 // muxOpts is muxArgs as text to append to a command line that sh will parse

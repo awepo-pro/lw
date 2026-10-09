@@ -207,7 +207,7 @@ func syncSetup(vaultPath string, mode syncMode) (root string, o vaultsync.Option
 		Interactive: true,
 		Stderr:      os.Stderr,
 		AppendOnly:  syncAppendOnly,
-		MaxFormat:   stage.FormatVersion,
+		Quiesce:     quiesceJournal(root),
 	}, nil
 }
 
@@ -455,6 +455,10 @@ func syncInit(vaultPath, remote string) error {
 		return err
 	}
 	recordSync(root, st.Remote, nil)
+	// From here the vault syncs, so its journal appenders take the lock.
+	if err := stage.EnsureJournalLock(filepath.Join(root, stateDirName)); err != nil {
+		return err
+	}
 	fmt.Printf("pushed %d commit(s) to %s\n", st.Pushed, st.Remote)
 	return adoptSyncConfig(os.Stdout, root, remote)
 }
@@ -483,6 +487,9 @@ func syncClone(remote, dir string) error {
 		return fmt.Errorf("index the cloned vault: %w", err)
 	}
 	recordSync(abs, remote, nil)
+	if err := stage.EnsureJournalLock(filepath.Join(abs, stateDirName)); err != nil {
+		return err
+	}
 	fmt.Printf("cloned %s into %s\n", remote, abs)
 	return adoptSyncConfig(os.Stdout, abs, remote)
 }

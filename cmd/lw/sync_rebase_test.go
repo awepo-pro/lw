@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/awepo-pro/lw/internal/stage"
 	"github.com/awepo-pro/lw/internal/vaultsync"
@@ -306,17 +307,58 @@ func TestTUIExitReportsTheRebase(t *testing.T) {
 	}
 }
 
-// TestSyncOptionsCarryTheFormat: the options every sync call is made with name
-// the newest format this lw writes — vaultsync's Push needs it to refuse to
-// rebase onto a vault from a newer lw.
-func TestSyncOptionsCarryTheFormat(t *testing.T) {
+// TestSyncOptionsQuiesceTheJournal: the options every sync call is made with
+// carry the quiesce — the exclusive side of the journal lock — and it really
+// does hold journal appends off while held (A-042-9 b).
+func TestSyncOptionsQuiesceTheJournal(t *testing.T) {
 	a, _, _ := syncPair(t)
 	a.act()
-	if got := (&autoSync{root: a.root, remotes: []string{"x:y"}}).options().MaxFormat; got != stage.FormatVersion {
-		t.Errorf("auto-sync options MaxFormat = %d, want %d", got, stage.FormatVersion)
+	for name, o := range map[string]vaultsync.Options{"auto-sync": (&autoSync{root: a.root, remotes: []string{"x:y"}}).options()} {
+		if o.Quiesce == nil {
+			t.Fatalf("%s options have no Quiesce", name)
+		}
 	}
-	_, o, err := syncSetup(a.root, syncModeRead)
-	if err != nil || o.MaxFormat != stage.FormatVersion {
-		t.Errorf("explicit sync options MaxFormat = %d, %v; want %d", o.MaxFormat, err, stage.FormatVersion)
+	_, explicit, err := syncSetup(a.root, syncModeRead)
+	if err != nil || explicit.Quiesce == nil {
+		t.Fatalf("explicit sync options: Quiesce %v, %v", explicit.Quiesce != nil, err)
+	}
+
+	release, err := explicit.Quiesce()
+	if err != nil {
+		t.Fatal(err)
+	}
+	j, err := stage.OpenJournal(filepath.Join(a.root, ".llmwiki", "journal.ndjson"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- j.Append(stage.Event{TS: time.Now().UTC(), Kind: stage.EvChangesetOpened, Changeset: "cs-q", Actor: stage.Author{Kind: "human"}, Message: "held-off"})
+	}()
+	select {
+	case <-done:
+		t.Fatal("a journal append went through the quiesce")
+	case <-time.After(150 * time.Millisecond):
+	}
+	release()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(a.read(".llmwiki/journal.ndjson"), "held-off"); got != 1 {
+		t.Errorf("the held-off line is in the journal %d times, want 1", got)
+	}
+}
+
+// TestSyncInitAndCloneMakeTheJournalLock: a vault that joins sync has its lock
+// file from then on, so appenders take their side before the first quiesce.
+func TestSyncInitAndCloneMakeTheJournalLock(t *testing.T) {
+	a, b, _ := syncPair(t)
+	for name, pc := range map[string]*syncPC{"init": a, "clone": b} {
+		if _, err := os.Stat(filepath.Join(pc.root, ".llmwiki", "tmp", "journal.lock")); err != nil {
+			t.Errorf("after sync %s: %v", name, err)
+		}
+		if got := pc.git("ls-files", ".llmwiki/tmp"); got != "" {
+			t.Errorf("after sync %s the lock is tracked: %q", name, got)
+		}
 	}
 }

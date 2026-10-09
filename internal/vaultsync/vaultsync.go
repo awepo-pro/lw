@@ -67,20 +67,16 @@ type Options struct {
 	// must still be able to take another PC's commits.
 	AppendOnly []string
 
-	// MaxFormat is the newest vault format this lw writes (stage.FormatVersion).
-	// Pull takes it as an argument; Push, which has none, needs it for the one
-	// case where it reads the remote's content — a divergence it would resolve
-	// by rebasing onto the remote's tip. 0 means 1, the shape every vault had
-	// before the format existed.
-	MaxFormat int
-}
-
-// maxFormat is Options.MaxFormat with its zero value read as 1.
-func (o Options) maxFormat() int {
-	if o.MaxFormat > 0 {
-		return o.MaxFormat
-	}
-	return 1
+	// Quiesce, when set, is called to hold off every other writer of the
+	// append-only files for the length of a local mutation of the work tree —
+	// carrying a tail, a fast-forward, a rebase, take-remote's reset, a
+	// recovery — and the function it returns is called to let them go. It is
+	// never held across a network call, and never nested: a mutation takes it
+	// once. cmd/lw wires it to the exclusive side of the journal lock
+	// (stage.QuiesceJournal), which every journal append takes shared; without
+	// it a line another lw process appends while the tail is set aside is
+	// overwritten (A-042-9).
+	Quiesce func() (release func(), err error)
 }
 
 // State is what one call learned about the vault and the remote, and what it

@@ -5,8 +5,8 @@ package vaultsync
 // nothing of theirs conflicts; refusing — and sending the user to
 // --take-remote, which moves their work off the tree onto a backup branch — was
 // the right call while the only alternative was a merge lw could not vouch for,
-// and the wrong one for the commonest case. So before it refuses, Pull and Push
-// replay the local commits on the remote's tip with `git rebase`:
+// and the wrong one for the commonest case. So before it refuses, Pull (and only
+// Pull: Push never touches the work tree, A-042-9 c) replays the local commits on the remote's tip with `git rebase`:
 //
 //   - A clean replay leaves a history that is the remote's plus the local
 //     commits, in order, with no merge commit; the State says how many were
@@ -39,6 +39,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 )
 
 const (
@@ -69,6 +70,100 @@ type rebaseState struct {
 	// left); one that is not describes a vault that must go back to Pre.
 	Done bool `json:"done,omitempty"`
 }
+
+// quiesce holds off the other writers of the append-only files for one local
+// mutation of the work tree (Options.Quiesce) and returns what lets them go.
+// Without the option there is nothing to hold.
+func (r *runner) quiesce() (release func(), err error) {
+	if r.o.Quiesce == nil {
+		return func() {}, nil
+	}
+	rel, err := r.o.Quiesce()
+	if err != nil {
+		return nil, fmt.Errorf("vaultsync: could not hold off the journal's other writers: %w", err)
+	}
+	if rel == nil {
+		rel = func() {}
+	}
+	return rel, nil
+}
+
+// resetKeepingTails is `git reset --hard sha` that cannot cost the user a line
+// (A-042-9 d). Uncommitted lines at the end of an append-only file are carried
+// across it, as a fast-forward carries them. Any other uncommitted change to a
+// tracked file is refused, not reset: after a failed rebase or a crash the tree
+// was clean of such changes, so one that is there was written since — by a verb
+// that does not sync — and it is not lw's to discard.
+func (r *runner) resetKeepingTails(ctx context.Context, sha string) error {
+	appendOnly, err := cleanAppendOnly(r.o.AppendOnly)
+	if err != nil {
+		return err
+	}
+	carry, derr := r.dirtyCarry(ctx, appendOnly)
+	if derr != nil {
+		var de *dirtyError
+		if errors.As(derr, &de) {
+			return fmt.Errorf("the vault has uncommitted changes that are not journal lines (git -C %s status); lw will not reset them away — commit or move them, then run lw sync again (%s holds the HEAD from before the rebase)", r.o.Dir, preRebaseRef)
+		}
+		return derr
+	}
+	if _, err := r.out(ctx, "reset", "--hard", "--quiet", sha, "--"); err != nil {
+		return err
+	}
+	return r.reappend(carry)
+}
+
+// rescueRebaseTails records, before `git rebase --abort` (which is a hard reset
+// of the tree), the lines that were appended to an append-only file while the
+// rebase stood — after the process that began it died and let go of the lock,
+// or with no Quiesce to hold writers off. git wrote the file when the rebase
+// last touched it, so what the work tree has beyond the index's version is
+// exactly what was appended since; it joins the record's carried tails, which
+// putBack returns to the file once the vault is back. A file with no index
+// version (untracked, or unmerged) or whose bytes do not extend it has nothing
+// that can be told apart from git's own work, and is left to the abort.
+func (r *runner) rescueRebaseTails(ctx context.Context, s *rebaseState) (changed bool, err error) {
+	appendOnly, err := cleanAppendOnly(r.o.AppendOnly)
+	if err != nil {
+		return false, err
+	}
+	paths := make([]string, 0, len(appendOnly))
+	for p := range appendOnly {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	for _, p := range paths {
+		staged, err := r.gitCall(ctx, call{args: []string{"cat-file", "blob", ":" + p}})
+		if err != nil {
+			continue
+		}
+		work, err := os.ReadFile(filepath.Join(r.o.Dir, filepath.FromSlash(p)))
+		if err != nil || len(work) <= len(staged) || !bytes.HasPrefix(work, []byte(staged)) {
+			continue
+		}
+		extra := work[len(staged):]
+		found := false
+		for i := range s.Carry {
+			if s.Carry[i].Path == p {
+				s.Carry[i].Tail = append(append([]byte(nil), s.Carry[i].Tail...), extra...)
+				found = true
+				break
+			}
+		}
+		if !found {
+			s.Carry = append(s.Carry, carryRecord{Path: p, Tail: append([]byte(nil), extra...)})
+		}
+		changed = true
+	}
+	return changed, nil
+}
+
+// afterRebase runs as soon as git's rebase has returned, whichever way it
+// ended, before anything is checked or undone. It is a seam for the tests that
+// prove the checks and the cleanup: another process fetching a newer tip into
+// the tracking ref, or appending a journal line, while the rebase stood is not
+// something a test can time.
+var afterRebase = func(ctx context.Context, r *runner) {}
 
 // afterRebaseAbort runs between `git rebase --abort` and the check that the
 // abort restored everything. It is a seam for the test that proves the check
@@ -231,6 +326,22 @@ func (r *runner) treeIsAt(ctx context.Context, sha string) bool {
 	return err == nil && dirty == ""
 }
 
+// treeIsAtIgnoringTails is treeIsAt, except that uncommitted lines at the end
+// of an append-only file are allowed: they are exactly what resetKeepingTails
+// puts back.
+func (r *runner) treeIsAtIgnoringTails(ctx context.Context, sha string) bool {
+	head, err := r.out(ctx, "rev-parse", "HEAD")
+	if err != nil || head != sha {
+		return false
+	}
+	appendOnly, err := cleanAppendOnly(r.o.AppendOnly)
+	if err != nil {
+		return false
+	}
+	_, derr := r.dirtyCarry(ctx, appendOnly)
+	return derr == nil
+}
+
 // recoverRebase finishes or undoes a rebase a dead process left (A-042-8). A
 // record that is not Done means the vault must go back to the record's HEAD:
 // git's rebase, if still running, is aborted, and a tree that is not exactly at
@@ -251,15 +362,33 @@ func (r *runner) recoverRebase(ctx context.Context) (string, error) {
 		return "", r.errForeignRebase()
 	}
 
+	// Undoing is a local mutation like any other, and it must finish whatever
+	// became of the step that found the work to do (A-042-9 d).
+	ctx = context.WithoutCancel(ctx)
+	release, err := r.quiesce()
+	if err != nil {
+		return "", err
+	}
+	defer release()
+
 	note := "a rebase that was cut short had already finished; lw cleared its record"
 	if !s.Done {
 		if running {
+			// The abort resets the tree: lines appended since the crash are
+			// written into the record first, where they survive it.
+			if changed, err := r.rescueRebaseTails(ctx, &s); err != nil {
+				return "", err
+			} else if changed {
+				if err := r.saveRebaseState(ctx, s); err != nil {
+					return "", err
+				}
+			}
 			if _, err := r.gitCall(ctx, call{args: []string{"rebase", "--abort"}}); err != nil {
 				return "", wrap("rebase --abort", err)
 			}
 		}
 		if !r.treeIsAt(ctx, s.Pre) {
-			if _, err := r.out(ctx, "reset", "--hard", "--quiet", s.Pre, "--"); err != nil {
+			if err := r.resetKeepingTails(ctx, s.Pre); err != nil {
 				return "", err
 			}
 		}
@@ -332,6 +461,11 @@ func (r *runner) rebaseDiverged(ctx context.Context, st State, carry []carried, 
 	if err := r.saveRebaseState(ctx, state); err != nil {
 		return st, false, err
 	}
+	// The rebase is local and quick, and once it has begun it must be seen
+	// through — or undone — whatever happens to the caller's deadline; a
+	// cancelled context would leave git half-way and the cleanup unable to run
+	// (A-042-9 d).
+	ctx = context.WithoutCancel(ctx)
 	dir, err := r.gitPath(ctx, rebaseStateDir)
 	if err != nil {
 		return st, false, err
@@ -344,6 +478,11 @@ func (r *runner) rebaseDiverged(ctx context.Context, st State, carry []carried, 
 	// From here the vault changes; any failure goes through giveUp.
 	giveUp := func(cause error) (State, bool, error) {
 		if r.gitRebaseRunning(ctx) {
+			// Lines a writer outside the quiesce appended meanwhile are not lost
+			// to the abort's reset.
+			if changed, _ := r.rescueRebaseTails(ctx, &state); changed {
+				r.saveRebaseState(ctx, state)
+			}
 			if _, aerr := r.gitCall(ctx, call{args: []string{"rebase", "--abort"}}); aerr != nil {
 				return st, false, errors.Join(cause, wrap("rebase --abort", aerr))
 			}
@@ -352,8 +491,11 @@ func (r *runner) rebaseDiverged(ctx context.Context, st State, carry []carried, 
 		if !r.treeIsAt(ctx, pre) {
 			// The abort did not restore everything. The tree was clean of
 			// tracked changes when the rebase began (the tails are set aside),
-			// so putting it back to the saved HEAD loses nothing.
-			if _, rerr := r.out(ctx, "reset", "--hard", "--quiet", pre, "--"); rerr != nil || !r.treeIsAt(ctx, pre) {
+			// so putting it back to the saved HEAD loses nothing — and whatever
+			// lines have been appended to the journal since are carried over
+			// the reset, and an uncommitted change that is anything else stops
+			// it (A-042-9 d).
+			if rerr := r.resetKeepingTails(ctx, pre); rerr != nil || !r.treeIsAtIgnoringTails(ctx, pre) {
 				return st, false, errors.Join(cause, fmt.Errorf("vaultsync: the vault could not be restored after a failed rebase (%s holds its HEAD; lw sync will try again): %v", preRebaseRef, rerr))
 			}
 		}
@@ -385,6 +527,7 @@ func (r *runner) rebaseDiverged(ctx context.Context, st State, carry []carried, 
 			"rebase", "--quiet", "--merge", trackRef},
 		env: []string{"GIT_EDITOR=true", "GIT_SEQUENCE_EDITOR=true"},
 	})
+	afterRebase(ctx, r)
 	if rerr != nil {
 		conflicted := r.gitRebaseRunning(ctx)
 		if _, _, err := giveUp(nil); err != nil {

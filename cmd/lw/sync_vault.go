@@ -426,6 +426,10 @@ func readSyncState(root string) syncState {
 	return st
 }
 
+// syncStateMu serialises recordSyncAhead's read-modify-write of sync.json
+// within the process.
+var syncStateMu sync.Mutex
+
 // recordSync stamps sync.json after a sync step that leaves nothing unpushed.
 func recordSync(root, remote string, stepErr error) { recordSyncAhead(root, remote, stepErr, 0) }
 
@@ -442,6 +446,11 @@ func recordSync(root, remote string, stepErr error) { recordSyncAhead(root, remo
 // It is best effort — the step already did its work, and a bookkeeping file
 // that cannot be written is logged, never a reason to fail it.
 func recordSyncAhead(root, remote string, stepErr error, ahead int) {
+	// The read-modify-write is one step: the TUI's pusher and the verb that
+	// started it both record, and the later write must not undo the earlier
+	// one's field (A-042-9 g).
+	syncStateMu.Lock()
+	defer syncStateMu.Unlock()
 	st := readSyncState(root)
 	if stepErr != nil {
 		st.LastError = oneLine(stepErr.Error())

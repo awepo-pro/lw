@@ -190,22 +190,42 @@ func TestLWCommitsOnBothSidesStayRefused(t *testing.T) {
 	}
 }
 
-// TestPushRebasesAfterTheRemoteMoved: Push's own divergence path — the commit
-// hook's push, run after another PC pushed — rebases and sends in one call.
-func TestPushRebasesAfterTheRemoteMoved(t *testing.T) {
+// TestPushNeverRebases (A-042-9 c): Push touches no file of the work tree. A
+// divergence — even one that would replay cleanly — is ErrDiverged, nothing
+// changed, no pre-rebase ref; it is Pull, under the caller's locks, that
+// rebases, and the push path is Pull then Push.
+func TestPushNeverRebases(t *testing.T) {
 	hermetic(t)
 	p := newPair(t)
 	aCommits(t, p, map[string]string{"notes/from-a.md": "a\n"}, "lw notes")
 	bCommitsLocally(t, p, map[string]string{"notes/from-b.md": "b\n"}, "lw notes")
+	head := git(t, p.b, "rev-parse", "HEAD")
+	treeBefore := workTree(t, p.b)
+	remoteTip := git(t, p.bare, "--git-dir="+p.bare, "rev-parse", "main")
+
 	st, err := Push(t.Context(), opts(p.b, p.remote))
-	if err != nil || st.Pushed != 1 || st.Rebased != 1 || st.Pulled != 1 || st.Ahead != 0 || st.Behind != 0 {
-		t.Fatalf("Push = %+v, %v; want Pulled 1, Rebased 1, Pushed 1", st, err)
+	if !errors.Is(err, ErrDiverged) || st.Pushed != 0 || st.Rebased != 0 || st.Ahead != 1 || st.Behind != 1 {
+		t.Fatalf("Push = %+v, %v; want ErrDiverged with the counts and nothing done", st, err)
+	}
+	if git(t, p.b, "rev-parse", "HEAD") != head || git(t, p.bare, "--git-dir="+p.bare, "rev-parse", "main") != remoteTip {
+		t.Error("a refused Push moved something")
+	}
+	sameTree(t, workTree(t, p.b), treeBefore, "after the refused Push")
+	if out, err := gitErr(p.b, "rev-parse", "--verify", "--quiet", "refs/lw/pre-rebase"); err == nil {
+		t.Errorf("Push began a rebase (refs/lw/pre-rebase = %s)", out)
+	}
+
+	// The push path: Pull rebases, then Push sends.
+	pull, err := Pull(t.Context(), opts(p.b, p.remote), 1)
+	if err != nil || pull.Rebased != 1 || pull.Pulled != 1 {
+		t.Fatalf("Pull = %+v, %v", pull, err)
+	}
+	push, err := Push(t.Context(), opts(p.b, p.remote))
+	if err != nil || push.Pushed != 1 {
+		t.Fatalf("Push after the rebase = %+v, %v", push, err)
 	}
 	if got := git(t, p.bare, "--git-dir="+p.bare, "rev-parse", "main"); got != git(t, p.b, "rev-parse", "HEAD") {
 		t.Errorf("the remote tip %s is not B's HEAD", got)
-	}
-	if readFile(t, filepath.Join(p.b, "notes/from-a.md")) == "" {
-		t.Error("B lacks A's note")
 	}
 }
 
@@ -572,8 +592,10 @@ func TestAForeignRebaseIsLeftAlone(t *testing.T) {
 }
 
 // TestAbortIsVerifiedNotTrusted: after `git rebase --abort` lw checks that HEAD
-// and the tree are what they were, and puts them back itself if they are not.
-// The seam stands in for an abort that did not finish the job.
+// and the tree are what they were, and puts them back itself if they are not —
+// without ever resetting over a line of the journal or over a change that is not
+// its own to discard (A-042-9 d). The seam stands in for an abort that did not
+// finish the job.
 func TestAbortIsVerifiedNotTrusted(t *testing.T) {
 	conflict := func(t *testing.T) pair {
 		hermetic(t)
@@ -587,20 +609,6 @@ func TestAbortIsVerifiedNotTrusted(t *testing.T) {
 		afterRebaseAbort = func(_ context.Context, r *runner) { fn(r) }
 		t.Cleanup(func() { afterRebaseAbort = orig })
 	}
-
-	t.Run("a tree the abort left changed is put back", func(t *testing.T) {
-		p := conflict(t)
-		head := git(t, p.b, "rev-parse", "HEAD")
-		treeBefore := workTree(t, p.b)
-		hook(t, func(r *runner) { put(t, r.o.Dir, "wiki/alpha.md", "garbage the abort left\n") })
-		if _, err := Pull(t.Context(), opts(p.b, p.remote), 1); !errors.Is(err, ErrDiverged) {
-			t.Fatalf("Pull err = %v, want ErrDiverged", err)
-		}
-		if git(t, p.b, "rev-parse", "HEAD") != head {
-			t.Error("HEAD moved")
-		}
-		sameTree(t, workTree(t, p.b), treeBefore, "after the repaired abort")
-	})
 
 	t.Run("a HEAD the abort left moved is put back", func(t *testing.T) {
 		p := conflict(t)
@@ -616,13 +624,49 @@ func TestAbortIsVerifiedNotTrusted(t *testing.T) {
 		sameTree(t, workTree(t, p.b), treeBefore, "after the repaired abort")
 	})
 
+	t.Run("a journal line the abort left is carried over the reset", func(t *testing.T) {
+		p := conflict(t)
+		head := git(t, p.b, "rev-parse", "HEAD")
+		hook(t, func(r *runner) {
+			git(t, r.o.Dir, "reset", "--hard", "--quiet", "HEAD~1") // so the repair has a reset to make
+			appendTo(t, r.o.Dir, journalPath, "late-line\n")        // ... over a line someone appended meanwhile
+		})
+		if _, err := Pull(t.Context(), appendOpts(p.b, p.remote), 1); !errors.Is(err, ErrDiverged) {
+			t.Fatalf("Pull err = %v, want ErrDiverged", err)
+		}
+		if git(t, p.b, "rev-parse", "HEAD") != head {
+			t.Error("HEAD was not put back")
+		}
+		if got := readFile(t, filepath.Join(p.b, journalPath)); !strings.HasSuffix(got, "late-line\n") || strings.Count(got, "late-line") != 1 {
+			t.Errorf("journal = %q, want the late line kept, once", got)
+		}
+	})
+
+	t.Run("a change that is not a journal line is never reset away", func(t *testing.T) {
+		p := conflict(t)
+		hook(t, func(r *runner) {
+			git(t, r.o.Dir, "reset", "--hard", "--quiet", "HEAD~1")
+			put(t, r.o.Dir, "wiki/alpha.md", "written by something else\n")
+		})
+		_, err := Pull(t.Context(), opts(p.b, p.remote), 1)
+		if err == nil || errors.Is(err, ErrDiverged) || !strings.Contains(err.Error(), "could not be restored") || !strings.Contains(err.Error(), "will not reset them away") {
+			t.Fatalf("err = %v; want a refusal to reset the change away", err)
+		}
+		if got := readFile(t, filepath.Join(p.b, "wiki/alpha.md")); got != "written by something else\n" {
+			t.Errorf("the change was reset away: %q", got)
+		}
+		if _, serr := os.Stat(filepath.Join(p.b, ".git", "lw-rebase", "state.json")); serr != nil {
+			t.Error("lw's record was removed although the vault is not back")
+		}
+	})
+
 	t.Run("what cannot be restored is an error, kept for Recover", func(t *testing.T) {
 		p := conflict(t)
 		head := git(t, p.b, "rev-parse", "HEAD")
 		treeBefore := workTree(t, p.b)
 		lock := filepath.Join(p.b, ".git", "index.lock")
 		hook(t, func(r *runner) {
-			put(t, r.o.Dir, "wiki/alpha.md", "garbage the abort left\n")
+			git(t, r.o.Dir, "reset", "--hard", "--quiet", "HEAD~1")
 			os.WriteFile(lock, nil, 0o644) // reset --hard will not get past it
 		})
 		_, err := Pull(t.Context(), opts(p.b, p.remote), 1)
@@ -644,29 +688,29 @@ func TestAbortIsVerifiedNotTrusted(t *testing.T) {
 	})
 }
 
-// TestPushWontRebaseOntoANewerFormat: Push takes no maxFormat, but replaying
-// commits on a tip written by a newer lw would put this lw's shape under theirs.
-// Options.MaxFormat is what it checks the remote against.
-func TestPushWontRebaseOntoANewerFormat(t *testing.T) {
+// TestADivergedPullWontRebaseOntoANewerFormat: replaying commits on a tip
+// written by a newer lw would put this lw's shape under theirs, so Pull's format
+// gate comes before the rebase — and Push, which never rebases, says diverged.
+func TestADivergedPullWontRebaseOntoANewerFormat(t *testing.T) {
 	hermetic(t)
 	p := newPair(t)
 	aCommits(t, p, map[string]string{".llmwiki/format": "{\"version\": 2}\n"}, "lw sync")
 	bCommitsLocally(t, p, map[string]string{"notes/from-b.md": "b\n"}, "lw notes")
 	head := git(t, p.b, "rev-parse", "HEAD")
 
-	o := opts(p.b, p.remote)
-	o.MaxFormat = 1
-	_, err := Push(t.Context(), o)
+	_, err := Pull(t.Context(), opts(p.b, p.remote), 1)
 	var fe *FormatError
 	if !errors.As(err, &fe) || fe.Have != 2 || fe.Max != 1 {
-		t.Fatalf("Push err = %v, want a *FormatError{Have 2, Max 1}", err)
+		t.Fatalf("Pull err = %v, want a *FormatError{Have 2, Max 1}", err)
+	}
+	if _, err := Push(t.Context(), opts(p.b, p.remote)); !errors.Is(err, ErrDiverged) {
+		t.Fatalf("Push err = %v, want ErrDiverged", err)
 	}
 	if git(t, p.b, "rev-parse", "HEAD") != head {
 		t.Error("HEAD moved")
 	}
 	// An lw that does support format 2 rebases.
-	o.MaxFormat = 2
-	if st, err := Push(t.Context(), o); err != nil || st.Rebased != 1 || st.Pushed != 1 {
-		t.Fatalf("Push with MaxFormat 2 = %+v, %v", st, err)
+	if st, err := Pull(t.Context(), opts(p.b, p.remote), 2); err != nil || st.Rebased != 1 {
+		t.Fatalf("Pull with maxFormat 2 = %+v, %v", st, err)
 	}
 }
