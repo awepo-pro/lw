@@ -45,8 +45,12 @@ only sshd and git. [sync] remotes in config.toml lists them, tried in order.
 
 lw sync owns the vault's .gitignore: it rewrites it to the per-PC state it keeps
 out of the remote (the search index, caches, logs, locks), whenever the bytes differ.
-Divergence is detected and refused, never merged; --take-remote keeps the remote and
-saves this PC's commits on a branch named lw-diverged-<time>.
+When this PC and the remote have both committed, lw sync replays this PC's commits on
+the remote's (a rebase) if nothing conflicts — notes written on two PCs, edits to
+different pages — and pushes them; HEAD from before is kept in refs/lw/pre-rebase.
+A conflict (the same page edited on both, or an lw commit on each side) is refused
+and nothing changes; --take-remote then keeps the remote and saves this PC's
+commits on a branch named lw-diverged-<time>.
 `)
 }
 
@@ -203,6 +207,7 @@ func syncSetup(vaultPath string, mode syncMode) (root string, o vaultsync.Option
 		Interactive: true,
 		Stderr:      os.Stderr,
 		AppendOnly:  syncAppendOnly,
+		MaxFormat:   stage.FormatVersion,
 	}, nil
 }
 
@@ -214,6 +219,16 @@ func syncExplicitErr(err error, st vaultsync.State) error {
 		return fmt.Errorf("diverged from %s: this PC has %d commit(s) the remote lacks, the remote has %d this PC lacks; "+
 			"nothing was changed — lw sync --take-remote keeps the remote and saves this PC's commits on a backup branch",
 			st.Remote, st.Ahead, st.Behind)
+	}
+	return err
+}
+
+// syncRecover undoes a rebase a crashed sync left in the vault, before this one
+// builds on it, and says so on stderr (A-042-8).
+func syncRecover(ctx context.Context, o vaultsync.Options) error {
+	note, err := vaultsync.Recover(ctx, o)
+	if note != "" {
+		fmt.Fprintln(os.Stderr, "sync: "+note)
 	}
 	return err
 }
@@ -263,6 +278,9 @@ func syncRun(vaultPath string, takeRemote bool) error {
 			return err
 		}
 		defer release()
+		if err := syncRecover(ctx, o); err != nil {
+			return err
+		}
 		return syncTake(ctx, root, o)
 	}
 
@@ -278,6 +296,11 @@ func syncRun(vaultPath string, takeRemote bool) error {
 		if err := printIndexRebuild(root); err != nil {
 			return err
 		}
+	}
+	if st.Rebased > 0 {
+		// A divergence that conflicted with nothing: the local commits now sit
+		// on the remote's, and the push below sends them.
+		fmt.Println(rebasedLine("", st.Rebased, remote))
 	}
 
 	// Only a commit this run made, or one that was already waiting (Ahead), has
@@ -296,7 +319,7 @@ func syncRun(vaultPath string, takeRemote bool) error {
 	switch {
 	case pushed > 0:
 		fmt.Printf("pushed %d commit(s) to %s\n", pushed, remote)
-	case pulled == 0:
+	case pulled == 0 && st.Rebased == 0:
 		fmt.Printf("up to date with %s\n", remote)
 	}
 	return nil
@@ -313,6 +336,9 @@ func syncPullLocked(ctx context.Context, root string, o vaultsync.Options) (st v
 		return st, false, err
 	}
 	defer release()
+	if err := syncRecover(ctx, o); err != nil {
+		return st, false, err
+	}
 
 	st, err = syncPull(ctx, o, stage.FormatVersion)
 	if errors.Is(err, vaultsync.ErrDirty) {

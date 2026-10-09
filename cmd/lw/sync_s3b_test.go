@@ -163,6 +163,7 @@ func TestStartOfVerbOnlyPulls(t *testing.T) {
 	}
 
 	b.write("notes/20261009-130000-b.md", "from b\n")
+	b.appendTo(kvPage, "\nB's edit of the same page\n") // so that the divergence below conflicts (A-042-8)
 	if _, _, code := b.lw("sync"); code != 0 {
 		t.Fatal("B could not push")
 	}

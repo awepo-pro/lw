@@ -161,6 +161,7 @@ func (a *autoSync) options() vaultsync.Options {
 		Remotes:    orderedRemotes(a.root, a.remotes),
 		Timeout:    remoteBudget(syncAutoTimeout, len(a.remotes)),
 		AppendOnly: syncAppendOnly,
+		MaxFormat:  stage.FormatVersion,
 	}
 }
 
@@ -207,6 +208,8 @@ func syncReason(err error, st vaultsync.State) (text string, named bool) {
 		return fe.Error(), true
 	case errors.Is(err, vaultsync.ErrDirty):
 		return "the vault has uncommitted changes — run lw sync", true
+	case errors.Is(err, vaultsync.ErrRebaseInProgress):
+		return oneLine(err.Error()), true
 	}
 	return oneLine(err.Error()), false
 }
@@ -260,6 +263,10 @@ func (a *autoSync) pull() {
 		a.warnStart("", err, vaultsync.State{})
 		return
 	}
+	if err := a.recoverRebase(ctx); err != nil {
+		a.warnStart("recover", err, vaultsync.State{})
+		return
+	}
 
 	endNotice := slowNotice(os.Stderr, "pulling")
 	st, err := syncPull(ctx, a.options(), stage.FormatVersion)
@@ -286,6 +293,20 @@ func (a *autoSync) pull() {
 		slog.Warn("sync: rebuild index after pull", "err", err)
 	}
 	fmt.Fprintf(os.Stderr, "sync: pulled %d commit(s) from %s\n", st.Pulled, st.Remote)
+	if st.Rebased > 0 {
+		fmt.Fprintln(os.Stderr, rebasedLine("sync: ", st.Rebased, st.Remote))
+	}
+}
+
+// recoverRebase undoes a rebase a crashed process left in the vault and says so
+// (A-042-8), before this step builds on the vault. A rebase that is the user's
+// is an error and is left alone.
+func (a *autoSync) recoverRebase(ctx context.Context) error {
+	note, err := vaultsync.Recover(ctx, a.options())
+	if note != "" {
+		fmt.Fprintln(os.Stderr, "sync: "+note)
+	}
+	return err
 }
 
 // retryIfAhead asks for a push when the pull found commits in git that the
@@ -345,12 +366,19 @@ func (a *autoSync) push(ctx context.Context) syncPushResult {
 	// commit fail with "vault is locked" for as long as the server is slow
 	// (A-042-7 d).
 	st, err := syncPush(ctx, a.options())
+	if st.Pulled > 0 {
+		// A push that had to rebase has taken the remote's commits into the
+		// tree: the pages may have changed under the search index.
+		if _, ierr := rebuildIndexIfStale(a.root); ierr != nil {
+			slog.Warn("sync: rebuild index after push", "err", ierr)
+		}
+	}
 	if err != nil {
 		recordSyncAhead(a.root, "", err, st.Ahead)
-		return syncPushResult{Remote: st.Remote, Err: err}
+		return syncPushResult{Remote: st.Remote, Pulled: st.Pulled, Rebased: st.Rebased, Err: err}
 	}
 	recordSyncAhead(a.root, st.Remote, nil, st.Ahead)
-	return syncPushResult{Remote: st.Remote, Pushed: st.Pushed}
+	return syncPushResult{Remote: st.Remote, Pushed: st.Pushed, Pulled: st.Pulled, Rebased: st.Rebased}
 }
 
 // commitWork is the local half of a push: under the vault lock, and only when
@@ -363,6 +391,9 @@ func (a *autoSync) commitWork() error {
 	}
 	defer release()
 	if err := noInterruptedCommit(a.root); err != nil {
+		return err
+	}
+	if err := a.recoverRebase(context.Background()); err != nil {
 		return err
 	}
 	if _, err := syncCommitWork(a.options(), syncCommitMessage(a.root)); err != nil {
@@ -391,10 +422,23 @@ func (a *autoSync) pushInline() {
 	a.report(os.Stderr, res)
 }
 
-// report prints a push's outcome as the CLI line: the success line when it
-// sent commits, the failure line when it failed, nothing when there was
-// nothing to send.
+// rebasedLine is the line for a divergence that was resolved by replaying local
+// commits on the remote's tip (A-042-8).
+func rebasedLine(prefix string, n int, remote string) string {
+	return fmt.Sprintf("%srebased %d local commit(s) onto %s", prefix, n, remote)
+}
+
+// report prints a push's outcome as the CLI line: first, when the push had to
+// take the remote's commits and replay its own on them, what happened to the
+// vault; then the success line when it sent commits, the failure line when it
+// failed, nothing when there was nothing to send.
 func (a *autoSync) report(w io.Writer, res syncPushResult) {
+	if res.Pulled > 0 {
+		fmt.Fprintf(w, "sync: pulled %d commit(s) from %s\n", res.Pulled, res.Remote)
+	}
+	if res.Rebased > 0 {
+		fmt.Fprintln(w, rebasedLine("sync: ", res.Rebased, res.Remote))
+	}
 	switch {
 	case res.Err != nil:
 		fmt.Fprintln(w, pushFailureLine(res))

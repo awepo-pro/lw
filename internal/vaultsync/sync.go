@@ -37,6 +37,9 @@ func CommitWork(o Options, message string) (bool, error) {
 	if !r.isRepo() {
 		return false, ErrNotRepo
 	}
+	if _, err := r.recoverRebase(ctx); err != nil {
+		return false, err
+	}
 	if err := r.refuseIfCollided(ctx); err != nil {
 		return false, err
 	}
@@ -329,8 +332,14 @@ func Status(ctx context.Context, o Options) (State, error) {
 
 // Pull fetches, then fast-forwards HEAD to the remote tip when this PC has
 // nothing the remote lacks. A remote format newer than maxFormat is refused
-// before anything is merged, and a divergence is reported with its counts and
-// changes nothing.
+// before anything is merged.
+//
+// A divergence is first tried as a rebase (A-042-8, rebase.go): the local
+// commits are replayed on the remote's tip, and when nothing conflicts the
+// State says so — Pulled the remote commits taken, Rebased and Ahead the local
+// commits replayed and still to push, Behind 0. When something conflicts the
+// rebase is aborted, HEAD and the tree are verified unchanged, and the result is
+// ErrDiverged with the counts, exactly as before.
 //
 // The work tree need not be clean (A-042-7 a), but what is in it must be
 // something Pull can carry over a fast-forward. Uncommitted lines at the end of
@@ -354,6 +363,9 @@ func Pull(ctx context.Context, o Options, maxFormat int) (State, error) {
 	if err := r.requireRepo(ctx); err != nil {
 		return State{}, err
 	}
+	if _, err := r.recoverRebase(ctx); err != nil {
+		return State{}, err
+	}
 	if err := r.refuseIfCollided(ctx); err != nil {
 		return State{}, err
 	}
@@ -375,7 +387,16 @@ func Pull(ctx context.Context, o Options, maxFormat int) (State, error) {
 		return st, &FormatError{Remote: st.Remote, Have: st.RemoteFormat, Max: maxFormat}
 	}
 	if st.Diverged() {
-		return st, ErrDiverged
+		// A-042-8: before refusing, replay the local commits on the remote's
+		// tip. A conflict puts everything back and is the refusal it always was.
+		rebased, ok, err := r.rebaseDiverged(ctx, st, carry, appendOnly)
+		if !ok {
+			if err != nil {
+				return st, err
+			}
+			return st, ErrDiverged
+		}
+		return rebased, err
 	}
 	if st.Behind > 0 && st.Ahead == 0 {
 		// Normally CommitWork has just written it; a Pull on its own must
@@ -406,7 +427,10 @@ func Pull(ctx context.Context, o Options, maxFormat int) (State, error) {
 }
 
 // Push fetches, then pushes HEAD to the remote's main when the remote has
-// nothing this PC lacks. A divergence is refused with its counts. A push
+// nothing this PC lacks. A divergence is resolved by rebasing the local commits
+// onto the remote's tip when they replay without a conflict (A-042-8; see Pull)
+// and pushing them in the same call, State.Rebased saying how many; otherwise
+// it is refused with its counts. A push
 // that git rejects because the remote moved after our fetch (a race with
 // another PC) is turned into the same ErrDiverged with fresh counts, never
 // surfaced as a raw git error (042 D3).
@@ -415,7 +439,14 @@ func Push(ctx context.Context, o Options) (State, error) {
 	if err != nil {
 		return State{}, err
 	}
+	appendOnly, err := cleanAppendOnly(o.AppendOnly)
+	if err != nil {
+		return State{}, err
+	}
 	if err := r.requireRepo(ctx); err != nil {
+		return State{}, err
+	}
+	if _, err := r.recoverRebase(ctx); err != nil {
 		return State{}, err
 	}
 	if err := r.refuseIfCollided(ctx); err != nil {
@@ -426,7 +457,31 @@ func Push(ctx context.Context, o Options) (State, error) {
 		return st, err
 	}
 	if st.Diverged() {
-		return st, ErrDiverged
+		// A-042-8: the remote moved while this PC committed. If the local
+		// commits replay cleanly on its tip they go on top and are pushed in
+		// this call; otherwise this is the refusal it always was.
+		if st.RemoteFormat > o.maxFormat() {
+			return st, &FormatError{Remote: st.Remote, Have: st.RemoteFormat, Max: o.maxFormat()}
+		}
+		carry, dirtyErr := r.dirtyCarry(ctx, appendOnly)
+		if dirtyErr != nil {
+			var de *dirtyError
+			if !errors.As(dirtyErr, &de) {
+				return st, dirtyErr
+			}
+			return st, ErrDiverged // a tree with uncommitted changes cannot be rebased
+		}
+		rebased, ok, err := r.rebaseDiverged(ctx, st, carry, appendOnly)
+		if !ok {
+			if err != nil {
+				return st, err
+			}
+			return st, ErrDiverged
+		}
+		if err != nil {
+			return rebased, err
+		}
+		st = rebased
 	}
 	if st.Ahead == 0 {
 		return st, nil // nothing to push; Behind > 0 is Pull's business
@@ -508,6 +563,9 @@ func takeRemoteAt(ctx context.Context, o Options, maxFormat int, now time.Time) 
 		return "", State{}, err
 	}
 	if err := r.requireRepo(ctx); err != nil {
+		return "", State{}, err
+	}
+	if _, err := r.recoverRebase(ctx); err != nil {
 		return "", State{}, err
 	}
 	st, err := r.fetch(ctx)

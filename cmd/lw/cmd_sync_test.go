@@ -103,6 +103,9 @@ func TestSyncVerbOutputs(t *testing.T) {
 		// B edited a tracked page (A-042-7: an untracked or journal-only change
 		// no longer stops a pull, so only a committed edit can diverge).
 		b.appendTo("index.md", "\nedited on B\n")
+		// ... and the page A edited (A-042-8: edits that touch different pages
+		// are rebased now, so this divergence has to conflict).
+		b.appendTo(kvPage, "\nEdited on B.\n")
 		stdout, stderr, code := b.lw("sync")
 		want := "lw: sync: diverged from " + remote + ": this PC has 1 commit(s) the remote lacks, the remote has 1 this PC lacks; " +
 			"nothing was changed — lw sync --take-remote keeps the remote and saves this PC's commits on a backup branch\n"

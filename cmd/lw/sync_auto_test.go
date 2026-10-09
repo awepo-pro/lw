@@ -242,13 +242,16 @@ func TestAutoSyncFailureWarnsAndContinues(t *testing.T) {
 func TestAutoDivergedWarns(t *testing.T) {
 	a, b, remote := syncPair(t)
 	a.write("notes/20261009-110000-a.md", "from a\n")
+	a.appendTo(kvPage, "\nEdited on A.\n")
 	if _, _, code := a.lw("sync"); code != 0 {
 		t.Fatal("A could not push")
 	}
 	// B's earlier push failed (it was offline): its work is committed, safe
 	// locally, and the remote has moved on. (A merely uncommitted change would
-	// not diverge: a verb's start only pulls, A-042-7 b.)
+	// not diverge: a verb's start only pulls, A-042-7 b. And edits to different
+	// pages would be rebased, A-042-8: both PCs edited the kv-cache page.)
 	b.write("notes/20261009-130000-b.md", "from b, committed locally\n")
+	b.appendTo(kvPage, "\nEdited on B.\n")
 	b.git("add", "-A")
 	b.git("commit", "--quiet", "-m", "lw notes")
 
@@ -517,10 +520,13 @@ func TestSyncAbortsOnTheFirstFailure(t *testing.T) {
 	t.Run("a diverged pull", func(t *testing.T) {
 		a, b, _ := syncPair(t)
 		a.write("notes/20261009-110000-a.md", "a\n")
+		a.appendTo("index.md", "\nedited on A\n")
 		if _, _, code := a.lw("sync"); code != 0 {
 			t.Fatal("A could not push")
 		}
-		b.appendTo("index.md", "\nedited on B\n") // a tracked edit: only a committed one can diverge
+		// A tracked edit of the same page: only a committed one can diverge, and
+		// only one that conflicts stays diverged (A-042-8).
+		b.appendTo("index.md", "\nedited on B\n")
 		pushes := stub(t)
 		if _, _, code := b.lw("sync"); code != 1 {
 			t.Fatalf("exit %d, want 1", code)

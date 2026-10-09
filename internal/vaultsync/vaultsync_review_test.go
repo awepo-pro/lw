@@ -655,6 +655,7 @@ func TestRootFileNamedHEAD(t *testing.T) {
 		t.Fatal(err)
 	}
 	put(t, b, "wiki/beta.md", "from B\n")
+	put(t, b, "wiki/alpha.md", "v3 from B\n") // A-042-8: a conflict, or it would be rebased
 	if _, err := CommitWork(opts(b, bare), "lw b"); err != nil {
 		t.Fatal(err)
 	}

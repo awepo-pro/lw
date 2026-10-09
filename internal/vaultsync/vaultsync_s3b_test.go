@@ -190,7 +190,8 @@ func TestPullAppendOnlyDivergedChangesNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	appendTo(t, p.b, journalPath, "b-1\n")
-	aPushes(t, p, "a-1\n", nil)
+	// A edits the same page (A-042-8: otherwise the divergence is rebased).
+	aPushes(t, p, "a-1\n", map[string]string{"wiki/alpha.md": "a's edit\n"})
 	treeBefore := workTree(t, p.b)
 	st, err := Pull(t.Context(), appendOpts(p.b, p.remote), 1)
 	if !errors.Is(err, ErrDiverged) || st.Ahead != 1 || st.Behind != 1 {

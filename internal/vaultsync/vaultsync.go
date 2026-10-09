@@ -66,6 +66,21 @@ type Options struct {
 	// open changeset has appended to the journal, and the PC that holds one
 	// must still be able to take another PC's commits.
 	AppendOnly []string
+
+	// MaxFormat is the newest vault format this lw writes (stage.FormatVersion).
+	// Pull takes it as an argument; Push, which has none, needs it for the one
+	// case where it reads the remote's content — a divergence it would resolve
+	// by rebasing onto the remote's tip. 0 means 1, the shape every vault had
+	// before the format existed.
+	MaxFormat int
+}
+
+// maxFormat is Options.MaxFormat with its zero value read as 1.
+func (o Options) maxFormat() int {
+	if o.MaxFormat > 0 {
+		return o.MaxFormat
+	}
+	return 1
 }
 
 // State is what one call learned about the vault and the remote, and what it
@@ -77,6 +92,12 @@ type State struct {
 	Pulled       int    // commits fast-forwarded by this call
 	Pushed       int    // commits pushed by this call
 	RemoteFormat int    // "version" in the remote tip's .llmwiki/format; 1 when absent; 0 when the remote has no commit
+
+	// Rebased is how many local commits this call replayed on the remote's tip
+	// to resolve a divergence (A-042-8). When it is more than 0, Pulled is the
+	// remote commits now underneath them, Ahead the replayed commits still to
+	// push (or, from Push, 0 once they are pushed), and Behind 0.
+	Rebased int
 }
 
 // Diverged reports that both sides have commits the other lacks.

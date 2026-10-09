@@ -130,13 +130,13 @@ type removed struct {
 	mode fs.FileMode
 }
 
-// prepareFastForward makes the work tree one git can fast-forward, or says why
-// it cannot, changing nothing in that case. It extends carry with append-only
-// files that are untracked here but created by the incoming commits, removes
-// the untracked files that are byte-identical to the incoming ones, and
-// restores the HEAD bytes of every carried file. The returned undo puts it all
-// back; the returned carry is what reappend must append afterwards.
-func (r *runner) prepareFastForward(ctx context.Context, carry []carried, appendOnly map[string]bool) ([]carried, func(), error) {
+// classifyIncoming sorts the untracked files at paths the incoming commits
+// create (HEAD to the remote-tracking ref: the same set whether the commits
+// will be fast-forwarded or replayed under): an append-only file is carried
+// whole, a file byte-identical to the incoming one is to be removed, and a
+// different one is the user's, so the pull is refused, naming them. Nothing is
+// changed.
+func (r *runner) classifyIncoming(ctx context.Context, carry []carried, appendOnly map[string]bool) ([]carried, []removed, error) {
 	adds, err := r.incomingAdds(ctx)
 	if err != nil {
 		return nil, nil, err
@@ -177,6 +177,20 @@ func (r *runner) prepareFastForward(ctx context.Context, carry []carried, append
 	}
 	if len(conflicts) > 0 {
 		return nil, nil, fmt.Errorf("untracked files would be overwritten by the pull: %s — move them aside and run lw sync again", strings.Join(conflicts, ", "))
+	}
+	return carry, identical, nil
+}
+
+// prepareFastForward makes the work tree one git can fast-forward, or says why
+// it cannot, changing nothing in that case. It extends carry with append-only
+// files that are untracked here but created by the incoming commits, removes
+// the untracked files that are byte-identical to the incoming ones, and
+// restores the HEAD bytes of every carried file. The returned undo puts it all
+// back; the returned carry is what reappend must append afterwards.
+func (r *runner) prepareFastForward(ctx context.Context, carry []carried, appendOnly map[string]bool) ([]carried, func(), error) {
+	carry, identical, err := r.classifyIncoming(ctx, carry, appendOnly)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	undo := func() {

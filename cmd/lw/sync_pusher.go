@@ -32,9 +32,11 @@ import (
 // syncPushResult is what one push did: the remote that answered, how many
 // commits it sent, and why it failed, if it did.
 type syncPushResult struct {
-	Remote string
-	Pushed int
-	Err    error
+	Remote  string
+	Pushed  int
+	Pulled  int // remote commits a rebase put under the local ones (A-042-8)
+	Rebased int // local commits a rebase replayed on them
+	Err     error
 }
 
 // pusherState is where the pusher is between triggers.
@@ -69,6 +71,8 @@ type syncPusher struct {
 
 	// The session's tally, for Flush's report.
 	total   int
+	pulled  int
+	rebased int
 	remote  string
 	lastErr error
 }
@@ -149,6 +153,8 @@ func (p *syncPusher) runOnce(parent context.Context) syncPushResult {
 // add up, and the latest attempt decides whether the session ends in failure.
 func (p *syncPusher) record(res syncPushResult) {
 	p.total += res.Pushed
+	p.pulled += res.Pulled
+	p.rebased += res.Rebased
 	if res.Remote != "" {
 		p.remote = res.Remote
 	}
@@ -194,7 +200,7 @@ func (p *syncPusher) Flush(budget time.Duration, needs func() bool) syncPushResu
 		}
 		p.mu.Lock()
 		defer p.mu.Unlock()
-		return syncPushResult{Remote: p.remote, Pushed: p.total, Err: fmt.Errorf("timed out after %s waiting for the push", budget)}
+		return syncPushResult{Remote: p.remote, Pushed: p.total, Pulled: p.pulled, Rebased: p.rebased, Err: fmt.Errorf("timed out after %s waiting for the push", budget)}
 	}
 
 	p.mu.Lock()
@@ -207,7 +213,7 @@ func (p *syncPusher) Flush(budget time.Duration, needs func() bool) syncPushResu
 		if remaining <= 0 {
 			p.mu.Lock()
 			defer p.mu.Unlock()
-			return syncPushResult{Remote: p.remote, Pushed: p.total, Err: errors.New("timed out before the final push could start")}
+			return syncPushResult{Remote: p.remote, Pushed: p.total, Pulled: p.pulled, Rebased: p.rebased, Err: errors.New("timed out before the final push could start")}
 		}
 		ctx, cancel := context.WithTimeout(p.ctx, remaining)
 		res := p.runOnce(ctx)
@@ -220,7 +226,7 @@ func (p *syncPusher) Flush(budget time.Duration, needs func() bool) syncPushResu
 	// The session is reported once: a second Flush has nothing left to say.
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	out := syncPushResult{Remote: p.remote, Pushed: p.total, Err: p.lastErr}
-	p.total, p.lastErr = 0, nil
+	out := syncPushResult{Remote: p.remote, Pushed: p.total, Pulled: p.pulled, Rebased: p.rebased, Err: p.lastErr}
+	p.total, p.pulled, p.rebased, p.lastErr = 0, 0, 0, nil
 	return out
 }

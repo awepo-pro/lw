@@ -366,6 +366,9 @@ func diverge(t *testing.T, p pair) (aTip, bTip string) {
 	}
 	put(t, p.b, "wiki/beta.md", "beta from B\n")
 	put(t, p.b, "raw/r1.md", "raw edited on B\n")
+	// A-042-8: commits that touch different files are rebased, not refused. B
+	// also edits the page A edited, so this is a divergence that conflicts.
+	put(t, p.b, "wiki/alpha.md", "alpha from B\n")
 	if _, err := CommitWork(opts(p.b, p.remote), "lw 000002: B"); err != nil {
 		t.Fatal(err)
 	}
