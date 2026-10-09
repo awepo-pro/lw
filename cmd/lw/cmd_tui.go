@@ -42,17 +42,35 @@ func cmdTUI(args []string) error {
 		return &exitError{code: 2}
 	}
 
-	root, err := findVaultRoot(*vaultPath)
+	// 042: the TUI writes (review commits, ingests, asks stage), so it is
+	// refused at start while a checkout collision is unresolved.
+	root, err := writableVaultRoot(*vaultPath)
 	if err != nil {
 		return err
 	}
 	initLoggingAt(root)
 
+	// 042: with remotes configured, take the newest vault before the engine
+	// opens. Commits and rejections made in the TUI are pushed in the
+	// background by auto's pusher — results to lw.log, never the screen — and
+	// finish waits for it at exit, which is deferred here so it runs after the
+	// program (p.Kill below) has put the terminal back: the CLI's push line
+	// lands on the shell, not in the alternate screen.
+	//
+	// A hangup (the terminal closing) must not kill the process before that
+	// flush: the signals are caught from here to the end of cmdTUI, and the
+	// program is told to quit when it exists (S3d H1).
+	sig := quitOnSignals()
+	defer sig.stop()
+	auto := loadTUIAutoSync(root)
+	auto.pull()
+	defer auto.finish(os.Stderr)
+
 	// 025 T3: initLoggingAt above installed the file logger, so this line
 	// lands in <vault>/.llmwiki/logs/lw.log beside the engine's own launch
 	// lines. Measurement only — OpenEngine itself is untouched.
 	start := time.Now()
-	engine, err := stage.OpenEngine(root)
+	engine, err := openVaultEngine(root, auto)
 	if err != nil {
 		return fmt.Errorf("open vault %s: %w", root, err)
 	}
@@ -107,6 +125,8 @@ func cmdTUI(args []string) error {
 	app := ui.NewApp(opts)
 
 	p := tea.NewProgram(app)
+	sig.attach(p)
+	defer sig.detach()
 	// Kill restores the terminal unconditionally, so a panic inside
 	// Update/View — or Run returning early on its own panic recovery —
 	// can never leave the terminal in raw mode (s4-tui.md S4-T2 item 5).

@@ -42,13 +42,13 @@ func cmdStage(args []string) error {
 		return err
 	}
 
-	root, err := findVaultRoot(*vaultPath)
+	root, err := writableVaultRoot(*vaultPath)
 	if err != nil {
 		return err
 	}
 	initLoggingAt(root)
 
-	e, err := stage.OpenEngine(root)
+	e, err := openVaultEngine(root, nil)
 	if err != nil {
 		return fmt.Errorf("open engine: %w", err)
 	}

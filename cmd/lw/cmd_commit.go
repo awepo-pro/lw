@@ -42,13 +42,19 @@ func cmdCommit(args []string) error {
 		return &exitError{code: 2}
 	}
 
-	root, err := findVaultRoot(*vaultPath)
+	root, err := writableVaultRoot(*vaultPath)
 	if err != nil {
 		return err
 	}
 	initLoggingAt(root)
 
-	e, err := stage.OpenEngine(root)
+	// 042: with remotes configured, take the newest vault before the engine
+	// opens, and push the commit before the verb exits (the hook openVaultEngine
+	// installs).
+	auto := loadAutoSync(root)
+	auto.pull()
+
+	e, err := openVaultEngine(root, auto)
 	if err != nil {
 		return fmt.Errorf("open engine: %w", err)
 	}

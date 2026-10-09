@@ -107,13 +107,17 @@ func cmdLint(args []string) error {
 // lands (/docs/design.md §9.4), so this leaves an open changeset and
 // commits nothing, exactly like `lw ingest`.
 func runLintFix(vaultPath, checksFlag string) error {
-	root, err := findVaultRoot(vaultPath)
+	root, err := writableVaultRoot(vaultPath)
 	if err != nil {
 		return err
 	}
 	initLoggingAt(root)
 
-	e, err := stage.OpenEngine(root)
+	// 042: take the newest vault before the engine opens.
+	auto := loadAutoSync(root)
+	auto.pull()
+
+	e, err := openVaultEngine(root, auto)
 	if err != nil {
 		return fmt.Errorf("open engine: %w", err)
 	}
@@ -357,40 +361,94 @@ func printLintReport(w io.Writer, report lint.Report) {
 // and must stay one.
 var remoteVaultForm = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]+:`)
 
-// findVaultRoot resolves the vault root shared by lw lint and lw status: an
-// explicit --vault value is used as given; otherwise the current directory
-// is walked upward until an ancestor containing SCHEMA.md is found.
+// findVaultRoot resolves the vault root every verb works on (042 D1), in this
+// order:
+//
+//  1. an explicit --vault value, used as given;
+//  2. $LW_VAULT, likewise;
+//  3. the nearest ancestor of the working directory that holds a SCHEMA.md;
+//  4. the config's [vault] path, which must hold a SCHEMA.md;
+//  5. otherwise the error that has always been returned.
 //
 // The one explicit value it refuses is host:path that names nothing on this
 // machine (047 S2): lw has no remote vaults, so `--vault home:~/ai-vault`
 // would otherwise fail verbs later on a "home:~" directory that does not
 // exist. It answers with the command that does work. A colon in a path that
-// exists is just a colon — the refusal needs os.Stat to fail.
+// exists is just a colon — the refusal needs os.Stat to fail. The same check
+// guards $LW_VAULT, and its message is unchanged.
+//
+// Whatever root comes out is then checked against the vault format (042
+// A-042-2): a vault written by a newer lw is refused here, with the
+// *stage.FormatError text, by EVERY verb that resolves a vault — lint and
+// status read it before any engine exists, status turns an engine error into a
+// status line, and note, session and trace never open the engine at all, so
+// leaving the check to stage.OpenEngine would let a dozen verbs misread a
+// newer vault. The check reads one small file and writes nothing.
 func findVaultRoot(explicit string) (string, error) {
-	if explicit != "" {
-		if remoteVaultForm.MatchString(explicit) {
-			if _, err := os.Stat(explicit); err != nil {
-				host, path, _ := strings.Cut(explicit, ":")
-				return "", fmt.Errorf("--vault %q looks like host:path, but lw has no remote vaults; run lw on that host instead: ssh %s -t lw tui --vault %s", explicit, host, path)
-			}
-		}
-		return explicit, nil
-	}
-
-	wd, err := os.Getwd()
+	root, err := discoverVaultRoot(explicit)
 	if err != nil {
-		return "", fmt.Errorf("getwd: %w", err)
+		return "", err
+	}
+	if err := checkVaultFormat(root); err != nil {
+		return "", err
+	}
+	return root, nil
+}
+
+// discoverVaultRoot is findVaultRoot's five-step search, without the format
+// check.
+func discoverVaultRoot(explicit string) (string, error) {
+	if explicit != "" {
+		return explicitVaultRoot(explicit)
+	}
+	if env := os.Getenv("LW_VAULT"); env != "" {
+		return explicitVaultRoot(env)
 	}
 
-	dir := wd
-	for {
-		if info, err := os.Stat(filepath.Join(dir, "SCHEMA.md")); err == nil && !info.IsDir() {
-			return dir, nil
+	wd, wdErr := os.Getwd()
+	if wdErr == nil {
+		dir := wd
+		for {
+			if info, err := os.Stat(filepath.Join(dir, "SCHEMA.md")); err == nil && !info.IsDir() {
+				return dir, nil
+			}
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				break
+			}
+			dir = parent
 		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return "", fmt.Errorf("no SCHEMA.md found in %s or any parent directory; pass --vault", wd)
-		}
-		dir = parent
 	}
+
+	// The config is read only now, when nothing nearer named a vault, and a
+	// config that cannot be read is not this function's error to report: the
+	// verbs that load it say so, and falling through keeps today's message.
+	if cfg, err := config.Load(); err == nil && cfg.Vault.Path != "" {
+		path := cfg.Vault.ResolvedPath()
+		// A relative path would mean whichever directory lw happens to run in.
+		if !filepath.IsAbs(path) {
+			return "", fmt.Errorf("[vault] path %s: must be absolute or start with ~/", cfg.Vault.Path)
+		}
+		if info, err := os.Stat(filepath.Join(path, "SCHEMA.md")); err != nil || info.IsDir() {
+			return "", fmt.Errorf("[vault] path %s: no SCHEMA.md there", path)
+		}
+		return path, nil
+	}
+
+	if wdErr != nil {
+		return "", fmt.Errorf("getwd: %w", wdErr)
+	}
+	return "", fmt.Errorf("no SCHEMA.md found in %s or any parent directory; pass --vault", wd)
+}
+
+// explicitVaultRoot returns a --vault or $LW_VAULT value as given, refusing
+// the host:path form that names nothing on this machine (047 S2).
+func explicitVaultRoot(explicit string) (string, error) {
+	if remoteVaultForm.MatchString(explicit) {
+		if _, err := os.Stat(explicit); err != nil {
+			host, path, _ := strings.Cut(explicit, ":")
+			return "", fmt.Errorf("--vault %q looks like host:path, but lw has no remote vaults; run lw on that host instead: ssh %s -t lw tui --vault %s", explicit, host, path)
+		}
+	}
+	return explicit, nil
 }

@@ -936,13 +936,32 @@ func (e *Engine) refreshWriteLocked() error {
 // stale cache naming a changeset a foreign process already committed, the
 // rename fails with ENOENT and the caller finds out, rather than silently
 // rejecting a different changeset the user never saw.
+//
+// 042: after the rejection is journalled and writeMu is released, the
+// OnTerminal hook is told — see Commit for why it runs outside the lock.
 func (e *Engine) Reject(reason string) error {
+	changesetID, err := e.rejectLocked(reason)
+	if err != nil {
+		return err
+	}
+	e.fireTerminal(TerminalEvent{
+		Kind:      terminalReject,
+		Changeset: changesetID,
+		Message:   reason,
+	})
+	return nil
+}
+
+// rejectLocked is Reject's body under writeMu. It returns the id of the
+// changeset it moved so Reject can name it in the terminal event once the
+// lock is released.
+func (e *Engine) rejectLocked(reason string) (string, error) {
 	e.writeMu.Lock()
 	defer e.writeMu.Unlock()
 
 	c, err := e.currentOpen()
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	src := filepath.Join(e.changesetOpenDir(), c.ID)
@@ -951,7 +970,7 @@ func (e *Engine) Reject(reason string) error {
 	// directories (A-804, F-806-1), so a missing one fails the rename
 	// instead of being silently recreated.
 	if err := os.Rename(src, dst); err != nil {
-		return fmt.Errorf("stage: reject: %w", err)
+		return "", fmt.Errorf("stage: reject: %w", err)
 	}
 
 	if err := e.appendJournal(Event{
@@ -961,9 +980,9 @@ func (e *Engine) Reject(reason string) error {
 		Actor:     c.Author,
 		Message:   reason,
 	}); err != nil {
-		return fmt.Errorf("stage: reject: %w", err)
+		return "", fmt.Errorf("stage: reject: %w", err)
 	}
 
 	e.forgetOpen()
-	return nil
+	return c.ID, nil
 }

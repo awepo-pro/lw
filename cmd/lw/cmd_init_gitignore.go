@@ -15,6 +15,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/awepo-pro/lw/internal/vaultsync"
 )
 
 const (
@@ -50,6 +52,14 @@ func ensureGitignore(dir string) (wrote bool, err error) {
 	if ignoreEntryPresent(string(data)) {
 		return false, nil
 	}
+	// 042: a .gitignore lw sync manages is lw sync's, byte for byte — it
+	// rewrites the file whenever it differs — and it keeps .llmwiki/ tracked on
+	// purpose (the journal, objects and committed changesets are what a sync
+	// carries) while ignoring the per-PC parts. Appending ".llmwiki/" would
+	// ignore all of it, and the next sync would rewrite the line away.
+	if managedGitignore(string(data)) {
+		return false, nil
+	}
 
 	// Append exactly one entry line, matching the file's own line ending.
 	// A file with no trailing newline first gets that newline — the
@@ -70,6 +80,16 @@ func ensureGitignore(dir string) (wrote bool, err error) {
 		return false, fmt.Errorf("append %s: %w", gitignoreName, err)
 	}
 	return true, nil
+}
+
+// managedGitignore reports whether content is a .gitignore lw sync manages:
+// its first line is the marker vaultsync.Ignore opens with. Only the first
+// line counts — the words inside someone else's comment further down do not
+// make the file lw's.
+func managedGitignore(content string) bool {
+	marker, _, _ := strings.Cut(vaultsync.Ignore, "\n")
+	first, _, _ := strings.Cut(content, "\n")
+	return strings.TrimRight(first, "\r") == marker
 }
 
 // ignoreEntryPresent reports whether an existing .gitignore already ignores

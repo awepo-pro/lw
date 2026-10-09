@@ -121,7 +121,16 @@ func cmdNote(args []string) error {
 	if err != nil {
 		return err
 	}
+	// 042: a note is a tracked file in a synced vault, so it is refused while a
+	// checkout collision is unresolved, taken after the newest vault has been
+	// pulled (before an editor opens, so the pull does not wait on one), and
+	// pushed once it is on disk.
+	if err := collisionRefusal(root); err != nil {
+		return err
+	}
 	attachLoggingAt(root) // notes/ is not lw state: join the trail, never create it
+	auto := loadAutoSync(root)
+	auto.pull()
 
 	var text string
 	if len(texts) == 1 {
@@ -143,6 +152,7 @@ func cmdNote(args []string) error {
 		return err
 	}
 	fmt.Println("noted " + rel)
+	auto.afterNote()
 	return nil
 }
 
@@ -156,8 +166,8 @@ func noteVaultRoot(explicit string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if info, err := os.Stat(filepath.Join(root, "SCHEMA.md")); err != nil || info.IsDir() {
-		return "", fmt.Errorf("%s is not a vault (no SCHEMA.md); pass --vault", root)
+	if err := requireSchema(root); err != nil {
+		return "", err
 	}
 	return root, nil
 }

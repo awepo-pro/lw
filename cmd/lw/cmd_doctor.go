@@ -235,17 +235,30 @@ func cmdDoctor(args []string) error {
 		return &exitError{code: 2}
 	}
 
-	root, err := findVaultRoot(*vaultPath)
+	// 042: --discard-changeset rejects a changeset — a write to tracked state,
+	// so it is refused while a checkout collision is unresolved and, with
+	// remotes configured, pushed like any rejection. The other flags and the
+	// plain check touch nothing a sync carries.
+	rootOf := findVaultRoot
+	if *discard {
+		rootOf = writableVaultRoot
+	}
+	root, err := rootOf(*vaultPath)
 	if err != nil {
 		return err
 	}
 	attachLoggingAt(root) // read-only: join the trail, never create it
 
+	var auto *autoSync
+	if *discard {
+		auto = loadAutoSync(root)
+	}
 	rep := runDoctor(context.Background(), root, doctorOptions{
 		unlock:           *unlock,
 		rebuildIndex:     *rebuild,
 		discardChangeset: *discard,
 		probe:            true,
+		sync:             auto,
 	})
 
 	if *asJSON {
@@ -273,6 +286,12 @@ type doctorOptions struct {
 	rebuildIndex     bool // rebuild and save the index before checking
 	discardChangeset bool // move the open changeset to changesets/rejected before checking
 	probe            bool // run the provider check (false in tests)
+
+	// sync is the auto-sync (042) the engine runDoctor opens gets its terminal
+	// hook from: --discard-changeset rejects, and a rejection is pushed. nil
+	// when auto-sync does not apply, which is every run without
+	// --discard-changeset.
+	sync *autoSync
 }
 
 // runDoctor performs the repairs the flags ask for, then runs every check in
@@ -312,7 +331,7 @@ func runDoctor(ctx context.Context, root string, o doctorOptions) doctorReport {
 
 	rep.Checks = append(rep.Checks, checkIndex(root, v))
 
-	if e, err := stage.OpenEngine(root); err != nil {
+	if e, err := openVaultEngine(root, o.sync); err != nil {
 		rep.Checks = append(rep.Checks, doctorCheck{
 			Name:   "state",
 			Detail: fmt.Sprintf("%s could not be opened: %v", stateRel, err),
@@ -327,6 +346,11 @@ func runDoctor(ctx context.Context, root string, o doctorOptions) doctorReport {
 			res := discardChangeset(e, root)
 			rep.Actions = append(rep.Actions, res.line)
 			rep.discardNothing = res.nothing
+			if res.unreadable {
+				// The unreadable changeset is moved and journalled without
+				// Engine.Reject, so the terminal hook never fired for it.
+				o.sync.requestPush()
+			}
 		}
 		rep.Checks = append(rep.Checks,
 			checkObjects(root, e),
@@ -348,7 +372,13 @@ func runDoctor(ctx context.Context, root string, o doctorOptions) doctorReport {
 	}
 	rep.Checks = append(rep.Checks, checkLLMBudget(cfg, cfgErr))
 	if o.probe {
-		rep.Checks = append(rep.Checks, checkProvider(ctx, cfg))
+		if cfgErr != nil {
+			// The config check above already failed with the parse error; there
+			// is no endpoint to probe (and no Config to read one from).
+			rep.Checks = append(rep.Checks, doctorCheck{Name: "provider", OK: true, Skipped: true, Detail: "skipped: the configuration did not load"})
+		} else {
+			rep.Checks = append(rep.Checks, checkProvider(ctx, cfg))
+		}
 	}
 	return rep
 }
@@ -362,6 +392,11 @@ const discardReason = "discarded by lw doctor --discard-changeset"
 type discardResult struct {
 	line    string
 	nothing bool
+
+	// unreadable is true when the changeset was moved aside without the
+	// engine's Reject (its changeset.json could not be read) and journalled
+	// directly: the case where the caller has to ask for the sync push itself.
+	unreadable bool
 }
 
 // discardChangeset is the --discard-changeset repair (TD-7): the open
@@ -406,7 +441,7 @@ func discardChangeset(e *stage.Engine, root string) discardResult {
 		}); jErr != nil {
 			return discardResult{line: fmt.Sprintf("discard failed: %s moved to %s but journalling it did not: %v", id, rejectedChangesetsRel, jErr)}
 		}
-		return discardResult{line: fmt.Sprintf("discarded unreadable open changeset %s (%s -> %s); it had no readable changeset.json",
+		return discardResult{unreadable: true, line: fmt.Sprintf("discarded unreadable open changeset %s (%s -> %s); it had no readable changeset.json",
 			id, openChangesetsRel, rejectedChangesetsRel)}
 	}
 }

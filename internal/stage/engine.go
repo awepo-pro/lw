@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/awepo-pro/lw/internal/index"
@@ -45,6 +46,11 @@ type Engine struct {
 	// disk failure into the window.
 	failBeforePersist func() error
 	forceNext         bool // next Commit overrode a lint regression (D-AG); guarded by lifecycleMu
+	// onTerminal is the 042 terminal-event hook (OnTerminal, terminal.go).
+	// An atomic pointer rather than a mutex-guarded field: it is read after
+	// writeMu is released, so it must not be guarded by any engine lock, and
+	// OnTerminal may be called from a TUI goroutine while a commit runs.
+	onTerminal atomic.Pointer[func(TerminalEvent)]
 	// lifecycleMu guards the commit-lifecycle fields unlock and forceNext
 	// (008 contract §11, amendment A-804; ORCH-806): Commit writes both,
 	// ForceNextCommit and ReloadIfChanged read them, and those run on
@@ -304,10 +310,24 @@ func msSince(t time.Time) float64 {
 // reads e.now or e.rand — so WithClock and WithEntropy pin every
 // timestamp and changeset id the engine produces. Production passes no
 // options.
+//
+// 042: the vault's format (ReadFormat) is checked first, before vault.Open,
+// before .llmwiki/ gets a single new directory, before recovery, the index
+// or the journal are touched. A vault written by a newer lw is refused with
+// a *FormatError and left byte-for-byte as it was; a vault with no format
+// file (every vault today) opens exactly as before.
 func OpenEngine(vaultRoot string, opts ...Option) (*Engine, error) {
 	root, err := filepath.Abs(vaultRoot)
 	if err != nil {
 		return nil, fmt.Errorf("stage: open engine: %w", err)
+	}
+
+	have, err := ReadFormat(filepath.Join(root, ".llmwiki"))
+	if err != nil {
+		return nil, fmt.Errorf("stage: open engine: %w", err)
+	}
+	if have > FormatVersion {
+		return nil, &FormatError{Have: have, Max: FormatVersion}
 	}
 
 	// 025 T3 launch timing: every measurement below is a log line and
@@ -347,6 +367,14 @@ func OpenEngine(vaultRoot string, opts ...Option) (*Engine, error) {
 	}
 	for _, d := range dirs {
 		if err := os.MkdirAll(d, 0o755); err != nil {
+			return nil, fmt.Errorf("stage: open engine: %w", err)
+		}
+	}
+
+	// A vault that syncs has the journal lock from the first append, however it
+	// came to sync (A-042-10); one that does not gains nothing.
+	if SyncedVault(root) {
+		if err := EnsureJournalLock(dir); err != nil {
 			return nil, fmt.Errorf("stage: open engine: %w", err)
 		}
 	}

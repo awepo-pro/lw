@@ -1,0 +1,71 @@
+$ lw status
+[stdout]
+4 pages · 2 raw · 12 tags
+lint: 0 errors, 0 warnings, 0 info
+no open changeset
+[stderr]
+[exit 0]
+
+$ lw note -m hello
+[stdout]
+noted notes/<stamp>-hello.md
+[stderr]
+[exit 0]
+
+$ lw stage --from <ops>
+[stdout]
+staged 1 op(s) into <cs>
+[stderr]
+[exit 0]
+
+$ lw status
+[stdout]
+4 pages · 2 raw · 12 tags
+lint: 0 errors, 0 warnings, 0 info
+open changeset <cs>: cli stage import (1 op(s), 0 stale; schema=pass lint=pass orphans=1 broken_links=0)
+[stderr]
+[exit 0]
+
+$ lw commit -m first page
+[stdout]
+committed 000001
+[stderr]
+[exit 0]
+
+$ lw status
+[stdout]
+5 pages · 2 raw · 12 tags
+lint: 0 errors, 2 warnings, 0 info
+no open changeset
+[stderr]
+[exit 0]
+
+$ lw ingest --dry-run <src>
+[stdout]
+would ingest <src>
+within limits: 1 files, 1 KB (limit 10 files, 282 KB)
+[stderr]
+[exit 0]
+
+[files]
+.llmwiki/changesets/committed/<cs>/changeset.json
+.llmwiki/index.gob
+.llmwiki/journal.ndjson
+.llmwiki/logs/lw.log
+.llmwiki/objects/<xx>/<sha>
+.llmwiki/objects/<xx>/<sha>
+.llmwiki/objects/<xx>/<sha>
+.llmwiki/snapshots/000000.tree
+.llmwiki/snapshots/000001.tree
+SCHEMA.md
+curator-memory.md
+index.md
+log.md
+notes/<stamp>-hello.md
+raw/articles/kv-cache-explained.md
+raw/papers/leviathan-2023.md
+wiki/concepts/flash-attention.md
+wiki/concepts/kv-cache.md
+wiki/concepts/paged-attention.md
+wiki/concepts/speculative-decoding.md
+wiki/entities/gpt-4.md

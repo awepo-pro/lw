@@ -64,7 +64,11 @@ func cmdQuery(args []string) error {
 	}
 	initLoggingAt(root)
 
-	e, err := stage.OpenEngine(root)
+	// 042: a query is read-only, but a turn that stages anyway is rejected
+	// (below), and a rejection is pushed like any other (S3d L2) — through the
+	// same hook helper, quietly: this verb is not a writing verb, so a vault
+	// that is not under lw sync is nothing to announce.
+	e, err := openVaultEngine(root, loadQuietAutoSync(root))
 	if err != nil {
 		return fmt.Errorf("open engine: %w", err)
 	}

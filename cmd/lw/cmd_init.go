@@ -88,6 +88,13 @@ func runInit(o initOpts) error {
 		return fmt.Errorf("getwd: %w", err)
 	}
 
+	// 042: init — --force included, which scaffolds into an existing vault — is
+	// a verb that touches the vault like any other, and a vault written by a
+	// newer lw is refused before a byte of it is.
+	if err := checkVaultFormat(dir); err != nil {
+		return err
+	}
+
 	if err := refuseOccupied(dir, *force); err != nil {
 		return err
 	}

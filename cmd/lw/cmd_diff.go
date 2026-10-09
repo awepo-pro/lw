@@ -43,7 +43,7 @@ func cmdDiff(args []string) error {
 	}
 	attachLoggingAt(root) // read-only: join the trail, never create it
 
-	e, err := stage.OpenEngine(root)
+	e, err := openVaultEngine(root, nil)
 	if err != nil {
 		return fmt.Errorf("open engine: %w", err)
 	}

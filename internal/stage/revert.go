@@ -91,9 +91,7 @@ func (e *Engine) Revert(commitID string) (*Changeset, error) {
 		Actor:     final.Author,
 	}
 	if len(skipped) > 0 {
-		data, err := json.Marshal(struct {
-			Skipped []string `json:"skipped"`
-		}{Skipped: skipped})
+		data, err := json.Marshal(revertedPayload{Skipped: skipped})
 		if err != nil {
 			return nil, fmt.Errorf("stage: revert %s: %w", commitID, err)
 		}
@@ -104,6 +102,15 @@ func (e *Engine) Revert(commitID string) (*Changeset, error) {
 	}
 
 	return final, nil
+}
+
+// revertedPayload is the shape of a reverted event's Data field, written
+// only when the revert skipped paths. A named type — it was an anonymous
+// struct inside Revert — so TestFormatFingerprint can reflect over the real
+// thing (042): the journal is synced, and this key is part of the on-disk
+// format.
+type revertedPayload struct {
+	Skipped []string `json:"skipped"`
 }
 
 // classifyRevertDelta partitions cur against prev into the ADDED, REMOVED
