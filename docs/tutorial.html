@@ -686,9 +686,10 @@ lw doctor — /home/you/ml-wiki
 
   <h3>Quick notes (no LLM, no review)</h3>
 <pre><code>lw note -m "check whether paged attention changes the KV-cache trade-off"
+lw note -F draft.md     <span class="c"># from a file; -F - reads stdin</span>
 lw note                 <span class="c"># compose in $VISUAL / $EDITOR</span>
 lw note list -n 10</code></pre>
-  <p>Notes go into <code>notes/</code>, outside the wiki. They're never indexed or snapshotted. Think of it as an inbox for thoughts you'll turn into sources later.</p>
+  <p>Notes go into <code>notes/</code>, outside the wiki. They're never indexed or snapshotted. Think of it as an inbox for thoughts you'll turn into sources later. An editor that returns at once (<code>subl</code> or <code>code</code> without <code>-w</code>) is refused, and whatever you save in it is kept as a draft that the next <code>lw note</code> reopens.</p>
 
   <h3>PDFs</h3>
 <pre><code>uv tool install docling==2.130.0     <span class="c"># one-time; ~6 GB, runs CPU-only</span>
@@ -734,7 +735,7 @@ lw config set open.pdf "papers -i {page} {file}"   <span class="c"># or: mupdf {
     <tr><td><code>lw init [--schema d]</code></td><td>Scaffold a vault</td><td>no</td></tr>
     <tr><td><code>lw config [set k v] [--probe]</code></td><td>Show, edit, or test config</td><td>probe only</td></tr>
     <tr><td><code>lw ingest &lt;path|url|dir&gt;… [--dry-run]</code></td><td>Propose pages from sources</td><td>yes</td></tr>
-    <tr><td><code>lw note [-m "…"] | note list</code></td><td>Quick capture outside the wiki</td><td>no</td></tr>
+    <tr><td><code>lw note [-m "…" | -F &lt;file|-&gt;] | note list</code></td><td>Quick capture outside the wiki</td><td>no</td></tr>
     <tr><td><code>lw status</code></td><td>Committed counts + open changeset</td><td>no</td></tr>
     <tr><td><code>lw diff [--stat] [--op id]</code></td><td>Projected diff</td><td>no</td></tr>
     <tr><td><code>lw commit -m "…" [--force]</code></td><td>Land the changeset</td><td>no</td></tr>
