@@ -118,6 +118,11 @@ func ToolErrors(dir, id string, t *trace.Turn) ([]ToolError, error) {
 type failedCall struct {
 	ToolError
 	ResultBytes int
+	// Args is the call's arguments as the response echoed them, "" when the
+	// response is missing or carries no call with the event's id (060). The
+	// event has none, and a result whose text was never recovered can only be
+	// told by its size — which, for a not-found page, depends on what was asked.
+	Args string
 }
 
 // failedCalls is ToolErrors with each error's result size attached, read from
@@ -150,10 +155,25 @@ func failedCalls(dir, id string, t *trace.Turn) ([]failedCall, error) {
 					Text:  firstRunes(byID[c.ID], toolErrorRunes),
 				},
 				ResultBytes: c.ResultBytes,
+				Args:        argsOfCall(a.Response, c.ID),
 			})
 		}
 	}
 	return out, nil
+}
+
+// argsOfCall returns the arguments the model sent for the tool call id, from
+// the response whose tool_calls dispatched it; "" when there is no such call.
+func argsOfCall(r *trace.Response, id string) string {
+	if r == nil || id == "" {
+		return ""
+	}
+	for _, tc := range r.ToolCalls {
+		if tc.ID == id {
+			return tc.Arguments
+		}
+	}
+	return ""
 }
 
 // toolResults reads the tool-result messages out of the latest attempt of
