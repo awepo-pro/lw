@@ -187,6 +187,22 @@ type job struct {
 	// recompile marks an ingest job that runs `lw ingest --recompile` over
 	// args as vault paths of raws the snapshot already holds (055).
 	recompile bool
+
+	// then is the inputs of the SECOND `lw ingest` call of the job (060), in
+	// the same form as args: absolute paths, or vault paths when recompile.
+	// nil is the one call every job was before.
+	then []string
+}
+
+// argv is the command line of one lw call of j over args, on the scratch
+// vault: the verb, --vault, --recompile for a recompile job (both calls of a
+// joined one carry it), then the arguments.
+func (j job) argv(scratch string, args []string) []string {
+	argv := []string{j.verb, "--vault", scratch}
+	if j.recompile {
+		argv = append(argv, "--recompile")
+	}
+	return append(argv, args...)
 }
 
 // runState is what every job of one Run shares.
@@ -343,18 +359,22 @@ func (r *Runner) selectJobs() ([]job, error) {
 		all = append(all, entry{job{id: c.ID, verb: "query", kind: c.Kind, args: []string{c.Q}}, c.Holdout, true})
 	}
 	for _, c := range r.Set.Ingest {
-		var paths []string
-		for _, p := range c.Paths() {
-			if c.Recompile {
-				// 055: a vault path names a raw in the scratch vault, not a
-				// file beside cases.toml — joined onto the set directory it
-				// would name nothing lw could read.
-				paths = append(paths, p)
-				continue
+		// resolve turns a case's paths into the arguments lw gets.
+		resolve := func(rel []string) []string {
+			var paths []string
+			for _, p := range rel {
+				if c.Recompile {
+					// 055: a vault path names a raw in the scratch vault, not a
+					// file beside cases.toml — joined onto the set directory it
+					// would name nothing lw could read.
+					paths = append(paths, p)
+					continue
+				}
+				paths = append(paths, filepath.Join(r.Set.Dir, filepath.FromSlash(p)))
 			}
-			paths = append(paths, filepath.Join(r.Set.Dir, filepath.FromSlash(p)))
+			return paths
 		}
-		all = append(all, entry{job{id: c.ID, verb: "ingest", kind: "ingest", args: paths, recompile: c.Recompile}, c.Holdout, false})
+		all = append(all, entry{job{id: c.ID, verb: "ingest", kind: "ingest", args: resolve(c.Paths()), recompile: c.Recompile, then: resolve(c.Then)}, c.Holdout, false})
 	}
 
 	group := r.Only == "" || r.Only == "ask" || r.Only == "ingest"
@@ -423,16 +443,18 @@ dispatch:
 	return errs
 }
 
-// runJob runs one job: extract a fresh scratch vault, run lw on it, retry
-// once if it exits non-zero, then write the case's artifacts and remove the
-// scratch. meta.json is written last — a case directory without one is a
-// job that did not finish.
+// runJob runs one job: extract a fresh scratch vault, run lw on it (twice, for
+// a case with then — see attempt), retry once if the attempt exits non-zero,
+// then write the case's artifacts and remove the scratch. meta.json is written
+// last — a case directory without one is a job that did not finish.
 //
 // The retry starts from a freshly extracted scratch vault, not the one the
 // failed attempt left: a failed ingest leaves its half-built changeset
-// behind, and the retry would join it instead of starting clean. The price
-// is that the failed attempt's traces are not kept — everything in the case
-// directory describes the last attempt only.
+// behind, and the retry would join it instead of starting clean (060: a
+// joined case reruns BOTH calls on that fresh vault, for the same reason). The
+// price is that the failed attempt's traces are not kept — everything in the
+// case directory describes the last attempt only, and for a joined case that
+// is the traces of both its turns and the changeset after the second.
 func (r *Runner) runJob(ctx context.Context, st *runState, j job) error {
 	if err := ctx.Err(); err != nil {
 		return err // a cancelled run starts nothing new
@@ -469,14 +491,7 @@ func (r *Runner) runJob(ctx context.Context, st *runState, j job) error {
 		if st.jobTimeout > 0 {
 			actx, cancel = context.WithTimeout(ctx, st.jobTimeout)
 		}
-		// One lw call per job, whatever its inputs: a multi-file ingest case
-		// is the files of ONE `lw ingest`, in the order the case lists them.
-		argv := []string{j.verb, "--vault", scratch}
-		if j.recompile {
-			argv = append(argv, "--recompile")
-		}
-		argv = append(argv, j.args...)
-		res, err = st.exec(actx, Cmd{Path: r.LW, Args: argv, Env: st.env})
+		res, err = r.attempt(actx, st, scratch, j)
 		// A cut-off attempt is the job timeout, not a run error: the deadline
 		// fired on the attempt's own context while the run's was still live,
 		// and the command did not finish cleanly. One that exited 0 just as
@@ -522,7 +537,8 @@ func (r *Runner) runJob(ctx context.Context, st *runState, j job) error {
 			return err
 		}
 		if j.recompile {
-			if err := keepRecompiledRaws(scratch, caseDir, j.args); err != nil {
+			// 060: the raws of a joined call are kept beside the first call's.
+			if err := keepRecompiledRaws(scratch, caseDir, append(append([]string(nil), j.args...), j.then...)); err != nil {
 				return err
 			}
 		}
@@ -532,6 +548,38 @@ func (r *Runner) runJob(ctx context.Context, st *runState, j job) error {
 		Attempts: attempts, ExitCode: res.ExitCode, Failed: res.ExitCode != 0, TimedOut: timedOut,
 		Started: started, WallMS: wall.Milliseconds(), Traces: traces,
 	})
+}
+
+// attempt runs one attempt of j on the scratch vault and returns its result.
+//
+// A job is ONE lw call, whatever its inputs: a multi-file ingest case is the
+// files of one `lw ingest`, in the order the case lists them. A case with `then`
+// (060) is two: the second `lw ingest` runs in the same scratch vault right
+// after the first exits 0, so it joins the changeset the first left open (019) —
+// the shape of the 10-08 real failure, a joined recompile turn that asked wiki.get
+// six times for pages its own earlier turn had staged and ran out of rounds, which
+// the eval could not see because it never ran a second turn. Both calls share the
+// attempt's context, so the job timeout bounds the pair, not each; a deadline
+// already spent when the first call returns leaves no second call to start and
+// the attempt ends with the context's error, which runJob reads as a timeout.
+//
+// The result is the first call's when that failed — a joined call on a crashed
+// ingest's half-built changeset would measure the wreck, so it is skipped — and
+// otherwise the second's: its exit code, with the stdout and stderr of both calls,
+// the first's bytes then the second's with nothing between. A job without then
+// returns exactly what its one call returned.
+func (r *Runner) attempt(ctx context.Context, st *runState, scratch string, j job) (Output, error) {
+	res, err := st.exec(ctx, Cmd{Path: r.LW, Args: j.argv(scratch, j.args), Env: st.env})
+	if len(j.then) == 0 || err != nil || res.ExitCode != 0 {
+		return res, err
+	}
+	if err := ctx.Err(); err != nil {
+		return res, err
+	}
+	second, err := st.exec(ctx, Cmd{Path: r.LW, Args: j.argv(scratch, j.then), Env: st.env})
+	second.Stdout = append(append([]byte(nil), res.Stdout...), second.Stdout...)
+	second.Stderr = append(append([]byte(nil), res.Stderr...), second.Stderr...)
+	return second, err
 }
 
 // envKeys returns the sorted, de-duplicated names of env's KEY=VALUE

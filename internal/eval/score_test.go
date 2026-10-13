@@ -175,6 +175,7 @@ func TestScoreRun(t *testing.T) {
 			"pages_new": 1, "dup_pages": 0, "orphans_new": 1,
 			"reads_before_first_stage": 0, "read_refusals": 0, "closed": 0, "search_calls": 0,
 			"search_refusals": 0, // A-053-1: the 053 metric is a value (0) for any ingest run with a trace
+			"get_not_found":   0, // A-060-4: the 060 metric is a value (0) for any ingest run with a trace
 		})
 	}
 	wants := []want{
@@ -482,6 +483,7 @@ facts = [["speculative"], ["inference"], ["verifies them"]]
 		"pages_new": 2, "dup_pages": 0, "orphans_new": 0,
 		"reads_before_first_stage": 0, "read_refusals": 0, "closed": 0, "search_calls": 0,
 		"search_refusals": 0, // A-053-1
+		"get_not_found":   0, // A-060-4
 	})
 }
 

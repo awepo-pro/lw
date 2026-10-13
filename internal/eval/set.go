@@ -57,6 +57,15 @@ type IngestCase struct {
 	// input is then a vault path (raw/….md) of a source the snapshot already
 	// holds as a committed raw, not a file in the set directory.
 	Recompile bool `toml:"recompile"`
+	// Then is the inputs of a SECOND `lw ingest` call (060), run in the same
+	// scratch vault right after the first exits 0, so it joins the changeset the
+	// first left open (019). The eval never ran a joined second turn, so the
+	// 10-08 real failure — a joined recompile turn at max_rounds after six
+	// not-found wiki.get on its own staged pages — was invisible to it. The
+	// paths resolve like Input and Inputs (set-directory files, or vault paths
+	// when Recompile is set, and --recompile goes to both calls). Empty means
+	// the one call every earlier case was.
+	Then []string `toml:"then"`
 }
 
 // Paths returns the files the case ingests, as written and in order: Inputs
@@ -250,10 +259,12 @@ func checkAsk(c AskCase) error {
 // checkIngest validates one ingest case. Its facts are optional: the case
 // still yields the staged pages and their lint report, which is a result
 // even when nobody wrote a fact to look for. Every file it names, whether as
-// input or as an element of inputs, gets the same checks, and the same
-// words, as a lone input always did; a file listed twice is refused because
-// the run would hand lw the same source twice and score a different case
-// than the one written.
+// input, as an element of inputs or as an element of then (060), gets the same
+// checks, and the same words, as a lone input always did; a file listed twice
+// is refused because the run would hand lw the same source twice and score a
+// different case than the one written. That holds across the two calls too:
+// a then that repeats a first-call input would ingest one source in both
+// turns, which nobody writes on purpose.
 func checkIngest(setDir string, c IngestCase) error {
 	who := fmt.Sprintf("ingest %q", c.ID)
 	switch {
@@ -262,20 +273,25 @@ func checkIngest(setDir string, c IngestCase) error {
 	case c.Input == "" && len(c.Inputs) == 0:
 		return fmt.Errorf("cases.toml: %s: input is empty", who)
 	}
+	check := checkInput
+	if c.Recompile {
+		check = checkRecompileInput
+	}
 	seen := map[string]bool{}
-	for _, p := range c.Paths() {
-		check := checkInput
-		if c.Recompile {
-			check = checkRecompileInput
+	for _, call := range []struct {
+		who   string
+		paths []string
+	}{{who, c.Paths()}, {who + " then", c.Then}} {
+		for _, p := range call.paths {
+			if err := check(setDir, call.who, p); err != nil {
+				return err
+			}
+			key := filepath.Clean(filepath.FromSlash(p))
+			if seen[key] {
+				return fmt.Errorf("cases.toml: %s: input %s is listed twice", call.who, p)
+			}
+			seen[key] = true
 		}
-		if err := check(setDir, who, p); err != nil {
-			return err
-		}
-		key := filepath.Clean(filepath.FromSlash(p))
-		if seen[key] {
-			return fmt.Errorf("cases.toml: %s: input %s is listed twice", who, p)
-		}
-		seen[key] = true
 	}
 	return checkFacts(who, c.Facts)
 }
