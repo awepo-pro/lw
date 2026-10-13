@@ -41,7 +41,9 @@ type AskCase struct {
 	Holdout bool       `toml:"holdout"`
 }
 
-// IngestCase is one `lw ingest` call. A case names its input as Input (one
+// IngestCase is one `lw ingest` call, or two when Then is set (060 review
+// LOW-3: the second call joins the first's changeset, and both run as one
+// attempt under one job timeout). A case names its input as Input (one
 // file) or Inputs (several files handed to the SAME call, 049: the failure
 // the user hit was three articles in one `lw ingest`, which a single path
 // cannot express) — exactly one of the two. Paths are relative to the set's
@@ -68,10 +70,11 @@ type IngestCase struct {
 	Then []string `toml:"then"`
 }
 
-// Paths returns the files the case ingests, as written and in order: Inputs
-// when it is set, else Input alone. It is nil for a case that names none,
-// which LoadSet never lets through. The slice is the case's own — read it,
-// do not append to it.
+// Paths returns the files of the case's FIRST ingest call, as written and in
+// order: Inputs when it is set, else Input alone. It does not include Then —
+// those are the second call's files (060 review LOW-3). It is nil for a case
+// that names none, which LoadSet never lets through. The slice is the case's
+// own — read it, do not append to it.
 func (c IngestCase) Paths() []string {
 	if len(c.Inputs) > 0 {
 		return c.Inputs

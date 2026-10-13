@@ -65,10 +65,12 @@ type Runner struct {
 	Exec     ExecFunc      // nil = os/exec, parent env inherited
 	Backoff  time.Duration // before the one retry; 0 = 30s
 
-	// JobTimeout bounds ONE attempt of one lw command; 0 = no bound. An
-	// attempt that outlives it is cancelled and counts as a failed attempt —
-	// it gets the one retry like any other — so a provider that hangs costs a
-	// case 2×JobTimeout instead of the whole run. lweval defaults to 20
+	// JobTimeout bounds ONE attempt of one job; 0 = no bound. An attempt is one
+	// lw command — except for an ingest case with `then` (060), whose attempt is
+	// BOTH lw calls under this one timeout, not one timeout each (060 review
+	// LOW-3). An attempt that outlives it is cancelled and counts as a failed
+	// attempt — it gets the one retry like any other — so a provider that hangs
+	// costs a case 2×JobTimeout instead of the whole run. lweval defaults to 20
 	// minutes (A-037-9).
 	JobTimeout time.Duration
 
@@ -176,7 +178,9 @@ func osExec(ctx context.Context, c Cmd) (Output, error) {
 	return out, err
 }
 
-// job is one (case, index) pair: a single lw invocation's worth of work.
+// job is one (case, index) pair: one lw invocation's worth of work — or, for an
+// ingest case with `then` (060), two lw invocations, run as one attempt under
+// one timeout (060 review LOW-3).
 type job struct {
 	id    string
 	verb  string   // "query" | "ingest"

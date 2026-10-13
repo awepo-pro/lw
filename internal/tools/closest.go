@@ -2,6 +2,8 @@ package tools
 
 import (
 	"cmp"
+	"errors"
+	"fmt"
 	"path"
 	"slices"
 	"strings"
@@ -140,14 +142,37 @@ func closestPaths(want string, have []string) []string {
 // would point the model at a file that will never exist. No engine, no open
 // changeset or a failed read all mean "nothing staged": this is advice
 // appended to a refusal, and a hint that cannot be computed must not turn
-// the refusal into something else.
+// the refusal into something else. That silence is right for a hint only; a
+// caller that DECIDES a result from the set (wiki.get reading a staged-only
+// page back, the graph tools naming one) uses stagedPathsStrict, so an
+// unreadable changeset is never turned into "not found" (060 review LOW-2).
 func stagedPaths(d Deps, kind stage.OpKind) []string {
-	if d.Engine == nil {
+	out, err := stagedPathsStrict(d, kind)
+	if err != nil {
 		return nil
+	}
+	return out
+}
+
+// stagedPathsStrict is stagedPaths with the read failure reported: the same
+// live top-level ops of kind, but a changeset that cannot be read (anything
+// Engine.Current returns other than stage.ErrNoChangeset — a damaged
+// changeset.json, an I/O error) is an error, as the committed path's
+// Engine.StagedFile reports the same failure. No engine and no open changeset
+// are not errors — nothing is staged. 060 review LOW-2: the staged-only
+// lookup answers a page with this set, and a "not found" built over a
+// changeset it could not read sends the model into the retry loop 060
+// removes, where aborting the turn names the real problem.
+func stagedPathsStrict(d Deps, kind stage.OpKind) ([]string, error) {
+	if d.Engine == nil {
+		return nil, nil
 	}
 	cs, err := d.Engine.Current()
 	if err != nil {
-		return nil
+		if errors.Is(err, stage.ErrNoChangeset) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read open changeset: %w", err)
 	}
 	var out []string
 	for _, op := range cs.Live() {
@@ -155,7 +180,7 @@ func stagedPaths(d Deps, kind stage.OpKind) []string {
 			out = append(out, op.Path)
 		}
 	}
-	return out
+	return out, nil
 }
 
 // closestRawSources are the raw sources that resemble want: every committed

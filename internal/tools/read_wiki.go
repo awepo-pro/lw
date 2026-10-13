@@ -219,7 +219,10 @@ func wikiNeighborsHandler(ctx context.Context, d Deps, args json.RawMessage) (Re
 		return badArgs("wiki.neighbors", err, `{"page": "kv-cache"}`), nil
 	}
 
-	resolved, res, ok := resolvePagePath(d, "wiki.neighbors", a.Page)
+	resolved, res, ok, err := resolvePagePath(d, "wiki.neighbors", a.Page)
+	if err != nil {
+		return Result{}, fmt.Errorf("tools: wiki.neighbors: %w", err)
+	}
 	if !ok {
 		return res, nil
 	}
@@ -276,7 +279,10 @@ func wikiBacklinksHandler(ctx context.Context, d Deps, args json.RawMessage) (Re
 		return badArgs("wiki.backlinks", err, `{"page": "kv-cache"}`), nil
 	}
 
-	resolved, res, ok := resolvePagePath(d, "wiki.backlinks", a.Page)
+	resolved, res, ok, err := resolvePagePath(d, "wiki.backlinks", a.Page)
+	if err != nil {
+		return Result{}, fmt.Errorf("tools: wiki.backlinks: %w", err)
+	}
 	if !ok {
 		return res, nil
 	}
@@ -421,8 +427,10 @@ func badArgs(tool string, err error, example string) Result {
 // vault.ParsePage — the same parser a committed page goes through — and a
 // staged parse failure is an internal-invariant error, never a silent
 // fall back to the committed page, because Append only stages bytes it
-// validated. err is non-nil for such a violation and for a genuine
-// engine/CAS failure; the caller aborts the turn on it.
+// validated. err is non-nil for such a violation, for a genuine
+// engine/CAS failure and for an open changeset the staged-only lookup could
+// not read (060 review LOW-2: never a "not found" built over a changeset that
+// was not read); the caller aborts the turn on it.
 //
 // vault.Resolve does NOT match a page's frontmatter title (backbone §2.9:
 // exact path, then "<target>.md", then basename case-insensitively, then
@@ -433,7 +441,10 @@ func badArgs(tool string, err error, example string) Result {
 func resolvePageArg(d Deps, tool, page string) (resolved string, p *vault.Page, staged bool, onFail Result, ok bool, err error) {
 	resolved, arg, onFail, ok := resolveCommittedPath(d, tool, page)
 	if !ok {
-		sp, hit := stagedOnlyPath(d, arg)
+		sp, hit, serr := stagedOnlyPath(d, arg)
+		if serr != nil {
+			return "", nil, false, Result{}, false, serr
+		}
 		if !hit {
 			return "", nil, false, onFail, false, nil
 		}
@@ -491,13 +502,21 @@ func readStagedOnlyPage(d Deps, path string, notFound Result) (resolved string, 
 // stagedOnlyPath resolves arg among the paths the open changeset's live
 // stage.create_page ops propose (060): the pages that exist only in the
 // changeset. It runs only after the committed lookup missed. Live(), via
-// stagedPaths, so a dropped create is not offered; no engine, no open
-// changeset or an empty arg all mean no hit.
-func stagedOnlyPath(d Deps, arg string) (string, bool) {
+// stagedPathsStrict, so a dropped create is not offered; no engine, no open
+// changeset or an empty arg all mean no hit. A changeset that cannot be read
+// is an error, not a miss: the lookup decides the answer, and "not found" over
+// an unreadable changeset would hide the failure the committed path's
+// StagedFile reports (060 review LOW-2).
+func stagedOnlyPath(d Deps, arg string) (string, bool, error) {
 	if arg == "" {
-		return "", false
+		return "", false, nil
 	}
-	return vault.ResolveAmong(stagedPaths(d, stage.OpCreatePage), arg)
+	paths, err := stagedPathsStrict(d, stage.OpCreatePage)
+	if err != nil {
+		return "", false, err
+	}
+	sp, hit := vault.ResolveAmong(paths, arg)
+	return sp, hit, nil
 }
 
 // resolveCommittedPath is the committed half of both resolvers: trim the
@@ -538,18 +557,24 @@ func resolveCommittedPath(d Deps, tool, page string) (resolved, arg string, onFa
 // not "not found" either: the page exists, the committed graph just cannot
 // know it yet. Saying so, and pointing at wiki.get, keeps the model from
 // hunting for a typo — the same six-fold loop the wiki.get read-back fixes
-// — and still reads no staged byte.
-func resolvePagePath(d Deps, tool, page string) (resolved string, onFail Result, ok bool) {
+// — and still reads no staged byte. err is non-nil only when that lookup
+// could not read the open changeset (060 review LOW-2); the caller aborts the
+// turn on it, as wiki.get does, instead of answering "not found".
+func resolvePagePath(d Deps, tool, page string) (resolved string, onFail Result, ok bool, err error) {
 	resolved, arg, onFail, ok := resolveCommittedPath(d, tool, page)
 	if ok {
-		return resolved, Result{}, true
+		return resolved, Result{}, true, nil
 	}
-	if sp, hit := stagedOnlyPath(d, arg); hit {
+	sp, hit, serr := stagedOnlyPath(d, arg)
+	if serr != nil {
+		return "", Result{}, false, serr
+	}
+	if hit {
 		return "", Result{IsError: true, Content: fmt.Sprintf(
 			"page %q exists only in the open changeset (staged by stage.create_page, not committed); "+
 				"%s reports the committed link graph, which does not hold it yet — read it with wiki.get",
 			sp, tool,
-		)}, false
+		)}, false, nil
 	}
-	return "", onFail, false
+	return "", onFail, false, nil
 }

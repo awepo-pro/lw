@@ -67,6 +67,15 @@ func IsPageNotFound(text string) bool {
 // text for it is compared with result_bytes. A call whose text WAS recovered is
 // judged by the text alone, however many bytes it returned.
 //
+// That size comparison can collide with 048's refusal of a read: wiki.get's
+// refusal is a fixed text (len(readRefusalFmt for "wiki.get"), derived as
+// ReadRefusals derives it), and a page argument of about 62 characters has a
+// not-found answer of the same length — a crawl that ends on a refusal, the
+// commonest way a turn ends, would then count as a not-found. So a result of
+// exactly the refusal's length is never counted by the fallback: the scorer
+// prefers to under-count a last-round not-found of that one size to over-counting
+// a refusal as the loop it measures (060 review LOW-1).
+//
 // It counts calls, not distinct pages: asking again for a page that was not
 // found is the loop the metric exists to show. wiki.neighbors and wiki.backlinks
 // answer a missing page with the same words and are not counted — they are not
@@ -87,6 +96,9 @@ func GetNotFound(dir, id string, t *trace.Turn) (int, error) {
 			if IsPageNotFound(f.Text) {
 				n++
 			}
+		case f.ResultBytes == len(fmt.Sprintf(readRefusalFmt, "wiki.get")):
+			// 048's refusal, or a not-found of its exact size: not counted (060
+			// review LOW-1).
 		case f.ResultBytes == pageNotFoundSize(f.Args):
 			n++
 		}
