@@ -88,7 +88,8 @@ const (
 )
 
 // noteBOM is the UTF-8 byte-order mark some Windows editors put in front of a
-// file; it is not text, so -F drops it.
+// file. It is not text: vetNoteText drops one for every input path, and
+// readNoteSource does not count it against the cap.
 const noteBOM = "\xef\xbb\xbf"
 
 // noteKeyLine matches the first line of a top-level YAML entry, the way the
@@ -199,16 +200,14 @@ func cmdNote(args []string) error {
 		text = texts[0]
 	case len(files) == 1:
 		if text, err = readNoteSource(files[0]); err != nil {
-			var pe *os.PathError
-			if errors.As(err, &pe) {
-				err = pe.Err // the path is named once, as the user spelled it
-			}
-			fmt.Fprintf(os.Stderr, "lw note: read %s: %v; nothing saved\n", files[0], err)
+			// The path is named once, as the user spelled it.
+			fmt.Fprintf(os.Stderr, "lw note: read %s: %v; nothing saved\n", files[0], noteCause(err))
 			return &exitError{code: 1}
 		}
 	}
 	if !fromEditor {
-		if refusal := checkNoteText(text); refusal != "" {
+		var refusal string
+		if text, refusal = vetNoteText(text); refusal != "" {
 			fmt.Fprintln(os.Stderr, refusal)
 			return &exitError{code: 1}
 		}
@@ -230,7 +229,8 @@ func cmdNote(args []string) error {
 			keepNoteDraft(root)
 			return &exitError{code: 1}
 		}
-		if refusal := checkNoteText(text); refusal != "" {
+		var refusal string
+		if text, refusal = vetNoteText(text); refusal != "" {
 			fmt.Fprintln(os.Stderr, refusal)
 			keepNoteDraft(root)
 			return &exitError{code: 1}
@@ -313,19 +313,19 @@ func composeNote(root string) (string, error) {
 
 	buf := noteBufferPath(root)
 	if err := os.MkdirAll(filepath.Dir(buf), 0o755); err != nil {
-		return "", fmt.Errorf("create %s: %w", filepath.Dir(buf), err)
+		return "", fmt.Errorf("create %s: %w", filepath.Dir(buf), noteCause(err))
 	}
 	seed, err := os.ReadFile(buf)
 	switch {
-	case err == nil && len(bytes.TrimSpace(seed)) > 0:
+	case err == nil && noteHasText(seed):
 		fmt.Fprintln(os.Stderr, "lw note: reopening the unsaved draft in "+noteEditBufferRel)
 	case err == nil || errors.Is(err, os.ErrNotExist):
 		seed = nil
 		if err := os.WriteFile(buf, nil, 0o600); err != nil {
-			return "", fmt.Errorf("create %s: %w", buf, err)
+			return "", fmt.Errorf("create %s: %w", buf, noteCause(err))
 		}
 	default:
-		return "", fmt.Errorf("read %s: %w", buf, err)
+		return "", fmt.Errorf("read %s: %w", buf, noteCause(err))
 	}
 
 	cmd := exec.Command(argv[0], append(argv[1:], buf)...)
@@ -337,7 +337,7 @@ func composeNote(root string) (string, error) {
 	elapsed := time.Since(start)
 	b, err := os.ReadFile(buf)
 	if err != nil {
-		return "", fmt.Errorf("read %s: %w", buf, err)
+		return "", fmt.Errorf("read %s: %w", buf, noteCause(err))
 	}
 	if elapsed < noteEditorQuick && bytes.Equal(b, seed) {
 		return "", &noteQuickError{name: filepath.Base(argv[0]), envVar: envVar, value: value}
@@ -355,11 +355,29 @@ func keepNoteDraft(root string) {
 	if err != nil {
 		return // gone, or unreadable: nothing to say about it
 	}
-	if len(bytes.TrimSpace(b)) == 0 {
+	if !noteHasText(b) {
 		os.Remove(buf)
 		return
 	}
 	fmt.Fprintln(os.Stderr, "draft kept in "+noteEditBufferRel+"; the next lw note reopens it")
+}
+
+// noteHasText reports whether b holds anything but whitespace and a leading
+// BOM — the test for "is this buffer a draft".
+func noteHasText(b []byte) bool {
+	return len(bytes.TrimSpace(bytes.TrimPrefix(b, []byte(noteBOM)))) > 0
+}
+
+// noteCause is err without the *os.PathError wrapper that names the path
+// again, for messages that already name it: "read X: is a directory", not
+// "read X: read X: is a directory". The cause is still the syscall error, so
+// errors.Is keeps working on what is wrapped around it.
+func noteCause(err error) error {
+	var pe *os.PathError
+	if errors.As(err, &pe) {
+		return pe.Err
+	}
+	return err
 }
 
 // noteEditorArgv picks the editor command line: visual, else editor, else
@@ -381,7 +399,8 @@ func noteEditorArgv(visual, editor string) (argv []string, envVar, value string)
 // of text are kept — one past the cap is enough to know it was exceeded, and a
 // huge stdin cannot exhaust memory — so the size the cap check reports for -F
 // is the bytes read, 65537 when the source is longer, not the source's size.
-// A leading UTF-8 BOM is dropped and does not count: it is not text, and
+// A leading UTF-8 BOM is returned with the text (vetNoteText drops it, once,
+// for every path) but does not count against the cap: it is not text, and
 // counting it would let a BOM-led source slip past the cap with its tail cut.
 func readNoteSource(path string) (string, error) {
 	r := io.Reader(os.Stdin)
@@ -397,29 +416,36 @@ func readNoteSource(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	b = bytes.TrimPrefix(b, []byte(noteBOM))
-	if len(b) > noteMaxBytes+1 {
-		b = b[:noteMaxBytes+1]
+	keep := noteMaxBytes + 1
+	if bytes.HasPrefix(b, []byte(noteBOM)) {
+		keep += len(noteBOM)
+	}
+	if len(b) > keep {
+		b = b[:keep]
 	}
 	return string(b), nil
 }
 
-// checkNoteText is the one set of content checks every input path shares
-// (059 D3): -m, the editor and -F. It returns the refusal to print, or "" when
-// the text can be saved. The order is fixed: size first (so a huge input is
-// refused without being scanned), then whether it is text at all, then whether
-// anything is left once front matter is removed.
-func checkNoteText(text string) string {
+// vetNoteText is the one place every input path's text goes through (059):
+// -m, the editor and -F. It drops one leading UTF-8 BOM — the checks and the
+// front-matter test must see the text, not U+FEFF — and applies the content
+// checks, returning the text to save or the refusal to print. The order is
+// fixed: size first (so a huge input is refused without being scanned), then
+// whether it is text at all, then whether anything is left once front matter
+// is removed. The size is the bytes after the BOM, so a BOM never costs a note
+// its last bytes under the cap.
+func vetNoteText(text string) (clean, refusal string) {
+	text = strings.TrimPrefix(text, noteBOM)
 	if len(text) > noteMaxBytes {
-		return fmt.Sprintf("lw note: the note is %d bytes; the limit is 64 KiB — a document this size belongs in lw ingest; nothing saved", len(text))
+		return text, fmt.Sprintf("lw note: the note is %d bytes; the limit is 64 KiB — a document this size belongs in lw ingest; nothing saved", len(text))
 	}
 	if strings.IndexByte(text, 0) >= 0 || !utf8.ValidString(text) {
-		return "lw note: the note is not UTF-8 text; nothing saved"
+		return text, "lw note: the note is not UTF-8 text; nothing saved"
 	}
 	if _, body, _ := splitNoteFrontMatter(text); strings.TrimSpace(body) == "" {
-		return "empty note; nothing saved"
+		return text, "empty note; nothing saved"
 	}
-	return ""
+	return text, ""
 }
 
 // splitNoteFrontMatter separates a leading ---/--- block from the text. The
@@ -590,7 +616,7 @@ type noteRow struct {
 func noteDraftLine(root string, now time.Time) string {
 	buf := noteBufferPath(root)
 	b, err := os.ReadFile(buf)
-	if err != nil || len(bytes.TrimSpace(b)) == 0 {
+	if err != nil || !noteHasText(b) {
 		return ""
 	}
 	info, err := os.Stat(buf)
@@ -598,7 +624,7 @@ func noteDraftLine(root string, now time.Time) string {
 		return ""
 	}
 	return noteEditBufferName + "  " + noteAge(now.Sub(info.ModTime())) + "  " +
-		noteFirstLine(strings.Split(string(b), "\n")) + "  (unsaved draft — lw note reopens it)"
+		noteFirstLine(strings.Split(strings.TrimPrefix(string(b), noteBOM), "\n")) + "  (unsaved draft — lw note reopens it)"
 }
 
 // writeNoteList prints the newest n notes, one `<stem>  <age>  <text>` line

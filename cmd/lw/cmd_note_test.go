@@ -861,6 +861,16 @@ func noteSlowEditor(t *testing.T) {
 	t.Cleanup(func() { noteEditorQuick = orig })
 }
 
+// noteQuickWindow widens the "returned at once" window to a minute for one
+// test, so a test that EXPECTS the quick refusal cannot flake on a loaded
+// machine where a do-nothing sh script takes longer than the 1 s default.
+func noteQuickWindow(t *testing.T) {
+	t.Helper()
+	orig := noteEditorQuick
+	noteEditorQuick = time.Minute
+	t.Cleanup(func() { noteEditorQuick = orig })
+}
+
 // noteSeedDraft puts content in the vault's edit buffer, as a previous
 // session (or an editor that saved late) would have left it.
 func noteSeedDraft(t *testing.T, root, content string) {
@@ -939,6 +949,7 @@ func TestNoteEditorQuickReturnRefused(t *testing.T) {
 
 	t.Run("editor", func(t *testing.T) {
 		noteIsolate(t)
+		noteQuickWindow(t)
 		setNoteClock(t, at)
 		root := noteBareVault(t)
 		script := noteEditorScript(t, `:`)
@@ -959,6 +970,7 @@ func TestNoteEditorQuickReturnRefused(t *testing.T) {
 
 	t.Run("visual", func(t *testing.T) {
 		noteIsolate(t)
+		noteQuickWindow(t)
 		setNoteClock(t, at)
 		root := noteBareVault(t)
 		script := noteEditorScript(t, `:`)
@@ -976,6 +988,7 @@ func TestNoteEditorQuickReturnRefused(t *testing.T) {
 
 	t.Run("value_is_trimmed_and_keeps_its_arguments", func(t *testing.T) {
 		noteIsolate(t)
+		noteQuickWindow(t)
 		setNoteClock(t, at)
 		root := noteBareVault(t)
 		script := noteEditorScript(t, `:`)
@@ -992,6 +1005,7 @@ func TestNoteEditorQuickReturnRefused(t *testing.T) {
 
 	t.Run("vi_is_named_when_neither_variable_is_set", func(t *testing.T) {
 		noteIsolate(t)
+		noteQuickWindow(t)
 		setNoteClock(t, at)
 		root := noteBareVault(t)
 		noteEditorEnv(t, "", "  ")
@@ -1013,6 +1027,7 @@ func TestNoteEditorQuickReturnRefused(t *testing.T) {
 
 func TestNoteEditorQuickReturnKeepsDraft(t *testing.T) {
 	noteIsolate(t)
+	noteQuickWindow(t)
 	setNoteClock(t, time.Date(2026, 10, 5, 14, 3, 9, 0, noteZone))
 	root := noteBareVault(t)
 	script := noteEditorScript(t, `:`)
@@ -1030,6 +1045,14 @@ func TestNoteEditorQuickReturnKeepsDraft(t *testing.T) {
 	noteBufferIs(t, root, "draft one\n")
 	if got := noteFiles(t, root); len(got) != 0 {
 		t.Errorf("notes = %v, want none", got)
+	}
+}
+
+// The window the tests above widen is the shipped one: a second, which is what
+// separates "forked to a running Sublime" from "a person typed something".
+func TestNoteEditorQuickDefault(t *testing.T) {
+	if noteEditorQuick != time.Second {
+		t.Errorf("noteEditorQuick = %v, want the default %v", noteEditorQuick, time.Second)
 	}
 }
 
@@ -1476,9 +1499,9 @@ func TestNoteF(t *testing.T) {
 		if code != 1 {
 			t.Fatalf("exit code = %d, want 1", code)
 		}
-		pattern := `^lw note: read ` + regexp.QuoteMeta(missing) + `: .+; nothing saved\n$`
-		if !regexp.MustCompile(pattern).MatchString(stderr) || stdout != "" {
-			t.Errorf("stdout = %q, stderr = %q, want empty and a match for %s", stdout, stderr, pattern)
+		// The path once, as given, then the bare cause (not "read X: open X: …").
+		if want := "lw note: read " + missing + ": no such file or directory; nothing saved\n"; stdout != "" || stderr != want {
+			t.Errorf("stdout = %q, stderr = %q, want empty and %q", stdout, stderr, want)
 		}
 		if _, err := os.Stat(filepath.Join(root, "notes")); !os.IsNotExist(err) {
 			t.Errorf("a failed -F created notes/ (stat err = %v)", err)
@@ -1501,9 +1524,8 @@ func TestNoteF(t *testing.T) {
 		if code != 1 {
 			t.Fatalf("exit code = %d, want 1", code)
 		}
-		pattern := `^lw note: read ` + regexp.QuoteMeta(dir) + `: .+; nothing saved\n$`
-		if !regexp.MustCompile(pattern).MatchString(stderr) || stdout != "" {
-			t.Errorf("stdout = %q, stderr = %q, want empty and a match for %s", stdout, stderr, pattern)
+		if want := "lw note: read " + dir + ": is a directory; nothing saved\n"; stdout != "" || stderr != want {
+			t.Errorf("stdout = %q, stderr = %q, want empty and %q", stdout, stderr, want)
 		}
 		if got := noteFiles(t, root); len(got) != 0 {
 			t.Errorf("notes = %v, want none", got)
@@ -1846,6 +1868,198 @@ func TestNoteRefusedTextCostsNoPull(t *testing.T) {
 		noteEditorEnv(t, "", noteEditorScript(t, `head -c 65537 /dev/zero | tr '\000' a > "$last"`))
 		_, stderr, code := noteRun(t, root)
 		if want := notSyncingLine + "\n" + noteOversizeText(65537) + noteKeptLine; code != 1 || stderr != want {
+			t.Errorf("exit code = %d, stderr = %q, want 1 and %q", code, stderr, want)
+		}
+	})
+}
+
+// TestNoteBOM pins that a leading UTF-8 BOM is dropped once, in one place, for
+// every input path: the checks and the front-matter test must see the text, not
+// U+FEFF. Without it `-m $'\xef\xbb\xbf'` saved a note holding only a BOM, and
+// an editor that wrote a BOM before its front matter got the block doubled and
+// the slug "note" (the BOM hid the fence).
+func TestNoteBOM(t *testing.T) {
+	at := time.Date(2026, 10, 5, 14, 3, 9, 0, noteZone)
+	const head = "---\ncreated: 2026-10-05T14:03:09+08:00\nsummarized: null\n"
+
+	t.Run("m_bom_only_is_empty", func(t *testing.T) {
+		for _, text := range []string{"\ufeff", "\ufeff \n"} {
+			noteIsolate(t)
+			setNoteClock(t, at)
+			root := noteBareVault(t)
+			stdout, stderr, code := noteRun(t, root, "-m", text)
+			if code != 1 || stdout != "" || stderr != "empty note; nothing saved\n" {
+				t.Errorf("%q: exit code = %d, stdout = %q, stderr = %q, want 1, empty and the empty-note line", text, code, stdout, stderr)
+			}
+			if _, err := os.Stat(filepath.Join(root, "notes")); !os.IsNotExist(err) {
+				t.Errorf("%q: a BOM-only note created notes/ (stat err = %v)", text, err)
+			}
+		}
+	})
+
+	t.Run("m_bom_is_dropped", func(t *testing.T) {
+		noteIsolate(t)
+		setNoteClock(t, at)
+		root := noteBareVault(t)
+		if _, stderr, code := noteRun(t, root, "-m", "\ufeffhello"); code != 0 {
+			t.Fatalf("exit code = %d; stderr=%q", code, stderr)
+		}
+		want := head + "---\n\nhello\n"
+		if got := readNote(t, root, "20261005-140309-hello.md"); got != want {
+			t.Errorf("note = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("only_one_bom_is_dropped", func(t *testing.T) {
+		noteIsolate(t)
+		setNoteClock(t, at)
+		root := noteBareVault(t)
+		if _, stderr, code := noteRun(t, root, "-m", "\ufeff\ufeffx"); code != 0 {
+			t.Fatalf("exit code = %d; stderr=%q", code, stderr)
+		}
+		names := noteFiles(t, root)
+		if len(names) != 1 || !strings.HasSuffix(readNote(t, root, names[0]), "\n\n\ufeffx\n") {
+			t.Errorf("notes = %v, want one whose body keeps the second BOM", names)
+		}
+	})
+
+	t.Run("m_bom_then_front_matter_is_merged_once", func(t *testing.T) {
+		noteIsolate(t)
+		setNoteClock(t, at)
+		root := noteBareVault(t)
+		_, stderr, code := noteRun(t, root, "-m", "\ufeff---\ntitle: X\n---\nBody")
+		if code != 0 {
+			t.Fatalf("exit code = %d; stderr=%q", code, stderr)
+		}
+		want := head + "title: X\n---\n\nBody\n"
+		if got := readNote(t, root, "20261005-140309-body.md"); got != want {
+			t.Errorf("note = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("bom_does_not_count_against_the_cap_for_m", func(t *testing.T) {
+		noteIsolate(t)
+		setNoteClock(t, at)
+		root := noteBareVault(t)
+		body := strings.Repeat("a", noteMaxBytes)
+		if _, stderr, code := noteRun(t, root, "-m", "\ufeff"+body); code != 0 {
+			t.Fatalf("exit code = %d; stderr=%.200q", code, stderr)
+		}
+		names := noteFiles(t, root)
+		if len(names) != 1 || !strings.HasSuffix(readNote(t, root, names[0]), "\n\n"+body+"\n") {
+			t.Errorf("notes = %v, want one carrying all %d bytes", names, noteMaxBytes)
+		}
+	})
+
+	t.Run("editor_bom_then_front_matter_is_merged_once", func(t *testing.T) {
+		noteIsolate(t)
+		setNoteClock(t, at)
+		root := noteBareVault(t)
+		noteEditorEnv(t, "", noteEditorScript(t, `printf '\357\273\277---\ntitle: X\n---\nBody' > "$last"`))
+		stdout, stderr, code := noteRun(t, root)
+		if code != 0 || stderr != "" {
+			t.Fatalf("exit code = %d, stderr = %q, want 0 and empty", code, stderr)
+		}
+		if want := "noted notes/20261005-140309-body.md\n"; stdout != want {
+			t.Errorf("stdout = %q, want %q (the slug comes from the body, not the fence)", stdout, want)
+		}
+		want := head + "title: X\n---\n\nBody\n"
+		if got := readNote(t, root, "20261005-140309-body.md"); got != want {
+			t.Errorf("note = %q, want %q", got, want)
+		}
+		noteBufferGone(t, root)
+	})
+
+	// A buffer holding only a BOM has no text, so it is not a draft: it is
+	// removed, not kept and reopened forever as a file that looks empty.
+	t.Run("editor_bom_only_is_empty_and_not_kept", func(t *testing.T) {
+		noteIsolate(t)
+		setNoteClock(t, at)
+		root := noteBareVault(t)
+		noteEditorEnv(t, "", noteEditorScript(t, `printf '\357\273\277\n' > "$last"`))
+		_, stderr, code := noteRun(t, root)
+		if code != 1 || stderr != "empty note; nothing saved\n" {
+			t.Errorf("exit code = %d, stderr = %q, want 1 and the empty-note line (no kept line)", code, stderr)
+		}
+		noteBufferGone(t, root)
+	})
+
+	t.Run("a_draft_that_starts_with_a_bom_lists_clean", func(t *testing.T) {
+		noteIsolate(t)
+		setNoteClock(t, at)
+		root := noteBareVault(t)
+		noteSeedDraft(t, root, "\ufeff# from windows\nmore\n")
+		stdout, _, code := noteRun(t, root, "list")
+		want := "NOTE_EDITMSG  just now  # from windows  (unsaved draft — lw note reopens it)\nno notes yet — lw note -m \"…\"\n"
+		if code != 0 || stdout != want {
+			t.Errorf("list = %q (exit %d), want %q", stdout, code, want)
+		}
+	})
+
+	t.Run("a_bom_only_buffer_is_no_draft", func(t *testing.T) {
+		noteIsolate(t)
+		setNoteClock(t, at)
+		root := noteBareVault(t)
+		noteSeedDraft(t, root, "\ufeff\n")
+		noteEditorEnv(t, "", noteEditorScript(t, `printf 'fresh' > "$last"`))
+		if stdout, _, code := noteRun(t, root, "list"); code != 0 || strings.Contains(stdout, "NOTE_EDITMSG") {
+			t.Errorf("list = %q (exit %d), want no draft line", stdout, code)
+		}
+		if _, stderr, code := noteRun(t, root); code != 0 || stderr != "" {
+			t.Errorf("exit code = %d, stderr = %q, want 0 and no recovery line", code, stderr)
+		}
+	})
+}
+
+// TestNoteEditorBufferErrorsNameThePathOnce pins the error text of a buffer
+// that cannot be read or created: os.ReadFile's *PathError already names the path, so
+// wrapping it again printed "read X: read X: is a directory". The text is the
+// buffer's absolute path once, then the bare cause, like -F's read error.
+func TestNoteEditorBufferErrorsNameThePathOnce(t *testing.T) {
+	cases := []struct {
+		name   string
+		script string
+		seed   bool // the buffer is a directory before the editor opens
+		cause  string
+	}{
+		{"buffer_is_a_directory", `:`, true, "is a directory"},
+		{"editor_replaces_the_buffer_with_a_directory", `rm -f "$last"; mkdir "$last"`, false, "is a directory"},
+		{"editor_deletes_the_buffer", `rm -f "$last"`, false, "no such file or directory"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			noteIsolate(t)
+			root := noteBareVault(t)
+			noteEditorEnv(t, "", noteEditorScript(t, tc.script))
+			if tc.seed {
+				if err := os.MkdirAll(noteEditBuffer(root), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			stdout, stderr, code := noteRun(t, root)
+			if code != 1 {
+				t.Fatalf("exit code = %d, want 1", code)
+			}
+			want := "editor failed: read " + noteEditBuffer(root) + ": " + tc.cause + "; nothing saved\n"
+			if stdout != "" || stderr != want {
+				t.Errorf("stdout = %q, stderr = %q, want empty and %q", stdout, stderr, want)
+			}
+			if got := noteFiles(t, root); len(got) != 0 {
+				t.Errorf("notes = %v, want none", got)
+			}
+		})
+	}
+
+	t.Run("state_dir_cannot_be_created", func(t *testing.T) {
+		noteIsolate(t)
+		root := noteBareVault(t)
+		noteEditorEnv(t, "", noteEditorScript(t, `:`))
+		if err := os.WriteFile(filepath.Join(root, ".llmwiki"), []byte("not a directory"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, stderr, code := noteRun(t, root)
+		want := "editor failed: create " + filepath.Dir(noteEditBuffer(root)) + ": not a directory; nothing saved\n"
+		if code != 1 || stderr != want {
 			t.Errorf("exit code = %d, stderr = %q, want 1 and %q", code, stderr, want)
 		}
 	})
