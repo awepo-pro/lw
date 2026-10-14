@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/awepo-pro/lw/internal/config"
 )
 
 // ErrStreamTruncated is wrapped by every error for a stream that ended
@@ -30,7 +32,22 @@ var ErrStreamTruncated = errors.New("llm: provider stream ended early")
 // ToolCall — that silent truncation is the named regression this client
 // exists to avoid. The returned channel is always closed, on every exit
 // path, and ctx cancellation stops delivery promptly and still closes it.
+//
+// A provider that refuses the request — a non-200 status — returns a
+// *ProviderError, and one that fails mid-stream sends a Chunk{Err} holding an
+// in-stream *ProviderError (061); both carry the provider's own code and
+// message for the caller to classify with errors.As.
 func (c *Client) Stream(ctx context.Context, req Request) (<-chan Chunk, error) {
+	// 061 D3: a base_url that already ends in /chat/completions would be
+	// posted to ".../chat/completions/chat/completions" and come back as a
+	// bare 404. It is refused here — before the request is built, so the turn
+	// trace never records a request that was not sent, and before any I/O —
+	// with the text that names the fix. Probe goes through Stream, so lw
+	// doctor is covered by this one check.
+	if err := config.ValidateBaseURL(c.cfg.BaseURL); err != nil {
+		return nil, fmt.Errorf("llm: %w", err)
+	}
+
 	// The stall expiry (026 T2) needs a cancel of its own: firing it closes
 	// the connection, which is what unblocks a body Read parked in the
 	// provider's silence (stall.go). It is a child of ctx — the caller's
@@ -76,7 +93,15 @@ func (c *Client) Stream(ctx context.Context, req Request) (<-chan Chunk, error) 
 		if rerr != nil && errors.Is(rerr, ErrStalled) && len(b) == 0 {
 			return nil, rerr
 		}
-		return nil, fmt.Errorf("llm: unexpected status %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+		// 061: the refusal is a typed *ProviderError so the agent can tell a
+		// transient status (429, 5xx) from a permanent one; its Error() text
+		// is the exact string this path always returned. Retry-After is read
+		// against the instant the headers arrived.
+		return nil, &ProviderError{
+			Status:     resp.StatusCode,
+			Message:    strings.TrimSpace(string(b)),
+			RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After"), headersAt),
+		}
 	}
 
 	out := make(chan Chunk)
@@ -89,6 +114,12 @@ func (c *Client) Stream(ctx context.Context, req Request) (<-chan Chunk, error) 
 // chat-completions stream.
 type wireStreamChunk struct {
 	Choices []wireChoice `json:"choices"`
+	// Error is the provider's in-stream failure event (061): OpenRouter sends
+	// HTTP 200 and then {"error":{"code":502,"message":…}} as an ordinary
+	// data line, with or without a choices entry. Before it had a field the
+	// event decoded as a choice-less chunk and was skipped (s47: "stream
+	// ended early after 328 bytes", the provider's message lost).
+	Error *wireStreamError `json:"error"`
 	// Usage is the provider's token accounting, which rides whichever chunk
 	// the provider puts it on (038 T1): the finish_reason chunk (z.ai) or a
 	// trailing chunk with an empty choices array (DeepSeek/OpenAI). nil when
@@ -120,8 +151,14 @@ type wireDelta struct {
 	// ReasoningContent is a thinking-mode provider's reasoning fragment,
 	// alongside Content (C-114/D-CZ). consumeStream surfaces it as
 	// Chunk.Reasoning exactly as Content becomes Chunk.Text.
-	ReasoningContent string              `json:"reasoning_content,omitempty"`
-	ToolCalls        []wireToolCallDelta `json:"tool_calls,omitempty"`
+	ReasoningContent string `json:"reasoning_content,omitempty"`
+	// Reasoning is OpenRouter's spelling of the same fragment (061 D4): it
+	// streams thinking as delta.reasoning, so the ask pane's thinking status
+	// and the history's reasoning_content stayed empty for it. It is read only
+	// when ReasoningContent is empty — a provider that sends both is emitted
+	// once, not twice. reasoning_details is deliberately not decoded.
+	Reasoning string              `json:"reasoning,omitempty"`
+	ToolCalls []wireToolCallDelta `json:"tool_calls,omitempty"`
 }
 
 // wireToolCallDelta is one fragment of one tool call, identified by Index.
@@ -252,6 +289,13 @@ func (c *countingBody) Close() error { return c.rc.Close() }
 // (ErrStalled), an over-long line (bufio.ErrTooLong) and the caller's own
 // cancellation are bounded, deliberate ends, not the provider's stream
 // dying early.
+//
+// 061 adds the provider's own failure as a third kind of end, ahead of both:
+// an "error" object on a chunk, or a choice finishing with "error", is the
+// provider saying why it stopped — one Chunk{Err} holding an in-stream
+// *ProviderError and one "llm provider error" WARN, with no truncation record
+// and no usage chunk. Without it OpenRouter's error event (a data line with
+// no usable choice) was read as a silent EOF and the message was lost.
 func consumeStreamTimed(ctx context.Context, body io.ReadCloser, out chan<- Chunk, t0 time.Time) {
 	defer close(out)
 
@@ -336,6 +380,23 @@ func consumeStreamTimed(ctx context.Context, body io.ReadCloser, out chan<- Chun
 			"scan_err", scanErr.Error(),
 			"elapsed_ms", elapsed,
 		)
+	}
+
+	// providerFailed is the one exit for a provider-reported failure inside
+	// the stream (061 D2). The provider's message is its own diagnostic, not
+	// the user's content, so — unlike the truncation record's counts-only
+	// rule — the line carries it; the logging handler still redacts secret
+	// keys. The record is written before the chunk is delivered, as in
+	// truncated.
+	providerFailed := func(pe *ProviderError) {
+		slog.WarnContext(ctx, "llm provider error",
+			"status", pe.Status,
+			"code", pe.Code,
+			"message", pe.Message,
+			"in_stream", true,
+			"bytes", counter.n,
+		)
+		emit(Chunk{Err: pe})
 	}
 
 	// firstDeltaAt is when the first visible delta was produced — marked
@@ -443,6 +504,16 @@ func consumeStreamTimed(ctx context.Context, body io.ReadCloser, out chan<- Chun
 			return
 		}
 		parsedChunks++
+		// 061 D2: a provider's in-stream error event comes first, before the
+		// usage and choices handling below — it is often a chunk with no
+		// choices at all (the s47 live shape), which the empty-choices skip
+		// would otherwise swallow. An error carrier with nothing in it
+		// ("error":{}) is no error. The errored round is not an accounted one,
+		// so its usage is never read.
+		if wc.Error != nil && !wc.Error.empty {
+			providerFailed(wc.Error.providerError())
+			return
+		}
 		// 038 T1 U1: a usage object is decoded from ANY data chunk — the
 		// finish_reason chunk (z.ai) or a choices-less trailing chunk
 		// (DeepSeek/OpenAI) — so it must be read BEFORE the empty-choices
@@ -460,12 +531,31 @@ func consumeStreamTimed(ctx context.Context, body io.ReadCloser, out chan<- Chun
 		}
 		choice := wc.Choices[0]
 
+		// 061 D2: finish_reason "error" with no error object (OpenRouter's
+		// documented mid-stream marker when the object is omitted) is still
+		// the provider failing, not a finished round: it must not reach the
+		// finish handling below, which would complete a half-assembled tool
+		// call and report the failure as a clean "error" finish.
+		if choice.FinishReason != nil && *choice.FinishReason == "error" {
+			providerFailed(&ProviderError{
+				Message:  `the provider ended the stream with finish_reason "error"`,
+				InStream: true,
+			})
+			return
+		}
+
 		// A thinking-mode provider sends reasoning before content on the
 		// same delta, so emit the reasoning fragment first (C-114/D-CZ) —
-		// the consumer decides which assistant turn it belongs to.
-		if choice.Delta.ReasoningContent != "" {
+		// the consumer decides which assistant turn it belongs to. 061 D4:
+		// OpenRouter spells the fragment delta.reasoning; reasoning_content
+		// wins when a provider sends both, so a fragment is never doubled.
+		reasoning := choice.Delta.ReasoningContent
+		if reasoning == "" {
+			reasoning = choice.Delta.Reasoning
+		}
+		if reasoning != "" {
 			markDelta()
-			if !emit(Chunk{Reasoning: choice.Delta.ReasoningContent}) {
+			if !emit(Chunk{Reasoning: reasoning}) {
 				return
 			}
 		}

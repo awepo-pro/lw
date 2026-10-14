@@ -506,6 +506,33 @@ func ValidateStallTimeout(v string) error {
 	return nil
 }
 
+// chatCompletionsPath is the path lw appends to llm.base_url itself
+// (internal/llm client.go endpoint).
+const chatCompletionsPath = "/chat/completions"
+
+// ValidateBaseURL rejects an llm.base_url that already ends in
+// /chat/completions (061 D3). lw appends that path itself, so the value
+// posted to ".../chat/completions/chat/completions" and came back as a bare
+// 404 (s47: the user pasted OpenRouter's full endpoint); every other
+// OpenAI-compatible client reads base_url as the API root, and so must lw. A
+// trailing slash and the suffix's case are ignored. "" is the key absent and
+// always valid — the existing "no base_url" handling stays where it is.
+// Exported so llm.Client (which refuses the value before any I/O), lw doctor
+// and writers of the key (lw config set) apply the same rule. Load does NOT
+// call it: a config Load refused would stop every command, `lw config set`
+// included, and the error text points at exactly that repair.
+func ValidateBaseURL(v string) error {
+	root := strings.TrimRight(v, "/")
+	if len(root) < len(chatCompletionsPath) {
+		return nil
+	}
+	cut := len(root) - len(chatCompletionsPath)
+	if !strings.EqualFold(root[cut:], chatCompletionsPath) {
+		return nil
+	}
+	return fmt.Errorf("config: llm.base_url ends in /chat/completions, but lw adds that path itself — set it to the API root: lw config set llm.base_url %s", root[:cut])
+}
+
 // ValidateExtractTimeout rejects an extract.timeout value Load cannot honour
 // (007 T3, F.X3): not a Go duration string, zero, or negative — zero here is
 // a defect, not a mode: llm.stall_timeout reads "0" as "no bound", but an
