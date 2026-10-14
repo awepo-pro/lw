@@ -69,7 +69,10 @@ func (h *htmlExtractor) CanHandle(uri string) bool {
 }
 
 // Extract fetches uri (http/https) or reads it from disk (a local
-// .html/.htm path), then parses the bytes into a deterministic Doc.
+// .html/.htm path), then parses the bytes into a deterministic Doc. The
+// bytes it parsed travel on the Doc as OriginalBytes (058): the markdown is
+// a lossy conversion and the page may change or vanish, so the vault keeps
+// the page itself beside the raw.
 func (h *htmlExtractor) Extract(ctx context.Context, uri string) (*Doc, error) {
 	body, err := h.read(ctx, uri)
 	if err != nil {
@@ -80,7 +83,20 @@ func (h *htmlExtractor) Extract(ctx context.Context, uri string) (*Doc, error) {
 		return nil, fmt.Errorf("extract: parse %s: %w", uri, err)
 	}
 	doc.SourceURL = uri
+	doc.OriginalBytes = body
+	doc.OriginalExt = htmlOriginalExt(uri)
 	return doc, nil
+}
+
+// htmlOriginalExt names the original of an HTML source: ".htm" for a local
+// file saved as .htm (any case), ".html" for everything else — a local
+// .html, and every URL, whose own path ends in .php, .aspx or nothing at all
+// and says nothing about the bytes a server sent back.
+func htmlOriginalExt(uri string) string {
+	if !isRemoteURL(uri) && strings.ToLower(filepath.Ext(uri)) == ".htm" {
+		return ".htm"
+	}
+	return ".html"
 }
 
 // read returns uri's raw bytes: an HTTP GET for http/https, otherwise a

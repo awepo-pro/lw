@@ -362,9 +362,13 @@ cache is safe to delete; losing it only costs the time to rebuild it.
 
 ### Checking a claim against the PDF
 
-A PDF ingested since v2.21 keeps its original beside the extracted text,
-and the extracted text carries `<!-- page N -->` anchors — so a page's
-provenance markers can name the physical page a claim sits on:
+Every new ingest keeps a verbatim copy of its source beside the extracted
+text — a saved page as `x.html`, plain text as `x.txt`, a PDF as `x.pdf`,
+and a markdown source as `x.md.orig` (`x.md` is the raw itself). The
+extracted text is a conversion, and the copy is what it can be checked
+against. A PDF ingested since v2.21 also carries `<!-- page N -->` anchors
+in the extracted text — so a page's provenance markers can name the
+physical page a claim sits on:
 `^[raw/papers/leviathan-2023.md p.12]`. The number is the PDF's own
 1-based page index — the page whose text follows the anchor in the
 extracted raw, the same number Papers' `-i`, `mupdf` and Obsidian's
@@ -384,8 +388,11 @@ Browse screen, put the cursor on the page (or the raw source) and press
 `o`: the picker lists the PDFs the page cites, `enter` opens the selected
 one at the page its claim cites, and `esc` or `o` closes the picker.
 
-PDFs ingested before v2.21 carry neither the original nor the anchors, so
-they are cited without a page — `^[raw/papers/x.md]`, as before.
+Only a PDF opens this way; an `x.html` or `x.md.orig` sits in `raw/` for
+you to open yourself. PDFs ingested before v2.21 carry neither the original
+nor the anchors, so they are cited without a page — `^[raw/papers/x.md]`,
+as before; a page, text or markdown source ingested before originals were
+kept has only its raw text.
 
 ## 6. Review before anything lands
 

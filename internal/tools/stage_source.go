@@ -141,23 +141,42 @@ func stageIngestSourceTool(d Deps) Tool {
 		// invariant 1 holds: the agent supplies no bytes and no paths.
 		// A missing unreadable file is a recoverable IsError, not a staged
 		// op with a dangling original.
+		//
+		// 058: every other extractor already holds its source in memory and
+		// hands it over as Doc.OriginalBytes, so an HTML page, a text or a
+		// markdown file keeps a verbatim copy beside its raw too — before
+		// it, `lw ingest page.html` left only the lossy markdown in the
+		// vault. An empty OriginalBytes proves nothing and stages none.
 		var (
 			originalPath    string
 			originalSHA     string
 			originalContent []byte
+			haveOriginal    bool
+			originalExt     string
+			originalName    string // what a refusal below calls the original
 		)
-		if doc.Original != "" {
+		switch {
+		case len(doc.OriginalBytes) > 0:
+			haveOriginal = true
+			originalContent = doc.OriginalBytes
+			originalExt = strings.ToLower(doc.OriginalExt)
+			originalName = uri
+		case doc.Original != "":
 			b, rerr := os.ReadFile(doc.Original)
 			if rerr != nil {
 				return Result{IsError: true, Content: fmt.Sprintf("stage.ingest_source: the extractor's original %q could not be read: %v", doc.Original, rerr)}, nil
 			}
-			ext := strings.ToLower(path.Ext(doc.Original))
-			if ext == "" || ext == ".md" {
-				return Result{IsError: true, Content: fmt.Sprintf("stage.ingest_source: the extractor's original %q has no usable non-.md extension", doc.Original)}, nil
-			}
+			haveOriginal = true
 			originalContent = b
-			originalSHA = vault.BodySHA256(string(b))
-			originalPath = strings.TrimSuffix(sourcePath, ".md") + ext
+			originalExt = strings.ToLower(path.Ext(doc.Original))
+			originalName = doc.Original
+		}
+		if haveOriginal {
+			if originalExt == "" {
+				return Result{IsError: true, Content: fmt.Sprintf("stage.ingest_source: the extractor's original %q has no usable non-.md extension", originalName)}, nil
+			}
+			originalSHA = vault.BodySHA256(string(originalContent))
+			originalPath = originalPathFor(sourcePath, originalExt)
 		}
 		content := rawSourceDocumentWithOriginal(sourceURL, ingestDate(), body, originalPath, originalSHA)
 		if defect := rawDocumentDefect(sourceURL, body, originalPath, originalSHA, content); defect != "" {
@@ -247,6 +266,20 @@ func stageIngestSourceTool(d Deps) Tool {
 		}
 		return res, nil
 	}}
+}
+
+// originalPathFor names the original that sits beside the raw at sourcePath:
+// the raw's path with its .md swapped for the original's extension
+// (x.md -> x.pdf, x.html, x.txt). A markdown source's original has the
+// extension .md too, which would be the raw's own path, so it keeps the
+// whole name and gains .orig instead (058: x.md -> x.md.orig; the s47
+// decision). Raw loading reads *.md only, so x.md.orig never shows up as a
+// second raw.
+func originalPathFor(sourcePath, ext string) string {
+	if ext == ".md" {
+		return sourcePath + ".orig"
+	}
+	return strings.TrimSuffix(sourcePath, ".md") + ext
 }
 
 // inVaultRaw reports whether uri is a local file that lies under v's own raw/

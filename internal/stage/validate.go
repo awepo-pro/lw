@@ -211,7 +211,9 @@ func validateIngestSource(op Op, v *vault.Vault) error {
 //     original_sha256 misdescribes the bytes beside it);
 //   - OriginalPath sits in Path's directory under Path's base name with a
 //     non-empty, non-.md extension — so the pair is a md/pdf couple and
-//     no attachment path can walk out of the raw directory its md names;
+//     no attachment path can walk out of the raw directory its md names —
+//     or, for a markdown source (058), is exactly Path's base name plus
+//     ".orig": x.md's original is x.md.orig, since x.md is the raw itself;
 //   - OriginalPath does not already exist (same rule as Path itself);
 //   - the raw file the op stages (op.Content, the whole file) declares
 //     exactly this pair in its frontmatter — the invariant lint's
@@ -237,12 +239,17 @@ func validateIngestOriginal(op Op, v *vault.Vault) error {
 	if dir := path.Dir(op.OriginalPath); dir != path.Dir(op.Path) {
 		return fmt.Errorf("%w: ingest_source: original_path %s must sit in %s, beside the raw source", ErrValidation, op.OriginalPath, path.Dir(op.Path))
 	}
-	ext := path.Ext(op.OriginalPath)
-	if ext == "" || ext == ".md" {
-		return fmt.Errorf("%w: ingest_source: original_path %s must carry a non-.md extension", ErrValidation, op.OriginalPath)
-	}
-	if base := path.Base(op.OriginalPath); base != strings.TrimSuffix(path.Base(op.Path), ".md")+ext {
-		return fmt.Errorf("%w: ingest_source: original_path %s must be %s's base name with that extension", ErrValidation, op.OriginalPath, path.Base(op.Path))
+	// 058: the one name a .md original can have is "<raw base name>.orig".
+	// Matched exactly, not by extension — any other name ending in .orig
+	// still has to be the raw's base name with that extension, below.
+	if path.Base(op.OriginalPath) != path.Base(op.Path)+".orig" {
+		ext := path.Ext(op.OriginalPath)
+		if ext == "" || ext == ".md" {
+			return fmt.Errorf("%w: ingest_source: original_path %s must carry a non-.md extension", ErrValidation, op.OriginalPath)
+		}
+		if base := path.Base(op.OriginalPath); base != strings.TrimSuffix(path.Base(op.Path), ".md")+ext {
+			return fmt.Errorf("%w: ingest_source: original_path %s must be %s's base name with that extension", ErrValidation, op.OriginalPath, path.Base(op.Path))
+		}
 	}
 	if v.Exists(op.OriginalPath) {
 		return fmt.Errorf("%w: ingest_source: original_path %s already exists", ErrValidation, op.OriginalPath)
