@@ -130,11 +130,6 @@ func stageIngestSourceTool(d Deps) Tool {
 		if sourceURL == "" {
 			sourceURL = uri
 		}
-		// The staged path must be settled before the raw file is built: an
-		// original names itself after it. resolveSourcePath only reads the
-		// committed vault and the open changeset, so hoisting it above the
-		// refusal checks below cannot change the path it lands at.
-		_, sourcePath, suffixed := resolveSourcePath(d, kindDir, name)
 		// 033: the original travels with the ingest. Every bit of it comes
 		// from the extractor chain — Doc.Original was set by the PDF
 		// sidecar, and THIS handler is what touches the file — so backbone
@@ -171,10 +166,17 @@ func stageIngestSourceTool(d Deps) Tool {
 			originalExt = strings.ToLower(path.Ext(doc.Original))
 			originalName = doc.Original
 		}
+		if haveOriginal && originalExt == "" {
+			return Result{IsError: true, Content: fmt.Sprintf("stage.ingest_source: the extractor's original %q has no usable non-.md extension", originalName)}, nil
+		}
+		// The staged path must be settled before the raw file is built: an
+		// original names itself after it, and — 058 FIX1 — a candidate whose
+		// ORIGINAL's name is already taken is taken too, so the extension
+		// has to be known first. resolveSourcePath only reads the committed
+		// vault and the open changeset, so it can sit above the dedupe
+		// checks below without changing the path any of them lands at.
+		_, sourcePath, suffixed := resolveSourcePath(d, kindDir, name, originalExt)
 		if haveOriginal {
-			if originalExt == "" {
-				return Result{IsError: true, Content: fmt.Sprintf("stage.ingest_source: the extractor's original %q has no usable non-.md extension", originalName)}, nil
-			}
 			originalSHA = vault.BodySHA256(string(originalContent))
 			originalPath = originalPathFor(sourcePath, originalExt)
 		}

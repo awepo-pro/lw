@@ -363,10 +363,14 @@ cache is safe to delete; losing it only costs the time to rebuild it.
 ### Checking a claim against the PDF
 
 Every new ingest keeps a verbatim copy of its source beside the extracted
-text — a saved page as `x.html`, plain text as `x.txt`, a PDF as `x.pdf`,
-and a markdown source as `x.md.orig` (`x.md` is the raw itself). The
-extracted text is a conversion, and the copy is what it can be checked
-against. A PDF ingested since v2.21 also carries `<!-- page N -->` anchors
+text — a saved page as `x.html` (a file saved as `.htm` stays `x.htm`),
+plain text as `x.txt`, a PDF as `x.pdf`, and a markdown source as
+`x.md.orig` (`x.md` is the raw itself). The extracted text is a
+conversion, and the copy is what it can be checked against. The copy is
+the file as it was, so a saved page keeps its scripts and anything personal
+a logged-in page carried, and it syncs with the vault like the rest of
+`raw/` — prefer a clean save, from a logged-out browser or a reader view.
+A PDF ingested since v2.21 also carries `<!-- page N -->` anchors
 in the extracted text — so a page's provenance markers can name the
 physical page a claim sits on:
 `^[raw/papers/leviathan-2023.md p.12]`. The number is the PDF's own
