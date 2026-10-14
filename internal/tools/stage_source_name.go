@@ -64,10 +64,17 @@ func stripRawSourceExtension(base string) string {
 // (Vault.Exists) or a live ingest_source op in the open changeset already
 // claims it. Same-body occupants never reach this decision — the handler's
 // dedupe checks refuse them first, with the existing errors.
-func resolveSourcePath(d Deps, kindDir, name string) (candidate, final string, suffixed bool) {
+//
+// originalExt is the extension of the original the ingest keeps beside the
+// raw ("" when it keeps none). 058 FIX1: a candidate is also taken when the
+// path its original would land at is — a stray raw/articles/x.html someone
+// copied in by hand makes the engine refuse "original_path … already
+// exists", and without this the same title picks the same blocked name on
+// every retry, with no way out for a model that has no filesystem verbs.
+func resolveSourcePath(d Deps, kindDir, name, originalExt string) (candidate, final string, suffixed bool) {
 	candidate = "raw/" + kindDir + "/" + name + ".md"
 	final = candidate
-	for n := 2; sourcePathTaken(d, final); n++ {
+	for n := 2; sourcePathTaken(d, final) || originalPathTaken(d, originalPathFor(final, originalExt), originalExt); n++ {
 		final = fmt.Sprintf("raw/%s/%s-%d.md", kindDir, name, n)
 		suffixed = true
 	}
@@ -91,6 +98,16 @@ func sourcePathTaken(d Deps, path string) bool {
 		}
 	}
 	return false
+}
+
+// originalPathTaken reports whether path — the name an original would take —
+// is already a file in the vault. originalExt "" means the ingest keeps no
+// original, so nothing is taken. A live ingest_source op of the open
+// changeset needs no check of its own: its original sits beside its raw at
+// the same stem, so a candidate that collides with it collides on the raw
+// first (sourcePathTaken).
+func originalPathTaken(d Deps, path, originalExt string) bool {
+	return originalExt != "" && d.Vault != nil && d.Vault.Exists(path)
 }
 
 // slugSourceName slugs a title or basename into the raw source's file-name

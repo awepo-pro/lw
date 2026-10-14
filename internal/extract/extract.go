@@ -19,6 +19,16 @@ type Doc struct {
 	// Original is the absolute path of the local binary file this Doc was
 	// extracted from (the PDF backend only); "" for HTML, text and markdown.
 	Original string
+
+	// OriginalBytes is the verbatim source this Doc was converted from, for
+	// extractors that already hold it in memory (HTML local or fetched, text,
+	// markdown) — 058: before it, `lw ingest page.html` kept only the lossy
+	// markdown and the page itself was gone. nil for the PDF backend, which
+	// names a file in Original instead.
+	OriginalBytes []byte
+	// OriginalExt is OriginalBytes' extension, lower-case with its dot
+	// (".html", ".htm", ".txt", ".md", ".markdown"). "" when OriginalBytes is nil.
+	OriginalExt string
 }
 
 // Extractor turns a URI into a Doc. Implementations must be deterministic:
