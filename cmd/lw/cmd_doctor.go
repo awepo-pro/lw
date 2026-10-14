@@ -916,7 +916,7 @@ func checkConfig(cfg *config.Config, err error) doctorCheck {
 		return doctorCheck{
 			Name:   name,
 			Detail: berr.Error(),
-			Remedy: "lw config set llm.base_url " + baseURLRoot(cfg.LLM.BaseURL),
+			Remedy: "lw config set llm.base_url " + baseURLRepair(cfg.LLM.BaseURL),
 		}
 	}
 	about := fmt.Sprintf(" · model %s @ %s", cfg.LLM.Model, cfg.LLM.BaseURL)
@@ -952,13 +952,23 @@ func checkConfig(cfg *config.Config, err error) doctorCheck {
 	}
 }
 
-// baseURLRoot is a base_url that config.ValidateBaseURL refused, without the
-// trailing slashes and the /chat/completions suffix it was refused for — the
-// API root the refusal tells the user to set. Only called on a refused value,
-// which always carries the suffix.
-func baseURLRoot(v string) string {
-	root := strings.TrimRight(strings.TrimSpace(v), "/")
-	return root[:len(root)-len("/chat/completions")]
+// baseURLRepair is the value a base_url that config.ValidateBaseURL refused
+// should be set to. Three refusals exist: a value ending in /chat/completions is
+// told its API root (the suffix and trailing slashes off); a value with no
+// "://" at all — "api.example.com/v1" — is told the same value with https://
+// in front, the one-keystroke fix for the usual mistake; anything else (a
+// wrong scheme, no host) is shown the shape, with the example the refusal text
+// itself gives.
+func baseURLRepair(v string) string {
+	v = strings.TrimSpace(v)
+	root := strings.TrimRight(v, "/")
+	if suffix := "/chat/completions"; len(root) >= len(suffix) && strings.EqualFold(root[len(root)-len(suffix):], suffix) {
+		return root[:len(root)-len(suffix)]
+	}
+	if v != "" && !strings.Contains(v, "://") && !strings.HasPrefix(v, "/") && !strings.ContainsAny(v, " \t") {
+		return "https://" + root
+	}
+	return "https://api.deepseek.com/v1"
 }
 
 // checkWeb reports the [web] lookup configuration (010 contract §4, C-1001)

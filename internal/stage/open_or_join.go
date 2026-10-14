@@ -141,13 +141,17 @@ func (e *Engine) MarkPartial(note string) error {
 	return nil
 }
 
-// partialMarkPrefix opens the mark MarkPartial puts in front of an intent.
-const partialMarkPrefix = "[partial"
+// partialMarkPrefix opens the mark MarkPartial puts in front of an intent: the
+// note it is given always starts "partial: " (cmd/lw's partialNote). Matching
+// exactly that, not just "[partial", keeps "[partially done] …" and "[partial] …"
+// — an intent a person wrote — from being read as a mark and stripped (061 FIX3
+// F7).
+const partialMarkPrefix = "[partial: "
 
 // WithoutPartialMark splits a partial mark off the front of an intent: rest is
 // the intent without it ("[partial: provider 502 after 2 op(s)] ingest a.md"
 // gives "ingest a.md"; a mark and nothing else gives ""), marked says there was
-// one. An intent that does not START with a closed "[partial…]" is returned
+// one. An intent that does not START with a closed "[partial: …]" is returned
 // whole and unmarked. It is the one definition of "what MarkPartial wrote" that
 // MarkPartial itself, the Review commit message, the Changeset panel and the
 // shell header share (061 FIX2 R6).

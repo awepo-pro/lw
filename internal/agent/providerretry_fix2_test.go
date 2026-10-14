@@ -95,6 +95,7 @@ func TestProviderTransportRetryThenSucceeds(t *testing.T) {
 	if len(got) != 1 || got[0].Round != 1 || got[0].Attempt != 1 ||
 		!strings.HasPrefix(got[0].Reason, "provider network: ") ||
 		!strings.Contains(got[0].Reason, "connection refused") ||
+		strings.Contains(got[0].Reason, "Post ") || // FIX3 F3: the cause, not the request line
 		!strings.HasSuffix(got[0].Reason, "; retrying in 2s") {
 		t.Fatalf("RetryEv = %#v, want one \"provider network: …connection refused…; retrying in 2s\"", got)
 	}
@@ -343,5 +344,44 @@ func TestProviderHealthyStreamWithEmptyErrorIsNotRetried(t *testing.T) {
 	}
 	if hits() != 1 || len(sl.Sleeps()) != 0 || len(retryEvents(events)) != 0 {
 		t.Errorf("requests=%d sleeps=%v retries=%d, want a single clean request", hits(), sl.Sleeps(), len(retryEvents(events)))
+	}
+}
+
+// TestProviderPermanentLocalFailureIsNotRetried (FIX3 F1, whole stack): the
+// failures this machine's configuration makes permanent — a base_url with no
+// scheme, a TLS certificate it does not trust — fail the turn on the first
+// attempt. FIX2 typed them as network failures and waited out 2+4+8 s (a
+// scheme-less base_url: 0.04 s -> 14.06 s), once per page under lint --fix.
+func TestProviderPermanentLocalFailureIsNotRetried(t *testing.T) {
+	tlsSrv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer tlsSrv.Close()
+
+	for name, base := range map[string]string{
+		"no scheme":             "api.example.com/v1",
+		"unsupported scheme":    "ftp://api.example.com/v1",
+		"no host":               "http://",
+		"untrusted certificate": tlsSrv.URL,
+	} {
+		t.Run(name, func(t *testing.T) {
+			l, fx, sl := newWireLoop(t, base)
+			start := time.Now()
+			events, err := sendTurn(t, l, fx, "x")
+			if err == nil {
+				t.Fatal("Send returned nil for an unusable provider")
+			}
+			var pe *llm.ProviderError
+			if errors.As(err, &pe) {
+				t.Errorf("the failure is a ProviderError (retryable): %+v", *pe)
+			}
+			if len(sl.Sleeps()) != 0 || len(retryEvents(events)) != 0 {
+				t.Errorf("waited/retried: sleeps %v, retries %d — a permanent failure must fail at once", sl.Sleeps(), len(retryEvents(events)))
+			}
+			if errorEvents(events) != 1 {
+				t.Errorf("got %d ErrorEv, want exactly 1", errorEvents(events))
+			}
+			if d := time.Since(start); d > 2*time.Second {
+				t.Errorf("took %s, want an immediate failure", d)
+			}
+		})
 	}
 }

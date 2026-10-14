@@ -173,7 +173,7 @@ type headerStage struct {
 	Checks stage.Checks
 	Has    bool
 
-	// Partial marks a changeset whose intent starts with "[partial" — a turn
+	// Partial marks a changeset whose intent starts with "[partial: " — a turn
 	// the provider failed after it had staged work (stage.Engine.MarkPartial,
 	// 061). The header says so, next to the op count, at every width.
 	Partial bool

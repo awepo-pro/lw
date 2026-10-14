@@ -307,9 +307,12 @@ func rawText(raw json.RawMessage) string {
 }
 
 // providerError builds the in-stream *ProviderError from the decoded event.
-// A numeric code is the HTTP status the provider reports for the failure; a
-// string code is kept verbatim; every other code shape (null, a boolean, a
-// fraction, zero or negative) names nothing and leaves both unset.
+// A numeric code is the HTTP status the provider reports for the failure — and
+// so is a string of exactly three digits that reads as one ("401": some
+// gateways quote the number, 061 FIX3 F7), which puts it through the same
+// Retryable table as an unquoted one; any other string code is kept verbatim;
+// every other code shape (null, a boolean, a fraction, zero or negative) names
+// nothing and leaves both unset.
 func (e *wireStreamError) providerError() *ProviderError {
 	pe := &ProviderError{InStream: true, Message: boundRunes(cleanText(e.Message), inStreamMessageRunes)}
 	raw := strings.TrimSpace(string(e.Code))
@@ -318,7 +321,12 @@ func (e *wireStreamError) providerError() *ProviderError {
 	case strings.HasPrefix(raw, `"`):
 		var s string
 		if json.Unmarshal(e.Code, &s) == nil {
-			pe.Code = boundRunes(cleanText(s), providerCodeRunes)
+			code := boundRunes(cleanText(s), providerCodeRunes)
+			if status := httpStatusCode(code); status != 0 {
+				pe.Status = status
+			} else {
+				pe.Code = code
+			}
 		}
 	default:
 		var f float64
@@ -329,18 +337,44 @@ func (e *wireStreamError) providerError() *ProviderError {
 	return pe
 }
 
+// httpStatusCode is s read as an HTTP status: exactly three ASCII digits whose
+// value is 100 to 599, else 0. Narrow on purpose — "42" and "99999" are codes a
+// provider made up, not statuses, and "+429" is not a number a status is
+// written as.
+func httpStatusCode(s string) int {
+	if len(s) != 3 {
+		return 0
+	}
+	n := 0
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return 0
+		}
+		n = n*10 + int(r-'0')
+	}
+	if n < 100 || n > 599 {
+		return 0
+	}
+	return n
+}
+
 // providerCodeRunes bounds an in-stream string code. A code is an identifier
 // ("server_error", "rate_limit_exceeded"); one that runs to a screenful is the
 // provider shouting, and it is printed in the retry line and the partial mark.
 const providerCodeRunes = 64
 
-// cleanText makes a provider's string safe to print: a provider's code and
-// message reach the terminal (the retry notice, the partial mark, the log), and
-// bytes the provider chose must not move the cursor, recolour the screen or
-// forge a line. Line breaks and tabs become a space, every other control
-// character (ESC included) is dropped, and the result is trimmed (061 FIX2
-// R7). An escape SEQUENCE loses its ESC and keeps its printable remainder
-// ("[31m"): inert text, not a cleverer parser to get wrong.
+// cleanText strips a provider-chosen string of what could move a terminal's
+// cursor, recolour it or forge a line, for the fields lw composes into its own
+// lines: Code and Message — the retry notice, the partial mark, the log record
+// (061 FIX2 R7). Line breaks and tabs become a space, every other control
+// character (ESC included) is dropped, and the result is trimmed. An escape
+// SEQUENCE loses its ESC and keeps its printable remainder ("[31m"): inert text,
+// not a cleverer parser to get wrong.
+//
+// It does NOT make ProviderError.Error() safe. The HTTP form prints Body, and
+// the transport form prints the underlying error, both verbatim — their text is
+// byte-identical to what lw always printed, by contract, so a provider's raw
+// response body reaches whatever prints the error as the provider sent it.
 func cleanText(s string) string {
 	return strings.TrimSpace(strings.Map(func(r rune) rune {
 		switch {

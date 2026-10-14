@@ -146,15 +146,16 @@ func runAgentTurnTo(ctx context.Context, ag agent.Agent, sessionID, msg string, 
 }
 
 // notifyInterrupt derives from parent a context that the process's first
-// interrupt (Ctrl-C) or terminate signal cancels, and the function that stops
-// listening (061 FIX2 R3). A staging verb runs its agent turn under it, so an
+// interrupt (Ctrl-C), terminate or hangup signal cancels, and the function that
+// stops listening (061 FIX2 R3; FIX3 F5 added the hangup a dropped ssh session
+// sends). A staging verb runs its agent turn under it, so an
 // abort unwinds through the verb's own failure path — the changeset it opened
 // rejected, a joined one losing only its own ops — instead of the signal killing
 // the process mid-turn and leaving a half-staged changeset open. The first
 // signal also restores the default handling, so a second ^C ends a verb whose
 // cleanup is stuck. A variable so a test can hand the verb a cancel it holds.
 var notifyInterrupt = func(parent context.Context) (context.Context, context.CancelFunc) {
-	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	go func() {
 		<-ctx.Done()
 		stop()

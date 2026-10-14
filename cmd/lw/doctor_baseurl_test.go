@@ -166,3 +166,56 @@ func TestBaseURLWhitespace(t *testing.T) {
 		}
 	})
 }
+
+// TestBaseURLShape (FIX3 F1): a base_url that is not an http(s) URL with a host
+// is refused where the suffix is — `lw doctor` fails the config line with the
+// config package's text and the command that repairs it, `lw config set`
+// refuses to write it — and the repair names a value that works: a scheme-less
+// "api.example.com/v1" is told https://api.example.com/v1.
+func TestBaseURLShape(t *testing.T) {
+	const shapeText = "config: llm.base_url must be an http(s) URL with a host, e.g. https://api.deepseek.com/v1"
+
+	t.Run("doctor", func(t *testing.T) {
+		cases := []struct{ value, remedy string }{
+			{"api.example.com/v1", "lw config set llm.base_url https://api.example.com/v1"},
+			{"ftp://api.example.com/v1", "lw config set llm.base_url https://api.deepseek.com/v1"},
+			{"http://", "lw config set llm.base_url https://api.deepseek.com/v1"},
+		}
+		for _, tc := range cases {
+			t.Run(tc.value, func(t *testing.T) {
+				doctorTestEnv(t)
+				root := testutil.CopyFixture(t, "minimal")
+				writeConfigFile(t, os.Getenv("XDG_CONFIG_HOME"),
+					"[llm]\nbase_url = \""+tc.value+"\"\n\n[extract]\ncommand = \""+fakeDoclingCommand(t)+"\"\n")
+
+				rep := runDoctor(context.Background(), root, doctorOptions{})
+				c := checkByName(t, rep, "config")
+				if c.Detail != shapeText {
+					t.Errorf("detail = %q, want %q", c.Detail, shapeText)
+				}
+				wantFailed(t, c, tc.remedy)
+				if c.Remedy != tc.remedy {
+					t.Errorf("remedy = %q, want exactly %q", c.Remedy, tc.remedy)
+				}
+			})
+		}
+	})
+
+	t.Run("config set", func(t *testing.T) {
+		dir := configTestEnv(t)
+		path := writeConfigFile(t, dir, "[llm]\nbase_url = \"https://old.example/v1\"\n")
+		before, _ := os.ReadFile(path)
+		for _, value := range []string{"api.example.com/v1", "localhost:8080/v1", "ftp://x/v1", "http://"} {
+			_, stderr, code := runConfig(t, "set", "llm.base_url", value)
+			if code != 2 || !strings.Contains(stderr, shapeText) {
+				t.Errorf("set %q: exit %d, stderr %q, want exit 2 with the shape text", value, code, stderr)
+			}
+			if after, _ := os.ReadFile(path); string(after) != string(before) {
+				t.Fatalf("set %q changed the config file", value)
+			}
+		}
+		if _, stderr, code := runConfig(t, "set", "llm.base_url", "http://localhost:8080/v1"); code != 0 {
+			t.Errorf("set http://localhost:8080/v1: exit %d, stderr %q, want it accepted", code, stderr)
+		}
+	})
+}

@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -460,6 +461,9 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("config: parse %s: %w", path, err)
 	}
 	cfg := mergeOverDefault(Default(), fromShadow(s), md)
+	// 061 FIX3 F7: a hand-edited value can carry white space; the endpoint is
+	// built from this string and must never.
+	cfg.LLM.BaseURL = strings.TrimSpace(cfg.LLM.BaseURL)
 	if err := ValidateStallTimeout(cfg.LLM.StallTimeout); err != nil {
 		return nil, err
 	}
@@ -518,21 +522,33 @@ const chatCompletionsPath = "/chat/completions"
 // trailing slash and the suffix's case are ignored. "" is the key absent and
 // always valid — the existing "no base_url" handling stays where it is.
 // Surrounding white space is ignored (061 FIX2 R9): a pasted value brings a
-// trailing space or newline, and the suffix must not hide behind it.
+// trailing space or newline, and the suffix must not hide behind it. A value
+// that is not an http or https URL with a host is refused too (061 FIX3 F1).
 // Exported so llm.Client (which refuses the value before any I/O), lw doctor
 // and writers of the key (lw config set) apply the same rule. Load does NOT
 // call it: a config Load refused would stop every command, `lw config set`
 // included, and the error text points at exactly that repair.
 func ValidateBaseURL(v string) error {
-	root := strings.TrimRight(strings.TrimSpace(v), "/")
-	if len(root) < len(chatCompletionsPath) {
+	v = strings.TrimSpace(v)
+	root := strings.TrimRight(v, "/")
+	if len(root) >= len(chatCompletionsPath) {
+		cut := len(root) - len(chatCompletionsPath)
+		if strings.EqualFold(root[cut:], chatCompletionsPath) {
+			return fmt.Errorf("config: llm.base_url ends in /chat/completions, but lw adds that path itself — set it to the API root: lw config set llm.base_url %s", root[:cut])
+		}
+	}
+	if v == "" {
 		return nil
 	}
-	cut := len(root) - len(chatCompletionsPath)
-	if !strings.EqualFold(root[cut:], chatCompletionsPath) {
-		return nil
+	// 061 FIX3 F1: and it must be a URL the HTTP client can use. "api.example.com/v1"
+	// has no scheme, "localhost:8080/v1" parses as the scheme "localhost", "ftp://…"
+	// is not HTTP: each reached the client as a request that can never succeed and
+	// was waited out like a network blip. The suffix refusal above is the older,
+	// more specific text, so it is checked first.
+	if u, err := url.Parse(v); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
+		return errors.New("config: llm.base_url must be an http(s) URL with a host, e.g. https://api.deepseek.com/v1")
 	}
-	return fmt.Errorf("config: llm.base_url ends in /chat/completions, but lw adds that path itself — set it to the API root: lw config set llm.base_url %s", root[:cut])
+	return nil
 }
 
 // ValidateExtractTimeout rejects an extract.timeout value Load cannot honour

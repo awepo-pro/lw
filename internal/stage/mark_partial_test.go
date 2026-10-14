@@ -272,7 +272,13 @@ func TestWithoutPartialMark(t *testing.T) {
 		{"[partial: provider 502 after 2 op(s)] ingest a.md", "ingest a.md", true},
 		{"[partial: x]", "", true},
 		{"[partial: x] ", "", true},
-		{"[partial] ingest a.md", "ingest a.md", true},
+		// FIX3 F7: was {"[partial] ingest a.md", "ingest a.md", true}. Only the
+		// exact "[partial: " MarkPartial writes is the mark.
+		{"[partial] ingest a.md", "[partial] ingest a.md", false},
+		{"[partially done] ingest a.md", "[partially done] ingest a.md", false},
+		{"[partial:x] ingest a.md", "[partial:x] ingest a.md", false},
+		{"[Partial: x] ingest a.md", "[Partial: x] ingest a.md", false},
+		{" [partial: x] ingest a.md", " [partial: x] ingest a.md", false},
 		{"[partial: x]ingest a.md", "ingest a.md", true},
 		{"ingest a.md", "ingest a.md", false},
 		{"ingest a.md [partial: x]", "ingest a.md [partial: x]", false},
@@ -287,5 +293,61 @@ func TestWithoutPartialMark(t *testing.T) {
 				t.Errorf("WithoutPartialMark(%q) = (%q, %v), want (%q, %v)", tc.in, rest, marked, tc.wantRest, tc.wantMarked)
 			}
 		})
+	}
+}
+
+// TestCommitLogLineHasNoPartialMark (FIX3 F4): log.md records the committed
+// change. A changeset marked partial (a turn failed after it staged work) is
+// committed after the reviewer read it, so the mark — about the review — stays
+// in the changeset's intent and the journal, and out of log.md.
+func TestCommitLogLineHasNoPartialMark(t *testing.T) {
+	e, dir := newTestEngine(t)
+	if _, err := e.OpenChangeset("ingest a.md", testAuthor); err != nil {
+		t.Fatalf("OpenChangeset: %v", err)
+	}
+	if _, err := e.Append(Op{Kind: OpCreatePage, Path: "wiki/concepts/new-page.md", Content: newConceptPageContent("New Page"),
+		Rationale: "t", Provenance: []string{"raw/papers/leviathan-2023.md"}}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := e.MarkPartial("partial: provider 502 after 1 op(s)"); err != nil {
+		t.Fatalf("MarkPartial: %v", err)
+	}
+	if _, err := e.Commit("ingest a.md"); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	b, err := os.ReadFile(filepath.Join(dir, "log.md"))
+	if err != nil {
+		t.Fatalf("read log.md: %v", err)
+	}
+	log := string(b)
+	if strings.Contains(log, "[partial") {
+		t.Errorf("log.md carries the partial mark:\n%s", log)
+	}
+	if !strings.Contains(log, "ingest a.md") {
+		t.Errorf("log.md lost the intent:\n%s", log)
+	}
+}
+
+// TestCommitLogLineKeepsAnIntentThatIsOnlyTheMark: with nothing left after the
+// mark the log keeps the intent as written rather than an empty field.
+func TestCommitLogLineKeepsAnIntentThatIsOnlyTheMark(t *testing.T) {
+	e, dir := newTestEngine(t)
+	if _, err := e.OpenChangeset("", testAuthor); err != nil {
+		t.Fatalf("OpenChangeset: %v", err)
+	}
+	if _, err := e.Append(Op{Kind: OpCreatePage, Path: "wiki/concepts/new-page.md", Content: newConceptPageContent("New Page"),
+		Rationale: "t", Provenance: []string{"raw/papers/leviathan-2023.md"}}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := e.MarkPartial("partial: stalled after 1 op(s)"); err != nil {
+		t.Fatalf("MarkPartial: %v", err)
+	}
+	if _, err := e.Commit("x"); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	b, _ := os.ReadFile(filepath.Join(dir, "log.md"))
+	if !strings.Contains(string(b), "[partial: stalled after 1 op(s)]") {
+		t.Errorf("log.md =\n%s\nwant the mark-only intent kept as written", b)
 	}
 }

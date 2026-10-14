@@ -9,6 +9,7 @@ import "testing"
 
 func TestValidateBaseURL(t *testing.T) {
 	const wantFmt = "config: llm.base_url ends in /chat/completions, but lw adds that path itself — set it to the API root: lw config set llm.base_url "
+	const wantShape = "config: llm.base_url must be an http(s) URL with a host, e.g. https://api.deepseek.com/v1"
 
 	cases := []struct {
 		name string
@@ -33,6 +34,22 @@ func TestValidateBaseURL(t *testing.T) {
 		{"leading space and the suffix", "  https://x/v1/chat/completions", wantFmt + "https://x/v1"},
 		{"root with surrounding space is fine", " https://x/v1 ", ""},
 		{"only whitespace is the key absent", "   ", ""},
+		// FIX3 F1: the value must be a URL the HTTP client can use. A scheme-less
+		// "api.example.com/v1" went to the client, came back "unsupported
+		// protocol scheme" — a permanent failure retried for 14 s.
+		{"no scheme", "api.example.com/v1", wantShape},
+		{"host and port with no scheme parses as a scheme", "localhost:8080/v1", wantShape},
+		{"ftp scheme", "ftp://api.example.com/v1", wantShape},
+		{"scheme with no host", "https:///v1", wantShape},
+		{"http with no host at all", "http://", wantShape},
+		{"port only host", "http://:8080/v1", wantShape},
+		{"a path is not a URL", "/v1", wantShape},
+		{"spaces inside", "https://api example.com/v1", wantShape},
+		{"http with a port is fine", "http://localhost:8080/v1", ""},
+		{"https any case is fine", "HTTPS://API.EXAMPLE.COM/v1", ""},
+		{"ipv6 host is fine", "http://[::1]:8080/v1", ""},
+		// The suffix refusal is checked first: it is the older, more specific text.
+		{"suffix wins over a missing scheme", "api.example.com/v1/chat/completions", wantFmt + "api.example.com/v1"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -68,5 +85,21 @@ base_url = "https://openrouter.ai/api/v1/chat/completions"
 	}
 	if got := cfg.LLM.BaseURL; got != "https://openrouter.ai/api/v1/chat/completions" {
 		t.Fatalf("Load changed base_url to %q", got)
+	}
+}
+
+// TestLoadTrimsBaseURL (FIX3 F7): whatever the file holds, the loaded base_url
+// carries no surrounding white space — the endpoint is built from it, and a
+// trailing space or newline in a hand-edited value made a URL the client
+// refused.
+func TestLoadTrimsBaseURL(t *testing.T) {
+	dir := withConfigDir(t)
+	writeConfig(t, dir, "[llm]\nmodel = \"m\"\nbase_url = \" https://api.deepseek.com/v1 \\n\"\n")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.LLM.BaseURL; got != "https://api.deepseek.com/v1" {
+		t.Fatalf("Load base_url = %q, want it trimmed", got)
 	}
 }

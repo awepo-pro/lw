@@ -3,12 +3,16 @@ package llm
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -82,7 +86,7 @@ func (c *Client) Stream(ctx context.Context, req Request) (<-chan Chunk, error) 
 		// turn had staged. The caller's own cancel or deadline, a client
 		// timeout and a stall keep their plain wrapped error and their meaning.
 		if transportFailure(ctx, err) {
-			return nil, &ProviderError{Transport: true, Message: cleanText(err.Error()), cause: err}
+			return nil, &ProviderError{Transport: true, Message: transportMessage(err), cause: err}
 		}
 		return nil, fmt.Errorf("llm: request: %w", err)
 	}
@@ -129,18 +133,81 @@ func (c *Client) Stream(ctx context.Context, req Request) (<-chan Chunk, error) 
 }
 
 // transportFailure reports whether err — what c.do returned for a request that
-// got no response — is the network failing rather than the caller (061 FIX2
-// R2). Not a provider failure: the caller's ctx ending (a cancel, a deadline),
-// any cancel or deadline in the chain (a client-wide timeout would only be
-// waited out again), and ErrStalled, which already waited stall_timeout and
-// stays a non-retried, plainly wrapped stall.
+// got no response — is the network failing rather than the caller or the
+// configuration (061 FIX2 R2, FIX3 F1/F2). It is, for a refusal, a reset, a
+// DNS failure, an EOF before headers, a failed handshake that is not about
+// trust, and a dial that timed out.
+//
+// It is not: the caller's own ctx ending (a cancel, a deadline — even in the
+// middle of a dial); a failure this machine's configuration makes permanent
+// (permanentTransport); ErrStalled, which already waited stall_timeout; and any
+// other cancel or deadline in the chain, since a client-wide Timeout would only
+// be waited out again. The dial case is carved out of that last rule BEFORE it:
+// a dial that gives up reads "i/o timeout" and matches context.DeadlineExceeded,
+// yet it is the path to the provider being dead, and treating it as the
+// caller's deadline rolled back the work a turn had staged.
 func transportFailure(ctx context.Context, err error) bool {
 	if ctx.Err() != nil {
 		return false
 	}
-	return !errors.Is(err, context.Canceled) &&
-		!errors.Is(err, context.DeadlineExceeded) &&
-		!errors.Is(err, ErrStalled)
+	if errors.Is(err, ErrStalled) || permanentTransport(err) {
+		return false
+	}
+	var oe *net.OpError
+	if errors.As(err, &oe) && oe.Op == "dial" {
+		return true
+	}
+	return !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
+}
+
+// permanentTransport reports whether err is a failure that repeating the
+// request here cannot cure: a URL the HTTP client cannot use (no scheme, not
+// http(s), no host — the net/http errors are untyped strings, hence the match
+// on their text), a TLS certificate this machine does not trust or that does
+// not match the name, and a server that does not speak TLS on a TLS URL.
+// Waiting 2, 4 and 8 seconds for any of them was the FIX2 regression: a
+// scheme-less base_url cost 14 s a request, per page under `lw lint --fix`.
+func permanentTransport(err error) bool {
+	var (
+		unknown  x509.UnknownAuthorityError
+		hostname x509.HostnameError
+		invalid  x509.CertificateInvalidError
+		verify   *tls.CertificateVerificationError
+		record   tls.RecordHeaderError
+	)
+	if errors.As(err, &unknown) || errors.As(err, &hostname) || errors.As(err, &invalid) ||
+		errors.As(err, &verify) || errors.As(err, &record) {
+		return true
+	}
+	var ue *url.Error
+	cause := err
+	if errors.As(err, &ue) {
+		cause = ue.Err
+	}
+	text := cause.Error()
+	for _, permanent := range []string{
+		"unsupported protocol scheme",
+		"no Host in request URL",
+		"server gave HTTP response to HTTPS client",
+	} {
+		if strings.Contains(text, permanent) {
+			return true
+		}
+	}
+	return false
+}
+
+// transportMessage is the network's own account of a transport failure: the
+// *url.Error's cause (`dial tcp 1.2.3.4:443: connect: connection refused`)
+// without the `Post "<url>": ` the HTTP client puts in front (061 FIX3 F3). The
+// retry reason cuts a message to 120 runes, and a long URL would take them all.
+// Error() still prints the whole error, as it always has.
+func transportMessage(err error) string {
+	var ue *url.Error
+	if errors.As(err, &ue) && ue.Err != nil {
+		err = ue.Err
+	}
+	return cleanText(err.Error())
 }
 
 // wireStreamChunk is one SSE "data:" payload from an OpenAI-compatible
@@ -442,7 +509,8 @@ func consumeStreamTimed(ctx context.Context, body io.ReadCloser, out chan<- Chun
 	}
 
 	// emitUsage delivers the held-back usage chunk on a CLEAN end (038 T1
-	// U2): R1's [DONE], R2's finish-then-EOF, or A-035-1's tail lost. Every
+	// U2): R1's [DONE], R2's finish-then-EOF, A-035-1's tail lost, or an error
+	// event behind the finish (061 FIX2 R5, via providerEnded). Every
 	// other exit — a truncation, a stall, a cancellation — never emits
 	// Usage, so a consumer retrying on the Err never mistakes a cut round
 	// for an accounted one. When the chunk is actually delivered it writes

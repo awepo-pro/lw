@@ -56,7 +56,7 @@ type App struct {
 	stageOps    int
 	stageChecks stage.Checks
 	hasStage    bool
-	// stagePartial: the open changeset's intent starts with "[partial" (061
+	// stagePartial: the open changeset's intent starts with "[partial: " (061
 	// FIX1) — refreshStage reads it off the engine; StageChangedMsg carries no
 	// intent.
 	stagePartial bool

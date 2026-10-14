@@ -465,7 +465,18 @@ func TestStreamInStreamErrorShapes(t *testing.T) {
 		{"bool code is neither", `{"error":{"code":true,"message":"odd"}}`, 0, "", "odd"},
 		{"fractional code is neither", `{"error":{"code":1.5,"message":"odd"}}`, 0, "", "odd"},
 		{"zero code is no status", `{"error":{"code":0,"message":"odd"}}`, 0, "", "odd"},
-		{"digit string code stays a string", `{"error":{"code":"429","message":"slow"}}`, 0, "429", "slow"},
+		// FIX3 F7: was {"digit string code stays a string", …, 0, "429", "slow"}. A
+		// string code that IS an HTTP status ("401") is the status, so the normal
+		// Retryable table applies to it; any other digit string stays a code.
+		{"digit string code that is an HTTP status becomes the status", `{"error":{"code":"429","message":"slow"}}`, 429, "", "slow"},
+		{"digit string 401 is a status too", `{"error":{"code":"401","message":"bad key"}}`, 401, "", "bad key"},
+		{"digit string outside 100-599 stays a string", `{"error":{"code":"42","message":"odd"}}`, 0, "42", "odd"},
+		{"three digits above 599 stay a string", `{"error":{"code":"600","message":"odd"}}`, 0, "600", "odd"},
+		{"three digits below 100 stay a string", `{"error":{"code":"099","message":"odd"}}`, 0, "099", "odd"},
+		{"the 100 boundary is a status", `{"error":{"code":"100","message":"odd"}}`, 100, "", "odd"},
+		{"the 599 boundary is a status", `{"error":{"code":"599","message":"odd"}}`, 599, "", "odd"},
+		{"long digit string stays a string", `{"error":{"code":"99999","message":"odd"}}`, 0, "99999", "odd"},
+		{"digit string with a sign stays a string", `{"error":{"code":"+429","message":"odd"}}`, 0, "+429", "odd"},
 		{"message is trimmed", `{"error":{"code":500,"message":"  spaced out \n"}}`, 500, "", "spaced out"},
 		{"code only", `{"error":{"code":503}}`, 503, "", ""},
 		// FIX2 R1: "metadata only" moved out — an error object with no message,
