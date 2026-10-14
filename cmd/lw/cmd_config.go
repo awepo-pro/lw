@@ -53,7 +53,7 @@ func displayPlain(raw string) string { return raw }
 // configFields is every settable key, in the order `lw config` prints them.
 var configFields = []configField{
 	{key: "llm.base_url", get: func(c *config.Config) string { return c.LLM.BaseURL },
-		set:     func(c *config.Config, v string) error { c.LLM.BaseURL = v; return nil },
+		set:     setBaseURL,
 		display: displayPlain},
 	{key: "llm.model", get: func(c *config.Config) string { return c.LLM.Model },
 		set:     func(c *config.Config, v string) error { c.LLM.Model = v; return nil },
@@ -138,6 +138,21 @@ func configFieldByKey(key string) (configField, bool) {
 		}
 	}
 	return configField{}, false
+}
+
+// setBaseURL validates llm.base_url before anything is written (061), applying
+// config.ValidateBaseURL — the rule the client and lw doctor apply too: a value
+// ending in /chat/completions is refused with the text that names the API root
+// to set instead, because lw adds that path itself and the provider answers the
+// doubled one with a bare 404. Config.Load does not refuse such a value (a
+// config it refused could not be repaired with this very command), so this
+// setter is the door that keeps it from being written. "" stays legal.
+func setBaseURL(c *config.Config, v string) error {
+	if err := config.ValidateBaseURL(v); err != nil {
+		return err
+	}
+	c.LLM.BaseURL = v
+	return nil
 }
 
 // setStallTimeout validates llm.stall_timeout before anything is written,

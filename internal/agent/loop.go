@@ -59,6 +59,14 @@ const maxConsecutiveBadCalls = 2
 // otherwise (surfacing as RetryEv) — so only a twice-cut round reaches
 // Send's caller as an ErrorEv wrapping llm.ErrStreamTruncated.
 //
+// A provider that refuses a round (061 — an HTTP error status, or an error event
+// inside a 200 stream, as a *llm.ProviderError) is waited out and the identical
+// request re-sent, up to three times a round, when the refusal is transient and
+// no tool call has been dispatched yet (surfacing as RetryEv, providerretry.go);
+// after a dispatched call the round simply ends as finished. A refusal that is
+// not transient, one that asks for more than a minute, and a spent budget fail
+// the turn with the ProviderError in the chain.
+//
 // Turn trace (038 T4): Send mints the turn id (or keeps the one the caller
 // put on the ctx with logging.WithTurn) before any log line or session
 // access, and stamps it on the ctx — every *Context log call below then
@@ -331,6 +339,17 @@ func nudgeLastToolResult(ctx context.Context, msgs []llm.Message, round, k int, 
 // 1-based round number, the same counter DoneEv.Rounds reports — feeds the
 // recovery's log lines and RetryEv only.
 //
+// Provider refusal (061): a *llm.ProviderError — from Stream's return or a
+// Chunk.Err — takes the same split by whether a call was dispatched. Before
+// one, a transient refusal (ProviderError.Retryable) is retried like (B) after
+// a wait, up to maxProviderRetries per round and apart from (B)'s budget; the
+// wait is the provider's own Retry-After when it is at most a minute, else
+// 2 s, 4 s, 8 s, and a longer Retry-After is not waited out (providerretry.go).
+// After one it is (A): the call ran, so the round ends as finished. A refusal
+// that is not transient, or whose retries are spent, fails the turn, the
+// ProviderError intact in the chain. A ctx canceled during the wait returns
+// ctx.Err() at once.
+//
 // Contract — one assistant message per round (backbone §9, C-114/C-115/
 // D-CZ; superseded by C-120/D-DG). A round that streamed text then a tool
 // call with no reasoning used to become two assistant messages — a
@@ -359,9 +378,14 @@ func (l *Loop) runRound(ctx context.Context, sessionID string, round int, msgs [
 	// Per round, never per turn: each round's request is a fresh roll of
 	// the provider's dice, and a round that used its retry starts clean.
 	cutRetried := false
-	// attempt is the round's 1-based attempt number: 1, then 2 after a
-	// 035 (B) cut retry — the number the trace names each request file by
-	// (038 T4, C-5).
+	// providerRetries is how many times this round has been re-sent after the
+	// provider refused it (061): a budget of maxProviderRetries, per round and
+	// separate from cutRetried — a cut stream is not a refusal, and a round
+	// that had one does not owe the other.
+	providerRetries := 0
+	// attempt is the round's 1-based attempt number: 1, then one more for each
+	// re-send — a 035 (B) cut retry or a 061 provider retry — the number the
+	// trace names each request file by (038 T4, C-5).
 	attempt := 1
 
 	// tr is the turn's Recorder, nil for every untraced turn (TraceDir ""
@@ -462,7 +486,57 @@ streamLoop:
 			})
 		}
 
+		// providerRetry (061) takes cause when it is a *llm.ProviderError the
+		// round may be re-sent after, and reports retried once it has recorded
+		// the refused attempt, thrown its content away, said so and waited out
+		// the delay — the caller then loops. retried false with a nil werr
+		// means "not mine": the caller fails the turn as it always has. A non-nil
+		// werr is the ctx ending, during the RetryEv send or the wait. The
+		// discarded buffers are 035 case (B)'s four, plus finish: a refusal can
+		// follow a finish_reason, and the re-sent attempt must not inherit it.
+		// The caller has already ruled out a dispatched tool call — a refusal
+		// after one is case (A) below and never a retry — so nothing here can
+		// run a call twice.
+		providerRetry := func(cause error) (retried bool, werr error) {
+			var pe *llm.ProviderError
+			if ctx.Err() != nil || !errors.As(cause, &pe) {
+				return false, nil
+			}
+			delay, ok := providerRetryDelay(pe, providerRetries)
+			if !ok {
+				return false, nil
+			}
+			reason := providerRetryReason(pe, delay)
+			recordResponse(false, cause.Error())
+			tr.Retry(round, attempt+1, reason)
+			providerRetries++
+			attempt++
+			finish = ""
+			roundText.Reset()
+			roundReasoning.Reset()
+			pendingText.Reset()
+			pendingReasoning.Reset()
+			slog.WarnContext(ctx, "agent provider retry", "round", round, "attempt", providerRetries,
+				"status", pe.Status, "code", pe.Code, "delay_ms", delay.Milliseconds())
+			if !l.send(ctx, out, RetryEv{Round: round, Attempt: providerRetries, Reason: reason}) {
+				return false, ctx.Err()
+			}
+			if serr := l.wait(ctx, delay); serr != nil {
+				return false, serr
+			}
+			return true, nil
+		}
+
 		if err != nil {
+			// 061: the provider refused the request outright (an HTTP error
+			// status). Nothing was dispatched — the stream never opened — so a
+			// transient refusal is waited out and the identical request sent
+			// again; anything else falls through to the generic failure.
+			if retried, werr := providerRetry(err); werr != nil {
+				return nil, false, "", werr
+			} else if retried {
+				continue streamLoop
+			}
 			// The stream never opened: the attempt's response is the error,
 			// with no content (038 T4, A6).
 			recordResponse(false, err.Error())
@@ -535,7 +609,7 @@ streamLoop:
 							recordResponse(true, "")
 							tr.Retry(round, attempt+1, "stream ended early")
 							cutRetried = true
-							attempt = 2
+							attempt++
 							roundText.Reset()
 							roundReasoning.Reset()
 							pendingText.Reset()
@@ -552,6 +626,31 @@ streamLoop:
 							slog.WarnContext(ctx, "agent round cut", "round", round, "tool_calls", 0, "action", "fail")
 							recordResponse(true, chunk.Err.Error())
 							return nil, false, "", l.fail(ctx, out, fmt.Errorf("agent: stream: %w", chunk.Err))
+						}
+					}
+					// 061: the provider said it failed, in the stream. After a
+					// dispatched call this is case (A) again — the call ran, so
+					// the round ends as a finished one and the turn goes on (the
+					// next round is a new request and meets the provider afresh).
+					// Before one, a transient failure is waited out and the
+					// identical request sent again. A refusal the provider does
+					// not mark transient, or a spent budget, fails the turn below
+					// with the ProviderError in the chain.
+					var pe *llm.ProviderError
+					if ctx.Err() == nil && errors.As(chunk.Err, &pe) {
+						if toolCalled && pe.Retryable() {
+							if ferr := flushRecord(); ferr != nil {
+								recordResponse(false, ferr.Error())
+								return nil, false, "", l.fail(ctx, out, ferr)
+							}
+							slog.WarnContext(ctx, "agent round cut", "round", round, "tool_calls", len(roundToolCalls), "action", "continue", "status", pe.Status)
+							recordResponse(true, chunk.Err.Error())
+							return assemble(msgs), true, "", nil
+						}
+						if retried, werr := providerRetry(chunk.Err); werr != nil {
+							return nil, false, "", werr
+						} else if retried {
+							continue streamLoop
 						}
 					}
 					recordResponse(false, chunk.Err.Error())

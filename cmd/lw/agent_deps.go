@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -419,4 +420,49 @@ func agentErrorHint(sendErr error, maxTokens int, rejected bool) error {
 		err = fmt.Errorf("%w; the changeset was rejected", err)
 	}
 	return fmt.Errorf("%w. Raise it with: lw config set llm.max_tokens %d", err, config.Default().LLM.MaxTokens)
+}
+
+// providerFailure reports whether sendErr is the provider failing the turn
+// (061): a typed *llm.ProviderError (an HTTP refusal, or an error event in the
+// stream), a stream cut twice in one round (llm.ErrStreamTruncated, 035) or a
+// provider gone silent (llm.ErrStalled). Those are failures of the far end
+// that the work staged before them survives; a canceled turn, the output cap
+// (agent.ErrTruncated — the user's llm.max_tokens) and an internal error are
+// not, and keep their rollback.
+func providerFailure(sendErr error) bool {
+	var pe *llm.ProviderError
+	return errors.As(sendErr, &pe) ||
+		errors.Is(sendErr, llm.ErrStreamTruncated) ||
+		errors.Is(sendErr, llm.ErrStalled)
+}
+
+// partialNote is the text Engine.MarkPartial puts after a partial changeset's
+// intent (061): "partial: the agent turn failed (<cause>) after staging <k>
+// op(s)", the cause in the fewest honest words — the provider's own code, a
+// stream that ended early, or a stall.
+func partialNote(sendErr error, k int) string {
+	return fmt.Sprintf("partial: the agent turn failed (%s) after staging %d op(s)", partialCause(sendErr), k)
+}
+
+// partialCause names why a turn that providerFailure accepted failed. The
+// provider's code reads the way llm.ProviderError.Error words it: the HTTP
+// status when there is one, else the string code, else "unknown".
+func partialCause(sendErr error) string {
+	var pe *llm.ProviderError
+	switch {
+	case errors.As(sendErr, &pe):
+		code := "unknown"
+		switch {
+		case pe.Status != 0:
+			code = strconv.Itoa(pe.Status)
+		case pe.Code != "":
+			code = pe.Code
+		}
+		return "provider " + code
+	case errors.Is(sendErr, llm.ErrStreamTruncated):
+		return "stream ended early"
+	case errors.Is(sendErr, llm.ErrStalled):
+		return "stalled"
+	}
+	return "error"
 }

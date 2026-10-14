@@ -9,6 +9,7 @@ package agent
 
 import (
 	"context"
+	"time"
 
 	"github.com/awepo-pro/lw/internal/llm"
 	"github.com/awepo-pro/lw/internal/stage"
@@ -44,6 +45,12 @@ type Loop struct {
 	engine   *stage.Engine
 	ctxBldr  *ContextBuilder
 	cfg      LoopConfig
+
+	// sleep is how runRound waits out a provider refusal before re-sending
+	// (061, providerretry.go). nil means sleepCtx, a real timer that a
+	// canceled ctx cuts short; tests set it to a recorder so a retry costs
+	// no wall time.
+	sleep func(ctx context.Context, d time.Duration) error
 }
 
 var _ Agent = (*Loop)(nil)

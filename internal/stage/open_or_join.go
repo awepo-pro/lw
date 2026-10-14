@@ -14,6 +14,7 @@
 package stage
 
 import (
+	"errors"
 	"fmt"
 	"os"
 )
@@ -76,13 +77,54 @@ func (e *Engine) OpenOrJoin(intent string, a Author) (cs *Changeset, joined bool
 // elision convention the ask pane's intent uses, so `lw log` never shows a
 // truncated middle without an indicator.
 func joinIntents(existing, join string) string {
-	combined := existing + " + " + join
-	r := []rune(combined)
+	return boundIntent(existing + " + " + join)
+}
+
+// boundIntent cuts intent to at most maxIntentRunes runes, the last of them
+// "…" when anything was cut — the one bound a join (joinIntents) and a partial
+// mark (MarkPartial) share.
+func boundIntent(intent string) string {
+	r := []rune(intent)
 	if len(r) <= maxIntentRunes {
-		return combined
+		return intent
 	}
 	if maxIntentRunes <= 1 {
 		return "…"
 	}
 	return string(r[:maxIntentRunes-1]) + "…"
+}
+
+// MarkPartial appends " [<note>]" to the open changeset's Intent (the whole
+// Intent bounded like a join's: 200 runes, overflow ending in "…") and
+// persists it. It is how a turn that failed AFTER staging says so (061): the
+// agent turn died on a provider error with ops already in the changeset,
+// `lw ingest` keeps them instead of rolling back, and the mark is what Review,
+// `lw status` and `lw log` then show next to the intent.
+//
+// Contract (061): no journal event — the mark is a rewrite of one field, not a
+// new kind of history, so there is no new event kind and no vault-format
+// change; a failed persist publishes nothing (the writerOpen pattern OpenOrJoin
+// uses). No open changeset is an error, never a changeset conjured from
+// nothing.
+func (e *Engine) MarkPartial(note string) error {
+	e.writeMu.Lock()
+	defer e.writeMu.Unlock()
+
+	c, err := e.writerOpen()
+	if err != nil {
+		if errors.Is(err, ErrNoChangeset) {
+			return errors.New("stage: mark partial: no open changeset")
+		}
+		return fmt.Errorf("stage: mark partial: %w", err)
+	}
+	mark := "[" + note + "]"
+	if c.Intent == "" {
+		c.Intent = boundIntent(mark)
+	} else {
+		c.Intent = boundIntent(c.Intent + " " + mark)
+	}
+	if err := e.persistAndPublish(c); err != nil {
+		return fmt.Errorf("stage: mark partial: %w", err)
+	}
+	return nil
 }

@@ -65,12 +65,17 @@ type DoneEv struct {
 // ErrorEv fires when a turn ends in an error.
 type ErrorEv struct{ Err error }
 
-// RetryEv reports that round Round's stream ended early with no tool call
-// dispatched, and the identical request is being sent again (035).
-// Consumers drop the text streamed since the round began.
+// RetryEv reports that round Round's attempt failed with no tool call
+// dispatched, and the identical request is being sent again. Consumers drop
+// the text streamed since the round began. Reason says why: "stream ended
+// early" when the provider cut the stream (035, re-sent at once, once), or
+// "provider <code>: <message>; retrying in <N>s" when the provider refused
+// the round (061) — the loop waits N seconds before the re-send, up to three
+// times a round. Attempt numbers the retries of that kind within the round,
+// from 1.
 type RetryEv struct {
 	Round, Attempt int
-	Reason         string // "stream ended early"
+	Reason         string // "stream ended early", or "provider <code>: …; retrying in <N>s"
 }
 
 func (TextDelta) isEvent()      {}

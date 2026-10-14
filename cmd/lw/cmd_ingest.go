@@ -59,6 +59,12 @@ func isURLSource(src string) bool {
 // text, and resets the round state so the next TextDelta starts clean. A
 // round that wrote nothing writes nothing: the marker is only ever a
 // witness to text being disowned.
+//
+// 061: a RetryEv with any other reason — the provider refused the round and
+// the loop is waiting out a delay before re-sending — is a pause of seconds,
+// and silence that long reads as a hang, so its reason is written as a
+// bracketed line of its own whether or not the abandoned attempt streamed any
+// text.
 func runAgentTurn(ctx context.Context, ag agent.Agent, sessionID, msg string, w io.Writer) error {
 	out := make(chan agent.Event)
 	done := make(chan struct{})
@@ -99,6 +105,16 @@ func runAgentTurn(ctx context.Context, ag agent.Agent, sessionID, msg string, w 
 			toolSince = true
 			roundText = false
 		case agent.RetryEv:
+			if e.Reason != "" && e.Reason != "stream ended early" {
+				if wrote && trailingNL == 0 {
+					fmt.Fprint(w, "\n")
+				}
+				fmt.Fprintf(w, "[%s]\n", strings.Join(strings.Fields(e.Reason), " "))
+				trailingNL = 1
+				toolSince = false
+				roundText = false
+				continue
+			}
 			if !roundText {
 				continue
 			}
@@ -733,6 +749,16 @@ func cmdIngest(args []string) error {
 	}
 
 	if sendErr != nil {
+		// 061: a turn the PROVIDER failed keeps the ops it had staged, marked
+		// partial, instead of rolling them back (s47: one transient OpenRouter
+		// error in round 7 rejected the changeset and threw away two staged
+		// pages). A turn that staged nothing of its own has nothing to keep and
+		// takes today's rollback, texts unchanged; so does everything that is
+		// not the provider failing — the user's cancel, the output cap, an
+		// internal error.
+		if k := joinedOwnLive(final, n0); k > 0 && providerFailure(sendErr) {
+			return keepPartial(e, final, joined, k, sendErr, cfg.LLM.MaxTokens)
+		}
 		return ingestRollback(e, joined, cs.ID, n0, agentErrorHint(sendErr, cfg.LLM.MaxTokens, true))
 	}
 
@@ -794,6 +820,41 @@ func ingestRollback(e *stage.Engine, joined bool, csID string, n0 int, origErr e
 		return rejectAndReturn(e, origErr)
 	}
 	return joinRollback(e, csID, n0, origErr, true)
+}
+
+// keepPartial is cmdIngest's tail for a turn the provider failed after the
+// agent had staged k ops of its own (061): the ops stay, the changeset's
+// intent is marked partial (Engine.MarkPartial), and the summary and lint
+// warning a successful ingest prints are printed so the user sees what was
+// kept. It still returns an error — the turn did not finish, and the exit
+// code says so — but one that names the kept work and where to review it
+// instead of announcing a rollback that did not happen. There is no reject
+// verb to offer (the TUI's Review rejects), so it ends at lw tui.
+//
+// A failed mark is reported on the end of the error, never allowed to roll the
+// ops back: the work is the point. `lw lint --fix` already reports a partial
+// failure per page, and the TUI ask pane stages only what the user asks it
+// to, with its own error lines (057 owns filing and web) — neither takes this
+// path.
+func keepPartial(e *stage.Engine, final *stage.Changeset, joined bool, k int, sendErr error, maxTokens int) error {
+	markErr := e.MarkPartial(partialNote(sendErr, k))
+
+	// Print the changeset as it is now, the mark included; the pre-mark read
+	// is the fallback only if the engine cannot be read back.
+	shown := final
+	if cur, err := e.Current(); err == nil {
+		shown = cur
+	}
+	fmt.Println()
+	printChangesetSummary(os.Stdout, shown, joined)
+	warnIfLintRegresses(e)
+
+	err := fmt.Errorf("%w; kept the %d op(s) this ingest staged in changeset %s (partial: the turn did not finish) — review them in lw tui",
+		agentErrorHint(sendErr, maxTokens, false), k, final.ID)
+	if markErr != nil {
+		err = fmt.Errorf("%w (and marking the changeset partial failed: %v)", err, markErr)
+	}
+	return err
 }
 
 // joinRollback rolls a joined verb's failed turn back without touching the
