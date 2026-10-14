@@ -255,12 +255,17 @@ func (m *Model) changesetRows() []string {
 
 // sourceLabel is the Changeset panel's source row: when the intent starts
 // with "ingest ", the base name of the rest; otherwise the intent itself
-// (s2-screens.md T06).
+// (s2-screens.md T06). A leading partial mark (stage.Engine.MarkPartial,
+// "[partial: … after 2 op(s)] ", 061 FIX1) is looked past, not shown: the row
+// names the source, and the shell header's badge says the changeset is partial.
 func (m *Model) sourceLabel() string {
 	if m.changeset == nil {
 		return ""
 	}
 	intent := m.changeset.Intent
+	if rest, _ := stage.WithoutPartialMark(intent); rest != "" {
+		intent = rest
+	}
 	if rest, ok := strings.CutPrefix(intent, "ingest "); ok {
 		return path.Base(strings.TrimRight(rest, " "))
 	}

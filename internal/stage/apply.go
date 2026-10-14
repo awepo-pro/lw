@@ -288,7 +288,16 @@ func (e *Engine) commitWriteLocked(message string, changesetID *string) (commitI
 
 	// Step 8.
 	creates, edits := countPagesAndEdits(live)
-	if err := e.appendLog(commitID, c.Intent, live, creates, edits, now); err != nil {
+	// log.md records the committed change, and a partial mark (MarkPartial, 061)
+	// describes the review that preceded it — a turn that failed after staging —
+	// so the log line carries the intent without it (FIX3 F4). The mark stays in
+	// the changeset and the journal. An intent that is only the mark is logged
+	// as written rather than as nothing.
+	logIntent := c.Intent
+	if rest, marked := WithoutPartialMark(logIntent); marked && rest != "" {
+		logIntent = rest
+	}
+	if err := e.appendLog(commitID, logIntent, live, creates, edits, now); err != nil {
 		return "", fmt.Errorf("stage: commit: %w", err)
 	}
 	if err := e.checkFault("8"); err != nil {

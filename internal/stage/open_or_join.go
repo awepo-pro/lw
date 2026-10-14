@@ -14,8 +14,10 @@
 package stage
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"strings"
 )
 
 // maxIntentRunes bounds a changeset's Intent after a join appends to it, so
@@ -76,13 +78,90 @@ func (e *Engine) OpenOrJoin(intent string, a Author) (cs *Changeset, joined bool
 // elision convention the ask pane's intent uses, so `lw log` never shows a
 // truncated middle without an indicator.
 func joinIntents(existing, join string) string {
-	combined := existing + " + " + join
-	r := []rune(combined)
+	return boundIntent(existing + " + " + join)
+}
+
+// boundIntent cuts intent to at most maxIntentRunes runes, the last of them
+// "…" when anything was cut — the one bound a join (joinIntents) and a partial
+// mark (MarkPartial) share.
+func boundIntent(intent string) string {
+	r := []rune(intent)
 	if len(r) <= maxIntentRunes {
-		return combined
+		return intent
 	}
 	if maxIntentRunes <= 1 {
 		return "…"
 	}
 	return string(r[:maxIntentRunes-1]) + "…"
+}
+
+// MarkPartial puts "[<note>] " in front of the open changeset's Intent and
+// persists it. It is how a turn that failed AFTER staging says so (061): the
+// agent turn died on a provider error with ops already in the changeset,
+// `lw ingest` keeps them instead of rolling back, and the mark is what Review,
+// `lw status` and `lw log` then show with the intent.
+//
+// The mark is a PREFIX, and the 200-rune bound (boundIntent) applies to the
+// original intent only (061 FIX1, A-061-1). Appended, the mark was the first
+// thing a long intent lost — a multi-source or URL ingest is past 130 runes —
+// and a later join cuts an intent from its end too; in front, no bound can
+// reach it and every surface that shows an intent's start shows it. The whole
+// intent may therefore exceed 200 runes by the mark's length.
+//
+// A mark already in front (an earlier failed turn into the same changeset) is
+// REPLACED, not stacked under the new one (061 FIX2 R6): the reviewer needs to
+// know the changeset is incomplete, and the latest failure says why.
+//
+// Contract (061): no journal event — the mark is a rewrite of one field, not a
+// new kind of history, so there is no new event kind and no vault-format
+// change; a failed persist publishes nothing (the writerOpen pattern OpenOrJoin
+// uses). No open changeset is an error, never a changeset conjured from
+// nothing.
+func (e *Engine) MarkPartial(note string) error {
+	e.writeMu.Lock()
+	defer e.writeMu.Unlock()
+
+	c, err := e.writerOpen()
+	if err != nil {
+		if errors.Is(err, ErrNoChangeset) {
+			return errors.New("stage: mark partial: no open changeset")
+		}
+		return fmt.Errorf("stage: mark partial: %w", err)
+	}
+	mark := "[" + note + "]"
+	base, _ := WithoutPartialMark(c.Intent)
+	if base == "" {
+		c.Intent = mark
+	} else {
+		c.Intent = mark + " " + boundIntent(base)
+	}
+	if err := e.persistAndPublish(c); err != nil {
+		return fmt.Errorf("stage: mark partial: %w", err)
+	}
+	return nil
+}
+
+// partialMarkPrefix opens the mark MarkPartial puts in front of an intent: the
+// note it is given always starts "partial: " (cmd/lw's partialNote). Matching
+// exactly that, not just "[partial", keeps "[partially done] …" and "[partial] …"
+// — an intent a person wrote — from being read as a mark and stripped (061 FIX3
+// F7).
+const partialMarkPrefix = "[partial: "
+
+// WithoutPartialMark splits a partial mark off the front of an intent: rest is
+// the intent without it ("[partial: provider 502 after 2 op(s)] ingest a.md"
+// gives "ingest a.md"; a mark and nothing else gives ""), marked says there was
+// one. An intent that does not START with a closed "[partial: …]" is returned
+// whole and unmarked. It is the one definition of "what MarkPartial wrote" that
+// MarkPartial itself, the Review commit message, the Changeset panel and the
+// shell header share (061 FIX2 R6).
+func WithoutPartialMark(intent string) (rest string, marked bool) {
+	if !strings.HasPrefix(intent, partialMarkPrefix) {
+		return intent, false
+	}
+	end := strings.Index(intent, "]")
+	if end < 0 {
+		return intent, false
+	}
+	return strings.TrimPrefix(intent[end+1:], " "), true
 }

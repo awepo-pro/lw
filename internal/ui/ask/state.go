@@ -86,7 +86,7 @@ func (m *Model) applyEvent(ev agent.Event) tea.Cmd {
 			// 035: the round's stream ended early with no tool call
 			// dispatched, and the identical request is going out again —
 			// the partial text it streamed must not survive it (retry.go).
-			m.retryRound()
+			m.retryRound(e.Reason)
 		case agent.StageEv:
 			// Only the pane's own auto-reject streams an empty StageEv while
 			// its turn is active (stream.go forwardTurn) — the one turn that
