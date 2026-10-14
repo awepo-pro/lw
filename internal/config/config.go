@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -460,6 +461,9 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("config: parse %s: %w", path, err)
 	}
 	cfg := mergeOverDefault(Default(), fromShadow(s), md)
+	// 061 FIX3 F7: a hand-edited value can carry white space; the endpoint is
+	// built from this string and must never.
+	cfg.LLM.BaseURL = strings.TrimSpace(cfg.LLM.BaseURL)
 	if err := ValidateStallTimeout(cfg.LLM.StallTimeout); err != nil {
 		return nil, err
 	}
@@ -502,6 +506,47 @@ func ValidateStallTimeout(v string) error {
 	}
 	if d < 0 {
 		return fmt.Errorf("config: llm.stall_timeout: %q is negative; use \"0\" to disable the bound", v)
+	}
+	return nil
+}
+
+// chatCompletionsPath is the path lw appends to llm.base_url itself
+// (internal/llm client.go endpoint).
+const chatCompletionsPath = "/chat/completions"
+
+// ValidateBaseURL rejects an llm.base_url that already ends in
+// /chat/completions (061 D3). lw appends that path itself, so the value
+// posted to ".../chat/completions/chat/completions" and came back as a bare
+// 404 (s47: the user pasted OpenRouter's full endpoint); every other
+// OpenAI-compatible client reads base_url as the API root, and so must lw. A
+// trailing slash and the suffix's case are ignored. "" is the key absent and
+// always valid — the existing "no base_url" handling stays where it is.
+// Surrounding white space is ignored (061 FIX2 R9): a pasted value brings a
+// trailing space or newline, and the suffix must not hide behind it. A value
+// that is not an http or https URL with a host is refused too (061 FIX3 F1).
+// Exported so llm.Client (which refuses the value before any I/O), lw doctor
+// and writers of the key (lw config set) apply the same rule. Load does NOT
+// call it: a config Load refused would stop every command, `lw config set`
+// included, and the error text points at exactly that repair.
+func ValidateBaseURL(v string) error {
+	v = strings.TrimSpace(v)
+	root := strings.TrimRight(v, "/")
+	if len(root) >= len(chatCompletionsPath) {
+		cut := len(root) - len(chatCompletionsPath)
+		if strings.EqualFold(root[cut:], chatCompletionsPath) {
+			return fmt.Errorf("config: llm.base_url ends in /chat/completions, but lw adds that path itself — set it to the API root: lw config set llm.base_url %s", root[:cut])
+		}
+	}
+	if v == "" {
+		return nil
+	}
+	// 061 FIX3 F1: and it must be a URL the HTTP client can use. "api.example.com/v1"
+	// has no scheme, "localhost:8080/v1" parses as the scheme "localhost", "ftp://…"
+	// is not HTTP: each reached the client as a request that can never succeed and
+	// was waited out like a network blip. The suffix refusal above is the older,
+	// more specific text, so it is checked first.
+	if u, err := url.Parse(v); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
+		return errors.New("config: llm.base_url must be an http(s) URL with a host, e.g. https://api.deepseek.com/v1")
 	}
 	return nil
 }

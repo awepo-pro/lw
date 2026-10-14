@@ -103,7 +103,9 @@ func (fileExtractor) CanHandle(uri string) bool {
 // Kind defaults to "article" (backbone §10 rules out any readability
 // heuristic that would guess "paper" or "transcript"), and Extractor is
 // "passthrough". The markdown itself is passthrough: frontmatter included,
-// byte for byte.
+// byte for byte. OriginalBytes is the file exactly as read — before the
+// newline normalization above — so the vault keeps a verbatim copy beside a
+// raw whose body lw rewrote (058).
 func (fileExtractor) Extract(ctx context.Context, uri string) (*Doc, error) {
 	b, err := os.ReadFile(uri)
 	if err != nil {
@@ -134,11 +136,13 @@ func (fileExtractor) Extract(ctx context.Context, uri string) (*Doc, error) {
 	}
 
 	return &Doc{
-		Title:     title,
-		SourceURL: uri,
-		Markdown:  body,
-		Kind:      "article",
-		Extractor: "passthrough",
+		Title:         title,
+		SourceURL:     uri,
+		Markdown:      body,
+		Kind:          "article",
+		Extractor:     "passthrough",
+		OriginalBytes: b,
+		OriginalExt:   strings.ToLower(filepath.Ext(uri)),
 	}, nil
 }
 

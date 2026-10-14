@@ -8,10 +8,12 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/awepo-pro/lw/internal/agent"
@@ -59,7 +61,22 @@ func isURLSource(src string) bool {
 // text, and resets the round state so the next TextDelta starts clean. A
 // round that wrote nothing writes nothing: the marker is only ever a
 // witness to text being disowned.
+//
+// 061: a RetryEv with any other reason — the provider refused the round and
+// the loop is waiting out a delay before re-sending — is a pause of seconds,
+// and silence that long reads as a hang, so its reason is written as a
+// bracketed line of its own whether or not the abandoned attempt streamed any
+// text. FIX2 R8: that notice goes to STDERR, not w — w is the turn's answer,
+// which a script may be piping — while the abandoned attempt's partial text is
+// still ended on a newline in w, so the retry's text starts a line of its own.
 func runAgentTurn(ctx context.Context, ag agent.Agent, sessionID, msg string, w io.Writer) error {
+	return runAgentTurnTo(ctx, ag, sessionID, msg, w, os.Stderr)
+}
+
+// runAgentTurnTo is runAgentTurn with the stream the provider-retry notices go
+// to made explicit (os.Stderr is read when runAgentTurn is called, so a test
+// that swaps it still captures them).
+func runAgentTurnTo(ctx context.Context, ag agent.Agent, sessionID, msg string, w, notices io.Writer) error {
 	out := make(chan agent.Event)
 	done := make(chan struct{})
 	var sendErr error
@@ -99,6 +116,19 @@ func runAgentTurn(ctx context.Context, ag agent.Agent, sessionID, msg string, w 
 			toolSince = true
 			roundText = false
 		case agent.RetryEv:
+			if e.Reason != "" && e.Reason != "stream ended early" {
+				if roundText && trailingNL == 0 {
+					fmt.Fprint(w, "\n") // disown the abandoned attempt's text: the retry starts a fresh line
+					trailingNL = 1
+					toolSince = false
+				}
+				if wrote && trailingNL == 0 {
+					fmt.Fprint(notices, "\n") // the cursor is mid-line on a shared terminal
+				}
+				fmt.Fprintf(notices, "[%s]\n", strings.Join(strings.Fields(e.Reason), " "))
+				roundText = false
+				continue
+			}
 			if !roundText {
 				continue
 			}
@@ -113,6 +143,24 @@ func runAgentTurn(ctx context.Context, ag agent.Agent, sessionID, msg string, w 
 	}
 	<-done
 	return sendErr
+}
+
+// notifyInterrupt derives from parent a context that the process's first
+// interrupt (Ctrl-C), terminate or hangup signal cancels, and the function that
+// stops listening (061 FIX2 R3; FIX3 F5 added the hangup a dropped ssh session
+// sends). A staging verb runs its agent turn under it, so an
+// abort unwinds through the verb's own failure path — the changeset it opened
+// rejected, a joined one losing only its own ops — instead of the signal killing
+// the process mid-turn and leaving a half-staged changeset open. The first
+// signal also restores the default handling, so a second ^C ends a verb whose
+// cleanup is stuck. A variable so a test can hand the verb a cancel it holds.
+var notifyInterrupt = func(parent context.Context) (context.Context, context.CancelFunc) {
+	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
+	return ctx, stop
 }
 
 // retryMarker is the line runAgentTurn writes where a RetryEv disowned
@@ -353,6 +401,11 @@ func cmdIngest(args []string) error {
 	// trace.VerbFrom to name the turn event, and no constructor argument
 	// could tell the shared newAgent which verb is driving (038 C-3).
 	ctx := trace.WithVerb(context.Background(), trace.VerbIngest)
+	// 061 FIX2 R3: Ctrl-C cancels the turn instead of killing the process under
+	// it, and a canceled turn takes the rollback below — a provider error keeps
+	// the work, a deliberate abort does not.
+	ctx, stopInterrupt := notifyInterrupt(ctx)
+	defer stopInterrupt()
 
 	// 004 F.I1: an argument that stats as a directory is replaced, in
 	// place, by extract.Walk's eligible files — the same chain extracts
@@ -733,6 +786,19 @@ func cmdIngest(args []string) error {
 	}
 
 	if sendErr != nil {
+		// 061: a turn the PROVIDER failed keeps the ops it had staged, marked
+		// partial, instead of rolling them back (s47: one transient OpenRouter
+		// error in round 7 rejected the changeset and threw away two staged
+		// pages). A turn that staged nothing of its own has nothing to keep and
+		// takes today's rollback, texts unchanged; so does everything that is
+		// not the provider failing — the user's cancel, the output cap, an
+		// internal error.
+		// A ctx the user canceled is an abort whatever error the turn died
+		// with: a provider error that lands in the same instant as the ^C does
+		// not turn it into a keep (FIX2 R3).
+		if k := joinedOwnLive(final, n0); k > 0 && ctx.Err() == nil && providerFailure(sendErr) {
+			return keepPartial(e, final, joined, k, sendErr, cfg.LLM.MaxTokens)
+		}
 		return ingestRollback(e, joined, cs.ID, n0, agentErrorHint(sendErr, cfg.LLM.MaxTokens, true))
 	}
 
@@ -794,6 +860,41 @@ func ingestRollback(e *stage.Engine, joined bool, csID string, n0 int, origErr e
 		return rejectAndReturn(e, origErr)
 	}
 	return joinRollback(e, csID, n0, origErr, true)
+}
+
+// keepPartial is cmdIngest's tail for a turn the provider failed after the
+// agent had staged k ops of its own (061): the ops stay, the changeset's
+// intent is marked partial (Engine.MarkPartial), and the summary and lint
+// warning a successful ingest prints are printed so the user sees what was
+// kept. It still returns an error — the turn did not finish, and the exit
+// code says so — but one that names the kept work and where to review it
+// instead of announcing a rollback that did not happen. There is no reject
+// verb to offer (the TUI's Review rejects), so it ends at lw tui.
+//
+// A failed mark is reported on the end of the error, never allowed to roll the
+// ops back: the work is the point. `lw lint --fix` already reports a partial
+// failure per page, and the TUI ask pane stages only what the user asks it
+// to, with its own error lines (057 owns filing and web) — neither takes this
+// path.
+func keepPartial(e *stage.Engine, final *stage.Changeset, joined bool, k int, sendErr error, maxTokens int) error {
+	markErr := e.MarkPartial(partialNote(sendErr, k))
+
+	// Print the changeset as it is now, the mark included; the pre-mark read
+	// is the fallback only if the engine cannot be read back.
+	shown := final
+	if cur, err := e.Current(); err == nil {
+		shown = cur
+	}
+	fmt.Println()
+	printChangesetSummary(os.Stdout, shown, joined)
+	warnIfLintRegresses(e)
+
+	err := fmt.Errorf("%w; kept the %d op(s) this ingest staged in changeset %s (partial: the turn did not finish) — review them in lw tui",
+		agentErrorHint(sendErr, maxTokens, false), k, final.ID)
+	if markErr != nil {
+		err = fmt.Errorf("%w (and marking the changeset partial failed: %v)", err, markErr)
+	}
+	return err
 }
 
 // joinRollback rolls a joined verb's failed turn back without touching the

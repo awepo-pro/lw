@@ -906,6 +906,19 @@ func checkConfig(cfg *config.Config, err error) doctorCheck {
 			Remedy: "run lw config to inspect or repair the configuration file",
 		}
 	}
+	// 061: a base_url that already ends in /chat/completions is posted to
+	// ".../chat/completions/chat/completions" and comes back as a bare 404 with
+	// no hint (s47). config.Load deliberately lets it through — a config it
+	// refused would stop `lw config set`, the repair — so the check that names
+	// it is this one, with the config package's own refusal text and the command
+	// that fixes it.
+	if berr := config.ValidateBaseURL(cfg.LLM.BaseURL); berr != nil {
+		return doctorCheck{
+			Name:   name,
+			Detail: berr.Error(),
+			Remedy: "lw config set llm.base_url " + baseURLRepair(cfg.LLM.BaseURL),
+		}
+	}
 	about := fmt.Sprintf(" · model %s @ %s", cfg.LLM.Model, cfg.LLM.BaseURL)
 	switch ref := cfg.LLM.APIKey; {
 	case ref == "":
@@ -937,6 +950,25 @@ func checkConfig(cfg *config.Config, err error) doctorCheck {
 			Detail: fmt.Sprintf("api_key literal (set)%s — prefer env:NAME so the value is never stored in the config file", about),
 		}
 	}
+}
+
+// baseURLRepair is the value a base_url that config.ValidateBaseURL refused
+// should be set to. Three refusals exist: a value ending in /chat/completions is
+// told its API root (the suffix and trailing slashes off); a value with no
+// "://" at all — "api.example.com/v1" — is told the same value with https://
+// in front, the one-keystroke fix for the usual mistake; anything else (a
+// wrong scheme, no host) is shown the shape, with the example the refusal text
+// itself gives.
+func baseURLRepair(v string) string {
+	v = strings.TrimSpace(v)
+	root := strings.TrimRight(v, "/")
+	if suffix := "/chat/completions"; len(root) >= len(suffix) && strings.EqualFold(root[len(root)-len(suffix):], suffix) {
+		return root[:len(root)-len(suffix)]
+	}
+	if v != "" && !strings.Contains(v, "://") && !strings.HasPrefix(v, "/") && !strings.ContainsAny(v, " \t") {
+		return "https://" + root
+	}
+	return "https://api.deepseek.com/v1"
 }
 
 // checkWeb reports the [web] lookup configuration (010 contract §4, C-1001)

@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -103,7 +104,7 @@ func TestK1SecondExtractHitsCache(t *testing.T) {
 	if d1.Markdown != d2.Markdown {
 		t.Fatalf("markdown differs between calls")
 	}
-	if *d1 != *d2 {
+	if !reflect.DeepEqual(*d1, *d2) {
 		t.Fatalf("docs differ:\n%+v\n%+v", d1, d2)
 	}
 }

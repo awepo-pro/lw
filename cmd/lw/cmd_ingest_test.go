@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -565,7 +566,7 @@ func TestPreExtractedResolvesScratchPathToStagedDoc(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Extract: %v", err)
 	}
-	if *got != doc {
+	if !reflect.DeepEqual(*got, doc) {
 		t.Fatalf("Extract() = %+v, want %+v", *got, doc)
 	}
 
