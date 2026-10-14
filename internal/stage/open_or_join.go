@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 )
 
 // maxIntentRunes bounds a changeset's Intent after a join appends to it, so
@@ -107,6 +108,10 @@ func boundIntent(intent string) string {
 // reach it and every surface that shows an intent's start shows it. The whole
 // intent may therefore exceed 200 runes by the mark's length.
 //
+// A mark already in front (an earlier failed turn into the same changeset) is
+// REPLACED, not stacked under the new one (061 FIX2 R6): the reviewer needs to
+// know the changeset is incomplete, and the latest failure says why.
+//
 // Contract (061): no journal event — the mark is a rewrite of one field, not a
 // new kind of history, so there is no new event kind and no vault-format
 // change; a failed persist publishes nothing (the writerOpen pattern OpenOrJoin
@@ -124,13 +129,35 @@ func (e *Engine) MarkPartial(note string) error {
 		return fmt.Errorf("stage: mark partial: %w", err)
 	}
 	mark := "[" + note + "]"
-	if c.Intent == "" {
+	base, _ := WithoutPartialMark(c.Intent)
+	if base == "" {
 		c.Intent = mark
 	} else {
-		c.Intent = mark + " " + boundIntent(c.Intent)
+		c.Intent = mark + " " + boundIntent(base)
 	}
 	if err := e.persistAndPublish(c); err != nil {
 		return fmt.Errorf("stage: mark partial: %w", err)
 	}
 	return nil
+}
+
+// partialMarkPrefix opens the mark MarkPartial puts in front of an intent.
+const partialMarkPrefix = "[partial"
+
+// WithoutPartialMark splits a partial mark off the front of an intent: rest is
+// the intent without it ("[partial: provider 502 after 2 op(s)] ingest a.md"
+// gives "ingest a.md"; a mark and nothing else gives ""), marked says there was
+// one. An intent that does not START with a closed "[partial…]" is returned
+// whole and unmarked. It is the one definition of "what MarkPartial wrote" that
+// MarkPartial itself, the Review commit message, the Changeset panel and the
+// shell header share (061 FIX2 R6).
+func WithoutPartialMark(intent string) (rest string, marked bool) {
+	if !strings.HasPrefix(intent, partialMarkPrefix) {
+		return intent, false
+	}
+	end := strings.Index(intent, "]")
+	if end < 0 {
+		return intent, false
+	}
+	return strings.TrimPrefix(intent[end+1:], " "), true
 }

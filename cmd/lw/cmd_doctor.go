@@ -957,7 +957,7 @@ func checkConfig(cfg *config.Config, err error) doctorCheck {
 // API root the refusal tells the user to set. Only called on a refused value,
 // which always carries the suffix.
 func baseURLRoot(v string) string {
-	root := strings.TrimRight(v, "/")
+	root := strings.TrimRight(strings.TrimSpace(v), "/")
 	return root[:len(root)-len("/chat/completions")]
 }
 

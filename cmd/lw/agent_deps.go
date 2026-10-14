@@ -422,9 +422,10 @@ func agentErrorHint(sendErr error, maxTokens int, rejected bool) error {
 }
 
 // providerFailure reports whether sendErr is the provider failing the turn
-// (061): a typed *llm.ProviderError (an HTTP refusal, or an error event in the
-// stream), a stream cut twice in one round (llm.ErrStreamTruncated, 035) or a
-// provider gone silent (llm.ErrStalled). Those are failures of the far end
+// (061): a typed *llm.ProviderError (an HTTP refusal, an error event in the
+// stream, or — FIX2 — the network failing before any response), a stream cut
+// twice in one round (llm.ErrStreamTruncated, 035) or a provider gone silent
+// (llm.ErrStalled). Those are failures of the far end
 // that the work staged before them survives; a canceled turn, the output cap
 // (agent.ErrTruncated — the user's llm.max_tokens) and an internal error are
 // not, and keep their rollback.
@@ -445,6 +446,10 @@ func partialNote(sendErr error, k int) string {
 	return fmt.Sprintf("partial: %s after %d op(s)", partialCause(sendErr), k)
 }
 
+// partialBrackets turns the brackets a provider's code can carry into
+// parentheses, so the partial mark's own closing bracket stays the first one.
+var partialBrackets = strings.NewReplacer("[", "(", "]", ")")
+
 // partialCause names why a turn that providerFailure accepted failed, in the
 // fewest honest words: the provider's own "provider <code>"
 // (llm.ProviderError.Short), a stream that ended early, or a stall.
@@ -452,7 +457,10 @@ func partialCause(sendErr error) string {
 	var pe *llm.ProviderError
 	switch {
 	case errors.As(sendErr, &pe):
-		return pe.Short()
+		// The note sits inside "[…]" and ends at the first "]" (stage.
+		// WithoutPartialMark); a provider's code is printable text that may
+		// carry either bracket, so it is not allowed to close the mark early.
+		return partialBrackets.Replace(pe.Short())
 	case errors.Is(sendErr, llm.ErrStreamTruncated):
 		return "stream ended early"
 	case errors.Is(sendErr, llm.ErrStalled):

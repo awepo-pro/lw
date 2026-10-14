@@ -8,10 +8,12 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/awepo-pro/lw/internal/agent"
@@ -64,8 +66,17 @@ func isURLSource(src string) bool {
 // the loop is waiting out a delay before re-sending — is a pause of seconds,
 // and silence that long reads as a hang, so its reason is written as a
 // bracketed line of its own whether or not the abandoned attempt streamed any
-// text.
+// text. FIX2 R8: that notice goes to STDERR, not w — w is the turn's answer,
+// which a script may be piping — while the abandoned attempt's partial text is
+// still ended on a newline in w, so the retry's text starts a line of its own.
 func runAgentTurn(ctx context.Context, ag agent.Agent, sessionID, msg string, w io.Writer) error {
+	return runAgentTurnTo(ctx, ag, sessionID, msg, w, os.Stderr)
+}
+
+// runAgentTurnTo is runAgentTurn with the stream the provider-retry notices go
+// to made explicit (os.Stderr is read when runAgentTurn is called, so a test
+// that swaps it still captures them).
+func runAgentTurnTo(ctx context.Context, ag agent.Agent, sessionID, msg string, w, notices io.Writer) error {
 	out := make(chan agent.Event)
 	done := make(chan struct{})
 	var sendErr error
@@ -106,12 +117,15 @@ func runAgentTurn(ctx context.Context, ag agent.Agent, sessionID, msg string, w 
 			roundText = false
 		case agent.RetryEv:
 			if e.Reason != "" && e.Reason != "stream ended early" {
-				if wrote && trailingNL == 0 {
-					fmt.Fprint(w, "\n")
+				if roundText && trailingNL == 0 {
+					fmt.Fprint(w, "\n") // disown the abandoned attempt's text: the retry starts a fresh line
+					trailingNL = 1
+					toolSince = false
 				}
-				fmt.Fprintf(w, "[%s]\n", strings.Join(strings.Fields(e.Reason), " "))
-				trailingNL = 1
-				toolSince = false
+				if wrote && trailingNL == 0 {
+					fmt.Fprint(notices, "\n") // the cursor is mid-line on a shared terminal
+				}
+				fmt.Fprintf(notices, "[%s]\n", strings.Join(strings.Fields(e.Reason), " "))
 				roundText = false
 				continue
 			}
@@ -129,6 +143,23 @@ func runAgentTurn(ctx context.Context, ag agent.Agent, sessionID, msg string, w 
 	}
 	<-done
 	return sendErr
+}
+
+// notifyInterrupt derives from parent a context that the process's first
+// interrupt (Ctrl-C) or terminate signal cancels, and the function that stops
+// listening (061 FIX2 R3). A staging verb runs its agent turn under it, so an
+// abort unwinds through the verb's own failure path — the changeset it opened
+// rejected, a joined one losing only its own ops — instead of the signal killing
+// the process mid-turn and leaving a half-staged changeset open. The first
+// signal also restores the default handling, so a second ^C ends a verb whose
+// cleanup is stuck. A variable so a test can hand the verb a cancel it holds.
+var notifyInterrupt = func(parent context.Context) (context.Context, context.CancelFunc) {
+	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
+	return ctx, stop
 }
 
 // retryMarker is the line runAgentTurn writes where a RetryEv disowned
@@ -369,6 +400,11 @@ func cmdIngest(args []string) error {
 	// trace.VerbFrom to name the turn event, and no constructor argument
 	// could tell the shared newAgent which verb is driving (038 C-3).
 	ctx := trace.WithVerb(context.Background(), trace.VerbIngest)
+	// 061 FIX2 R3: Ctrl-C cancels the turn instead of killing the process under
+	// it, and a canceled turn takes the rollback below — a provider error keeps
+	// the work, a deliberate abort does not.
+	ctx, stopInterrupt := notifyInterrupt(ctx)
+	defer stopInterrupt()
 
 	// 004 F.I1: an argument that stats as a directory is replaced, in
 	// place, by extract.Walk's eligible files — the same chain extracts
@@ -756,7 +792,10 @@ func cmdIngest(args []string) error {
 		// takes today's rollback, texts unchanged; so does everything that is
 		// not the provider failing — the user's cancel, the output cap, an
 		// internal error.
-		if k := joinedOwnLive(final, n0); k > 0 && providerFailure(sendErr) {
+		// A ctx the user canceled is an abort whatever error the turn died
+		// with: a provider error that lands in the same instant as the ^C does
+		// not turn it into a keep (FIX2 R3).
+		if k := joinedOwnLive(final, n0); k > 0 && ctx.Err() == nil && providerFailure(sendErr) {
 			return keepPartial(e, final, joined, k, sendErr, cfg.LLM.MaxTokens)
 		}
 		return ingestRollback(e, joined, cs.ID, n0, agentErrorHint(sendErr, cfg.LLM.MaxTokens, true))

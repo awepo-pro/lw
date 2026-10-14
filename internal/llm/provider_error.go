@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -30,15 +31,29 @@ type ProviderError struct {
 	Body       string        // HTTP only: the whole response body, trimmed, ≤ 4096 bytes — what Error() prints; "" in-stream
 	RetryAfter time.Duration // Retry-After header (delta-seconds or HTTP-date, clamped ≥ 0); 0 when absent/unparseable
 	InStream   bool          // true: arrived as an SSE data event after a 200
+	Transport  bool          // true: no response at all — the dial, DNS, TLS handshake or connection failed before headers (061 FIX2); Status 0, not InStream
+
+	// cause is the transport error a Transport failure wraps: Error() prints its
+	// text and Unwrap hands it on, so errors.Is(err, syscall.ECONNREFUSED) and
+	// the like keep working exactly as with the plain `llm: request: %w`.
+	cause error
 }
 
 // Error keeps the HTTP form byte-identical to the text Stream returned before
 // the type existed — callers, logs and e2e assertions match on it, so it
 // prints the whole Body, never the unwrapped Message (061 FIX1: Message is the
 // short sentence for the retry line and the partial mark). An error built
-// without a Body prints its Message, so it reads as it always did. It gives
-// the in-stream form the same "llm:" prefix with the code in parentheses.
+// without a Body prints its Message, so it reads as it always did. A transport
+// failure (061 FIX2) prints the `llm: request: <err>` it printed before it was
+// typed. It gives the in-stream form the same "llm:" prefix with the code in
+// parentheses.
 func (e *ProviderError) Error() string {
+	if e.Transport {
+		if e.cause != nil {
+			return "llm: request: " + e.cause.Error()
+		}
+		return "llm: request: " + e.Message
+	}
 	if !e.InStream {
 		text := e.Body
 		if text == "" {
@@ -53,16 +68,23 @@ func (e *ProviderError) Error() string {
 }
 
 // code names the failure the way an in-stream Error() does: the HTTP status
-// when there is one, else the provider's string code, else "unknown".
+// when there is one, else the provider's string code, else "unknown" — and
+// "network" for a transport failure, which has neither.
 func (e *ProviderError) code() string {
 	switch {
 	case e.Status != 0:
 		return strconv.Itoa(e.Status)
 	case e.Code != "":
 		return e.Code
+	case e.Transport:
+		return "network"
 	}
 	return "unknown"
 }
+
+// Unwrap hands on the transport error a Transport failure wraps (nil for every
+// other kind), so the chain behind `llm: request: %w` survives the typing.
+func (e *ProviderError) Unwrap() error { return e.cause }
 
 // Short is the failure in two words, "provider <code>" — "provider 502",
 // "provider server_error", "provider unknown" — the one form the agent's retry
@@ -112,10 +134,17 @@ func httpErrorMessage(body string) string {
 // only when the provider named a wait (OpenRouter's in-flight budget sends
 // Retry-After; a 402 without it is a real out-of-credit). An in-stream error
 // with no numeric status is a mid-stream failure on the provider's side — the
-// request was already accepted and had begun to be answered.
+// request was already accepted and had begun to be answered — unless its
+// string code names a permanent problem (permanentCode: a bad key, a request
+// over the context window, an unknown model). A transport failure (061 FIX2:
+// the dial, DNS, TLS handshake or connection failed before any response) is
+// the path to the provider breaking, retryable like a 503.
 func (e *ProviderError) Retryable() bool {
 	if e == nil {
 		return false
+	}
+	if e.Transport {
+		return true
 	}
 	switch e.Status {
 	case 408, 409, 425, 429, 500, 502, 503, 504, 529:
@@ -123,9 +152,30 @@ func (e *ProviderError) Retryable() bool {
 	case 402:
 		return e.RetryAfter > 0
 	case 0:
-		return e.InStream
+		return e.InStream && !permanentCode(e.Code)
 	}
 	return false
+}
+
+// permanentCodes are the in-stream string codes that say the REQUEST is wrong
+// or the account cannot serve it — re-sending the same request three times
+// after waiting 2, 4 and 8 seconds cannot change that. Anything else stays
+// retryable: a mid-stream failure with an unrecognised code is more likely the
+// provider's than the request's (061 FIX2 R4). Compared case-insensitively;
+// "invalid_*" is the whole OpenAI family (invalid_api_key,
+// invalid_request_error, …).
+var permanentCodes = map[string]bool{
+	"context_length_exceeded": true,
+	"insufficient_quota":      true,
+	"model_not_found":         true,
+	"unsupported_parameter":   true,
+	"authentication_error":    true,
+	"permission_denied":       true,
+}
+
+func permanentCode(code string) bool {
+	c := strings.ToLower(code)
+	return strings.HasPrefix(c, "invalid_") || permanentCodes[c]
 }
 
 // maxRetryAfter caps a parsed Retry-After. Past a day the number is a quota
@@ -190,30 +240,56 @@ const inStreamMessageRunes = 1024
 type wireStreamError struct {
 	Code    json.RawMessage
 	Message string
-	// empty is an error carrier with nothing in it ("error":{} or "error":""):
-	// some gateways send one on every ordinary chunk, and it must not turn a
-	// healthy stream into an error.
+	// empty is an error carrier that does not count as an error (061 FIX2 R1).
+	// Some gateways stamp an "error" on EVERY ordinary chunk — null fields, empty
+	// strings, a 0, a false, an empty list — and an error that says nothing must
+	// not turn a healthy stream into a failed turn. A carrier counts ONLY if its
+	// message is a non-empty string, or its code is a non-empty string or a
+	// number of 1 or more; the choice's own finish_reason "error" is handled
+	// separately, in the stream loop.
 	empty bool
 }
 
-// UnmarshalJSON decodes the object, string and any-other-JSON shapes of an
-// "error" member. A JSON null never reaches it (encoding/json leaves the
+// UnmarshalJSON decodes the object and string shapes of an "error" member and
+// settles whether the carrier counts (wireStreamError.empty). Every other JSON
+// value — false, true, a number, a list — carries no message and no code, so it
+// does not count. A JSON null never reaches it (encoding/json leaves the
 // pointer nil), so nil means "no error key".
 func (e *wireStreamError) UnmarshalJSON(b []byte) error {
 	*e = wireStreamError{}
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal(b, &obj); err == nil {
-		if len(obj) == 0 {
-			e.empty = true
-			return nil
-		}
 		e.Code = obj["code"]
 		e.Message = rawText(obj["message"])
+		e.empty = !(isNonEmptyString(obj["message"]) || codeCounts(obj["code"]))
 		return nil
 	}
-	e.Message = rawText(b)
-	e.empty = e.Message == ""
+	var s string
+	if err := json.Unmarshal(b, &s); err == nil {
+		e.Message = s
+		e.empty = strings.TrimSpace(s) == ""
+		return nil
+	}
+	e.empty = true
 	return nil
+}
+
+// isNonEmptyString reports whether raw is a JSON string with something in it
+// besides white space.
+func isNonEmptyString(raw json.RawMessage) bool {
+	var s string
+	return json.Unmarshal(raw, &s) == nil && strings.TrimSpace(s) != ""
+}
+
+// codeCounts reports whether an error's "code" says anything: a non-empty
+// string, or a number of 1 or more. null, false, 0, a negative or fractional
+// number below one, and an empty string name nothing.
+func codeCounts(raw json.RawMessage) bool {
+	if isNonEmptyString(raw) {
+		return true
+	}
+	var f float64
+	return json.Unmarshal(raw, &f) == nil && f >= 1
 }
 
 // rawText is a JSON value as human text: a string unquoted, null as nothing,
@@ -235,14 +311,14 @@ func rawText(raw json.RawMessage) string {
 // string code is kept verbatim; every other code shape (null, a boolean, a
 // fraction, zero or negative) names nothing and leaves both unset.
 func (e *wireStreamError) providerError() *ProviderError {
-	pe := &ProviderError{InStream: true, Message: boundRunes(strings.TrimSpace(e.Message), inStreamMessageRunes)}
+	pe := &ProviderError{InStream: true, Message: boundRunes(cleanText(e.Message), inStreamMessageRunes)}
 	raw := strings.TrimSpace(string(e.Code))
 	switch {
 	case raw == "" || raw == "null":
 	case strings.HasPrefix(raw, `"`):
 		var s string
 		if json.Unmarshal(e.Code, &s) == nil {
-			pe.Code = s
+			pe.Code = boundRunes(cleanText(s), providerCodeRunes)
 		}
 	default:
 		var f float64
@@ -251,6 +327,30 @@ func (e *wireStreamError) providerError() *ProviderError {
 		}
 	}
 	return pe
+}
+
+// providerCodeRunes bounds an in-stream string code. A code is an identifier
+// ("server_error", "rate_limit_exceeded"); one that runs to a screenful is the
+// provider shouting, and it is printed in the retry line and the partial mark.
+const providerCodeRunes = 64
+
+// cleanText makes a provider's string safe to print: a provider's code and
+// message reach the terminal (the retry notice, the partial mark, the log), and
+// bytes the provider chose must not move the cursor, recolour the screen or
+// forge a line. Line breaks and tabs become a space, every other control
+// character (ESC included) is dropped, and the result is trimmed (061 FIX2
+// R7). An escape SEQUENCE loses its ESC and keeps its printable remainder
+// ("[31m"): inert text, not a cleverer parser to get wrong.
+func cleanText(s string) string {
+	return strings.TrimSpace(strings.Map(func(r rune) rune {
+		switch {
+		case r == '\n' || r == '\r' || r == '\t' || r == '\u2028' || r == '\u2029':
+			return ' '
+		case unicode.IsControl(r):
+			return -1
+		}
+		return r
+	}, s))
 }
 
 // boundRunes cuts s to at most max runes, the last of them "…" when anything

@@ -117,3 +117,52 @@ func TestConfigSetBaseURLRefused(t *testing.T) {
 		t.Errorf("saved base_url = %q, want %q", got.LLM.BaseURL, "https://x/v1")
 	}
 }
+
+// TestBaseURLWhitespace (FIX2 R9): a value pasted with a trailing space is
+// still a value ending in /chat/completions — the check ignores surrounding
+// white space, the repair command names a root without it, and `lw config set`
+// stores what it accepts trimmed.
+func TestBaseURLWhitespace(t *testing.T) {
+	t.Run("doctor", func(t *testing.T) {
+		doctorTestEnv(t)
+		root := testutil.CopyFixture(t, "minimal")
+		writeConfigFile(t, os.Getenv("XDG_CONFIG_HOME"),
+			"[llm]\nbase_url = \"https://openrouter.ai/api/v1/chat/completions \"\n\n[extract]\ncommand = \""+fakeDoclingCommand(t)+"\"\n")
+
+		c := checkByName(t, runDoctor(context.Background(), root, doctorOptions{}), "config")
+		if want := baseURLFixText("https://openrouter.ai/api/v1"); !strings.Contains(c.Detail, want) {
+			t.Errorf("detail = %q, want it to carry %q", c.Detail, want)
+		}
+		wantFailed(t, c, "lw config set llm.base_url https://openrouter.ai/api/v1")
+		if want := "lw config set llm.base_url https://openrouter.ai/api/v1"; c.Remedy != want {
+			t.Errorf("remedy = %q, want exactly %q", c.Remedy, want)
+		}
+	})
+
+	t.Run("config set refuses a suffix hidden behind a space", func(t *testing.T) {
+		dir := configTestEnv(t)
+		path := writeConfigFile(t, dir, "[llm]\nbase_url = \"https://old.example/v1\"\n")
+		before, _ := os.ReadFile(path)
+		_, stderr, code := runConfig(t, "set", "llm.base_url", "https://x/v1/chat/completions ")
+		if code != 2 || !strings.Contains(stderr, baseURLFixText("https://x/v1")) {
+			t.Fatalf("exit %d, stderr %q, want exit 2 with the refusal text", code, stderr)
+		}
+		if after, _ := os.ReadFile(path); string(after) != string(before) {
+			t.Errorf("the refused value changed the config file")
+		}
+	})
+
+	t.Run("config set stores the trimmed value", func(t *testing.T) {
+		configTestEnv(t)
+		if _, stderr, code := runConfig(t, "set", "llm.base_url", "  https://x/v1 \n"); code != 0 {
+			t.Fatalf("exit %d, stderr %q", code, stderr)
+		}
+		got, err := config.Load()
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if got.LLM.BaseURL != "https://x/v1" {
+			t.Errorf("saved base_url = %q, want %q", got.LLM.BaseURL, "https://x/v1")
+		}
+	})
+}

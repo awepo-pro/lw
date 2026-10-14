@@ -11,7 +11,6 @@ package ui
 import (
 	"log/slog"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"charm.land/bubbles/v2/key"
@@ -193,7 +192,7 @@ func (a *App) refreshStage() {
 	a.stageOps = len(c.Live())
 	a.stageChecks = c.Checks
 	a.hasStage = true
-	a.stagePartial = strings.HasPrefix(c.Intent, "[partial")
+	_, a.stagePartial = stage.WithoutPartialMark(c.Intent)
 }
 
 // Init returns tea.RequestBackgroundColor so the shell learns the

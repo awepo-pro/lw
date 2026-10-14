@@ -263,10 +263,8 @@ func (m *Model) sourceLabel() string {
 		return ""
 	}
 	intent := m.changeset.Intent
-	if strings.HasPrefix(intent, "[partial") {
-		if _, rest, ok := strings.Cut(intent, "] "); ok {
-			intent = rest
-		}
+	if rest, _ := stage.WithoutPartialMark(intent); rest != "" {
+		intent = rest
 	}
 	if rest, ok := strings.CutPrefix(intent, "ingest "); ok {
 		return path.Base(strings.TrimRight(rest, " "))

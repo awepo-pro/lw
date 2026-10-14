@@ -107,7 +107,11 @@ func cmdQuery(args []string) error {
 	// and lint --fix set theirs around their own Send. 039: the same verb is
 	// what puts the turn in ask mode — the ask prompt, the read tools only —
 	// so it is load-bearing, not just a trace label.
-	sendErr := runAgentTurn(trace.WithVerb(context.Background(), trace.VerbQuery), ag, sess.ID, queryPromptPrefix+question, os.Stdout)
+	// 061 FIX2 R3: under an interrupt-derived ctx, so ^C unwinds through the
+	// cleanup below instead of killing the process before it runs.
+	turnCtx, stopInterrupt := notifyInterrupt(trace.WithVerb(context.Background(), trace.VerbQuery))
+	defer stopInterrupt()
+	sendErr := runAgentTurn(turnCtx, ag, sess.ID, queryPromptPrefix+question, os.Stdout)
 	fmt.Println()
 
 	// Enforce "no changes" structurally, whatever the model attempted:

@@ -212,6 +212,24 @@ func TestRetryableTable(t *testing.T) {
 		{"in stream, string code", ProviderError{Code: "server_error", InStream: true}, true},
 		{"in stream, no code at all", ProviderError{InStream: true}, true},
 		{"HTTP status 0 is unknown, not a provider fault", ProviderError{}, false},
+		// FIX2 R4: an in-stream string code that names a permanent problem —
+		// a bad key, a request over the context window, an unknown model — is
+		// not worth three retries; every other string code stays retryable.
+		{"in stream invalid_api_key", ProviderError{Code: "invalid_api_key", InStream: true}, false},
+		{"in stream invalid_request_error", ProviderError{Code: "invalid_request_error", InStream: true}, false},
+		{"in stream context_length_exceeded", ProviderError{Code: "context_length_exceeded", InStream: true}, false},
+		{"in stream insufficient_quota", ProviderError{Code: "insufficient_quota", InStream: true}, false},
+		{"in stream model_not_found", ProviderError{Code: "model_not_found", InStream: true}, false},
+		{"in stream unsupported_parameter", ProviderError{Code: "unsupported_parameter", InStream: true}, false},
+		{"in stream authentication_error", ProviderError{Code: "authentication_error", InStream: true}, false},
+		{"in stream permission_denied", ProviderError{Code: "permission_denied", InStream: true}, false},
+		{"in stream deny-list is case-insensitive", ProviderError{Code: "Invalid_API_Key", InStream: true}, false},
+		{"in stream rate_limit_exceeded", ProviderError{Code: "rate_limit_exceeded", InStream: true}, true},
+		{"in stream overloaded_error", ProviderError{Code: "overloaded_error", InStream: true}, true},
+		{"in stream invalid code but a retryable status", ProviderError{Status: 503, Code: "invalid_x", InStream: true}, true},
+		{"in stream permanent code and a permanent status", ProviderError{Status: 401, Code: "rate_limit", InStream: true}, false},
+		// FIX2 R2: a transport failure (no response at all) is retryable.
+		{"transport", ProviderError{Transport: true, Message: "dial tcp: connection refused"}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -450,7 +468,12 @@ func TestStreamInStreamErrorShapes(t *testing.T) {
 		{"digit string code stays a string", `{"error":{"code":"429","message":"slow"}}`, 0, "429", "slow"},
 		{"message is trimmed", `{"error":{"code":500,"message":"  spaced out \n"}}`, 500, "", "spaced out"},
 		{"code only", `{"error":{"code":503}}`, 503, "", ""},
-		{"metadata only", `{"error":{"metadata":{"provider_name":"Nvidia"}}}`, 0, "", ""},
+		// FIX2 R1: "metadata only" moved out — an error object with no message,
+		// no code and no finish_reason "error" is a healthy chunk's decoration,
+		// not a failure (see the healthy carriers below).
+		{"string code only", `{"error":{"code":"server_error"}}`, 0, "server_error", ""},
+		{"fractional code of one or more counts, names no status", `{"error":{"code":1.5}}`, 0, "", ""},
+		{"string message with a null code", `{"error":{"message":"odd","code":null,"type":null}}`, 0, "", "odd"},
 		{"message that is not a string keeps its text", `{"error":{"code":500,"message":{"detail":"x"}}}`, 500, "", `{"detail":"x"}`},
 		{"message is bounded to 1024 runes", `{"error":{"code":500,"message":"` + long + `"}}`, 500, "", strings.Repeat("é", 1023) + "…"},
 	}
@@ -469,7 +492,25 @@ func TestStreamInStreamErrorShapes(t *testing.T) {
 
 	// An error key that carries nothing is not an error: the stream below is
 	// an ordinary finished answer and must come out exactly as without it.
-	for _, empty := range []string{`"error":null`, `"error":{}`, `"error":""`} {
+	// FIX2 R1: a carrier counts ONLY if its message is a non-empty string, or
+	// its code is a non-empty string or a number of 1 or more, or the choice
+	// finishes with "error". Gateways that stamp a null/empty/false error on
+	// every ordinary chunk (the reviewer's probe: all of these killed a healthy
+	// stream) must not fail the turn.
+	for _, empty := range []string{
+		`"error":null`, `"error":{}`, `"error":""`,
+		`"error":false`, `"error":0`, `"error":[]`, `"error":true`, `"error":" "`,
+		`"error":{"message":"","code":null}`,
+		`"error":{"message":null,"type":null,"param":null,"code":null}`,
+		`"error":{"code":0,"message":""}`,
+		`"error":{"message":"","type":"","param":"","code":""}`,
+		`"error":{"message":"   ","code":"  "}`,
+		`"error":{"code":false}`,
+		`"error":{"code":-1}`,
+		`"error":{"code":0.5}`,
+		`"error":{"metadata":{"provider_name":"Nvidia"}}`,
+		`"error":{"message":{"detail":"x"}}`,
+	} {
 		t.Run("empty carrier "+empty, func(t *testing.T) {
 			text := `{` + empty + `,"choices":[{"index":0,"delta":{"content":"hi"}}]}`
 			fin := `{` + empty + `,"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`

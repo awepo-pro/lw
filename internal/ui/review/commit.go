@@ -20,13 +20,17 @@ import (
 )
 
 // commitMessage is the changeset's Intent, falling back to "review: <id>"
-// when Intent is empty.
+// when Intent is empty. A partial mark leading the intent (stage.MarkPartial,
+// 061) is left out (FIX2 R6): it says the agent turn that staged the changeset
+// failed, which is the review's business, and the reviewer has now read the
+// diff and accepted what is in it — the commit records that change, not the
+// failure. An intent that is only the mark falls back like an empty one.
 func (m *Model) commitMessage() string {
 	if m.changeset == nil {
 		return "review: "
 	}
-	if m.changeset.Intent != "" {
-		return m.changeset.Intent
+	if intent, _ := stage.WithoutPartialMark(m.changeset.Intent); intent != "" {
+		return intent
 	}
 	return "review: " + m.changeset.ID
 }

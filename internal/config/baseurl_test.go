@@ -26,6 +26,13 @@ func TestValidateBaseURL(t *testing.T) {
 		{"suffix inside the path is fine", "https://x/chat/completions/v1", ""},
 		{"similar but not the suffix", "https://x/v1/chat/completion", ""},
 		{"shorter than the suffix", "https://x", ""},
+		// FIX2 R9: a pasted value carries whitespace; the suffix is not hidden
+		// behind it, and a plain root with some is still a plain root.
+		{"suffix then a trailing space", "https://x/v1/chat/completions ", wantFmt + "https://x/v1"},
+		{"suffix, slash, then a newline", "https://x/v1/chat/completions/\n", wantFmt + "https://x/v1"},
+		{"leading space and the suffix", "  https://x/v1/chat/completions", wantFmt + "https://x/v1"},
+		{"root with surrounding space is fine", " https://x/v1 ", ""},
+		{"only whitespace is the key absent", "   ", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -148,6 +148,7 @@ func configFieldByKey(key string) (configField, bool) {
 // config it refused could not be repaired with this very command), so this
 // setter is the door that keeps it from being written. "" stays legal.
 func setBaseURL(c *config.Config, v string) error {
+	v = strings.TrimSpace(v) // 061 FIX2 R9: a pasted value brings its trailing newline; store the value
 	if err := config.ValidateBaseURL(v); err != nil {
 		return err
 	}

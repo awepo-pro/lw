@@ -36,7 +36,11 @@ var ErrStreamTruncated = errors.New("llm: provider stream ended early")
 // A provider that refuses the request — a non-200 status — returns a
 // *ProviderError, and one that fails mid-stream sends a Chunk{Err} holding an
 // in-stream *ProviderError (061); both carry the provider's own code and
-// message for the caller to classify with errors.As.
+// message for the caller to classify with errors.As. So does a request that
+// got no response at all (refused, no such host, reset, a failed handshake, EOF
+// before headers): a *ProviderError with Transport set, retryable, its text the
+// plain `llm: request: <err>` (061 FIX2) — unless the caller's own ctx ended,
+// or the failure is a stall, which keep their plain wrapped errors.
 func (c *Client) Stream(ctx context.Context, req Request) (<-chan Chunk, error) {
 	// 061 D3: a base_url that already ends in /chat/completions would be
 	// posted to ".../chat/completions/chat/completions" and come back as a
@@ -70,6 +74,16 @@ func (c *Client) Stream(ctx context.Context, req Request) (<-chan Chunk, error) 
 	if err != nil {
 		cancel()
 		slog.WarnContext(ctx, "llm error", "err", err)
+		// 061 FIX2 R2: the request never got a response — refused, no such
+		// host, reset, a failed TLS handshake, EOF before headers. That is the
+		// path to the provider breaking, and a retry can clear it, so it is a
+		// typed (retryable) error like a 503 is: an untyped one failed the turn
+		// on the first hiccup and, in `lw ingest`, rolled back every op the
+		// turn had staged. The caller's own cancel or deadline, a client
+		// timeout and a stall keep their plain wrapped error and their meaning.
+		if transportFailure(ctx, err) {
+			return nil, &ProviderError{Transport: true, Message: cleanText(err.Error()), cause: err}
+		}
 		return nil, fmt.Errorf("llm: request: %w", err)
 	}
 
@@ -102,7 +116,7 @@ func (c *Client) Stream(ctx context.Context, req Request) (<-chan Chunk, error) 
 		bodyText := strings.TrimSpace(string(b))
 		return nil, &ProviderError{
 			Status:     resp.StatusCode,
-			Message:    httpErrorMessage(bodyText),
+			Message:    cleanText(httpErrorMessage(bodyText)),
 			Body:       bodyText,
 			RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After"), headersAt),
 		}
@@ -112,6 +126,21 @@ func (c *Client) Stream(ctx context.Context, req Request) (<-chan Chunk, error) 
 	body := wrapStallBody(resp.Body, c.cfg.StallTimeout, cancel)
 	go consumeStreamTimed(ctx, body, out, headersAt)
 	return out, nil
+}
+
+// transportFailure reports whether err — what c.do returned for a request that
+// got no response — is the network failing rather than the caller (061 FIX2
+// R2). Not a provider failure: the caller's ctx ending (a cancel, a deadline),
+// any cancel or deadline in the chain (a client-wide timeout would only be
+// waited out again), and ErrStalled, which already waited stall_timeout and
+// stays a non-retried, plainly wrapped stall.
+func transportFailure(ctx context.Context, err error) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	return !errors.Is(err, context.Canceled) &&
+		!errors.Is(err, context.DeadlineExceeded) &&
+		!errors.Is(err, ErrStalled)
 }
 
 // wireStreamChunk is one SSE "data:" payload from an OpenAI-compatible
@@ -434,6 +463,23 @@ func consumeStreamTimed(ctx context.Context, body io.ReadCloser, out chan<- Chun
 		)
 	}
 
+	// providerEnded is how the loop below reports a provider failure it read
+	// out of the stream. Before the round's finish_reason it is providerFailed.
+	// AFTER it (061 FIX2 R5) the round is already complete — the answer, its
+	// tool calls and its finish are delivered — so, like a read failure behind
+	// the finish (tailLost), it is a content-free record of a lost tail and a
+	// clean end: an Err chunk would make the consumer retry the round and
+	// discard an answer the provider finished. The record carries the
+	// provider's message, which is why the error itself is what tailLost logs.
+	providerEnded := func(pe *ProviderError) {
+		if finished {
+			tailLost(pe)
+			emitUsage()
+			return
+		}
+		providerFailed(pe)
+	}
+
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
@@ -515,7 +561,7 @@ func consumeStreamTimed(ctx context.Context, body io.ReadCloser, out chan<- Chun
 		// ("error":{}) is no error. The errored round is not an accounted one,
 		// so its usage is never read.
 		if wc.Error != nil && !wc.Error.empty {
-			providerFailed(wc.Error.providerError())
+			providerEnded(wc.Error.providerError())
 			return
 		}
 		// 038 T1 U1: a usage object is decoded from ANY data chunk — the
@@ -541,7 +587,7 @@ func consumeStreamTimed(ctx context.Context, body io.ReadCloser, out chan<- Chun
 		// finish handling below, which would complete a half-assembled tool
 		// call and report the failure as a clean "error" finish.
 		if choice.FinishReason != nil && *choice.FinishReason == "error" {
-			providerFailed(&ProviderError{
+			providerEnded(&ProviderError{
 				Message:  `the provider ended the stream with finish_reason "error"`,
 				InStream: true,
 			})

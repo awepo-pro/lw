@@ -33,6 +33,11 @@ import (
 type providerStep struct {
 	err    error
 	chunks []llm.Chunk
+
+	// preload queues every chunk on a buffered channel before Stream returns,
+	// so a chunk is ALREADY waiting when the loop gets back to its select —
+	// the only way a test can have a cancel and a chunk both ready (FIX2 R10).
+	preload bool
 }
 
 // scriptedStreamer replays steps, one per Stream call, and records every
@@ -77,6 +82,14 @@ func (s *scriptedStreamer) Stream(ctx context.Context, req llm.Request) (<-chan 
 	}
 	if step.err != nil {
 		return nil, step.err
+	}
+	if step.preload {
+		out := make(chan llm.Chunk, len(step.chunks))
+		for _, c := range step.chunks {
+			out <- c
+		}
+		close(out)
+		return out, nil
 	}
 	out := make(chan llm.Chunk)
 	go func() {

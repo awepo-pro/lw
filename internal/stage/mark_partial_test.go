@@ -209,3 +209,83 @@ func TestMarkPartialKeepsOps(t *testing.T) {
 		t.Errorf("Intent = %q, want %q", after.Intent, want)
 	}
 }
+
+// TestMarkPartialReplacesLeadingMark (FIX2 R6): a second failed turn into the
+// same changeset moves the mark, it does not stack another in front. Stacked,
+// every failure added forty characters to the front of the intent and the
+// reviewer read a history of failures where one fact — "this changeset is
+// incomplete" — was meant.
+func TestMarkPartialReplacesLeadingMark(t *testing.T) {
+	cases := []struct {
+		name   string
+		intent string
+		want   string
+	}{
+		{"one mark", "[partial: provider 502 after 2 op(s)] ingest a.md", "[partial: stalled after 1 op(s)] ingest a.md"},
+		{"mark and a join", "[partial: provider 502 after 2 op(s)] ingest a.md + ingest b.md", "[partial: stalled after 1 op(s)] ingest a.md + ingest b.md"},
+		{"mark only", "[partial: provider 502 after 2 op(s)]", "[partial: stalled after 1 op(s)]"},
+		{"not a mark in front", "ingest a.md [partial: x]", "[partial: stalled after 1 op(s)] ingest a.md [partial: x]"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e, _ := newTestEngine(t)
+			if _, err := e.OpenChangeset(tc.intent, testAuthor); err != nil {
+				t.Fatalf("OpenChangeset: %v", err)
+			}
+			if err := e.MarkPartial("partial: stalled after 1 op(s)"); err != nil {
+				t.Fatalf("MarkPartial: %v", err)
+			}
+			cur, err := e.Current()
+			if err != nil {
+				t.Fatalf("Current: %v", err)
+			}
+			if cur.Intent != tc.want {
+				t.Errorf("Intent = %q, want %q", cur.Intent, tc.want)
+			}
+		})
+	}
+
+	t.Run("twice", func(t *testing.T) {
+		e, _ := newTestEngine(t)
+		if _, err := e.OpenChangeset("ingest a.md", testAuthor); err != nil {
+			t.Fatalf("OpenChangeset: %v", err)
+		}
+		for _, note := range []string{"partial: provider 502 after 2 op(s)", "partial: provider 429 after 3 op(s)"} {
+			if err := e.MarkPartial(note); err != nil {
+				t.Fatalf("MarkPartial: %v", err)
+			}
+		}
+		cur, _ := e.Current()
+		if want := "[partial: provider 429 after 3 op(s)] ingest a.md"; cur.Intent != want {
+			t.Errorf("Intent = %q, want %q", cur.Intent, want)
+		}
+	})
+}
+
+// TestWithoutPartialMark: the one parse of what MarkPartial writes.
+func TestWithoutPartialMark(t *testing.T) {
+	cases := []struct {
+		in         string
+		wantRest   string
+		wantMarked bool
+	}{
+		{"[partial: provider 502 after 2 op(s)] ingest a.md", "ingest a.md", true},
+		{"[partial: x]", "", true},
+		{"[partial: x] ", "", true},
+		{"[partial] ingest a.md", "ingest a.md", true},
+		{"[partial: x]ingest a.md", "ingest a.md", true},
+		{"ingest a.md", "ingest a.md", false},
+		{"ingest a.md [partial: x]", "ingest a.md [partial: x]", false},
+		{"[partial: never closed", "[partial: never closed", false},
+		{"[wip] ingest a.md", "[wip] ingest a.md", false},
+		{"", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			rest, marked := WithoutPartialMark(tc.in)
+			if rest != tc.wantRest || marked != tc.wantMarked {
+				t.Errorf("WithoutPartialMark(%q) = (%q, %v), want (%q, %v)", tc.in, rest, marked, tc.wantRest, tc.wantMarked)
+			}
+		})
+	}
+}

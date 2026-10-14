@@ -17,6 +17,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -473,5 +474,70 @@ func TestRecompileProviderFailureKeepsOps(t *testing.T) {
 	}
 	if got := countChangesets(t, root, "rejected"); got != 0 {
 		t.Errorf("rejected changesets = %d, want 0", got)
+	}
+}
+
+// TestIngestTransportFailureKeepsOps (FIX2 R2): the network failing under a turn
+// that already staged work is a provider-side failure like any other — the ops
+// are kept and the changeset marked. The error is the one the REAL client
+// returns for a refused connection, not a hand-built look-alike, so the test
+// breaks if the client stops typing it.
+func TestIngestTransportFailureKeepsOps(t *testing.T) {
+	maxTokens8192Env(t)
+	root := testutil.CopyFixture(t, "minimal")
+	src := shortSource(t)
+
+	l, lerr := net.Listen("tcp", "127.0.0.1:0")
+	if lerr != nil {
+		t.Fatalf("Listen: %v", lerr)
+	}
+	base := "http://" + l.Addr().String()
+	l.Close()
+	_, refused := llm.New(llm.Config{BaseURL: base, Model: "m"}).Stream(context.Background(),
+		llm.Request{Messages: []llm.Message{{Role: "user", Content: "hi"}}})
+	var pe *llm.ProviderError
+	if !errors.As(refused, &pe) || !pe.Transport {
+		t.Fatalf("the real client returned %v, want a Transport ProviderError", refused)
+	}
+	sendErr := fmt.Errorf("agent: stream: %w", refused)
+	stagingThenFailing(t, partialOps(), sendErr)
+
+	_, err := ingestOnce(t, root, src)
+	if err == nil {
+		t.Fatal("cmdIngest returned nil for a failed turn, want exit 1")
+	}
+	cs := currentOf(t, root)
+	if got := len(cs.Live()); got != 2 {
+		t.Fatalf("live ops = %d, want the 2 the turn staged", got)
+	}
+	if want := "[partial: provider network after 2 op(s)] ingest " + src; cs.Intent != want {
+		t.Errorf("Intent = %q, want %q", cs.Intent, want)
+	}
+	if got := countChangesets(t, root, "rejected"); got != 0 {
+		t.Errorf("rejected changesets = %d, want 0", got)
+	}
+	for _, part := range []string{
+		"agent turn: agent: stream: llm: request: ",
+		"connection refused",
+		"; kept the 2 op(s) this ingest staged in changeset " + cs.ID + " (partial: the turn did not finish) — review them in lw tui",
+	} {
+		if !strings.Contains(err.Error(), part) {
+			t.Errorf("error %q does not contain %q", err, part)
+		}
+	}
+}
+
+// TestPartialNoteHasNoBrackets: the note sits inside "[…]" and
+// stage.WithoutPartialMark finds its end at the first "]", so a provider code
+// that carries a bracket (the llm client keeps printable characters) cannot be
+// allowed to close the mark early.
+func TestPartialNoteHasNoBrackets(t *testing.T) {
+	err := fmt.Errorf("agent: stream: %w", &llm.ProviderError{Code: "a] b[", InStream: true})
+	note := partialNote(err, 2)
+	if strings.ContainsAny(note, "[]") {
+		t.Errorf("note %q carries a bracket", note)
+	}
+	if want := "partial: provider a) b( after 2 op(s)"; note != want {
+		t.Errorf("note = %q, want %q", note, want)
 	}
 }

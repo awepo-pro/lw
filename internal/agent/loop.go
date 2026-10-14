@@ -637,7 +637,16 @@ streamLoop:
 					// not mark transient, or a spent budget, fails the turn below
 					// with the ProviderError in the chain.
 					var pe *llm.ProviderError
-					if ctx.Err() == nil && errors.As(chunk.Err, &pe) {
+					if errors.As(chunk.Err, &pe) {
+						if cerr := ctx.Err(); cerr != nil {
+							// FIX2 R10: the cancel and the refusal were both
+							// ready and select took the refusal. The turn is
+							// canceled all the same — not a round that carries
+							// on, and not a ProviderError, which `lw ingest`
+							// answers by keeping the ops of a user who aborted.
+							recordResponse(false, cerr.Error())
+							return nil, false, "", cerr
+						}
 						if toolCalled && pe.Retryable() {
 							if ferr := flushRecord(); ferr != nil {
 								recordResponse(false, ferr.Error())

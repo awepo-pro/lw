@@ -517,12 +517,14 @@ const chatCompletionsPath = "/chat/completions"
 // OpenAI-compatible client reads base_url as the API root, and so must lw. A
 // trailing slash and the suffix's case are ignored. "" is the key absent and
 // always valid — the existing "no base_url" handling stays where it is.
+// Surrounding white space is ignored (061 FIX2 R9): a pasted value brings a
+// trailing space or newline, and the suffix must not hide behind it.
 // Exported so llm.Client (which refuses the value before any I/O), lw doctor
 // and writers of the key (lw config set) apply the same rule. Load does NOT
 // call it: a config Load refused would stop every command, `lw config set`
 // included, and the error text points at exactly that repair.
 func ValidateBaseURL(v string) error {
-	root := strings.TrimRight(v, "/")
+	root := strings.TrimRight(strings.TrimSpace(v), "/")
 	if len(root) < len(chatCompletionsPath) {
 		return nil
 	}
