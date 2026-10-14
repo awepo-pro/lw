@@ -143,7 +143,23 @@ func stageSummary(cs *stage.Changeset) Result {
 			fmt.Fprintf(&b, "\n- %s: %d", kind, counts[stage.OpKind(kind)])
 		}
 	}
-	touches := cs.Touches()
+	// 058: an ingest op touches its original's path beside the raw's, and
+	// the model must not learn an original exists — the summary would
+	// otherwise count "2 files" and name x.html for every html/txt/md
+	// ingest. The originals are skipped here, not in Changeset.Touches,
+	// whose journal and drop-cascade users need the real path set.
+	originals := map[string]bool{}
+	for _, op := range cs.Live() {
+		if op.Kind == stage.OpIngestSource && op.OriginalPath != "" {
+			originals[op.OriginalPath] = true
+		}
+	}
+	var touches []string
+	for _, p := range cs.Touches() {
+		if !originals[p] {
+			touches = append(touches, p)
+		}
+	}
 	fmt.Fprintf(&b, "\nfiles touched: %d", len(touches))
 	for _, p := range touches {
 		fmt.Fprintf(&b, "\n- %s", p)

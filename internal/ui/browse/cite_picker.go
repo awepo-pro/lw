@@ -46,7 +46,8 @@ type pickerRow struct {
 	// source is the vault-relative md source the row stands for — the
 	// "no original PDF" status names it.
 	source string
-	// pdf is the source's original: path, "" when it has none.
+	// pdf is the source's original: path when it is a PDF, "" when it has
+	// none or keeps a non-PDF one (058).
 	pdf string
 	// page is what Enter opens: the cite's From, or 1 when unpaged.
 	page int
@@ -163,12 +164,20 @@ func (m *Model) pickerEnter() {
 	m.picker.status = "page " + strconv.Itoa(row.page) + " opened: " + filepath.Base(row.pdf)
 }
 
+// isPDFOriginal reports whether a raw's original: names a PDF — the only
+// original open.pdf can show. Since 058 a raw may also keep its saved .html,
+// a .txt or an x.md.orig, and handing one of those to a PDF viewer opens
+// nothing useful; the picker treats them as no original at all.
+func isPDFOriginal(original string) bool {
+	return strings.EqualFold(path.Ext(original), ".pdf")
+}
+
 // citeRows builds the picker's rows for the node under the tree cursor. A
 // wiki page contributes one row per distinct well-formed raw/ Cite (by
 // canonical String(), so a marker repeated in the body offers one launch,
-// not two), in body order. A raw source with an original contributes one
-// row for its PDF at page 1. Anything else — a directory, a page without
-// raw/ markers, a raw source without an original, no vault — yields no
+// not two), in body order. A raw source with a PDF original contributes one
+// row for it at page 1. Anything else — a directory, a page without
+// raw/ markers, a raw source without a PDF original, no vault — yields no
 // rows, and the box says "(no citations)".
 func (m *Model) citeRows() []pickerRow {
 	if m.deps.Engine == nil {
@@ -182,7 +191,7 @@ func (m *Model) citeRows() []pickerRow {
 
 	if n.Kind == nodeRawSource {
 		r, ok := v.RawSource(n.Path)
-		if !ok || r.Original == "" {
+		if !ok || !isPDFOriginal(r.Original) {
 			return nil
 		}
 		return []pickerRow{{
@@ -215,7 +224,7 @@ func (m *Model) citeRows() []pickerRow {
 				row.label = "p." + strconv.Itoa(c.From)
 			}
 		}
-		if r, ok := v.RawSource(c.Source); ok && r.Original != "" {
+		if r, ok := v.RawSource(c.Source); ok && isPDFOriginal(r.Original) {
 			row.pdf = r.Original
 			if row.label == "" {
 				row.label = "—" // an unpaged cite of a source with an original
