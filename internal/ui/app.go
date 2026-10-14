@@ -11,6 +11,7 @@ package ui
 import (
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"charm.land/bubbles/v2/key"
@@ -56,6 +57,10 @@ type App struct {
 	stageOps    int
 	stageChecks stage.Checks
 	hasStage    bool
+	// stagePartial: the open changeset's intent starts with "[partial" (061
+	// FIX1) — refreshStage reads it off the engine; StageChangedMsg carries no
+	// intent.
+	stagePartial bool
 
 	// overlayOpen is the `?` overlay's toggle state (contract §5 frame note 4).
 	overlayOpen bool
@@ -181,12 +186,14 @@ func (a *App) refreshStage() {
 	c, err := a.deps.Engine.Current()
 	if err != nil {
 		a.stageID, a.stageOps, a.stageChecks, a.hasStage = "", 0, stage.Checks{}, false
+		a.stagePartial = false
 		return
 	}
 	a.stageID = c.ID
 	a.stageOps = len(c.Live())
 	a.stageChecks = c.Checks
 	a.hasStage = true
+	a.stagePartial = strings.HasPrefix(c.Intent, "[partial")
 }
 
 // Init returns tea.RequestBackgroundColor so the shell learns the

@@ -97,9 +97,13 @@ func (c *Client) Stream(ctx context.Context, req Request) (<-chan Chunk, error) 
 		// transient status (429, 5xx) from a permanent one; its Error() text
 		// is the exact string this path always returned. Retry-After is read
 		// against the instant the headers arrived.
+		// 061 FIX1: Body is the whole trimmed body (Error() prints it, as it
+		// always has); Message is the sentence inside it, when it has one.
+		bodyText := strings.TrimSpace(string(b))
 		return nil, &ProviderError{
 			Status:     resp.StatusCode,
-			Message:    strings.TrimSpace(string(b)),
+			Message:    httpErrorMessage(bodyText),
+			Body:       bodyText,
 			RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After"), headersAt),
 		}
 	}

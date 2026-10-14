@@ -4,8 +4,12 @@
 // dispatched and the identical request is being sent again; the text the
 // cut round already streamed into the transcript must not survive it, or
 // the retried round's answer would be appended to a half-sentence the
-// provider abandoned.
+// provider abandoned. 061 added a second cause for the same event — the
+// provider refused the round and the loop waits before re-sending — which
+// drops the same text and says its own reason.
 package ask
+
+import "strings"
 
 // retryStatusLine is the kindStatus line a RetryEv leaves behind (035):
 // U+00B7, matching the pane's other mid-turn notices (`· sending…`,
@@ -13,6 +17,20 @@ package ask
 // provider ended the stream before [DONE] or a finish_reason, and the
 // round is going out again unchanged.
 const retryStatusLine = "provider stream cut · retrying the round"
+
+// retryStatusText is the status line a RetryEv with this Reason leaves
+// behind. 035's reason ("stream ended early") and the empty one keep
+// retryStatusLine; any other is the loop's own account of a provider refusal
+// it is waiting out (061 FIX1: "provider 429: <message>; retrying in 3s"),
+// which the line used to mislabel as a cut stream — a wait of up to a minute
+// under the wrong words. The reason is collapsed to one line: a provider's
+// message can carry newlines.
+func retryStatusText(reason string) string {
+	if reason == "" || reason == "stream ended early" {
+		return retryStatusLine
+	}
+	return strings.Join(strings.Fields(reason), " ")
+}
 
 // retryRound folds one agent.RetryEv into the scrollback (035): the
 // assistant entries the cut round streamed since the turn's last
@@ -35,7 +53,7 @@ const retryStatusLine = "provider stream cut · retrying the round"
 // and a RetryEv outside a turn — a protocol-violating fake, never the
 // real Loop, whose cut rounds only ever surface mid-turn — must not be
 // able to reach back into a finished turn's answer.
-func (m *Model) retryRound() {
+func (m *Model) retryRound(reason string) {
 	if m.turnActive {
 		start := len(m.entries)
 		for start > 0 && m.entries[start-1].kind != kindUser &&
@@ -53,5 +71,5 @@ func (m *Model) retryRound() {
 		m.entries = append(m.entries[:start], kept[:n]...)
 	}
 	m.resetReasoningRound()
-	m.entries = append(m.entries, entry{kind: kindStatus, text: retryStatusLine})
+	m.entries = append(m.entries, entry{kind: kindStatus, text: retryStatusText(reason)})
 }

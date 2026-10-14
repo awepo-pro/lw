@@ -172,6 +172,11 @@ type headerStage struct {
 	Ops    int
 	Checks stage.Checks
 	Has    bool
+
+	// Partial marks a changeset whose intent starts with "[partial" — a turn
+	// the provider failed after it had staged work (stage.Engine.MarkPartial,
+	// 061). The header says so, next to the op count, at every width.
+	Partial bool
 }
 
 // opWord is the header's op-count noun (contract §5 note 1, clarified
@@ -190,6 +195,12 @@ func opWord(n int) string {
 // highlighted, and a right-aligned summary ending at column w-2. The stats
 // group (pages/raw/lint) is dropped first when the row is too narrow to
 // hold everything.
+//
+// A partial changeset (061 FIX1) adds " · partial" after the op count. It costs
+// ten columns the 80-column row does not always have — a vault name of seven
+// or more characters would push the summary into the tab bar — so that summary
+// sheds words, never the badge: first the "checks" label, then the op count.
+// Every other changeset draws the one summary it always did.
 func headerLine(t Theme, w int, vault string, tabs []string, active string,
 	pages, raw, lintErrs int, stg headerStage) string {
 
@@ -220,6 +231,28 @@ func headerLine(t Theme, w int, vault string, tabs []string, active string,
 			{cs9, t.Fg},
 			{fmt.Sprintf(" · %d %s · checks ", stg.Ops, opWord(stg.Ops)), t.Muted},
 			{glyph, style},
+		}
+		if stg.Partial {
+			ops := fmt.Sprintf(" · %d %s · ", stg.Ops, opWord(stg.Ops))
+			// Widest first; the first that fits wins, the narrowest is the
+			// fallback. fits is the stats group's own test (x is the column
+			// after the tab bar's trailing gap).
+			variants := [][]seg{
+				{{cs9, t.Fg}, {ops, t.Muted}, {"partial", t.Warn.Bold(true)}, {" · checks ", t.Muted}, {glyph, style}},
+				{{cs9, t.Fg}, {ops, t.Muted}, {"partial", t.Warn.Bold(true)}, {" · ", t.Muted}, {glyph, style}},
+				{{cs9, t.Fg}, {" · ", t.Muted}, {"partial", t.Warn.Bold(true)}, {" · ", t.Muted}, {glyph, style}},
+			}
+			right = variants[len(variants)-1]
+			for _, v := range variants {
+				n := 0
+				for _, s := range v {
+					n += utf8.RuneCountInString(s.text)
+				}
+				if x+n+1 <= w {
+					right = v
+					break
+				}
+			}
 		}
 	} else {
 		right = []seg{{"no changeset", t.Faint}}

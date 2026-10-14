@@ -143,7 +143,9 @@ func TestIngestProviderFailureKeepsOps(t *testing.T) {
 	if got := len(cs.Live()); got != 2 {
 		t.Fatalf("live ops = %d, want the 2 the turn staged", got)
 	}
-	wantIntent := "ingest " + src + " [partial: the agent turn failed (provider 502) after staging 2 op(s)]"
+	// FIX1 A-061-1: the mark is a prefix (it was `ingest <src> [partial: the
+	// agent turn failed (provider 502) after staging 2 op(s)]`).
+	wantIntent := "[partial: provider 502 after 2 op(s)] ingest " + src
 	if cs.Intent != wantIntent {
 		t.Errorf("Intent =\n\t%q\nwant\n\t%q", cs.Intent, wantIntent)
 	}
@@ -209,8 +211,8 @@ func TestIngestProviderFailureJoinedKeepsOps(t *testing.T) {
 	if patch := findOpInChangeset(t, cs, stage.OpPatchPage); patch.ID != patchID {
 		t.Errorf("patch op = %s, want the pre-existing %s", patch.ID, patchID)
 	}
-	if !strings.HasSuffix(cs.Intent, " [partial: the agent turn failed (provider 503) after staging 2 op(s)]") {
-		t.Errorf("Intent = %q, want it to end with the partial mark naming the 2 ops THIS ingest staged", cs.Intent)
+	if !strings.HasPrefix(cs.Intent, "[partial: provider 503 after 2 op(s)] ") {
+		t.Errorf("Intent = %q, want it to start with the partial mark naming the 2 ops THIS ingest staged", cs.Intent)
 	}
 	if got := countChangesets(t, root, "rejected"); got != 0 {
 		t.Errorf("rejected changesets = %d, want 0", got)
@@ -406,9 +408,9 @@ func TestIngestPartialCauseForms(t *testing.T) {
 				t.Fatal("cmdIngest returned nil for a failed turn")
 			}
 			cs := currentOf(t, root)
-			want := " [partial: the agent turn failed (" + c.cause + ") after staging 1 op(s)]"
-			if !strings.HasSuffix(cs.Intent, want) {
-				t.Errorf("Intent = %q, want it to end with %q", cs.Intent, want)
+			want := "[partial: " + c.cause + " after 1 op(s)] "
+			if !strings.HasPrefix(cs.Intent, want) {
+				t.Errorf("Intent = %q, want it to start with %q", cs.Intent, want)
 			}
 			if got := len(cs.Live()); got != 1 {
 				t.Errorf("live ops = %d, want the 1 the turn staged", got)
@@ -463,8 +465,8 @@ func TestRecompileProviderFailureKeepsOps(t *testing.T) {
 	if got := rcCount(cs, stage.OpCreatePage); got != 1 || len(cs.Live()) != 1 {
 		t.Errorf("live ops = %+v, want exactly the 1 create_page the turn staged", cs.Live())
 	}
-	if want := " [partial: the agent turn failed (provider 502) after staging 1 op(s)]"; !strings.HasSuffix(cs.Intent, want) {
-		t.Errorf("Intent = %q, want it to end with %q", cs.Intent, want)
+	if want := "[partial: provider 502 after 1 op(s)] "; !strings.HasPrefix(cs.Intent, want) {
+		t.Errorf("Intent = %q, want it to start with %q", cs.Intent, want)
 	}
 	if want := "; kept the 1 op(s) this ingest staged in changeset " + cs.ID + " (partial: the turn did not finish) — review them in lw tui"; !strings.Contains(stderr, want) {
 		t.Errorf("stderr = %q, want it to contain %q", stderr, want)

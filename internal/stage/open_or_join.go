@@ -94,12 +94,18 @@ func boundIntent(intent string) string {
 	return string(r[:maxIntentRunes-1]) + "…"
 }
 
-// MarkPartial appends " [<note>]" to the open changeset's Intent (the whole
-// Intent bounded like a join's: 200 runes, overflow ending in "…") and
+// MarkPartial puts "[<note>] " in front of the open changeset's Intent and
 // persists it. It is how a turn that failed AFTER staging says so (061): the
 // agent turn died on a provider error with ops already in the changeset,
 // `lw ingest` keeps them instead of rolling back, and the mark is what Review,
-// `lw status` and `lw log` then show next to the intent.
+// `lw status` and `lw log` then show with the intent.
+//
+// The mark is a PREFIX, and the 200-rune bound (boundIntent) applies to the
+// original intent only (061 FIX1, A-061-1). Appended, the mark was the first
+// thing a long intent lost — a multi-source or URL ingest is past 130 runes —
+// and a later join cuts an intent from its end too; in front, no bound can
+// reach it and every surface that shows an intent's start shows it. The whole
+// intent may therefore exceed 200 runes by the mark's length.
 //
 // Contract (061): no journal event — the mark is a rewrite of one field, not a
 // new kind of history, so there is no new event kind and no vault-format
@@ -119,9 +125,9 @@ func (e *Engine) MarkPartial(note string) error {
 	}
 	mark := "[" + note + "]"
 	if c.Intent == "" {
-		c.Intent = boundIntent(mark)
+		c.Intent = mark
 	} else {
-		c.Intent = boundIntent(c.Intent + " " + mark)
+		c.Intent = mark + " " + boundIntent(c.Intent)
 	}
 	if err := e.persistAndPublish(c); err != nil {
 		return fmt.Errorf("stage: mark partial: %w", err)

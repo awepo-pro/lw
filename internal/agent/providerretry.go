@@ -21,7 +21,6 @@ package agent
 import (
 	"context"
 	"strconv"
-	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -65,21 +64,10 @@ func providerRetryDelay(pe *llm.ProviderError, retries int) (time.Duration, bool
 	return providerBackoff[retries], true
 }
 
-// providerCode names pe the way llm.ProviderError.Error does for an in-stream
-// failure: the HTTP status when there is one, else the provider's string code,
-// else "unknown".
-func providerCode(pe *llm.ProviderError) string {
-	switch {
-	case pe.Status != 0:
-		return strconv.Itoa(pe.Status)
-	case pe.Code != "":
-		return pe.Code
-	}
-	return "unknown"
-}
-
 // providerRetryReason is the RetryEv reason and trace line for a retry:
-// `provider <code>: <message>; retrying in <N>s`. The message is cut to its
+// `provider <code>: <message>; retrying in <N>s` (llm.ProviderError.Short is
+// the first half; Message is the provider's own sentence, unwrapped from an
+// HTTP error body by the client — 061 FIX1). The message is cut to its
 // first providerRetryReasonRunes runes (never mid-rune) and N is the wait
 // rounded UP to whole seconds, so a sub-second Retry-After never reads "0s".
 func providerRetryReason(pe *llm.ProviderError, delay time.Duration) string {
@@ -88,15 +76,7 @@ func providerRetryReason(pe *llm.ProviderError, delay time.Duration) string {
 		msg = string([]rune(msg)[:providerRetryReasonRunes])
 	}
 	secs := int((delay + time.Second - 1) / time.Second)
-	var b strings.Builder
-	b.WriteString("provider ")
-	b.WriteString(providerCode(pe))
-	b.WriteString(": ")
-	b.WriteString(msg)
-	b.WriteString("; retrying in ")
-	b.WriteString(strconv.Itoa(secs))
-	b.WriteString("s")
-	return b.String()
+	return pe.Short() + ": " + msg + "; retrying in " + strconv.Itoa(secs) + "s"
 }
 
 // sleepCtx waits d, or until ctx ends — whichever is first — and reports

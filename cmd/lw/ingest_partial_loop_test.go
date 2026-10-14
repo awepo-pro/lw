@@ -154,9 +154,9 @@ func TestIngestProviderFailureThroughRealLoop(t *testing.T) {
 			if n := len(cs.Live()); n != 2 {
 				t.Fatalf("live ops = %d, want the 2 staged in round 1; error: %v", n, err)
 			}
-			wantSuffix := " [partial: the agent turn failed (" + c.cause + ") after staging 2 op(s)]"
-			if !strings.HasSuffix(cs.Intent, wantSuffix) {
-				t.Errorf("Intent = %q, want it to end with %q", cs.Intent, wantSuffix)
+			wantPrefix := "[partial: " + c.cause + " after 2 op(s)] "
+			if !strings.HasPrefix(cs.Intent, wantPrefix) {
+				t.Errorf("Intent = %q, want it to start with %q", cs.Intent, wantPrefix)
 			}
 			if countChangesets(t, root, "rejected") != 0 {
 				t.Errorf("a changeset was rejected; the failed turn's work must be kept")

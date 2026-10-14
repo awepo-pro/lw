@@ -4,8 +4,15 @@ package stage
 // turn that failed AFTER staging keeps its ops, and the changeset says so in
 // the one place a reviewer already looks — its Intent. The mark is a plain
 // rewrite of that field: no journal event (so no new event kind and no
-// vault-format change), the same 200-rune bound a join gets, and an error —
-// never a changeset conjured from nothing — when none is open.
+// vault-format change), and an error — never a changeset conjured from
+// nothing — when none is open.
+//
+// FIX1 A-061-1 moved the mark from the END of the intent to the START
+// (`[partial: …] ingest a.md`): the 200-rune bound (a join's, boundIntent)
+// cuts an intent from its end, and a mark at the end was the first thing a
+// multi-source or URL intent lost — the very surfaces that show an intent's
+// start (the Review badge, `lw status`, the Changeset panel) now always see it.
+// The bound applies to the original intent only.
 
 import (
 	"os"
@@ -42,7 +49,7 @@ func TestMarkPartialAppendsIntent(t *testing.T) {
 		t.Fatalf("MarkPartial: %v", err)
 	}
 
-	const want = "ingest a.md [partial: x]"
+	const want = "[partial: x] ingest a.md" // FIX1: was "ingest a.md [partial: x]"
 	cur, err := e.Current()
 	if err != nil {
 		t.Fatalf("Current: %v", err)
@@ -69,28 +76,70 @@ func TestMarkPartialAppendsIntent(t *testing.T) {
 	}
 }
 
-// TestMarkPartialBounded: the whole intent stays within 200 runes, the cut
-// marked by a trailing "…" — the rule a join gets, applied to the same field.
+// TestMarkPartialBounded: the 200-rune bound applies to the ORIGINAL intent
+// only, so the mark is always whole and first. FIX1 amendment: it was "a
+// 199-rune intent → 200 runes ending in …" (the whole intent bounded, the
+// mark cut off the end). An original within the bound is kept untouched — a
+// 199-rune one has nothing to cut — and a longer one ends in "…" after 199
+// of its runes, the mark in front of it either way.
 func TestMarkPartialBounded(t *testing.T) {
+	const mark = "[partial: x] "
+	cases := []struct {
+		name     string
+		original string
+		want     string
+	}{
+		{"199 runes kept whole", strings.Repeat("y", 199), mark + strings.Repeat("y", 199)},
+		{"200 runes kept whole", strings.Repeat("y", 200), mark + strings.Repeat("y", 200)},
+		{"201 runes bounded", strings.Repeat("y", 201), mark + strings.Repeat("y", 199) + "…"},
+		{"300 runes bounded", strings.Repeat("y", 300), mark + strings.Repeat("y", 199) + "…"},
+		{"multibyte original bounded by runes", strings.Repeat("四", 250), mark + strings.Repeat("四", 199) + "…"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e, _ := newTestEngine(t)
+			if _, err := e.OpenChangeset(tc.original, testAuthor); err != nil {
+				t.Fatalf("OpenChangeset: %v", err)
+			}
+			if err := e.MarkPartial("partial: x"); err != nil {
+				t.Fatalf("MarkPartial: %v", err)
+			}
+			cur, err := e.Current()
+			if err != nil {
+				t.Fatalf("Current: %v", err)
+			}
+			if cur.Intent != tc.want {
+				t.Errorf("Intent = %.60q… (%d runes), want %.60q… (%d runes)",
+					cur.Intent, len([]rune(cur.Intent)), tc.want, len([]rune(tc.want)))
+			}
+			if !strings.HasPrefix(cur.Intent, mark) {
+				t.Errorf("Intent %.40q… does not start with the whole mark", cur.Intent)
+			}
+		})
+	}
+}
+
+// TestMarkPartialSurvivesJoin: a later join bounds the whole intent from its
+// END (joinIntents), and the mark sits at the start — a verb that joins a
+// partial changeset cannot cut it off.
+func TestMarkPartialSurvivesJoin(t *testing.T) {
 	e, _ := newTestEngine(t)
-	if _, err := e.OpenChangeset(strings.Repeat("y", 199), testAuthor); err != nil {
+	if _, err := e.OpenChangeset("ingest a.md", testAuthor); err != nil {
 		t.Fatalf("OpenChangeset: %v", err)
 	}
-
-	if err := e.MarkPartial("partial: x"); err != nil {
+	if err := e.MarkPartial("partial: provider 502 after 2 op(s)"); err != nil {
 		t.Fatalf("MarkPartial: %v", err)
 	}
 
-	cur, err := e.Current()
-	if err != nil {
-		t.Fatalf("Current: %v", err)
+	cs, joined, err := e.OpenOrJoin(strings.Repeat("z", 400), testAuthor)
+	if err != nil || !joined {
+		t.Fatalf("OpenOrJoin = %v, joined %v", err, joined)
 	}
-	got := []rune(cur.Intent)
-	if len(got) != 200 {
-		t.Fatalf("Intent is %d runes, want exactly 200", len(got))
+	if want := "[partial: provider 502 after 2 op(s)] ingest a.md + "; !strings.HasPrefix(cs.Intent, want) {
+		t.Errorf("Intent = %.80q…, want it to still start with %q", cs.Intent, want)
 	}
-	if got[len(got)-1] != '…' {
-		t.Errorf("Intent ends in %q, want the overflow marker %q", string(got[len(got)-1]), "…")
+	if n := len([]rune(cs.Intent)); n != 200 {
+		t.Errorf("joined Intent is %d runes, want the join's own 200-rune bound", n)
 	}
 }
 
@@ -155,7 +204,8 @@ func TestMarkPartialKeepsOps(t *testing.T) {
 	if after.ID != before.ID || after.Author != before.Author {
 		t.Errorf("id/author changed: %s/%+v -> %s/%+v", before.ID, before.Author, after.ID, after.Author)
 	}
-	if !strings.HasSuffix(after.Intent, "[partial: the agent turn failed (provider 502) after staging 1 op(s)]") {
-		t.Errorf("Intent = %q, want it to end with the bracketed note", after.Intent)
+	// FIX1: a prefix (it was: ended with the bracketed note).
+	if want := "[partial: the agent turn failed (provider 502) after staging 1 op(s)] ingest a.md"; after.Intent != want {
+		t.Errorf("Intent = %q, want %q", after.Intent, want)
 	}
 }

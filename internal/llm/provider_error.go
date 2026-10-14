@@ -26,29 +26,84 @@ import (
 type ProviderError struct {
 	Status     int           // HTTP status, or the in-stream error.code when numeric; 0 if unknown
 	Code       string        // the in-stream error.code verbatim when it is a string ("server_error"); "" otherwise
-	Message    string        // provider text, trimmed, ≤ 4096 bytes (HTTP) / ≤ 1024 runes (in-stream)
+	Message    string        // the provider's sentence: an HTTP body's error.message (else the body), ≤ 4096 bytes; an in-stream message, ≤ 1024 runes
+	Body       string        // HTTP only: the whole response body, trimmed, ≤ 4096 bytes — what Error() prints; "" in-stream
 	RetryAfter time.Duration // Retry-After header (delta-seconds or HTTP-date, clamped ≥ 0); 0 when absent/unparseable
 	InStream   bool          // true: arrived as an SSE data event after a 200
 }
 
 // Error keeps the HTTP form byte-identical to the text Stream returned before
-// the type existed — callers, logs and e2e assertions match on it — and gives
+// the type existed — callers, logs and e2e assertions match on it, so it
+// prints the whole Body, never the unwrapped Message (061 FIX1: Message is the
+// short sentence for the retry line and the partial mark). An error built
+// without a Body prints its Message, so it reads as it always did. It gives
 // the in-stream form the same "llm:" prefix with the code in parentheses.
 func (e *ProviderError) Error() string {
 	if !e.InStream {
-		return fmt.Sprintf("llm: unexpected status %d: %s", e.Status, e.Message)
-	}
-	code := "unknown"
-	switch {
-	case e.Status != 0:
-		code = strconv.Itoa(e.Status)
-	case e.Code != "":
-		code = e.Code
+		text := e.Body
+		if text == "" {
+			text = e.Message
+		}
+		return fmt.Sprintf("llm: unexpected status %d: %s", e.Status, text)
 	}
 	if e.Message == "" {
-		return "llm: provider error in stream (" + code + ")"
+		return "llm: provider error in stream (" + e.code() + ")"
 	}
-	return "llm: provider error in stream (" + code + "): " + e.Message
+	return "llm: provider error in stream (" + e.code() + "): " + e.Message
+}
+
+// code names the failure the way an in-stream Error() does: the HTTP status
+// when there is one, else the provider's string code, else "unknown".
+func (e *ProviderError) code() string {
+	switch {
+	case e.Status != 0:
+		return strconv.Itoa(e.Status)
+	case e.Code != "":
+		return e.Code
+	}
+	return "unknown"
+}
+
+// Short is the failure in two words, "provider <code>" — "provider 502",
+// "provider server_error", "provider unknown" — the one form the agent's retry
+// line and `lw ingest`'s partial mark both name a provider failure by (061
+// FIX1: it was written twice, in agent and cmd/lw). Nil-safe, like Retryable.
+func (e *ProviderError) Short() string {
+	if e == nil {
+		return "provider unknown"
+	}
+	return "provider " + e.code()
+}
+
+// httpErrorMessage is the provider's sentence out of an HTTP error body: the
+// JSON body's error.message when it parses as {"error":{"message":<string>…}},
+// else a top-level "message" string, else the body whole. Message is what the
+// retry line and the partial mark print, so a 429 reads `Rate limit exceeded:
+// free-models-per-min`, not `{"error":{"message":"Rate limit exceeded: …","code":429}}`
+// (s47 live run). Anything that is not that shape — HTML from a gateway, a
+// body cut at the 4096-byte read, an error given as a bare string with no
+// top-level message, a non-string or blank message — is returned as it came,
+// so no information is lost to the guess.
+func httpErrorMessage(body string) string {
+	var top map[string]json.RawMessage
+	if json.Unmarshal([]byte(body), &top) != nil {
+		return body
+	}
+	var nested struct {
+		Message json.RawMessage `json:"message"`
+	}
+	// A bare-string or otherwise odd "error" leaves nested empty; the
+	// top-level message below still gets its turn.
+	_ = json.Unmarshal(top["error"], &nested)
+	for _, raw := range []json.RawMessage{nested.Message, top["message"]} {
+		var s string
+		if json.Unmarshal(raw, &s) == nil {
+			if s = strings.TrimSpace(s); s != "" {
+				return s
+			}
+		}
+	}
+	return body
 }
 
 // Retryable reports whether trying the same request again can reasonably

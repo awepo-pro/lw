@@ -85,8 +85,13 @@ func TestStreamHTTPErrorIsProviderError(t *testing.T) {
 	if !pe.Retryable() {
 		t.Error("Retryable() = false, want true for a 429")
 	}
-	if pe.Message != body {
-		t.Errorf("Message = %q, want the body %q", pe.Message, body)
+	// FIX1 A-061-3 amendment: Message is the body's error.message, Body the
+	// whole body (it was: Message == the body).
+	if pe.Message != "slow down" {
+		t.Errorf("Message = %q, want the body's error.message %q", pe.Message, "slow down")
+	}
+	if pe.Body != body {
+		t.Errorf("Body = %q, want the body %q", pe.Body, body)
 	}
 	const want = `llm: unexpected status 429: {"error":{"message":"slow down","code":429}}`
 	if err.Error() != want {

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/url"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -436,29 +435,24 @@ func providerFailure(sendErr error) bool {
 		errors.Is(sendErr, llm.ErrStalled)
 }
 
-// partialNote is the text Engine.MarkPartial puts after a partial changeset's
-// intent (061): "partial: the agent turn failed (<cause>) after staging <k>
-// op(s)", the cause in the fewest honest words — the provider's own code, a
-// stream that ended early, or a stall.
+// partialNote is the text Engine.MarkPartial puts in front of a partial
+// changeset's intent (061): "partial: <cause> after <k> op(s)", so the
+// changeset reads `[partial: provider 502 after 2 op(s)] ingest a.md`. It is
+// short because it leads the intent — every surface that shows an intent's
+// start (the Review header's badge, `lw status`, the Changeset panel) shows it
+// whole; the full account of the failure is the error `lw ingest` returned.
 func partialNote(sendErr error, k int) string {
-	return fmt.Sprintf("partial: the agent turn failed (%s) after staging %d op(s)", partialCause(sendErr), k)
+	return fmt.Sprintf("partial: %s after %d op(s)", partialCause(sendErr), k)
 }
 
-// partialCause names why a turn that providerFailure accepted failed. The
-// provider's code reads the way llm.ProviderError.Error words it: the HTTP
-// status when there is one, else the string code, else "unknown".
+// partialCause names why a turn that providerFailure accepted failed, in the
+// fewest honest words: the provider's own "provider <code>"
+// (llm.ProviderError.Short), a stream that ended early, or a stall.
 func partialCause(sendErr error) string {
 	var pe *llm.ProviderError
 	switch {
 	case errors.As(sendErr, &pe):
-		code := "unknown"
-		switch {
-		case pe.Status != 0:
-			code = strconv.Itoa(pe.Status)
-		case pe.Code != "":
-			code = pe.Code
-		}
-		return "provider " + code
+		return pe.Short()
 	case errors.Is(sendErr, llm.ErrStreamTruncated):
 		return "stream ended early"
 	case errors.Is(sendErr, llm.ErrStalled):
