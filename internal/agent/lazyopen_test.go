@@ -10,6 +10,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -29,6 +30,7 @@ import (
 type lazyFixture struct {
 	root   string
 	engine *stage.Engine
+	reg    *tools.Registry
 	store  SessionStore
 	fake   *fakeStreamer
 	loop   *Loop
@@ -64,7 +66,7 @@ func newLazyFixtureWeb(t *testing.T, rounds [][]llm.Chunk, web bool) *lazyFixtur
 	}
 	fake := &fakeStreamer{rounds: rounds}
 	cfg := LoopConfig{TraceMeta: trace.Meta{Model: "loop-model"}}
-	return &lazyFixture{root: root, engine: e, store: store, fake: fake, loop: newLoop(fake, reg, store, e, cfg)}
+	return &lazyFixture{root: root, engine: e, reg: reg, store: store, fake: fake, loop: newLoop(fake, reg, store, e, cfg)}
 }
 
 // send runs one turn of lazySession under verb and returns its events.
@@ -398,5 +400,307 @@ func TestLazyOpenFailureIsAToolError(t *testing.T) {
 	}
 	if !done {
 		t.Fatalf("the turn did not go on to its answer: %#v", events)
+	}
+}
+
+// refusedCreatePageArgs is valid JSON that stage.create_page refuses (no
+// rationale, no body): the call dispatches, runs, and comes back IsError, having
+// staged nothing.
+const refusedCreatePageArgs = `{"path":"wiki/concepts/refused.md"}`
+
+// rejectedDirs lists the ids under changesets/rejected/.
+func (f *lazyFixture) rejectedDirs(t *testing.T) []string {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(f.root, ".llmwiki", "changesets", "rejected"))
+	if err != nil {
+		t.Fatalf("ReadDir rejected: %v", err)
+	}
+	var ids []string
+	for _, e := range entries {
+		ids = append(ids, e.Name())
+	}
+	return ids
+}
+
+// hookStreamer calls before(n) at the start of the n'th Stream call (1-based),
+// then answers from the scripted fake: the place a test changes the engine
+// between two rounds of one turn.
+type hookStreamer struct {
+	inner  *fakeStreamer
+	before func(call int)
+	n      int
+}
+
+func (h *hookStreamer) Stream(ctx context.Context, req llm.Request) (<-chan llm.Chunk, error) {
+	h.n++
+	if h.before != nil {
+		h.before(h.n)
+	}
+	return h.inner.Stream(ctx, req)
+}
+
+// TestLazyOpenRefusedFirstCallRejectsEmpty: the loop opened a changeset for a
+// staging call that then staged nothing (the call came back IsError), and the
+// turn ended without any other op. Nothing is left to review, and the old pane
+// rejected exactly such a changeset (forwardTurn, "ask turn staged nothing");
+// the lazy open must too, or a model that fumbles its first stage.create_page
+// leaves an empty changeset in the curator's Review. Rejected through
+// Engine.Reject like any rejection: journalled, moved to rejected/, with no
+// session adopted into it.
+func TestLazyOpenRefusedFirstCallRejectsEmpty(t *testing.T) {
+	const reason = "ask turn staged nothing"
+	for _, tc := range []struct {
+		name   string
+		rounds [][]llm.Chunk
+		mutate func(f *lazyFixture)
+	}{
+		{"answer_after_the_refusal", [][]llm.Chunk{
+			{toolCallChunk("call-1", "stage_create_page", refusedCreatePageArgs), {Finish: "tool_calls"}},
+			{{Text: "I could not stage that."}, {Finish: "stop"}},
+		}, nil},
+		{"round_limit_after_the_refusal", [][]llm.Chunk{
+			{toolCallChunk("call-1", "stage_create_page", refusedCreatePageArgs), {Finish: "tool_calls"}},
+		}, func(f *lazyFixture) { f.loop.cfg.MaxToolRounds = 1 }},
+		{"provider_error_after_the_refusal", [][]llm.Chunk{
+			{toolCallChunk("call-1", "stage_create_page", refusedCreatePageArgs), {Finish: "tool_calls"}},
+			{{Err: errors.New("provider exploded")}},
+		}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newLazyFixture(t, tc.rounds)
+			if tc.mutate != nil {
+				tc.mutate(f)
+			}
+			out := make(chan Event, 64)
+			_ = f.loop.Send(trace.WithVerb(WithOpenIntent(context.Background(), "ask: file it"), trace.VerbFile), lazySession, "file this answer", out)
+			events := drain(out)
+
+			var refused bool
+			for _, ev := range events {
+				if r, ok := ev.(ToolResEv); ok && r.Name == "stage.create_page" && r.IsError {
+					refused = true
+				}
+			}
+			if !refused {
+				t.Fatalf("the staging call was not refused; the test proves nothing: %#v", events)
+			}
+			if cs, err := f.engine.Current(); err == nil {
+				t.Fatalf("changeset %s is still open with %d live ops after a turn that staged nothing", cs.ID, len(cs.Live()))
+			}
+			rejected := f.rejectedDirs(t)
+			if len(rejected) != 1 {
+				t.Fatalf("rejected/ holds %v, want exactly the one lazily opened changeset", rejected)
+			}
+			if _, err := os.Stat(filepath.Join(f.root, ".llmwiki", "changesets", "rejected", rejected[0], "session.ndjson")); !os.IsNotExist(err) {
+				t.Fatalf("a session.ndjson was written into the rejected changeset (%v); nothing is adopted into it", err)
+			}
+			journal := string(f.journalBytes(t))
+			if n := strings.Count(journal, `"changeset_opened"`); n != 1 {
+				t.Fatalf("journal holds %d changeset_opened events, want 1:\n%s", n, journal)
+			}
+			if !strings.Contains(journal, `"changeset_rejected"`) || !strings.Contains(journal, `"message":"`+reason+`"`) {
+				t.Fatalf("journal has no changeset_rejected with the reason %q:\n%s", reason, journal)
+			}
+			// The shell hears the changeset is gone (the empty StageEv the old
+			// pane streamed) BEFORE the turn's terminal event, so a consumer that
+			// stops at the terminal event has seen it.
+			emptyAt, terminalAt := -1, -1
+			for i, ev := range events {
+				switch e := ev.(type) {
+				case StageEv:
+					if e.ChangesetID == "" {
+						emptyAt = i
+					}
+				case DoneEv, ErrorEv:
+					terminalAt = i
+				}
+			}
+			if emptyAt < 0 || terminalAt < 0 || emptyAt > terminalAt {
+				t.Fatalf("empty StageEv at %d, terminal event at %d; want the StageEv first:\n%#v", emptyAt, terminalAt, events)
+			}
+		})
+	}
+}
+
+// TestLazyOpenedWithOpsKept: a lazily opened changeset with at least one live op
+// is the curator's to review and is left exactly as it was — whether the first
+// call staged, or a refused first call was followed by one that did.
+func TestLazyOpenedWithOpsKept(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		rounds [][]llm.Chunk
+	}{
+		{"first_call_stages", [][]llm.Chunk{
+			{toolCallChunk("call-1", "stage_create_page", wireCreatePageArgs), {Finish: "tool_calls"}},
+			{{Text: "Filed."}, {Finish: "stop"}},
+		}},
+		{"refused_then_stages", [][]llm.Chunk{
+			{toolCallChunk("call-1", "stage_create_page", refusedCreatePageArgs), {Finish: "tool_calls"}},
+			{toolCallChunk("call-2", "stage_create_page", wireCreatePageArgs), {Finish: "tool_calls"}},
+			{{Text: "Filed on the second try."}, {Finish: "stop"}},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newLazyFixture(t, tc.rounds)
+			events := f.send(t, WithOpenIntent(context.Background(), "ask: file it"), trace.VerbFile)
+
+			cs, err := f.engine.Current()
+			if err != nil {
+				t.Fatalf("Current: %v, want the changeset kept", err)
+			}
+			if len(cs.Live()) != 1 {
+				t.Fatalf("the changeset holds %d live ops, want the staged page", len(cs.Live()))
+			}
+			if rejected := f.rejectedDirs(t); len(rejected) != 0 {
+				t.Fatalf("rejected/ holds %v, want nothing rejected", rejected)
+			}
+			if strings.Contains(string(f.journalBytes(t)), "changeset_rejected") {
+				t.Fatal("the journal holds a changeset_rejected event for a changeset with a live op")
+			}
+			for _, ev := range events {
+				if s, ok := ev.(StageEv); ok && s.ChangesetID == "" {
+					t.Fatalf("an empty StageEv was streamed though the changeset is open: %#v", events)
+				}
+			}
+		})
+	}
+}
+
+// TestJoinedChangesetNeverRejected: only a changeset THIS turn's lazy open
+// created is the turn's to reject. One that was open before the turn (an
+// `lw ingest` left it), and one that took its place while the turn ran, are
+// someone else's work, empty or not.
+func TestJoinedChangesetNeverRejected(t *testing.T) {
+	t.Run("opened_before_the_turn", func(t *testing.T) {
+		f := newLazyFixture(t, [][]llm.Chunk{
+			{toolCallChunk("call-1", "stage_create_page", refusedCreatePageArgs), {Finish: "tool_calls"}},
+			{{Text: "could not."}, {Finish: "stop"}},
+		})
+		opened, err := f.engine.OpenChangeset("lw ingest a.md", stage.Author{Kind: "agent", Model: "ingest-model"})
+		if err != nil {
+			t.Fatalf("OpenChangeset: %v", err)
+		}
+		before := string(f.journalBytes(t))
+
+		f.send(t, WithOpenIntent(context.Background(), "ask: file it"), trace.VerbFile)
+
+		cs, err := f.engine.Current()
+		if err != nil || cs.ID != opened.ID || cs.Intent != "lw ingest a.md" {
+			t.Fatalf("Current = %+v, %v; want the pre-opened changeset untouched", cs, err)
+		}
+		if rejected := f.rejectedDirs(t); len(rejected) != 0 {
+			t.Fatalf("rejected/ holds %v; a pre-opened changeset must never be rejected", rejected)
+		}
+		if added := strings.TrimPrefix(string(f.journalBytes(t)), before); strings.Contains(added, "changeset_") {
+			t.Fatalf("the turn wrote changeset events into the journal:\n%s", added)
+		}
+	})
+
+	// joined_by_another_verb: `lw ingest` opens a changeset in the instant between
+	// the loop's "nothing is open" check and its open. OpenOrJoin joins it
+	// instead of creating one, so the changeset is not the turn's — whatever the
+	// refused call leaves in it.
+	t.Run("joined_by_another_verb", func(t *testing.T) {
+		f := newLazyFixture(t, [][]llm.Chunk{
+			{toolCallChunk("call-1", "stage_create_page", refusedCreatePageArgs), {Finish: "tool_calls"}},
+			{{Text: "could not."}, {Finish: "stop"}},
+		})
+		var other *stage.Changeset
+		f.loop.beforeLazyOpen = func() {
+			cs, err := f.engine.OpenChangeset("lw ingest b.md", stage.Author{Kind: "agent", Model: "ingest-model"})
+			if err != nil {
+				t.Errorf("OpenChangeset: %v", err)
+			}
+			other = cs
+		}
+
+		f.send(t, WithOpenIntent(context.Background(), "ask: file it"), trace.VerbFile)
+
+		if other == nil {
+			t.Fatal("the hook never ran")
+		}
+		cs, err := f.engine.Current()
+		if err != nil || cs.ID != other.ID {
+			t.Fatalf("Current = %+v, %v; want the other verb's changeset %s kept", cs, err, other.ID)
+		}
+		if !strings.HasPrefix(cs.Intent, "lw ingest b.md + ask: file it") {
+			t.Fatalf("Intent = %q, want the join recorded on the other verb's changeset", cs.Intent)
+		}
+		if rejected := f.rejectedDirs(t); len(rejected) != 0 {
+			t.Fatalf("rejected/ holds %v; a changeset the turn joined must never be rejected", rejected)
+		}
+	})
+
+	t.Run("replaced_while_the_turn_ran", func(t *testing.T) {
+		f := newLazyFixture(t, [][]llm.Chunk{
+			{toolCallChunk("call-1", "stage_create_page", refusedCreatePageArgs), {Finish: "tool_calls"}},
+			{{Text: "could not."}, {Finish: "stop"}},
+		})
+		var other *stage.Changeset
+		hook := &hookStreamer{inner: f.fake, before: func(call int) {
+			if call != 2 { // between the refused call and the closing answer
+				return
+			}
+			// Review rejects the lazily opened changeset and an `lw ingest` opens
+			// its own: empty, and not ours.
+			if err := f.engine.Reject("rejected in Review"); err != nil {
+				t.Errorf("Reject: %v", err)
+			}
+			cs, err := f.engine.OpenChangeset("lw ingest later.md", stage.Author{Kind: "agent"})
+			if err != nil {
+				t.Errorf("OpenChangeset: %v", err)
+			}
+			other = cs
+		}}
+		f.loop = newLoop(hook, f.reg, f.store, f.engine, LoopConfig{})
+
+		f.send(t, WithOpenIntent(context.Background(), "ask: file it"), trace.VerbFile)
+
+		if other == nil {
+			t.Fatal("the hook never ran")
+		}
+		cs, err := f.engine.Current()
+		if err != nil || cs.ID != other.ID {
+			t.Fatalf("Current = %+v, %v; want the other verb's changeset %s untouched", cs, err, other.ID)
+		}
+		if rejected := f.rejectedDirs(t); len(rejected) != 1 {
+			t.Fatalf("rejected/ holds %v, want only the one Review rejected", rejected)
+		}
+		if n := strings.Count(string(f.journalBytes(t)), `"changeset_rejected"`); n != 1 {
+			t.Fatalf("journal holds %d changeset_rejected events, want only Review's", n)
+		}
+	})
+}
+
+// TestLazyOpenCancelledTurnRejectsEmpty: a turn cut short (the pane cancelled it,
+// ctrl+c) sends no terminal event, so there is no event for the rejection to
+// precede — but the empty changeset its lazy open made is just as empty, and
+// is rejected as Send returns.
+func TestLazyOpenCancelledTurnRejectsEmpty(t *testing.T) {
+	f := newLazyFixture(t, [][]llm.Chunk{
+		{toolCallChunk("call-1", "stage_create_page", refusedCreatePageArgs), {Finish: "tool_calls"}},
+		{{Text: "never reached"}, {Finish: "stop"}},
+	})
+	ctx, cancel := context.WithCancel(trace.WithVerb(WithOpenIntent(context.Background(), "ask: file it"), trace.VerbFile))
+	defer cancel()
+	f.loop = newLoop(&hookStreamer{inner: f.fake, before: func(call int) {
+		if call == 2 {
+			cancel() // the pane cancels the turn after the refused call
+		}
+	}}, f.reg, f.store, f.engine, LoopConfig{})
+
+	out := make(chan Event, 64)
+	_ = f.loop.Send(ctx, lazySession, "file this answer", out)
+	for _, ev := range drain(out) {
+		if _, ok := ev.(DoneEv); ok {
+			t.Fatal("the cancelled turn ended with a DoneEv; the test proves nothing")
+		}
+	}
+
+	if cs, err := f.engine.Current(); err == nil {
+		t.Fatalf("changeset %s is still open after a cancelled turn that staged nothing", cs.ID)
+	}
+	if rejected := f.rejectedDirs(t); len(rejected) != 1 {
+		t.Fatalf("rejected/ holds %v, want the lazily opened changeset", rejected)
 	}
 }

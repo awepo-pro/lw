@@ -90,11 +90,13 @@ func (m *Model) applyEvent(ev agent.Event) tea.Cmd {
 		case agent.StageEv:
 			// 057: the changeset the turn staged into, remembered so a Review
 			// commit or reject of THAT changeset can cancel the turn
-			// (changesetGone) and an unrelated one cannot. An empty id (a
-			// stage.* call that left nothing open) names none.
-			if e.ChangesetID != "" {
-				m.stagedID = e.ChangesetID
-			}
+			// (changesetGone) and an unrelated one cannot. The turn's own empty
+			// StageEv — a stage.* call that left nothing open, or the loop
+			// rejecting the empty changeset its lazy open made — says that
+			// changeset is gone, so it is forgotten: the ui.StageChangedMsg{} this
+			// command produces cannot be told from a Review verdict, and must not
+			// cancel the turn that is delivering its terminal event.
+			m.stagedID = e.ChangesetID
 			cmd = stageChangedCmd(e)
 		case agent.DoneEv:
 			// The frozen conversation grids render a clean stop's turn

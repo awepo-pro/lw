@@ -101,6 +101,12 @@ const maxConsecutiveBadCalls = 2
 // (toolsFor, dispatchToolCall). The tool is unbudgeted and bills per call, and
 // an ingest compiles a source the user already supplied.
 //
+// Lazy open (057, lazyopen.go): a staging call with nothing open opens the
+// changeset it stages into. A turn that ends with no live op in the changeset its
+// own lazy open created rejects it (reason "ask turn staged nothing") before the
+// terminal event, streaming an empty StageEv; a changeset the turn did not create
+// is never touched.
+//
 // Repeat-call guard (051): in every verb, a guarded read whose identical twin
 // already ran this turn and whose result is still above, un-elided and
 // unchanged by a stage call since, is refused instead of run (repeatGuard). The
@@ -114,6 +120,13 @@ func (l *Loop) Send(ctx context.Context, sessionID, msg string, out chan<- Event
 		id = trace.NewID(time.Now())
 	}
 	ctx = logging.WithTurn(ctx, id)
+
+	// 057 D2: the turn remembers the changeset its own lazy open created, so a
+	// turn that ends with nothing staged in it can reject it (lazyopen.go). Runs
+	// as Send returns, before close(out) above it, for the exits that emit no
+	// terminal event; the exits that do settle before it.
+	ctx, _ = withLazyOpened(ctx)
+	defer func() { l.settleLazyOpen(ctx, out) }()
 
 	var rec *trace.Recorder
 	started := time.Now()
@@ -226,6 +239,7 @@ func (l *Loop) Send(ctx context.Context, sessionID, msg string, out chan<- Event
 			}
 			doneReason = "stop"
 			slog.InfoContext(ctx, "agent done", "reason", "stop", "rounds", rounds)
+			l.settleLazyOpen(ctx, out)
 			if !l.send(ctx, out, DoneEv{Reason: "stop", Rounds: rounds}) {
 				return ctx.Err()
 			}
@@ -235,6 +249,7 @@ func (l *Loop) Send(ctx context.Context, sessionID, msg string, out chan<- Event
 		if rounds >= l.cfg.MaxToolRounds {
 			doneReason = "max_rounds"
 			slog.InfoContext(ctx, "agent done", "reason", "max_rounds", "rounds", rounds)
+			l.settleLazyOpen(ctx, out)
 			if !l.send(ctx, out, DoneEv{Reason: "max_rounds", Rounds: rounds}) {
 				return ctx.Err()
 			}
@@ -1135,6 +1150,7 @@ func (l *Loop) send(ctx context.Context, out chan<- Event, ev Event) bool {
 // the same way send is — and returns err, so Send's own return matches
 // what the event carried (backbone §9, C-105).
 func (l *Loop) fail(ctx context.Context, out chan<- Event, err error) error {
+	l.settleLazyOpen(ctx, out) // 057: before the terminal event, like the DoneEv exits
 	l.send(ctx, out, ErrorEv{Err: err})
 	return err
 }

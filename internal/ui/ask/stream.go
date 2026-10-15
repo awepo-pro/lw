@@ -223,8 +223,8 @@ func forwardTurn(ctx context.Context, ss agent.SessionStore, e *stage.Engine, sp
 			terminal = ev
 			continue
 		}
-		if sev, ok := ev.(agent.StageEv); ok && sev.ChangesetID != "" {
-			stagedInto = sev.ChangesetID
+		if sev, ok := ev.(agent.StageEv); ok {
+			stagedInto = sev.ChangesetID // "": the changeset is gone (rejected empty, or never there); nothing to adopt into
 		}
 		select {
 		case out <- ev:
