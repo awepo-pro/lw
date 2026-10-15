@@ -41,8 +41,9 @@ run flags:
   --lw PATH             the lw binary (default: lw on PATH)
   --n N                 runs per case (default 3)
   --parallel N          cases at once, 1 or 2 (default 2)
-  --job-timeout D       longest one lw command may run, e.g. 20m (default 20m; 0 = no limit);
-                        a command that outlives it counts as a failed attempt and is retried once
+  --job-timeout D       longest one attempt may run, e.g. 20m (default 20m; 0 = no limit); an attempt
+                        is one lw command, or both calls of an ingest case with "then" together;
+                        an attempt that outlives it counts as failed and is retried once
   --only X              ask, ingest, or one case id
   --holdout             include the holdout cases
   --note S              a label recorded in run.json
@@ -64,9 +65,10 @@ type app struct {
 	sweep          func(time.Time) ([]string, error) // nil = eval.SweepVariantDirs
 }
 
-// defaultJobTimeout is how long one lw command may run before `run` gives up
-// on that attempt: generous for a 300-page PDF ingest, short enough that a
-// provider that stops answering costs a case 40 minutes, not the night.
+// defaultJobTimeout is how long one attempt may run before `run` gives up on
+// it — one lw command, or both calls of an ingest case with `then` (060 review
+// LOW-3): generous for a 300-page PDF ingest, short enough that a provider that
+// stops answering costs a case 40 minutes, not the night.
 const defaultJobTimeout = 20 * time.Minute
 
 // shutdownSignals are the signals that cancel a run instead of killing
