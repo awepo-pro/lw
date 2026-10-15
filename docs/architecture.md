@@ -18,7 +18,7 @@ actually shipped in v1.0.0.
                      2  agent loop, tools only  ────────────►  proposed pages,
                         18 or 19 tools, 0 filesystem verbs     patches, renames
                      3  every proposal becomes an op  ─────►  OPEN CHANGESET
-                                                              + session.ndjson
+                        (the first one opens it)              + session.ndjson
  you                 4  review hunk by hunk (TUI or lw diff)
                      5  accept / drop / reject
                      6  lw commit ─────────────────────────►  working tree,

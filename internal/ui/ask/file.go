@@ -176,11 +176,11 @@ func (m *Model) queryCandidates(question string) []index.Hit {
 }
 
 // beginTurn is the shared tail of submitInput and the ctrl+s filing turn
-// (009 contract §3.3): the nil-agent degrade, the synchronous changeset
-// read, the tail re-attach, the echo and the turn bookkeeping, so both
-// entry points set m.back, turnActive and sessionID identically. echo is
-// the user entry the transcript shows; msg is what the agent receives —
-// the submitted text for submitInput, fileMessage's for ctrl+s.
+// (009 contract §3.3): the nil-agent degrade, the tail re-attach, the echo and
+// the turn bookkeeping, so both entry points set m.back, turnActive, convID and
+// stagedID identically. echo is the user entry the transcript shows; msg is
+// what the agent receives — the submitted text for submitInput, fileMessage's
+// for ctrl+s.
 //
 // beginTurn is the question's entry (verb "ask"); beginTurnAs takes the verb
 // for the one caller that is not a question (039).
@@ -202,24 +202,21 @@ func (m *Model) beginTurnAs(verb, echo, msg string) tea.Cmd {
 		return nil
 	}
 
-	sessionID := ""
-	if m.deps.Engine != nil {
-		if cs, err := m.deps.Engine.Current(); err == nil {
-			sessionID = cs.ID
-		}
-	}
-
 	m.back = 0
 	m.echoUser(echo)
 	m.turnActive = true
 	// 022 T2: a new turn counts its thinking from zero — the previous
 	// turn's reasoning count and tail never bleed into this one's.
 	m.resetReasoningTurn()
-	// "" until runTurn resolves it and reports back via turnStartedMsg
-	// (C-124/D-DH) — a changeset already open above is known synchronously,
-	// same as before.
-	m.sessionID = sessionID
-	return m.startTurn(sessionID, m.convID, msg, verb)
+	// 057: the first turn mints the pane's one conversation; every later turn,
+	// ask or filing, runs in it. No changeset is read or opened here — one
+	// exists only if this turn stages (the agent's lazy open), and the turn
+	// reports it through its StageEv, which sets stagedID afresh.
+	if m.convID == "" {
+		m.convID = mintConvID()
+	}
+	m.stagedID = ""
+	return m.startTurn(msg, verb)
 }
 
 // fileMessage renders the message a filing turn runs on, byte for byte as

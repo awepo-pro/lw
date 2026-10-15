@@ -124,10 +124,11 @@ func askQuestion(t *testing.T, app *ui.App, msg string) []tea.Msg {
 
 // TestTUIAgentWiresThroughNewAgentToTheAskPane is S5-T5's cmd/lw half: the
 // real tuiAgent path is used, newAgent is the seam it goes through, the
-// sessions it hands over are the file-backed store bound to the vault's
-// changesets (backbone §9, C-102) — and the agent it returns reaches the ask
-// pane buildTUIOptions injects, proven by asking that pane a question and
-// watching a fake agent answer through the shell.
+// sessions it hands over keep the pane's ask- conversation in memory over the
+// file-backed store bound to the vault's changesets (backbone §9, C-102; 057) —
+// and the agent it returns reaches the ask pane buildTUIOptions injects, proven
+// by asking that pane a question and watching a fake agent answer through the
+// shell.
 func TestTUIAgentWiresThroughNewAgentToTheAskPane(t *testing.T) {
 	root := testutil.CopyFixture(t, "minimal")
 	engine, err := stage.OpenEngine(root)
@@ -140,7 +141,7 @@ func TestTUIAgentWiresThroughNewAgentToTheAskPane(t *testing.T) {
 		t.Fatalf("OpenChangeset: %v", err)
 	}
 
-	sessions := agent.NewFileSessions(root)
+	sessions := agent.NewAskSessions(agent.NewFileSessions(root))
 	ag := &fakeScriptAgent{e: engine, sessions: sessions}
 	var gotEngine *stage.Engine
 	var gotSessions agent.SessionStore
@@ -160,7 +161,25 @@ func TestTUIAgentWiresThroughNewAgentToTheAskPane(t *testing.T) {
 		t.Fatalf("newAgent was handed engine %p, want %p", gotEngine, engine)
 	}
 	if gotSessions == nil {
-		t.Fatal("newAgent was handed a nil session store, want the file-backed one")
+		t.Fatal("newAgent was handed a nil session store, want the ask-conversation store")
+	}
+	// 057: the store keeps an ask- conversation in memory — creating one writes
+	// nothing under the vault — while a changeset's session still goes to disk.
+	before := listChangesetDirs(t, root)
+	if _, err := gotSessions.Create("ask-wiring-probe"); err != nil {
+		t.Fatalf("Create(ask-wiring-probe): %v", err)
+	}
+	if after := listChangesetDirs(t, root); strings.Join(after, ",") != strings.Join(before, ",") {
+		t.Fatalf("an ask- conversation touched the changesets directory: %v -> %v", before, after)
+	}
+	if _, err := gotSessions.Create(cs.ID); err != nil {
+		t.Fatalf("Create(%s): %v", cs.ID, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".llmwiki", "changesets", "open", cs.ID, "session.ndjson")); err != nil {
+		t.Fatalf("a changeset's session did not go to the file store: %v", err)
+	}
+	if err := os.Remove(filepath.Join(root, ".llmwiki", "changesets", "open", cs.ID, "session.ndjson")); err != nil {
+		t.Fatalf("Remove: %v", err)
 	}
 
 	deps := testTUIDeps(t)
@@ -185,11 +204,14 @@ func TestTUIAgentWiresThroughNewAgentToTheAskPane(t *testing.T) {
 	if ag.gotMsg != "stage a page about the wiring test" {
 		t.Fatalf("Send got msg %q, want the typed question", ag.gotMsg)
 	}
-	// The turn ran under the changeset's own session (backbone §9, C-102) —
-	// never an ephemeral store.
-	if ag.gotSess != cs.ID {
-		t.Fatalf("turn ran under session %q, want the open changeset %q", ag.gotSess, cs.ID)
+	// The turn ran in the pane's own conversation (057), not under the open
+	// changeset's id ...
+	if !strings.HasPrefix(ag.gotSess, "ask-") {
+		t.Fatalf("turn ran under session %q, want the pane's ask- conversation", ag.gotSess)
 	}
+	// ... and because it staged into the open changeset (the fake's StageEv
+	// names it), the adopt step created that changeset's session beside it
+	// (backbone §9, C-102 — D9 still holds for every changeset that exists).
 	if _, err := os.Stat(filepath.Join(root, ".llmwiki", "changesets", "open", cs.ID, "session.ndjson")); err != nil {
 		t.Fatalf("session file was not created beside the changeset: %v", err)
 	}
@@ -224,6 +246,26 @@ func TestTUIAgentWiresThroughNewAgentToTheAskPane(t *testing.T) {
 	if !jumped {
 		t.Fatalf("ctrl+r never produced SwitchScreenMsg{ScreenReview}; seen = %#v", seen)
 	}
+}
+
+// listChangesetDirs lists the changeset directory entries of every state under
+// root, sorted by ReadDir, as "<state>/<name>".
+func listChangesetDirs(t *testing.T, root string) []string {
+	t.Helper()
+	var out []string
+	for _, state := range []string{"open", "committed", "rejected"} {
+		entries, err := os.ReadDir(filepath.Join(root, ".llmwiki", "changesets", state))
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			t.Fatalf("ReadDir %s: %v", state, err)
+		}
+		for _, e := range entries {
+			out = append(out, state+"/"+e.Name())
+		}
+	}
+	return out
 }
 
 // askQuestionCmd chases one already-captured command through the shell and

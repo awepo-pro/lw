@@ -1,8 +1,11 @@
-// session_test.go pins the S5-T5 session lifecycle: the empty
-// ui.StageChangedMsg is how review reports "no changeset any more", and
-// that is when this pane archives the session its turn ran under — once,
-// only its own, through a real commit as well as a reject — and cancels a
-// turn still running when its changeset goes.
+// session_test.go pins the Ask pane's session lifecycle as 057 left it. The
+// empty ui.StageChangedMsg is still how review reports "no changeset any more"
+// (Commit and Reject both emit it), but the conversation a turn ran in is no
+// longer the changeset's session, so it does not close with it: the pane keeps
+// it, and cancels a turn still running only when that turn staged into the
+// changeset that went away. (Before 057 the pane archived the session its turn
+// ran under at that message, once and only its own; A-057-1 rewrote these three
+// tests to the contract that replaced it.)
 package ask
 
 import (
@@ -17,13 +20,27 @@ import (
 	"github.com/awepo-pro/lw/internal/ui"
 )
 
-// TestSessionClosesWhenReviewRejects pins the S5-T5 session lifecycle: the
-// empty ui.StageChangedMsg is how review reports "no changeset any more"
-// (Commit and Reject both emit it), and that is when this pane archives the
-// session its turn ran under — once, and only its own.
-func TestSessionClosesWhenReviewRejects(t *testing.T) {
+// wantFateOnly fails the test unless cmd is nil or the title's state lookup
+// (titleFateMsg) — the one thing the empty broadcast may still owe now that it
+// archives no session.
+func wantFateOnly(t *testing.T, cmd tea.Cmd) {
+	t.Helper()
+	if cmd == nil {
+		return
+	}
+	if msg := cmd(); msg != nil {
+		if _, ok := msg.(titleFateMsg); !ok {
+			t.Fatalf("empty StageChangedMsg produced %#v (%T), want at most the title's state lookup", msg, msg)
+		}
+	}
+}
+
+// TestSessionSurvivesWhenReviewRejects: the empty ui.StageChangedMsg review
+// broadcasts after Engine.Reject closes nothing and cancels nothing — the
+// conversation outlives the changeset, which is the point of 057.
+func TestSessionSurvivesWhenReviewRejects(t *testing.T) {
 	root, engine, csID := liveVault(t)
-	sessions := &recordingSessions{SessionStore: agent.NewFileSessions(root)}
+	sessions := &recordingSessions{SessionStore: agent.NewAskSessions(agent.NewFileSessions(root))}
 	ag := &fakeTurnAgent{
 		sessions: sessions,
 		script:   []agent.Event{agent.DoneEv{Reason: "stop", Rounds: 1}},
@@ -36,63 +53,54 @@ func TestSessionClosesWhenReviewRejects(t *testing.T) {
 	}
 	var seen []tea.Msg
 	m = runCmd(t, m, cmd, &seen).(*Model)
-	if m.sessionID != csID {
-		t.Fatalf("sessionID = %q, want %q", m.sessionID, csID)
+	convID := m.convID
+	if convID == "" || convID == csID {
+		t.Fatalf("convID = %q, want the pane's own ask- conversation", convID)
 	}
 	if got := sessions.closedIDs(); len(got) != 0 {
 		t.Fatalf("session closed %v before any commit/reject, want none", got)
 	}
 
-	// A populated StageChangedMsg is a change, not a removal: it must leave
-	// the session alone.
+	// A populated StageChangedMsg is a change, not a removal: it must leave the
+	// conversation alone.
 	if _, cmd := m.Update(ui.StageChangedMsg{ChangesetID: csID, Ops: 2}); cmd != nil {
 		t.Fatalf("populated StageChangedMsg produced a command (%#v), want nil", cmd)
 	}
-	if got := sessions.closedIDs(); len(got) != 0 {
-		t.Fatalf("populated StageChangedMsg closed %v, want none", got)
-	}
 
 	// Engine.Reject is what review's X runs; the message it broadcasts
-	// afterwards is the empty one. Closing must succeed against the real
-	// store even though the changeset's directory has moved to rejected/.
+	// afterwards is the empty one. Nothing is owed to the conversation.
 	if err := engine.Reject("rejected in test"); err != nil {
 		t.Fatalf("Reject: %v", err)
 	}
 	pane, closeCmd := m.Update(ui.StageChangedMsg{})
 	m = pane.(*Model)
-	if closeCmd == nil {
-		t.Fatal("empty StageChangedMsg produced no Close command")
+	// The only command the broadcast may owe is the title's state lookup for
+	// the changeset id the pane showed (liveVault's, seeded at New); the
+	// session archive that used to be returned here is gone.
+	wantFateOnly(t, closeCmd)
+	if got := sessions.closedIDs(); len(got) != 0 {
+		t.Fatalf("closed = %v after the reject, want the conversation kept", got)
 	}
-	outcome := closeCmd()
-	sc, ok := outcome.(sessionClosedMsg)
-	if !ok {
-		t.Fatalf("Close command produced %#v (%T), want sessionClosedMsg", outcome, outcome)
+	if m.convID != convID {
+		t.Fatalf("convID = %q after the changeset went, want the conversation %q kept", m.convID, convID)
 	}
-	if sc.err != nil {
-		t.Fatalf("Close failed after Reject: %v", sc.err)
-	}
-	if got := sessions.closedIDs(); len(got) != 1 || got[0] != csID {
-		t.Fatalf("closed = %v, want exactly [%s]", got, csID)
-	}
-	if m.sessionID != "" {
-		t.Fatalf("sessionID = %q after the changeset went, want empty", m.sessionID)
+	if _, err := sessions.Get(convID); err != nil {
+		t.Fatalf("the conversation is gone after the reject: %v", err)
 	}
 
-	// And a second empty broadcast has nothing of ours left to close.
+	// And a second empty broadcast has nothing of ours left to do.
 	if _, cmd := m.Update(ui.StageChangedMsg{}); cmd != nil {
 		t.Fatalf("second empty StageChangedMsg produced a command (%#v), want nil", cmd)
 	}
-	if got := sessions.closedIDs(); len(got) != 1 {
-		t.Fatalf("closed = %v after a repeated broadcast, want exactly one close", got)
-	}
 }
 
-// TestSessionClosesAfterARealCommit is the same lifecycle through
-// Engine.Commit, whose directory move lands the session under
-// changesets/committed/ before the broadcast arrives.
-func TestSessionClosesAfterARealCommit(t *testing.T) {
+// TestSessionSurvivesARealCommit is the same lifecycle through Engine.Commit,
+// whose directory move lands the changeset under changesets/committed/ before
+// the broadcast arrives. The turn staged nothing into it, so it left no
+// session.ndjson there and the commit takes none along.
+func TestSessionSurvivesARealCommit(t *testing.T) {
 	root, engine, csID := liveVault(t)
-	sessions := &recordingSessions{SessionStore: agent.NewFileSessions(root)}
+	sessions := &recordingSessions{SessionStore: agent.NewAskSessions(agent.NewFileSessions(root))}
 	ag := &fakeTurnAgent{
 		sessions: sessions,
 		script:   []agent.Event{agent.DoneEv{Reason: "stop", Rounds: 1}},
@@ -105,6 +113,7 @@ func TestSessionClosesAfterARealCommit(t *testing.T) {
 	}
 	var seen []tea.Msg
 	m = runCmd(t, m, cmd, &seen).(*Model)
+	convID := m.convID
 
 	// Commit refuses a changeset with no live op (008 ErrNothingToCommit,
 	// C-802), so the harness stages one valid page through the public stage
@@ -123,42 +132,42 @@ func TestSessionClosesAfterARealCommit(t *testing.T) {
 	if _, err := engine.Commit("test commit"); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(root, ".llmwiki", "changesets", "committed", csID, "session.ndjson")); err != nil {
-		t.Fatalf("session did not travel with the committed changeset: %v", err)
+	committed := filepath.Join(root, ".llmwiki", "changesets", "committed", csID)
+	if _, err := os.Stat(filepath.Join(committed, "changeset.json")); err != nil {
+		t.Fatalf("the commit did not land: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(committed, "session.ndjson")); !os.IsNotExist(err) {
+		t.Fatalf("a session.ndjson travelled with the committed changeset (%v); the turn staged nothing into it", err)
 	}
 
 	pane, closeCmd := m.Update(ui.StageChangedMsg{})
 	m = pane.(*Model)
-	if closeCmd == nil {
-		t.Fatal("empty StageChangedMsg produced no Close command")
+	wantFateOnly(t, closeCmd)
+	if got := sessions.closedIDs(); len(got) != 0 {
+		t.Fatalf("closed = %v after the commit, want the conversation kept", got)
 	}
-	if sc, ok := closeCmd().(sessionClosedMsg); !ok {
-		t.Fatalf("Close command produced a %#T, want sessionClosedMsg", closeCmd())
-	} else if sc.err != nil {
-		t.Fatalf("Close failed after Commit: %v", sc.err)
-	}
-	if got := sessions.closedIDs(); len(got) != 1 || got[0] != csID {
-		t.Fatalf("closed = %v, want exactly [%s]", got, csID)
+	if m.convID != convID {
+		t.Fatalf("convID = %q after the commit, want %q", m.convID, convID)
 	}
 }
 
-// TestChangesetGoneMidTurnCancelsTheTurn pins the other half of the session
-// lifecycle: a turn still running when its changeset is committed or
-// rejected is cancelled rather than left writing records into an archived
-// session, and its stream still closes out cleanly (backbone §9, C-105).
+// TestChangesetGoneMidTurnCancelsTheTurn pins the other half of the lifecycle:
+// a turn still running when the changeset it STAGED INTO is committed or
+// rejected is cancelled rather than left appending records its adopt step has
+// nowhere to put, and its stream still closes out cleanly (backbone §9,
+// C-105). (Before 057 any turn was cancelled, staged or not.)
 func TestChangesetGoneMidTurnCancelsTheTurn(t *testing.T) {
 	root, engine, csID := liveVault(t)
-	sessions := &recordingSessions{SessionStore: agent.NewFileSessions(root)}
-	release := make(chan struct{})
-	entered := make(chan struct{})
-	ag := &fakeTurnAgent{
+	sessions := &recordingSessions{SessionStore: agent.NewAskSessions(agent.NewFileSessions(root))}
+	ag := &gatedAgent{
 		sessions: sessions,
-		release:  release,
-		entered:  entered,
-		script: []agent.Event{
+		first: []agent.Event{
 			agent.TextDelta{Text: "still working"},
-			agent.DoneEv{Reason: "stop", Rounds: 1},
+			agent.StageEv{ChangesetID: csID, Ops: 1},
 		},
+		rest:    []agent.Event{agent.DoneEv{Reason: "stop", Rounds: 1}},
+		reached: make(chan struct{}),
+		release: make(chan struct{}),
 	}
 	m := New(liveDeps(t, engine, ag)).(*Model)
 
@@ -169,7 +178,10 @@ func TestChangesetGoneMidTurnCancelsTheTurn(t *testing.T) {
 	if m.cancel == nil {
 		t.Fatal("submit left the turn's context uncancellable")
 	}
-	<-entered // the turn is genuinely running, session and all
+	m, _ = pump(t, m, cmd) // turnStartedMsg
+	<-ag.reached           // the turn is genuinely running, session and all
+	m = nextEvent(t, m)    // the TextDelta
+	m = nextEvent(t, m)    // the StageEv: the turn staged into csID
 
 	// Review rejects while the turn is parked mid-flight.
 	if err := engine.Reject("rejected mid-turn"); err != nil {
@@ -177,22 +189,15 @@ func TestChangesetGoneMidTurnCancelsTheTurn(t *testing.T) {
 	}
 	pane, closeCmd := m.Update(ui.StageChangedMsg{})
 	m = pane.(*Model)
-	if closeCmd == nil {
-		t.Fatal("empty StageChangedMsg produced no Close command")
-	}
+	wantFateOnly(t, closeCmd)
 	if m.cancel != nil {
 		t.Fatal("changesetGone did not cancel the running turn")
 	}
-	if sc, ok := closeCmd().(sessionClosedMsg); !ok {
-		t.Fatalf("Close command produced a %#T, want sessionClosedMsg", closeCmd())
-	} else if sc.err != nil {
-		t.Fatalf("Close failed after Reject: %v", sc.err)
-	}
-	close(release)
+	close(ag.release)
 
 	// The channel closes out cleanly and the pane's pump terminates.
 	var seen []tea.Msg
-	m = runCmd(t, m, cmd, &seen).(*Model)
+	m = runCmd(t, m, Listen(m.ch), &seen).(*Model)
 	if m.turnActive {
 		t.Fatal("cancelled turn left the pane marked active")
 	}
@@ -205,7 +210,7 @@ func TestChangesetGoneMidTurnCancelsTheTurn(t *testing.T) {
 	if !sawClosed {
 		t.Fatalf("StreamClosedMsg never observed; seen = %#v", seen)
 	}
-	if got := sessions.closedIDs(); len(got) != 1 || got[0] != csID {
-		t.Fatalf("closed = %v, want exactly [%s]", got, csID)
+	if got := sessions.closedIDs(); len(got) != 0 {
+		t.Fatalf("closed = %v, want the conversation kept", got)
 	}
 }

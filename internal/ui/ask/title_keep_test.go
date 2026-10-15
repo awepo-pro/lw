@@ -1,16 +1,17 @@
-// title_keep_test.go pins the Transcript title's kept-id state machine and
-// the nothing-staged hint (005 contract §6, as amended by R-509/D-5L — the
-// user's U3 finding: an Ask turn that auto-rejected its own empty changeset
-// made the id vanish from the title the moment the answer finished, and the
-// UI said nothing about the session that had survived it). Every assertion
-// here is made against the rendered top border, exactly what the shell
-// draws, never against the pane's fields alone.
+// title_keep_test.go pins the Transcript title's kept-id state machine (005
+// contract §6, as amended by R-509/D-5L). It also pinned the nothing-staged
+// hint and A-806's `answered` word — the user's U3 finding: an Ask turn that
+// auto-rejected its own empty changeset made the id vanish from the title the
+// moment the answer finished, and the UI said nothing about the session that
+// had survived it. 057 removed the cause (an empty ask opens no changeset), so
+// the empty-turn subtests now pin its absence, and the subtests that needed a
+// kept id get one from the path that still makes them, a Review commit. Every
+// assertion here is made against the rendered top border, exactly what the
+// shell draws, never against the pane's fields alone.
 package ask
 
 import (
 	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -24,26 +25,25 @@ import (
 )
 
 func TestTranscriptTitleKeepsTheLastSession(t *testing.T) {
-	// empty_self_opened_turn_keeps_id_as_answered is U3 itself, as re-read
-	// by A-806: after the turn's own auto-reject takes the changeset away,
-	// the title keeps the id and names it `answered` — a cleanly answered
-	// (DoneEv) question that staged nothing, not a verdict.
-	t.Run("empty_self_opened_turn_keeps_id_as_answered", func(t *testing.T) {
-		m, _, _, rejectedID := submitEmptyTurn(t)
-		want := "Transcript — " + ui.ShortID(rejectedID) + " · answered"
+	// empty_turn_leaves_the_title_plain was U3 itself (empty_self_opened_turn_
+	// keeps_id_as_answered): a cleanly answered question that staged nothing
+	// used to keep its auto-rejected changeset's id, as `answered`. It opens no
+	// changeset now, so there is no id to keep and the title stays plain.
+	t.Run("empty_turn_leaves_the_title_plain", func(t *testing.T) {
+		m, _ := submitEmptyTurn(t)
 		got := titleLine(t, m)
-		if !strings.Contains(got, want) {
-			t.Fatalf("the top border reads %q, want it to contain %q", got, want)
+		if !strings.Contains(got, "Transcript") || strings.Contains(got, "Transcript —") {
+			t.Fatalf("the top border reads %q, want the plain Transcript title (no changeset id)", got)
 		}
-		if strings.Contains(got, "rejected") {
-			t.Fatalf("the top border reads %q, want no `rejected` for an answered question", got)
+		if strings.Contains(got, "answered") || strings.Contains(got, "rejected") {
+			t.Fatalf("the top border reads %q, want no state word for a question that opened nothing", got)
 		}
 	})
 
-	// errored_empty_turn_keeps_id_as_rejected: the ErrorEv twin of that same
-	// empty, self-opened turn — there `rejected` is the truth, and
-	// `answered` must not show.
-	t.Run("errored_empty_turn_keeps_id_as_rejected", func(t *testing.T) {
+	// errored_empty_turn_leaves_the_title_plain (was errored_empty_turn_keeps_
+	// id_as_rejected): the ErrorEv twin of the same empty turn leaves no id
+	// either.
+	t.Run("errored_empty_turn_leaves_the_title_plain", func(t *testing.T) {
 		root := testutil.CopyFixture(t, "minimal")
 		engine, err := stage.OpenEngine(root)
 		if err != nil {
@@ -51,7 +51,7 @@ func TestTranscriptTitleKeepsTheLastSession(t *testing.T) {
 		}
 		t.Cleanup(func() { engine.Close() })
 		ag := &fakeTurnAgent{
-			sessions: agent.NewFileSessions(root),
+			sessions: askStore(root),
 			script:   []agent.Event{agent.ErrorEv{Err: errors.New("the provider gave up")}},
 		}
 		m := New(liveDeps(t, engine, ag)).(*Model)
@@ -62,34 +62,29 @@ func TestTranscriptTitleKeepsTheLastSession(t *testing.T) {
 		var seen []tea.Msg
 		m = runCmd(t, m, cmd, &seen).(*Model)
 
-		want := "Transcript — " + ui.ShortID(rejectedChangesetID(t, root)) + " · rejected"
 		got := titleLine(t, m)
-		if !strings.Contains(got, want) {
-			t.Fatalf("the top border reads %q, want it to contain %q", got, want)
+		if !strings.Contains(got, "Transcript") || strings.Contains(got, "Transcript —") {
+			t.Fatalf("the top border reads %q, want the plain Transcript title", got)
 		}
-		if strings.Contains(got, "answered") {
-			t.Fatalf("the top border reads %q, want no `answered` for an errored turn", got)
+		if strings.Contains(got, "answered") || strings.Contains(got, "rejected") {
+			t.Fatalf("the top border reads %q, want no state word", got)
 		}
 	})
 
-	// empty_turn_adds_the_session_hint: right after that turn's terminal
-	// line sits ONE status entry telling the curator where the conversation
-	// went — after the done line for a finished turn, after the error entry
-	// for a failed one.
-	t.Run("empty_turn_adds_the_session_hint", func(t *testing.T) {
-		m, _, _, rejectedID := submitEmptyTurn(t)
-		want := "nothing staged · conversation kept · lw session show " + ui.ShortID(rejectedID)
-		hint := lastEntry(m)
-		if hint.kind != kindStatus || hint.text != want {
-			t.Fatalf("last entry = %#v, want the kindStatus hint %q", hint, want)
-		}
-		done := m.entries[len(m.entries)-2]
+	// empty_turn_adds_no_hint (was empty_turn_adds_the_session_hint): the
+	// `nothing staged · conversation kept · lw session show <id>` entry told
+	// the curator where the auto-rejected changeset's session went. There is no
+	// such session now, so the turn's terminal line is the last thing it says —
+	// the done line for a finished turn, the error entry for a failed one.
+	t.Run("empty_turn_adds_no_hint", func(t *testing.T) {
+		m, _ := submitEmptyTurn(t)
+		done := lastEntry(m)
 		if done.kind != kindStatus || done.text != "done · 1 rounds" {
-			t.Fatalf("entry before the hint = %#v, want the done line", done)
+			t.Fatalf("last entry = %#v, want the done line and nothing after it", done)
 		}
+		assertNoHintEntries(t, m)
 
-		// The ErrorEv twin: the hint follows the error entry, and nowhere
-		// else in the scrollback does `lw session show` appear.
+		// The ErrorEv twin: the error entry is last.
 		root := testutil.CopyFixture(t, "minimal")
 		engine, err := stage.OpenEngine(root)
 		if err != nil {
@@ -97,7 +92,7 @@ func TestTranscriptTitleKeepsTheLastSession(t *testing.T) {
 		}
 		t.Cleanup(func() { engine.Close() })
 		ag := &fakeTurnAgent{
-			sessions: agent.NewFileSessions(root),
+			sessions: askStore(root),
 			script:   []agent.Event{agent.ErrorEv{Err: errors.New("the provider gave up")}},
 		}
 		m = New(liveDeps(t, engine, ag)).(*Model)
@@ -108,15 +103,11 @@ func TestTranscriptTitleKeepsTheLastSession(t *testing.T) {
 		var errSeen []tea.Msg
 		m = runCmd(t, m, cmd, &errSeen).(*Model)
 
-		errWant := "nothing staged · conversation kept · lw session show " + ui.ShortID(rejectedChangesetID(t, root))
-		errHint := lastEntry(m)
-		if errHint.kind != kindStatus || errHint.text != errWant {
-			t.Fatalf("last entry = %#v, want the kindStatus hint %q", errHint, errWant)
-		}
-		errEntry := m.entries[len(m.entries)-2]
+		errEntry := lastEntry(m)
 		if errEntry.kind != kindError || !strings.Contains(errEntry.text, "the provider gave up") {
-			t.Fatalf("entry before the hint = %#v, want the error entry", errEntry)
+			t.Fatalf("last entry = %#v, want the error entry and no hint after it", errEntry)
 		}
+		assertNoHintEntries(t, m)
 	})
 
 	// turn_that_staged_work_gets_no_hint: the keep-it scenario — a turn
@@ -130,13 +121,21 @@ func TestTranscriptTitleKeepsTheLastSession(t *testing.T) {
 		}
 		t.Cleanup(func() { engine.Close() })
 
-		release := make(chan struct{})
-		entered := make(chan struct{})
+		// 057: nothing is open when the turn starts, so the fake turn opens
+		// the changeset itself — as the loop's lazy open does at the first
+		// staging call — stages into it and reports it with its StageEv.
 		ag := &fakeTurnAgent{
-			sessions: agent.NewFileSessions(root),
-			release:  release,
-			entered:  entered,
+			sessions: askStore(root),
 			script:   []agent.Event{agent.DoneEv{Reason: "stop", Rounds: 1}},
+		}
+		ag.mid = func() []agent.Event {
+			cs, _, err := engine.OpenOrJoin("ask: stage a small edit for me", stage.Author{Kind: "agent"})
+			if err != nil {
+				t.Errorf("OpenOrJoin: %v", err)
+				return nil
+			}
+			stageKVCachePatch(t, engine)
+			return []agent.Event{agent.StageEv{ChangesetID: cs.ID, Ops: 1}}
 		}
 		m := New(liveDeps(t, engine, ag)).(*Model)
 
@@ -144,9 +143,6 @@ func TestTranscriptTitleKeepsTheLastSession(t *testing.T) {
 		if cmd == nil {
 			t.Fatal("submit produced no command")
 		}
-		<-entered
-		stageKVCachePatch(t, engine)
-		close(release)
 		var seen []tea.Msg
 		m = runCmd(t, m, cmd, &seen).(*Model)
 
@@ -223,11 +219,11 @@ func TestTranscriptTitleKeepsTheLastSession(t *testing.T) {
 		}
 	})
 
-	// next_changeset_replaces_the_kept_id: a populated broadcast — or a
-	// started turn — names the changeset open now, and the kept id gives
-	// way entirely.
+	// next_changeset_replaces_the_kept_id: a populated broadcast names the
+	// changeset open now, and the kept id gives way entirely. (A started turn
+	// used to replace it too; a turn names no changeset until it stages.)
 	t.Run("next_changeset_replaces_the_kept_id", func(t *testing.T) {
-		m, engine, _, rejectedID := submitEmptyTurn(t)
+		m, engine, rejectedID := keptCommittedTitle(t)
 
 		cs, err := engine.OpenChangeset("the next one", stage.Author{Kind: "human"})
 		if err != nil {
@@ -248,9 +244,9 @@ func TestTranscriptTitleKeepsTheLastSession(t *testing.T) {
 	// vault_reload_keeps_the_kept_id: a reload that finds nothing open
 	// leaves the kept id — suffix and all — exactly where it was.
 	t.Run("vault_reload_keeps_the_kept_id", func(t *testing.T) {
-		m, _, _, rejectedID := submitEmptyTurn(t)
+		m, _, keptID := keptCommittedTitle(t)
 		before := titleLine(t, m)
-		if !strings.Contains(before, ui.ShortID(rejectedID)+" · answered") {
+		if !strings.Contains(before, ui.ShortID(keptID)+" · committed") {
 			t.Fatalf("precondition: the top border reads %q, want the kept id with its state", before)
 		}
 
@@ -266,7 +262,7 @@ func TestTranscriptTitleKeepsTheLastSession(t *testing.T) {
 	// id may have moved on, and yesterday's answer must not pin today's
 	// title.
 	t.Run("stale_fate_is_ignored", func(t *testing.T) {
-		m, _, _, _ := submitEmptyTurn(t)
+		m, _, _ := keptCommittedTitle(t)
 		before := titleLine(t, m)
 
 		pane, cmd := m.Update(titleFateMsg{id: "cs-somethingelse", state: "committed"})
@@ -334,20 +330,6 @@ func assertNoHintEntries(t *testing.T, m *Model) {
 	}
 }
 
-// rejectedChangesetID returns the one id under root's changesets/rejected/.
-func rejectedChangesetID(t *testing.T, root string) string {
-	t.Helper()
-	dir := filepath.Join(root, ".llmwiki", "changesets", "rejected")
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("ReadDir %s: %v", dir, err)
-	}
-	if len(entries) != 1 {
-		t.Fatalf("changesets/rejected/ has %d entries, want exactly 1: %v", len(entries), entries)
-	}
-	return entries[0].Name()
-}
-
 // stageKVCachePatch appends the one-line patch_page op the turn tests use,
 // so a changeset has a staged op for review to commit or reject.
 func stageKVCachePatch(t *testing.T, e *stage.Engine) {
@@ -378,14 +360,14 @@ func stageKVCachePatch(t *testing.T, e *stage.Engine) {
 	}
 }
 
-// submitEmptyTurn runs the auto-reject scenario to quiescence (the same one
-// TestSubmitWithNoOpenChangesetRejectsWhenNothingStaged drives): a turn that
-// opens its own changeset, stages nothing, and is rejected when Send
-// returns. It returns the pane, the engine, the vault root and the id the
-// rejected changeset landed under.
-func submitEmptyTurn(t *testing.T) (m *Model, engine *stage.Engine, root, rejectedID string) {
+// submitEmptyTurn runs a question that stages nothing to quiescence on a vault
+// with nothing open (the scenario that used to end in the pane's auto-reject,
+// TestSubmitWithNoOpenChangesetRejectsWhenNothingStaged's). It returns the pane
+// and the engine; since 057 the turn leaves no changeset behind, so there is no
+// rejected id to return.
+func submitEmptyTurn(t *testing.T) (m *Model, engine *stage.Engine) {
 	t.Helper()
-	root = testutil.CopyFixture(t, "minimal")
+	root := testutil.CopyFixture(t, "minimal")
 	engine, err := stage.OpenEngine(root)
 	if err != nil {
 		t.Fatalf("OpenEngine: %v", err)
@@ -393,7 +375,7 @@ func submitEmptyTurn(t *testing.T) (m *Model, engine *stage.Engine, root, reject
 	t.Cleanup(func() { engine.Close() })
 
 	ag := &fakeTurnAgent{
-		sessions: agent.NewFileSessions(root),
+		sessions: askStore(root),
 		script:   []agent.Event{agent.DoneEv{Reason: "stop", Rounds: 1}},
 	}
 	m = New(liveDeps(t, engine, ag)).(*Model)
@@ -404,5 +386,23 @@ func submitEmptyTurn(t *testing.T) (m *Model, engine *stage.Engine, root, reject
 	}
 	var seen []tea.Msg
 	m = runCmd(t, m, cmd, &seen).(*Model)
-	return m, engine, root, rejectedChangesetID(t, root)
+	return m, engine
+}
+
+// keptCommittedTitle gives a pane whose title keeps an id: a changeset open at
+// construction (an `lw ingest` left it) is committed in Review and the empty
+// broadcast arrives, so the pane keeps the id with its `committed` word. It is
+// what submitEmptyTurn used to supply, from the one path that still makes a kept
+// id. It returns the pane, the engine and the committed id.
+func keptCommittedTitle(t *testing.T) (m *Model, engine *stage.Engine, keptID string) {
+	t.Helper()
+	_, engine, keptID = liveVault(t)
+	stageKVCachePatch(t, engine)
+	m = New(liveDeps(t, engine, nil)).(*Model)
+	if _, err := engine.Commit("review accepted"); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	var seen []tea.Msg
+	m = feedMsg(t, m, ui.StageChangedMsg{}, &seen).(*Model)
+	return m, engine, keptID
 }

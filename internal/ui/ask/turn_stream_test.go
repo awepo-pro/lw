@@ -55,8 +55,8 @@ func TestCtrlRDuringTurnJumpsToReviewAndKeepsTheStream(t *testing.T) {
 	if !m.turnActive {
 		t.Fatal("ctrl+r ended the turn")
 	}
-	if m.sessionID != csID {
-		t.Fatalf("sessionID = %q after ctrl+r, want %q", m.sessionID, csID)
+	if !strings.HasPrefix(m.convID, "ask-") || m.convID == csID {
+		t.Fatalf("convID = %q after ctrl+r, want the pane's ask- conversation (not the changeset %q)", m.convID, csID)
 	}
 
 	// The stream survives the jump: the whole script still arrives, in

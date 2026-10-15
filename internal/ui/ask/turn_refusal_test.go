@@ -15,13 +15,15 @@ import (
 )
 
 // TestSubmitWithChangesetAlreadyOpenNeverRejectsEvenIfEmpty is D-DH's other
-// boundary: a changeset already open at submit is reused, and a turn that
-// stages nothing under it is left alone — this pane never rejects a
-// changeset it did not open itself.
+// boundary: a changeset already open at submit is left alone, and a turn that
+// stages nothing under it does not touch it — this pane never rejects a
+// changeset it did not open itself. Since 057 the turn does not run in that
+// changeset's session either: it runs in the pane's conversation, minted
+// synchronously at submit.
 func TestSubmitWithChangesetAlreadyOpenNeverRejectsEvenIfEmpty(t *testing.T) {
 	_, engine, csID := liveVault(t) // a changeset is already open (case d)
 	ag := &fakeTurnAgent{
-		sessions: agent.NewFileSessions(engine.Vault().Root()),
+		sessions: agent.NewAskSessions(agent.NewFileSessions(engine.Vault().Root())),
 		script:   []agent.Event{agent.DoneEv{Reason: "stop", Rounds: 1}},
 	}
 	m := New(liveDeps(t, engine, ag)).(*Model)
@@ -30,10 +32,10 @@ func TestSubmitWithChangesetAlreadyOpenNeverRejectsEvenIfEmpty(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("submit produced no command")
 	}
-	// A pre-existing changeset is known synchronously at submit — this pane
-	// never has to wait on the turn to learn its own bookkeeping for it.
-	if m.sessionID != csID {
-		t.Fatalf("sessionID after submit = %q, want the pre-existing %q", m.sessionID, csID)
+	// The conversation is the pane's own, known synchronously at submit; the
+	// open changeset is none of its business until a turn stages into it.
+	if !strings.HasPrefix(m.convID, "ask-") || m.convID == csID {
+		t.Fatalf("convID after submit = %q, want an ask- conversation, not the changeset %q", m.convID, csID)
 	}
 
 	var seen []tea.Msg
@@ -54,8 +56,8 @@ func TestSubmitWithChangesetAlreadyOpenNeverRejectsEvenIfEmpty(t *testing.T) {
 			t.Fatalf("empty ui.StageChangedMsg observed though the changeset predates this turn")
 		}
 	}
-	if ag.gotSess != csID {
-		t.Fatalf("Send ran with session %q, want %q", ag.gotSess, csID)
+	if ag.gotSess != m.convID {
+		t.Fatalf("Send ran with session %q, want the pane's conversation %q", ag.gotSess, m.convID)
 	}
 }
 
@@ -95,7 +97,7 @@ func TestSubmitNilAgentDegradesToStatusLine(t *testing.T) {
 // answer that came back could not be attributed to either question. The
 // refused text stays in the box so nothing the curator wrote is lost.
 func TestSubmitWhileTurnActiveIsRefusedNotQueued(t *testing.T) {
-	_, engine, csID := liveVault(t)
+	_, engine, _ := liveVault(t)
 	release := make(chan struct{})
 	entered := make(chan struct{})
 	ag := &fakeTurnAgent{
@@ -148,8 +150,8 @@ func TestSubmitWhileTurnActiveIsRefusedNotQueued(t *testing.T) {
 	if m.turnActive {
 		t.Fatal("turn still active after DoneEv")
 	}
-	if ag.gotMsg != "first question" || ag.gotSess != csID {
-		t.Fatalf("Send got (%q, %q), want (first question, %s)", ag.gotMsg, ag.gotSess, csID)
+	if ag.gotMsg != "first question" || ag.gotSess != m.convID || !strings.HasPrefix(ag.gotSess, "ask-") {
+		t.Fatalf("Send got (%q, %q), want (first question, the pane's conversation %s)", ag.gotMsg, ag.gotSess, m.convID)
 	}
 	if got := assistantText(m); len(got) != 1 || got[0] != "working" {
 		t.Fatalf("assistant entries = %#v, want exactly one \"working\"", got)

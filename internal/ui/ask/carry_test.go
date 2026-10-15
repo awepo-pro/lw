@@ -1,14 +1,17 @@
-// carry_test.go is 009 contract §3.1's evidence: a turn that runs in a
-// session the pane just created is seeded with the conversation of the pane's
-// most recent turn (convID), so follow-up questions see the answers they
-// follow even though the previous session was archived with its changeset.
-// Every turn here runs through the real pane, a real engine and a real
-// NewFileSessions store; the fake agent is turn_submit_test.go's, extended
-// with record persistence (liveharness_test.go).
+// carry_test.go is 009 contract §3.1's evidence, restated for 057: follow-up
+// questions see the answers they follow. Under 009 each turn ran in a session
+// the pane created and seeded from the previous turn's, because the previous
+// session was archived with its changeset; since 057 every turn runs in the
+// pane's ONE in-memory conversation (agent.NewAskSessions), whose history view
+// is that same prose, so nothing is seeded and nothing is lost. Every turn here
+// runs through the real pane, a real engine and the real store; the fake agent
+// is turn_submit_test.go's, extended with record persistence
+// (liveharness_test.go).
 package ask
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -90,14 +93,37 @@ func stageKeepOp(t *testing.T, engine *stage.Engine) {
 	}
 }
 
-// seedFailSessions refuses every Append — the store whose Append fails
-// during the seed, so the turn must end before Send.
-type seedFailSessions struct {
+// openFailSessions cannot open a conversation: Get finds nothing and Create
+// refuses — 057's version of the store whose seed failed, a turn that must end
+// before Send.
+type openFailSessions struct {
 	agent.SessionStore
 }
 
-func (seedFailSessions) Append(id string, r agent.Record) error {
-	return errors.New("append refused")
+func (openFailSessions) Get(id string) (*agent.Session, error) {
+	return nil, errors.New("no such conversation")
+}
+
+func (openFailSessions) Create(id string) (*agent.Session, error) {
+	return nil, errors.New("create refused")
+}
+
+// askStore is the production store shape over root: the in-memory ask
+// conversation above the file store.
+func askStore(root string) agent.SessionStore {
+	return agent.NewAskSessions(agent.NewFileSessions(root))
+}
+
+// turnRecords lists the conversation's full log, tool records included — what
+// the adopt step reads — where sessionRecords on this store returns the prose
+// view the model is sent.
+func turnRecords(t *testing.T, ss agent.SessionStore, id string) []agent.Record {
+	t.Helper()
+	recs, err := agent.RawRecords(ss, id)
+	if err != nil {
+		t.Fatalf("RawRecords %s: %v", id, err)
+	}
+	return recs
 }
 
 // wantCarried asserts one record's role, text and carried flag.
@@ -111,7 +137,7 @@ func wantCarried(t *testing.T, label string, r agent.Record, role, content strin
 func TestConversationCarry(t *testing.T) {
 	t.Run("answered_turn_carries_into_next", func(t *testing.T) {
 		root, engine := carryVault(t)
-		sessions := agent.NewFileSessions(root)
+		sessions := askStore(root)
 		ag := &fakeTurnAgent{sessions: sessions}
 		m := New(liveDeps(t, engine, ag)).(*Model)
 
@@ -122,31 +148,38 @@ func TestConversationCarry(t *testing.T) {
 		if cs1 == "" {
 			t.Fatal("turn 1 left convID empty")
 		}
-		if m.sessionID != "" {
-			t.Fatalf("sessionID = %q after the auto-reject, want empty", m.sessionID)
-		}
 
 		ag.script, ag.persist = turnScript("q2", "A2")
 		m = submitAndDrain(t, m, "q2")
 
-		cs2 := m.convID
-		if cs2 == "" || cs2 == cs1 {
-			t.Fatalf("convID after turn 2 = %q, want a fresh session id (turn 1 ran under %q)", cs2, cs1)
+		// One conversation for both turns (057): no second session, no seed.
+		if m.convID != cs1 {
+			t.Fatalf("convID after turn 2 = %q, want the same conversation %q", m.convID, cs1)
 		}
+		raw := turnRecords(t, sessions, cs1)
+		if len(raw) != 4 {
+			t.Fatalf("conversation %s holds %d records, want turn 1's q1/A1 then turn 2's own q2/A2:\n%+v", cs1, len(raw), raw)
+		}
+		wantCarried(t, "record 0", raw[0], "user", "q1", false)
+		wantCarried(t, "record 1", raw[1], "assistant", "A1", false)
+		wantCarried(t, "record 2", raw[2], "user", "q2", false)
+		wantCarried(t, "record 3", raw[3], "assistant", "A2", false)
 
-		recs := sessionRecords(t, sessions, cs2)
-		if len(recs) != 4 {
-			t.Fatalf("session %s holds %d records, want turn 1's q1/A1 carried ahead of turn 2's own q2/A2:\n%+v", cs2, len(recs), recs)
+		// What the next turn's model reads is the prose view: the same four
+		// records 009's seeding would have carried.
+		view := sessionRecords(t, sessions, cs1)
+		if len(view) != 4 {
+			t.Fatalf("history view holds %d records, want 4:\n%+v", len(view), view)
 		}
-		wantCarried(t, "record 0", recs[0], "user", "q1", true)
-		wantCarried(t, "record 1", recs[1], "assistant", "A1", true)
-		wantCarried(t, "record 2", recs[2], "user", "q2", false)
-		wantCarried(t, "record 3", recs[3], "assistant", "A2", false)
+		wantCarried(t, "view 0", view[0], "user", "q1", true)
+		wantCarried(t, "view 1", view[1], "assistant", "A1", true)
+		wantCarried(t, "view 2", view[2], "user", "q2", true)
+		wantCarried(t, "view 3", view[3], "assistant", "A2", true)
 	})
 
 	t.Run("chain_carries_all_turns", func(t *testing.T) {
 		root, engine := carryVault(t)
-		sessions := agent.NewFileSessions(root)
+		sessions := askStore(root)
 		ag := &fakeTurnAgent{sessions: sessions}
 		m := New(liveDeps(t, engine, ag)).(*Model)
 
@@ -157,22 +190,24 @@ func TestConversationCarry(t *testing.T) {
 			m = submitAndDrain(t, m, tt.q)
 			ids = append(ids, m.convID)
 		}
+		if ids[0] == "" || ids[1] != ids[0] || ids[2] != ids[0] {
+			t.Fatalf("convIDs across three turns = %v, want one conversation", ids)
+		}
 
 		recs := sessionRecords(t, sessions, ids[2])
 		if len(recs) != 6 {
-			t.Fatalf("third session holds %d records, want turns 1 and 2 carried ahead of turn 3's own two:\n%+v", len(recs), recs)
+			t.Fatalf("history view holds %d records, want all three turns:\n%+v", len(recs), recs)
 		}
-		wantCarried(t, "record 0", recs[0], "user", "q1", true)
-		wantCarried(t, "record 1", recs[1], "assistant", "A1", true)
-		wantCarried(t, "record 2", recs[2], "user", "q2", true)
-		wantCarried(t, "record 3", recs[3], "assistant", "A2", true)
-		wantCarried(t, "record 4", recs[4], "user", "q3", false)
-		wantCarried(t, "record 5", recs[5], "assistant", "A3", false)
+		for i, want := range []struct{ role, content string }{
+			{"user", "q1"}, {"assistant", "A1"}, {"user", "q2"}, {"assistant", "A2"}, {"user", "q3"}, {"assistant", "A3"},
+		} {
+			wantCarried(t, fmt.Sprintf("record %d", i), recs[i], want.role, want.content, true)
+		}
 	})
 
 	t.Run("tool_records_not_carried", func(t *testing.T) {
 		root, engine := carryVault(t)
-		sessions := agent.NewFileSessions(root)
+		sessions := askStore(root)
 		ag := &fakeTurnAgent{sessions: sessions}
 		m := New(liveDeps(t, engine, ag)).(*Model)
 
@@ -193,14 +228,20 @@ func TestConversationCarry(t *testing.T) {
 		ag.script, ag.persist = turnScript("q2", "A2")
 		m = submitAndDrain(t, m, "q2")
 
+		// The conversation keeps the tool record (the adopt step needs it) ...
+		if raw := turnRecords(t, sessions, m.convID); len(raw) != 5 {
+			t.Fatalf("conversation holds %d records, want q1, the tool record, A1, q2, A2:\n%+v", len(raw), raw)
+		}
+		// ... and the history the model is sent never replays it (046's pairs
+		// would grow the context without bound; Compact never shrinks them).
 		recs := sessionRecords(t, sessions, m.convID)
 		if len(recs) != 4 {
-			t.Fatalf("session holds %d records, want the two carried text records plus turn 2's own two:\n%+v", len(recs), recs)
+			t.Fatalf("history view holds %d records, want the four text records:\n%+v", len(recs), recs)
 		}
 		wantCarried(t, "record 0", recs[0], "user", "q1", true)
 		wantCarried(t, "record 1", recs[1], "assistant", "A1", true)
-		wantCarried(t, "record 2", recs[2], "user", "q2", false)
-		wantCarried(t, "record 3", recs[3], "assistant", "A2", false)
+		wantCarried(t, "record 2", recs[2], "user", "q2", true)
+		wantCarried(t, "record 3", recs[3], "assistant", "A2", true)
 		for i, r := range recs {
 			if r.Role == "tool" || r.Tool != "" {
 				t.Fatalf("record %d carried tool state ({role %s tool %q}) — only conversation text is carried", i, r.Role, r.Tool)
@@ -208,61 +249,58 @@ func TestConversationCarry(t *testing.T) {
 		}
 	})
 
+	// reused_changeset_not_seeded: a turn that stages is adopted into its
+	// changeset's session, and a later turn staging into the SAME changeset
+	// appends to that session — it is never re-seeded with the conversation
+	// (009's "a reused session is never seeded", as 057 keeps it).
 	t.Run("reused_changeset_not_seeded", func(t *testing.T) {
 		root, engine := carryVault(t)
-		sessions := agent.NewFileSessions(root)
-		release := make(chan struct{})
-		entered := make(chan struct{})
-		ag := &fakeTurnAgent{
-			sessions: sessions,
-			release:  release,
-			entered:  entered,
+		sessions := askStore(root)
+		ag := &fakeTurnAgent{sessions: sessions}
+		var csID string
+		ag.mid = func() []agent.Event {
+			if csID == "" {
+				cs, _, err := engine.OpenOrJoin("ask: q1", stage.Author{Kind: "agent"})
+				if err != nil {
+					t.Errorf("OpenOrJoin: %v", err)
+				}
+				csID = cs.ID
+				stageKeepOp(t, engine)
+			}
+			return []agent.Event{agent.StageEv{ChangesetID: csID, Ops: 1}}
 		}
 		ag.script, ag.persist = turnScript("q1", "A1")
 		m := New(liveDeps(t, engine, ag)).(*Model)
+		m = submitAndDrain(t, m, "q1")
 
-		m, cmd := typeAndSubmit(t, m, "q1")
-		if cmd == nil {
-			t.Fatal("submit produced no command")
+		if csID == "" || m.stagedID != csID {
+			t.Fatalf("stagedID %q after a turn that staged into %q", m.stagedID, csID)
 		}
-		<-entered
-		stageKeepOp(t, engine)
-		close(release)
-		var seen []tea.Msg
-		m = runCmd(t, m, cmd, &seen).(*Model)
-
-		cs1 := m.convID
-		if cs1 == "" || m.sessionID != cs1 {
-			t.Fatalf("convID %q / sessionID %q after a turn that staged something, want both %q", cs1, m.sessionID, cs1)
-		}
-		if got := len(sessionRecords(t, sessions, cs1)); got != 2 {
-			t.Fatalf("session %s holds %d records after turn 1, want 2", cs1, got)
+		first := sessionRecords(t, agent.NewFileSessions(root), csID)
+		if len(first) != 2 {
+			t.Fatalf("changeset session holds %d records after turn 1, want the turn's 2:\n%+v", len(first), first)
 		}
 
-		// Turn 2 finds the changeset open at submit, so it reuses cs1's
-		// existing session — and a reused session is never seeded.
-		ag.release = nil
-		ag.entered = nil
+		// Turn 2 stages into the same still-open changeset.
 		ag.script, ag.persist = turnScript("q2", "A2")
 		m = submitAndDrain(t, m, "q2")
 
-		if m.convID != cs1 {
-			t.Fatalf("convID after turn 2 = %q, want the reused %q", m.convID, cs1)
-		}
-		recs := sessionRecords(t, sessions, cs1)
+		recs := sessionRecords(t, agent.NewFileSessions(root), csID)
 		if len(recs) != 4 {
-			t.Fatalf("session holds %d records, want turn 1's two plus turn 2's own two:\n%+v", len(recs), recs)
+			t.Fatalf("changeset session holds %d records, want turn 1's two plus turn 2's own two:\n%+v", len(recs), recs)
 		}
 		for i, r := range recs {
 			if r.Carried {
-				t.Fatalf("record %d ({%s %q}) is Carried — a reused session is never seeded", i, r.Role, r.Content)
+				t.Fatalf("record %d ({%s %q}) is Carried — an existing session is never seeded", i, r.Role, r.Content)
 			}
 		}
+		wantCarried(t, "record 2", recs[2], "user", "q2", false)
+		wantCarried(t, "record 3", recs[3], "assistant", "A2", false)
 	})
 
 	t.Run("foreign_session_not_seeded", func(t *testing.T) {
 		root, engine := carryVault(t)
-		sessions := agent.NewFileSessions(root)
+		sessions := askStore(root)
 		ag := &fakeTurnAgent{sessions: sessions}
 		m := New(liveDeps(t, engine, ag)).(*Model)
 
@@ -270,7 +308,7 @@ func TestConversationCarry(t *testing.T) {
 		m = submitAndDrain(t, m, "q1")
 
 		// Another verb (`lw ingest`) opens a changeset and creates its
-		// session between the pane's turns.
+		// session between the pane's turns, and writes its own record.
 		cs2, err := engine.OpenChangeset("lw ingest", stage.Author{Kind: "agent"})
 		if err != nil {
 			t.Fatalf("OpenChangeset: %v", err)
@@ -278,47 +316,44 @@ func TestConversationCarry(t *testing.T) {
 		if _, err := sessions.Create(cs2.ID); err != nil {
 			t.Fatalf("Create: %v", err)
 		}
+		if err := sessions.Append(cs2.ID, agent.Record{Role: "user", Content: "ingest a.md"}); err != nil {
+			t.Fatalf("Append: %v", err)
+		}
 
+		// Turn 2 stages into that changeset: it joins the ingest's session,
+		// appending only its own records.
 		ag.script, ag.persist = turnScript("q2", "A2")
+		ag.script = append([]agent.Event{agent.StageEv{ChangesetID: cs2.ID, Ops: 1}}, ag.script...)
 		m = submitAndDrain(t, m, "q2")
 
-		if m.convID != cs2.ID {
-			t.Fatalf("convID after turn 2 = %q, want the ingest changeset %q", m.convID, cs2.ID)
+		recs := sessionRecords(t, agent.NewFileSessions(root), cs2.ID)
+		if len(recs) != 3 {
+			t.Fatalf("session holds %d records, want the ingest's one and only turn 2's own two:\n%+v", len(recs), recs)
 		}
-		recs := sessionRecords(t, sessions, cs2.ID)
-		if len(recs) != 2 {
-			t.Fatalf("session holds %d records, want only turn 2's own two:\n%+v", len(recs), recs)
-		}
-		wantCarried(t, "record 0", recs[0], "user", "q2", false)
-		wantCarried(t, "record 1", recs[1], "assistant", "A2", false)
+		wantCarried(t, "record 0", recs[0], "user", "ingest a.md", false)
+		wantCarried(t, "record 1", recs[1], "user", "q2", false)
+		wantCarried(t, "record 2", recs[2], "assistant", "A2", false)
 	})
 
-	t.Run("seed_error_fails_turn", func(t *testing.T) {
+	// conversation_open_error_fails_turn replaces 009's seed_error_fails_turn:
+	// there is no seed to fail any more, but a store that cannot open the
+	// conversation must still end the turn before Send with its error line.
+	t.Run("conversation_open_error_fails_turn", func(t *testing.T) {
 		root, engine := carryVault(t)
-		sessions := agent.NewFileSessions(root)
-		ag := &fakeTurnAgent{sessions: sessions}
+		ag := &fakeTurnAgent{sessions: openFailSessions{SessionStore: askStore(root)}}
 		m := New(liveDeps(t, engine, ag)).(*Model)
 
-		ag.script, ag.persist = turnScript("q1", "A1")
 		m = submitAndDrain(t, m, "q1")
 
-		// Turn 2's store refuses every Append, so seeding its fresh session
-		// from turn 1's cannot write: the turn must end before Send.
-		ag.sessions = seedFailSessions{SessionStore: agent.NewFileSessions(root)}
-		ag.script, ag.persist = nil, nil
-		sendsBefore := ag.sendCount()
-
-		m = submitAndDrain(t, m, "q2")
-
-		if got := ag.sendCount(); got != sendsBefore {
-			t.Fatalf("Send ran %d more times after the seed failure (had %d), want no Send at all", got-sendsBefore, sendsBefore)
+		if got := ag.sendCount(); got != 0 {
+			t.Fatalf("Send ran %d times after the open failure, want no Send at all", got)
 		}
 		got := lastEntry(m)
 		if got.kind != kindError {
-			t.Fatalf("last entry = %#v, want the seed failure's error line", got)
+			t.Fatalf("last entry = %#v, want the open failure's error line", got)
 		}
-		if !strings.HasPrefix(got.text, "ask: carry the conversation into ") {
-			t.Fatalf("error line = %q, want the \"ask: carry the conversation into \" prefix", got.text)
+		if !strings.HasPrefix(got.text, "ask: open the conversation ") {
+			t.Fatalf("error line = %q, want the \"ask: open the conversation \" prefix", got.text)
 		}
 		if m.turnActive {
 			t.Fatal("the failed turn left the pane marked active")

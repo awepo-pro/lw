@@ -260,10 +260,14 @@ func tuiTheme() (ui.Theme, ui.KeyMap, error) {
 }
 
 // tuiAgent constructs the agent.Agent the Ask pane drives: the config, the
-// package-level newAgent seam, and the file-backed session store that keeps
-// a turn's transcript beside its changeset (backbone §9, C-102 — never an
-// ephemeral store, since review's Commit and Reject move the very directory
-// that session lives in, and the transcript has to move with it).
+// package-level newAgent seam, and a session store that keeps the pane's
+// conversation in memory (agent.NewAskSessions, 057) over the file-backed one.
+// A question that only reads therefore opens no changeset and writes nothing —
+// half of a real vault's changesets were asks the pane opened and rejected
+// unread. A turn that stages gets its changeset at its first staging call and
+// is adopted into that changeset's session.ndjson, so the transcript still
+// travels with every changeset that exists (backbone §9, C-102: review's Commit
+// and Reject move the very directory that session lives in).
 //
 // It is a function rather than inline code so a test can prove both halves
 // of the contract — wired and degraded — without driving tea.Program.Run
@@ -274,7 +278,7 @@ func tuiAgent(e *stage.Engine) (agent.Agent, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
 	}
-	return newAgent(e, cfg, agent.NewFileSessions(e.Vault().Root()))
+	return newAgent(e, cfg, agent.NewAskSessions(agent.NewFileSessions(e.Vault().Root())))
 }
 
 // buildTUIOptions assembles the ui.Options ui.NewApp is built from: the

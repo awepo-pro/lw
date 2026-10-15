@@ -72,7 +72,7 @@ buffer with hunk-level review and a pre-approval audit trail.
 | D6 | **Plain word search**, no SQLite, no FTS5 | An in-memory inverted index is instant at vault scale and removes a cgo-free-but-still-heavy dependency. FTS5 → the v2 roadmap |
 | D7 | **One open changeset at a time**, single-threaded ingest | Matches git's index; keeps review comprehensible. Parallel ingest → the v2 roadmap |
 | D8 | **The vault is the agent's memory.** No second store | Standing editorial preferences live in a reviewable `curator-memory.md` the agent edits through `stage.*` like any other page. Its memory is diffable, auditable and revertable |
-| D9 | **Session per changeset** | Opening a changeset opens a session; commit or reject closes it and archives the transcript beside the changeset. Answers "why did it propose this?" months later — the archive is re-read with `lw session show` |
+| D9 | **Session per changeset** | Every changeset has a session; commit or reject archives the transcript beside it. Answers "why did it propose this?" months later — the archive is re-read with `lw session show`. The TUI's Ask conversation is held in memory until a turn stages, then written into that changeset's session (057): a question that only answers opens no changeset |
 | D10 | **Embedded chat, rendered in the TUI** | D2 makes this the cheap path: we own the stream, so there is no subprocess to supervise or parse. The tmux fallback is no longer needed |
 
 ---
@@ -433,8 +433,10 @@ than failing mysteriously mid-ingest.
 ### 11.3 Sessions and context (D9)
 
 A session is bound to a changeset: `stage.open` starts one, commit or reject ends it and
-archives `session.ndjson` beside the changeset. `lw ingest` and `lw query` use ephemeral
-sessions. One open changeset means one live session (D7). The archives stay out of git
+archives `session.ndjson` beside the changeset. `lw query` uses an ephemeral session, and so
+does the TUI's Ask pane until a turn stages: its conversation lives in memory, a changeset
+opens at the turn's first staging call, and that turn is then written into the changeset's
+session (057). One open changeset means one live session (D7). The archives stay out of git
 through the vault `.gitignore` that `lw init` writes, and `lw session show` re-reads one
 in full.
 

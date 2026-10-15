@@ -263,3 +263,37 @@ func decodeRecords(b []byte) ([]Record, error) {
 	}
 	return recs, nil
 }
+
+// attachOpen puts an empty session.ndjson beside the OPEN changeset id's
+// changeset.json and reports whether it made the file (false: the changeset
+// already had a session). Unlike Create it never makes a directory: the
+// os.OpenFile below fails when changesets/open/<id>/ is gone, so a changeset
+// Review committed or rejected between the caller's check and this call is
+// reported as errChangesetNotOpen instead of being resurrected as an open/<id>
+// holding only a session.ndjson (C-118; 057 D4's adopt step). The rename that
+// moves a changeset out of open/ and this create are ordered by the
+// filesystem itself — the file lands inside the directory before the rename or
+// not at all — which is what closes the window an Engine.Current check cannot.
+func (s *fileSessions) attachOpen(id string) (bool, error) {
+	dir := filepath.Join(s.openDir(), id)
+	if _, err := os.Stat(filepath.Join(dir, "changeset.json")); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, fmt.Errorf("%w: %s", errChangesetNotOpen, id)
+		}
+		return false, fmt.Errorf("agent: attach session %s: %w", id, err)
+	}
+	f, err := os.OpenFile(filepath.Join(dir, "session.ndjson"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	switch {
+	case err == nil:
+		if err := f.Close(); err != nil {
+			return false, fmt.Errorf("agent: attach session %s: %w", id, err)
+		}
+		return true, nil
+	case errors.Is(err, fs.ErrExist):
+		return false, nil
+	case errors.Is(err, fs.ErrNotExist):
+		return false, fmt.Errorf("%w: %s", errChangesetNotOpen, id)
+	default:
+		return false, fmt.Errorf("agent: attach session %s: %w", id, err)
+	}
+}

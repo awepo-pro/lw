@@ -83,7 +83,12 @@ rebase or drop.
 One session per changeset, and the transcript lives **inside the changeset
 directory**. Commit or reject moves the directory and the session moves with it,
 so "why did it propose this?" is answerable months later with no external
-store. `lw log --agent` filters the journal to agent-authored events;
+store. A TUI Ask conversation is the one exception to "created with the
+changeset": it lives in memory, so a question that only answers opens no
+changeset at all, and a turn that stages is written into the changeset's
+`session.ndjson` once it has — with the earlier questions and answers marked
+carried — so the trail exists for every changeset that exists.
+`lw log --agent` filters the journal to agent-authored events;
 `lw revert` opens a new reviewable changeset holding the inverse ops.
 
 ## The journal

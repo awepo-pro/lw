@@ -962,6 +962,15 @@ func (l *Loop) dispatchToolCall(ctx context.Context, sessionID string, round int
 		return l.correctable(ctx, sessionID, round, tc, canonical, fmt.Errorf("malformed tool arguments: %w", perr), badCalls, out, t0)
 	}
 
+	// 057 D2: a staging call with nothing open opens the changeset it stages
+	// into, here, once the call is certain to run — the refusals above and the
+	// argument parse have all passed — so the Ask pane need not open one it would
+	// reject unread (lazyopen.go). An open that fails is the call's error, fed
+	// back like any other refusal.
+	if text := l.lazyOpen(ctx, sessionID, canonical); text != "" {
+		return l.toolError(ctx, sessionID, round, tc, canonical, text, out, t0)
+	}
+
 	res, callErr := l.tools.Call(ctx, canonical, json.RawMessage(args))
 	if callErr != nil {
 		if errors.Is(callErr, tools.ErrUnknownTool) {

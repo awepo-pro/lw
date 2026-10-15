@@ -1,52 +1,69 @@
-// session.go is the ask screen's session lifecycle: how a turn finds or
-// opens the changeset it runs under (a session is keyed by its changeset,
-// backbone §9, C-102), how the session is archived once that changeset is
-// committed or rejected, and the one-line intent a self-opened changeset
-// stamps into the journal.
+// session.go is the ask screen's conversation lifecycle (057): the one
+// in-memory session every turn of the pane runs in, the id it is minted under,
+// what a Review commit or reject means for a turn that is running, and the
+// one-line intent a changeset the turn's first staging call opens is stamped
+// with.
+//
+// Before 057 a session was keyed by its changeset (backbone §9, C-102), so every
+// question that found nothing open opened a changeset, ran inside it, and
+// rejected it unread — half of the changesets in a real vault, each a journal
+// pair, a rejected/ directory and a sync push. The conversation is now its own
+// session (agent.NewAskSessions); a changeset exists only when a turn stages
+// into one (agent's lazy open) and the staging turn is adopted into it
+// (agent.AdoptTurn, stream.go).
 package ask
 
 import (
-	"errors"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"strings"
 
-	tea "charm.land/bubbletea/v2"
-
 	"github.com/awepo-pro/lw/internal/agent"
-	"github.com/awepo-pro/lw/internal/stage"
 )
 
-// resolveTurnChangeset opens a changeset for a turn that started with none
-// open (C-124/D-DH), or falls back to whatever is open if something raced
-// ahead of it. It never returns an empty id without a non-nil err.
-func resolveTurnChangeset(e *stage.Engine, msg string) (id string, openedHere bool, err error) {
-	if e == nil {
-		return "", false, errors.New("ask: no engine to open a changeset in")
-	}
-	cs, err := e.OpenChangeset(askIntent(msg), stage.Author{Kind: "agent"})
-	if err == nil {
-		return cs.ID, true, nil
-	}
-	if !errors.Is(err, stage.ErrOpenChangeset) {
-		return "", false, fmt.Errorf("ask: open a changeset for this turn: %w", err)
-	}
-	// Something opened one between the pane's read and this goroutine
-	// running: fall back to it, exactly as a turn that found one open at
-	// submit would.
-	cur, curErr := e.Current()
-	if curErr != nil {
-		return "", false, fmt.Errorf("ask: no changeset open to run this turn in: %w", curErr)
-	}
-	return cur.ID, false, nil
+// convIDPrefix starts every conversation id; agent.NewAskSessions keeps ids
+// with it in memory.
+const convIDPrefix = "ask-"
+
+// newConvID mints a conversation id from r: "ask-" and 16 lowercase hex digits.
+// It reads r rather than crypto/rand directly so a test can pin the bytes.
+func newConvID(r io.Reader) string {
+	var b [8]byte
+	_, _ = io.ReadFull(r, b[:]) // crypto/rand.Reader never fails on supported platforms
+	return convIDPrefix + hex.EncodeToString(b[:])
 }
 
-// askIntentRunes bounds the intent D-DH stamps on a changeset this pane
-// opens for itself, so `lw log`/`lw status` show a readable one-liner
-// instead of a raw, possibly multi-line question.
+// mintConvID is the pane's id source: crypto/rand, so two panes (or two TUIs on
+// one vault) never share a conversation.
+func mintConvID() string { return newConvID(rand.Reader) }
+
+// ensureConversation makes sure the session store holds conversation id,
+// creating it when it does not. It reports a failure as the turn's error: a turn
+// whose conversation cannot be opened ends before Agent.Send, exactly as a turn
+// whose changeset could not be opened used to. With the production store
+// (agent.NewAskSessions) Create is a map insert and touches no file.
+func ensureConversation(ss agent.SessionStore, id string) error {
+	if _, err := ss.Get(id); err == nil {
+		return nil
+	}
+	if _, err := ss.Create(id); err != nil {
+		return fmt.Errorf("ask: open the conversation %s: %w", id, err)
+	}
+	return nil
+}
+
+// askIntentRunes bounds the intent a changeset opened for a turn is stamped
+// with, so `lw log`/`lw status` show a readable one-liner instead of a raw,
+// possibly multi-line question.
 const askIntentRunes = 60
 
 // askIntent turns msg into that intent: "ask: " plus the question collapsed
-// to one line and truncated to askIntentRunes runes.
+// to one line and truncated to askIntentRunes runes. The turn hands it to the
+// agent on its ctx (agent.WithOpenIntent); the loop uses it when the turn's
+// first staging call has to open the changeset (057 D2) — byte for byte the
+// intent the changeset this pane used to open for itself carried.
 func askIntent(msg string) string {
 	return "ask: " + truncateRunes(singleLine(msg), askIntentRunes)
 }
@@ -71,86 +88,30 @@ func truncateRunes(s string, max int) string {
 	return string(r[:max-1]) + "…"
 }
 
-// ensureSession makes sure a turn can actually run under id, when id names a
-// changeset this turn did not just open itself, and reports whether it
-// CREATED the session — 009 §3.1's seeding condition: only a session the
-// turn created is seeded with the previous conversation, never one another
-// verb or turn already owns. Loop.Send resolves its session through
-// Sessions.Get before it does anything else (backbone §9), and a file-backed
-// store keys a session by the changeset id (backbone §9, C-102) — so a
-// changeset opened by another verb (`lw stage --from`, `lw revert`) has no
-// session yet and needs one created, while a changeset `lw ingest` opened
-// already has the session that verb created, and reusing it is the point:
-// the transcript stays one continuous record per changeset across processes.
-//
-// Create is only ever called here after id has been confirmed open —
-// Engine.Current for a changeset already open at submit, or resolveTurnChangeset's
-// own Current fallback (C-124/D-DH) — so the directory Create writes into
-// (changesets/open/<id>/) is the changeset's own, never a fabricated one. A
-// changeset this turn opened itself calls ss.Create directly instead
-// (runTurn), immediately after OpenChangeset returns, which is what closes
-// C-118's race for that path.
-func ensureSession(ss agent.SessionStore, id string) (created bool, err error) {
-	if _, err := ss.Get(id); err == nil {
-		return false, nil
-	}
-	if _, err := ss.Create(id); err != nil {
-		return false, fmt.Errorf("ask: open a session for changeset %s: %w", id, err)
-	}
-	return true, nil
-}
-
-// closeSessionCmd archives id's session in its own tea.Cmd, so the
-// filesystem work (and the directory fsync a file-backed Close performs)
-// never blocks Update. The outcome comes back as a sessionClosedMsg so a
-// failure is visible in the scrollback instead of vanishing.
-func closeSessionCmd(ss agent.SessionStore, id string) tea.Cmd {
-	return func() tea.Msg {
-		return sessionClosedMsg{err: ss.Close(id)}
-	}
-}
-
-// sessionClosedMsg reports the outcome of archiving the session a turn ran
-// under, after the changeset it belonged to was committed or rejected
-// (backbone §9, C-102). Unexported: only this pane produces and consumes
-// it, and the pane has no other way to surface a Close failure than its
-// own scrollback.
-type sessionClosedMsg struct{ err error }
-
-// changesetGone archives the session a turn ran under once the changeset it
-// is bound to has gone — the empty ui.StageChangedMsg review emits after
+// changesetGone reacts to the empty ui.StageChangedMsg review emits after
 // Engine.Commit or Engine.Reject, which the shell broadcasts to every pane
-// (backbone §12, C-106/TD-4). Closing it here, rather than in the review
-// screen, archives the transcript beside the audit trail this pane's turns
-// wrote without review ever having to know a session exists.
+// (backbone §12, C-106/TD-4): no changeset is open any more.
 //
-// A populated ChangesetID is a change, not a removal, and leaves the
-// session alone.
-func (m *Model) changesetGone(changesetID string) tea.Cmd {
-	if changesetID != "" || m.sessionID == "" {
-		return nil
+// The conversation is untouched — it is not the changeset's (057 D3). Before
+// 057 this closed the session the turn ran under and cancelled whatever turn was
+// running, because the session and the changeset were one thing; now a turn is
+// cancelled ONLY when it has staged into the changeset that went away
+// (m.stagedID, set from the turn's StageEv): it has nothing left to stage into,
+// and cancelling it is what stops it appending records its adopt step could not
+// place. A question still being answered while an unrelated changeset (an
+// `lw ingest`'s) is rejected goes on. Send unwinds promptly and closes the
+// channel with no terminal event of its own (backbone §9, C-105), which lands
+// here as an ordinary StreamClosedMsg.
+//
+// A populated ChangesetID is a change, not a removal, and leaves everything
+// alone.
+func (m *Model) changesetGone(changesetID string) {
+	if changesetID != "" || m.stagedID == "" {
+		return
 	}
-	ag := m.deps.Agent
-	if ag == nil {
-		m.sessionID = ""
-		return nil
-	}
-	ss := ag.Sessions()
-	if ss == nil {
-		m.sessionID = ""
-		return nil
-	}
-	id := m.sessionID
-	m.sessionID = ""
-
-	// A turn still running against a now-closed session has nothing left to
-	// stage: cancelling it is what stops it writing records into a session
-	// that has just been archived. Send unwinds promptly and closes the
-	// channel with no terminal event of its own (backbone §9, C-105), which
-	// lands here as an ordinary StreamClosedMsg.
-	if m.cancel != nil {
+	m.stagedID = ""
+	if m.turnActive && m.cancel != nil {
 		m.cancel()
 		m.cancel = nil
 	}
-	return closeSessionCmd(ss, id)
 }
