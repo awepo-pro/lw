@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -58,6 +59,12 @@ const (
 	// block and is pinned as such — so every table prints it last, by name,
 	// the way the rule above metricOrder says a newer metric is placed.
 	MetricSearchRefusals = "search_refusals"
+
+	// MetricGetNotFound is 060's: the wiki.get calls of the whole case (every
+	// turn of it) that came back "page … was not found", from the trace like
+	// the refusal counts. It is not in metricOrder either, so every table
+	// prints it by name after the listed metrics, before search_refusals.
+	MetricGetNotFound = "get_not_found"
 )
 
 // metricOrder is the order every table prints metrics in: accuracy first,
@@ -408,9 +415,10 @@ func (s *scorer) scoreIngest(m map[string]float64, c IngestCase, dir string, tur
 	// it names, committed in the snapshot — so they count here too, resolved
 	// the way a staged source is (the copy the runner kept in staged/, else the
 	// snapshot's own). Without this its chunk_coverage was absent whatever the
-	// model read, and a skimmed recompile scored like an untried one.
+	// model read, and a skimmed recompile scored like an untried one. The raws
+	// of a joined second call (060) are the case's too.
 	if c.Recompile {
-		for _, p := range c.Paths() {
+		for _, p := range slices.Concat(c.Paths(), c.Then) {
 			if seen[p] {
 				continue
 			}
@@ -453,14 +461,16 @@ func (s *scorer) scoreIngest(m map[string]float64, c IngestCase, dir string, tur
 // ingestTraceMetrics adds the ingest metrics that come from the trace: how
 // many wiki reads came before the first page change (refused or not), how many
 // reads 048's budget refused, whether stage.close was reached, how many
-// wiki.search calls were made, and how many of those 053's budget refused. A
-// run with no recorded turn has none of them — "nobody looked" must not
-// average in as 0 reads. (049; search_refusals 053.)
+// wiki.search calls were made, how many of those 053's budget refused, and how
+// many wiki.get calls were told the page was not found — across every turn of
+// the case, so a joined second turn (060) counts. A run with no recorded turn
+// has none of them — "nobody looked" must not average in as 0 reads. (049;
+// search_refusals 053; get_not_found 060.)
 func ingestTraceMetrics(m map[string]float64, tracesDir string, turns []*trace.Turn) error {
 	if len(turns) == 0 {
 		return nil
 	}
-	refusals, searchRefusals := 0, 0
+	refusals, searchRefusals, notFound := 0, 0, 0
 	for _, t := range turns {
 		if t == nil {
 			continue
@@ -475,12 +485,18 @@ func ingestTraceMetrics(m map[string]float64, tracesDir string, turns []*trace.T
 			return err
 		}
 		searchRefusals += n
+		n, err = score.GetNotFound(tracesDir, t.ID, t)
+		if err != nil {
+			return err
+		}
+		notFound += n
 	}
 	m[MetricReadsBeforeFirstStage] = float64(score.ReadsBeforeFirstStage(turns))
 	m[MetricReadRefusals] = float64(refusals)
 	m[MetricClosed] = boolMetric(score.Closed(turns))
 	m[MetricSearchCalls] = float64(score.CallCount(turns, "wiki.search"))
 	m[MetricSearchRefusals] = float64(searchRefusals)
+	m[MetricGetNotFound] = float64(notFound)
 	return nil
 }
 

@@ -9,6 +9,7 @@ import (
 
 	"github.com/awepo-pro/lw/internal/index"
 	"github.com/awepo-pro/lw/internal/lint"
+	"github.com/awepo-pro/lw/internal/stage"
 	"github.com/awepo-pro/lw/internal/vault"
 )
 
@@ -218,7 +219,10 @@ func wikiNeighborsHandler(ctx context.Context, d Deps, args json.RawMessage) (Re
 		return badArgs("wiki.neighbors", err, `{"page": "kv-cache"}`), nil
 	}
 
-	resolved, res, ok := resolvePagePath(d, "wiki.neighbors", a.Page)
+	resolved, res, ok, err := resolvePagePath(d, "wiki.neighbors", a.Page)
+	if err != nil {
+		return Result{}, fmt.Errorf("tools: wiki.neighbors: %w", err)
+	}
 	if !ok {
 		return res, nil
 	}
@@ -275,7 +279,10 @@ func wikiBacklinksHandler(ctx context.Context, d Deps, args json.RawMessage) (Re
 		return badArgs("wiki.backlinks", err, `{"page": "kv-cache"}`), nil
 	}
 
-	resolved, res, ok := resolvePagePath(d, "wiki.backlinks", a.Page)
+	resolved, res, ok, err := resolvePagePath(d, "wiki.backlinks", a.Page)
+	if err != nil {
+		return Result{}, fmt.Errorf("tools: wiki.backlinks: %w", err)
+	}
 	if !ok {
 		return res, nil
 	}
@@ -400,18 +407,30 @@ func badArgs(tool string, err error, example string) Result {
 // staged bytes to mark, so they use resolvePagePath and never pay for a
 // staged read they would throw away (020 FIX-1).
 //
-// The staged preference is a read-back, not a discovery channel:
-// vault.Resolve walks the committed index, so a page that exists only as
-// a staged create_page — no committed counterpart — still falls to the
-// not-found message. Reading a path you just staged is the contract;
-// staged-only page discovery is out of scope.
+// A page that exists only as a staged create_page has no committed
+// counterpart, so that lookup misses — and the read-back used to stop
+// there with the not-found message (060). Both the wiki.get description
+// ("if the page has staged bytes in the open changeset, the staged content
+// is returned") and 040's history placeholder ("wiki.get returns the page's
+// current staged or committed text") promise otherwise, and the model
+// believes them: the 2026-10-08 joined recompile turn asked for the two
+// pages the first call had staged six times, got not-found every time and
+// ran out of rounds (max_rounds 24/24). So on a committed miss only, the
+// argument is resolved among the open changeset's live create_page paths
+// (vault.ResolveAmong, the same set closestPageList offers) and a hit is
+// read from the staged bytes like any staged committed page. A committed
+// hit never reaches that lookup, so every pre-060 result is unchanged byte
+// for byte; a dropped or rejected create is not live, and an ambiguous
+// staged name is a miss, as it is for a committed one.
 //
 // Contract (mirrors rawSourceBody): staged bytes parse through
 // vault.ParsePage — the same parser a committed page goes through — and a
 // staged parse failure is an internal-invariant error, never a silent
 // fall back to the committed page, because Append only stages bytes it
-// validated. err is non-nil for such a violation and for a genuine
-// engine/CAS failure; the caller aborts the turn on it.
+// validated. err is non-nil for such a violation, for a genuine
+// engine/CAS failure and for an open changeset the staged-only lookup could
+// not read (060 review LOW-2: never a "not found" built over a changeset that
+// was not read); the caller aborts the turn on it.
 //
 // vault.Resolve does NOT match a page's frontmatter title (backbone §2.9:
 // exact path, then "<target>.md", then basename case-insensitively, then
@@ -420,9 +439,16 @@ func badArgs(tool string, err error, example string) Result {
 // path, and a description promising titles resolve sends it round the loop
 // search -> title -> not found -> search (MASTER §10 OR-15).
 func resolvePageArg(d Deps, tool, page string) (resolved string, p *vault.Page, staged bool, onFail Result, ok bool, err error) {
-	resolved, onFail, ok = resolvePagePath(d, tool, page)
+	resolved, arg, onFail, ok := resolveCommittedPath(d, tool, page)
 	if !ok {
-		return "", nil, false, onFail, false, nil
+		sp, hit, serr := stagedOnlyPath(d, arg)
+		if serr != nil {
+			return "", nil, false, Result{}, false, serr
+		}
+		if !hit {
+			return "", nil, false, onFail, false, nil
+		}
+		return readStagedOnlyPage(d, sp, onFail)
 	}
 
 	pg, found := d.Vault.Page(resolved)
@@ -451,30 +477,104 @@ func resolvePageArg(d Deps, tool, page string) (resolved string, p *vault.Page, 
 	return resolved, pg, false, Result{}, true, nil
 }
 
-// resolvePagePath is resolvePageArg's path-only half, shared by both
-// resolvers' front matter: trim the argument and resolve it to a
-// committed page path through vault.Resolve. It carries no staged read
-// and no parse — wiki.neighbors and wiki.backlinks resolve through it
-// because their answers are COMMITTED-INDEX ONLY (Graph().Backlinks and
-// Neighbors over d.Vault): staged bytes would be parsed and immediately
-// discarded, and a staged parse failure would turn a healthy committed
-// page's graph query into an invariant error for nothing (020 FIX-1, T-B
-// review finding 4). onFail is meaningful only when ok is false.
-func resolvePagePath(d Deps, tool, page string) (resolved string, onFail Result, ok bool) {
-	page = strings.TrimSpace(page)
-	if page == "" {
-		return "", Result{IsError: true, Content: fmt.Sprintf(
+// readStagedOnlyPage reads path — a live staged create_page that
+// stagedOnlyPath resolved — from the open changeset (060). Same contract as
+// the staged leg of resolvePageArg: ParsePage failure is an invariant error
+// and a CAS failure is passed up. has == false cannot happen for a live
+// create (Live() and StagedFile agree on what is staged); if it ever does,
+// the answer is the not-found text the caller already built, never a made-up
+// empty page.
+func readStagedOnlyPage(d Deps, path string, notFound Result) (resolved string, p *vault.Page, staged bool, onFail Result, ok bool, err error) {
+	b, has, serr := d.Engine.StagedFile(path)
+	if serr != nil {
+		return "", nil, false, Result{}, false, serr
+	}
+	if !has {
+		return "", nil, false, notFound, false, nil
+	}
+	sp, perr := vault.ParsePage(path, b)
+	if perr != nil {
+		return "", nil, false, Result{}, false, fmt.Errorf("parse staged page %s: %w", path, perr)
+	}
+	return path, sp, true, Result{}, true, nil
+}
+
+// stagedOnlyPath resolves arg among the paths the open changeset's live
+// stage.create_page ops propose (060): the pages that exist only in the
+// changeset. It runs only after the committed lookup missed. Live(), via
+// stagedPathsStrict, so a dropped create is not offered; no engine, no open
+// changeset or an empty arg all mean no hit. A changeset that cannot be read
+// is an error, not a miss: the lookup decides the answer, and "not found" over
+// an unreadable changeset would hide the failure the committed path's
+// StagedFile reports (060 review LOW-2).
+func stagedOnlyPath(d Deps, arg string) (string, bool, error) {
+	if arg == "" {
+		return "", false, nil
+	}
+	paths, err := stagedPathsStrict(d, stage.OpCreatePage)
+	if err != nil {
+		return "", false, err
+	}
+	sp, hit := vault.ResolveAmong(paths, arg)
+	return sp, hit, nil
+}
+
+// resolveCommittedPath is the committed half of both resolvers: trim the
+// argument and resolve it to a committed page path through vault.Resolve.
+// On failure onFail is the ready-made refusal — the required-argument error
+// for a blank page, the not-found text otherwise — and arg is the trimmed
+// argument, which the callers need for the staged-only lookup and for the
+// graph tools' wording. It carries no staged read and no parse.
+func resolveCommittedPath(d Deps, tool, page string) (resolved, arg string, onFail Result, ok bool) {
+	arg = strings.TrimSpace(page)
+	if arg == "" {
+		return "", "", Result{IsError: true, Content: fmt.Sprintf(
 			`page is required for %s: provide a page path or filename basename, e.g. {"page": "kv-cache"}`, tool,
 		)}, false
 	}
 
-	resolved, found := vault.Resolve(d.Vault, page)
+	resolved, found := vault.Resolve(d.Vault, arg)
 	if !found {
-		return "", Result{IsError: true, Content: fmt.Sprintf(
+		return "", arg, Result{IsError: true, Content: fmt.Sprintf(
 			"page %q was not found; pass the vault-relative path or the filename basename "+
 				"(e.g. \"kv-cache\"), not the page title — wiki.search lists each result's "+
-				"path before the em dash", page,
+				"path before the em dash", arg,
 		)}, false
 	}
-	return resolved, Result{}, true
+	return resolved, arg, Result{}, true
+}
+
+// resolvePagePath is the graph tools' resolver: resolveCommittedPath, and
+// nothing more on a hit. It carries no staged read and no parse —
+// wiki.neighbors and wiki.backlinks resolve through it because their
+// answers are COMMITTED-INDEX ONLY (Graph().Backlinks and Neighbors over
+// d.Vault): staged bytes would be parsed and immediately discarded, and a
+// staged parse failure would turn a healthy committed page's graph query
+// into an invariant error for nothing (020 FIX-1, T-B review finding 4).
+// onFail is meaningful only when ok is false.
+//
+// A committed miss that names a page only the open changeset holds (060) is
+// not "not found" either: the page exists, the committed graph just cannot
+// know it yet. Saying so, and pointing at wiki.get, keeps the model from
+// hunting for a typo — the same six-fold loop the wiki.get read-back fixes
+// — and still reads no staged byte. err is non-nil only when that lookup
+// could not read the open changeset (060 review LOW-2); the caller aborts the
+// turn on it, as wiki.get does, instead of answering "not found".
+func resolvePagePath(d Deps, tool, page string) (resolved string, onFail Result, ok bool, err error) {
+	resolved, arg, onFail, ok := resolveCommittedPath(d, tool, page)
+	if ok {
+		return resolved, Result{}, true, nil
+	}
+	sp, hit, serr := stagedOnlyPath(d, arg)
+	if serr != nil {
+		return "", Result{}, false, serr
+	}
+	if hit {
+		return "", Result{IsError: true, Content: fmt.Sprintf(
+			"page %q exists only in the open changeset (staged by stage.create_page, not committed); "+
+				"%s reports the committed link graph, which does not hold it yet — read it with wiki.get",
+			sp, tool,
+		)}, false, nil
+	}
+	return "", onFail, false, nil
 }
