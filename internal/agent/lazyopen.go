@@ -15,27 +15,37 @@ package agent
 // model gave up. The pane used to reject such a changeset itself ("ask turn
 // staged nothing"); the loop is the only place that knows which changeset its
 // own lazy open created, so the loop rejects it at the end of the turn
-// (settleLazyOpen).
+// (settleLazyOpen) — and the same goes for a changeset the model itself created
+// with stage.open, which the ask web flow still offers (noteStageOpen).
+//
+// A changeset that does get a staged op has its audit trail written as the turn
+// runs, not when it ends: the first successful staging call tees the turn into
+// the changeset's session.ndjson (teeTurn, asksessions.go beginTee).
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
 
+	"github.com/awepo-pro/lw/internal/logging"
 	"github.com/awepo-pro/lw/internal/stage"
-	"github.com/awepo-pro/lw/internal/trace"
+	"github.com/awepo-pro/lw/internal/tools"
 )
 
 // openIntentKey is the ctx key WithOpenIntent stores under.
 type openIntentKey struct{}
 
 // WithOpenIntent returns ctx carrying the intent a changeset the loop opens
-// lazily (D2) is given — the one-line "why" `lw log` and `lw status` show. The
-// Ask pane sets it to the question ("ask: …"), which is byte for byte the
-// intent the changeset it used to open for itself carried. Without it the loop
-// falls back to "agent: <verb>".
+// lazily (D2) is given — the one-line "why" `lw log` and `lw status` show — and
+// is how a caller opts in to the lazy open at all (057 FIX2 R3). The Ask pane
+// sets it to the question ("ask: …"), which is byte for byte the intent the
+// changeset it used to open for itself carried. A caller that sets none — `lw
+// ingest` and `lint --fix` pre-open their changeset — gets no lazy open: if its
+// changeset is not there, its staging call fails with the engine's own "no open
+// changeset", as it did before 057.
 func WithOpenIntent(ctx context.Context, intent string) context.Context {
 	return context.WithValue(ctx, openIntentKey{}, intent)
 }
@@ -44,16 +54,20 @@ func WithOpenIntent(ctx context.Context, intent string) context.Context {
 // with — the pane's old reject reason, so the journal reads as it always has.
 const lazyOpenEmptyReason = "ask turn staged nothing"
 
-// lazyOpened is the one thing a turn remembers about its lazy open: the id of the
-// changeset THIS turn's open created. It rides the ctx as a pointer, because the
-// open happens deep in dispatchToolCall and the verdict is Send's, at the end of
-// the turn. Only a changeset OpenOrJoin created is recorded — one it joined (an
-// `lw ingest` opened it between the Current check and the open) is not ours —
-// and a turn whose staging verb pre-opened its changeset never records
-// anything. Send is synchronous and dispatch sequential, so it needs no lock.
+// lazyOpened is what a turn remembers about the changesets it made: the id of
+// the changeset THIS turn created (by its lazy open, or by a successful stage.open
+// of the model's), whether the turn has been settled (settleLazyOpen), and
+// whether it has been teed into a changeset's session (teeTurn). It rides the ctx
+// as a pointer, because the open happens deep in dispatchToolCall and the verdict
+// is Send's, at the end of the turn. Only a changeset that was CREATED is
+// recorded — one that OpenOrJoin joined (an `lw ingest` opened it between the
+// Current check and the open) is not ours — and a turn whose staging verb
+// pre-opened its changeset never records anything. Send is synchronous and
+// dispatch sequential, so it needs no lock.
 type lazyOpened struct {
 	id      string
 	settled bool
+	teed    bool
 }
 
 // lazyOpenedKey is the ctx key withLazyOpened stores under.
@@ -106,7 +120,8 @@ const lazyOpenFailedFmt = "stage: could not open a changeset for this call: %v"
 // changeset.json can tell which conversation staged it. `lw ingest` and `lint
 // --fix` open before they send, so they never reach the open: Current answers.
 func (l *Loop) lazyOpen(ctx context.Context, sessionID, canonical string) string {
-	if l.engine == nil || !stagesOps(canonical) {
+	intent := openIntentFrom(ctx)
+	if l.engine == nil || intent == "" || !stagesOps(canonical) {
 		return ""
 	}
 	if _, ok := l.tools.Get(canonical); !ok {
@@ -120,14 +135,6 @@ func (l *Loop) lazyOpen(ctx context.Context, sessionID, canonical string) string
 		l.beforeLazyOpen()
 	}
 
-	intent := openIntentFrom(ctx)
-	if intent == "" {
-		verb := trace.VerbFrom(ctx)
-		if verb == "" {
-			verb = "turn"
-		}
-		intent = "agent: " + verb
-	}
 	cs, joined, err := l.engine.OpenOrJoin(intent, stage.Author{Kind: "agent", Model: l.cfg.TraceMeta.Model, Session: sessionID})
 	if err != nil {
 		return fmt.Sprintf(lazyOpenFailedFmt, err)
@@ -139,22 +146,28 @@ func (l *Loop) lazyOpen(ctx context.Context, sessionID, canonical string) string
 	return ""
 }
 
-// settleLazyOpen rejects the changeset this turn's lazy open created if the turn
-// is ending with no live op in it (reason lazyOpenEmptyReason, through
-// Engine.Reject — journalled, moved to rejected/, and the sync hook told, like
-// any rejection), and streams the empty StageEv the pane's own reject used to,
-// so the shell's header and the pane's staged-changeset bookkeeping drop it. It
-// is called before every terminal event Send emits and, once more, as Send
-// returns (a cancelled turn has no terminal event); the first call decides.
+// settleLazyOpen rejects the changeset this turn created — by its lazy open, or
+// by a stage.open the model called (noteStageOpen) — if the turn is ending with
+// no live op in it (reason lazyOpenEmptyReason, through Engine.Reject —
+// journalled, moved to rejected/, and the sync hook told, like any rejection),
+// and streams the empty StageEv the pane's own reject used to, so the shell's
+// header and the pane's staged-changeset bookkeeping drop it. It is called
+// before every terminal event Send emits and, once more, as Send returns (a
+// cancelled turn has no terminal event); the first call decides.
 //
-// The scope is exact. Nothing happens when the turn did not lazily open a
-// changeset (an `lw ingest` pre-opened its own, or the turn only read), or when
-// OpenOrJoin joined one it did not create. And the changeset must still be open
+// The scope is what this process can know. Nothing happens when the turn
+// created no changeset (an `lw ingest` pre-opened its own, the turn only read,
+// or OpenOrJoin joined one it did not create). The changeset must still be open
 // under the id this turn recorded: one Review committed or rejected, or that
-// another verb replaced, is not ours to touch — Current names a different id or
-// none. A changeset with a live op is the curator's to review and is left as it
-// is. The remaining window — an op appended by another process between the Live
-// check and the Reject — is the engine's: Reject takes no id.
+// another verb replaced, is not ours — Current names a different id or none. One
+// with a live op is the curator's to review and is left as it is.
+//
+// It is not atomic against another PROCESS. The Live check and Engine.Reject are
+// two steps, and Reject takes no id: an op another process appends to this
+// changeset between them (a joiner's `lw stage` import, say) is rejected with it
+// — the checks above narrow that window to the span of two engine calls, they do
+// not close it. A stale engine cache cannot make Reject take the wrong
+// changeset: it renames open/<cached id> and fails if that directory is gone.
 func (l *Loop) settleLazyOpen(ctx context.Context, out chan<- Event) {
 	lz := lazyOpenedFrom(ctx)
 	if lz == nil || lz.id == "" || lz.settled {
@@ -172,4 +185,88 @@ func (l *Loop) settleLazyOpen(ctx context.Context, out chan<- Event) {
 	}
 	slog.InfoContext(ctx, "agent lazy open rejected", "changeset", lz.id, "reason", lazyOpenEmptyReason)
 	l.send(ctx, out, StageEv{})
+}
+
+// stageOpenBaseline reports, before a stage.open call is dispatched, whether the
+// call can CREATE a changeset in a turn whose caller opted in to the lazy open:
+// the tool is stage.open, the caller set an intent, and nothing is open.
+func (l *Loop) stageOpenBaseline(ctx context.Context, canonical string) bool {
+	if l.engine == nil || canonical != "stage.open" || openIntentFrom(ctx) == "" {
+		return false
+	}
+	if _, err := l.engine.Current(); !errors.Is(err, stage.ErrNoChangeset) {
+		return false
+	}
+	if l.beforeLazyOpen != nil {
+		l.beforeLazyOpen()
+	}
+	return true
+}
+
+// noteStageOpen records a changeset the model created with stage.open in the
+// turn's lazyOpened, so settleLazyOpen treats it like a lazily opened one — an
+// ask turn that opens a changeset "to look into x" and then answers from the
+// vault would otherwise leave it open and empty for the curator's Review. The ask
+// web flow still offers stage.open (039's askWebTools); removing it would change
+// the wire tool list.
+//
+// created is exact. wasNone is the baseline above (nothing was open before the
+// call), and stage.open's result carries the changeset: when OpenOrJoin JOINED
+// one that appeared in the meantime, the changeset's Intent is rewritten to
+// "<existing> + <intent>", never the bare intent the model supplied; only a
+// changeset the call created has exactly that intent. The model's intent is
+// kept — nothing is stamped over it.
+func (l *Loop) noteStageOpen(ctx context.Context, canonical, args string, wasNone bool, res tools.Result) {
+	if !wasNone || res.IsError || canonical != "stage.open" {
+		return
+	}
+	lz := lazyOpenedFrom(ctx)
+	if lz == nil || lz.id != "" {
+		return
+	}
+	cs, ok := res.Data.(*stage.Changeset)
+	if !ok || cs == nil {
+		return
+	}
+	var a struct {
+		Intent string `json:"intent"`
+	}
+	if err := json.Unmarshal([]byte(args), &a); err != nil || cs.Intent != strings.TrimSpace(a.Intent) {
+		return
+	}
+	lz.id = cs.ID
+	slog.InfoContext(ctx, "agent stage.open created", "changeset", cs.ID)
+}
+
+// teeTurn attaches the turn to changeset csID's session the first time one of
+// its staging calls succeeds (057 FIX2 R2): csID is the changeset that call
+// staged into, as the StageEv names it. It is a no-op without a tee-capable
+// store (a plain file store writes the changeset's own session already), after
+// the first attach, and when no changeset is open. An error is the turn's:
+// writing the audit trail is not optional once there is something to audit.
+func (l *Loop) teeTurn(ctx context.Context, sessionID, csID string) error {
+	lz := lazyOpenedFrom(ctx)
+	if lz == nil || lz.teed || csID == "" {
+		return nil
+	}
+	tee, ok := l.sessions.(turnTee)
+	if !ok {
+		return nil
+	}
+	lz.teed = true
+	attached, err := tee.beginTee(sessionID, csID, logging.TurnFrom(ctx))
+	if err != nil {
+		return fmt.Errorf("agent: write the turn into changeset %s's session: %w", csID, err)
+	}
+	if attached {
+		slog.InfoContext(ctx, "agent tee", "changeset", csID)
+	}
+	return nil
+}
+
+// endTee ends the turn's tee as Send returns.
+func (l *Loop) endTee(sessionID string) {
+	if tee, ok := l.sessions.(turnTee); ok {
+		tee.endTee(sessionID)
+	}
 }

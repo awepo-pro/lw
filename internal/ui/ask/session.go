@@ -9,8 +9,9 @@
 // rejected it unread — half of the changesets in a real vault, each a journal
 // pair, a rejected/ directory and a sync push. The conversation is now its own
 // session (agent.NewAskSessions); a changeset exists only when a turn stages
-// into one (agent's lazy open) and the staging turn is adopted into it
-// (agent.AdoptTurn, stream.go).
+// into one (agent's lazy open) and the staging turn is written into it as it
+// runs (the ask store's tee; agent.AdoptTurn, called from stream.go, is the
+// fallback for a turn nothing teed).
 package ask
 
 import (
@@ -97,8 +98,7 @@ func truncateRunes(s string, max int) string {
 // running, because the session and the changeset were one thing; now a turn is
 // cancelled ONLY when it has staged into the changeset that went away
 // (m.stagedID, set from the turn's StageEv): it has nothing left to stage into,
-// and cancelling it is what stops it appending records its adopt step could not
-// place. A question still being answered while an unrelated changeset (an
+// and cancelling it is what stops it appending records no changeset wants. A question still being answered while an unrelated changeset (an
 // `lw ingest`'s) is rejected goes on. Send unwinds promptly and closes the
 // channel with no terminal event of its own (backbone §9, C-105), which lands
 // here as an ordinary StreamClosedMsg.

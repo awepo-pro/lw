@@ -264,10 +264,11 @@ func tuiTheme() (ui.Theme, ui.KeyMap, error) {
 // conversation in memory (agent.NewAskSessions, 057) over the file-backed one.
 // A question that only reads therefore opens no changeset and writes nothing —
 // half of a real vault's changesets were asks the pane opened and rejected
-// unread. A turn that stages gets its changeset at its first staging call and
-// is adopted into that changeset's session.ndjson, so the transcript still
-// travels with every changeset that exists (backbone §9, C-102: review's Commit
-// and Reject move the very directory that session lives in).
+// unread. A turn that stages gets its changeset at its first staging call and,
+// from its first staged op on, is written into that changeset's session.ndjson
+// as it runs, so the transcript travels with every changeset that has an op
+// (backbone §9, C-102: review's Commit and Reject move the very directory that
+// session lives in — mid-turn included).
 //
 // It is a function rather than inline code so a test can prove both halves
 // of the contract — wired and degraded — without driving tea.Program.Run

@@ -609,8 +609,10 @@ marked `…`.)
 Type a question and press `enter`. An Ask turn opens no changeset: the
 conversation runs in memory, and a question that only reads and answers
 leaves nothing behind — no changeset, no journal line, nothing to clean up.
-A changeset opens only when the agent stages something (a filed answer, a
-web source it ingests), and its intent is literally `ask: <your question>`.
+A changeset opens at the agent's first staging call (a filed answer, a web
+source it ingests), and its intent is literally `ask: <your question>`; if that
+turn ends with nothing staged in it — every staging call refused — the changeset
+is rejected for you (`ask turn staged nothing` in `lw log`).
 The message box takes all typing, so on this screen `q` and `?` type into the
 message instead of quitting or opening the overlay — quit from Ask with
 `ctrl+c`. A real
@@ -764,11 +766,12 @@ A turn that staged something is not lost when it ends. The conversation is
 recorded in the vault, under the changeset the turn staged into — a session
 *is* a changeset, and the session id in the Transcript panel's title is the
 changeset id — and the recording stays after the changeset is committed or
-rejected. (The Ask pane keeps its conversation in memory until a turn stages;
-the staging turn is then written into the changeset's transcript together with
-the questions and answers that led to it, marked `· carried`. A question that
-only answered is not written anywhere, and `lw session list` does not show
-it.) `lw session list` shows what is on disk, newest first:
+rejected. (The Ask pane keeps its conversation in memory until a turn's first
+staged op; from there the turn is written into the changeset's transcript as it
+happens, together with the questions and answers that led to it, marked
+`· carried`. A question that only answered is not written anywhere, nor is a
+turn whose staging calls were all refused, and `lw session list` does not show
+them.) `lw session list` shows what is on disk, newest first:
 
 ```
 $ lw session list

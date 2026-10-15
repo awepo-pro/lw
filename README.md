@@ -100,7 +100,8 @@ lw lint && lw log --limit 20 && lw status
 
 `lw` with no command opens the TUI: browse, review, ask, lint, log. Typing a
 question on the Ask screen opens nothing: it runs in an in-memory conversation,
-and a changeset appears only once the agent stages something. See
+and a changeset opens only when the agent makes a staging call (and is rejected
+again for you if nothing ends up staged in it). See
 [docs/tutorial.md](docs/tutorial.md) for the full walkthrough, including the
 TUI.
 
@@ -312,9 +313,14 @@ tools need nothing from it.
 
 Every agent conversation that stages something is recorded in the vault, under
 the changeset it staged into — a session *is* a changeset, and the two share
-one id. `lw ingest` and `lw lint --fix` record theirs as they go; a TUI Ask
-turn is kept in memory while it only answers, and is written into the
-changeset's transcript once it stages (the ctrl+s filing turn always does):
+one id. `lw ingest` and `lw lint --fix` record theirs as they go. A TUI Ask turn
+runs in memory until its first staged op; from that op on it is written into the
+changeset's transcript as it happens — the questions and answers that led to it
+first, when the changeset had no transcript yet — so a crash, a quit, or a Review
+commit in the middle of the turn keeps it. A turn that stages nothing leaves no
+transcript: a question that only answers writes nothing, and a ctrl+s filing
+turn whose staging calls were all refused has its empty changeset rejected.
+Where a transcript lives:
 
 ```
 <vault>/.llmwiki/changesets/{open,committed,rejected}/<changeset-id>/session.ndjson

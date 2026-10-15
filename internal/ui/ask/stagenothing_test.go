@@ -146,3 +146,70 @@ func TestOwnEmptyStageEvClearsStagedID(t *testing.T) {
 		t.Fatal("the empty StageChangedMsg that follows the turn's own empty StageEv cancelled the turn")
 	}
 }
+
+// TestChangesetGoneDoesNotCancelALaterReadOnlyTurn (057 FIX2 R7): turn 1 stages
+// into X and ends, X stays open; turn 2 is a read-only question that is still
+// running when Review rejects X. D3's rule is that only a turn that staged into
+// the changeset that went away is cancelled, and turn 2 did not: beginTurnAs
+// resets stagedID, which turn 1 left naming X. Without that reset a plain
+// question is cancelled by an unrelated Review verdict.
+func TestChangesetGoneDoesNotCancelALaterReadOnlyTurn(t *testing.T) {
+	root, engine := carryVault(t)
+	mustOpen(t, engine)
+	stageKVCachePatch(t, engine)
+	cs, err := engine.Current()
+	if err != nil {
+		t.Fatalf("Current: %v", err)
+	}
+	store := agent.NewAskSessions(agent.NewFileSessions(root))
+
+	released := make(chan struct{})
+	close(released)
+	turn1 := &gatedAgent{
+		sessions: store,
+		first:    []agent.Event{agent.StageEv{ChangesetID: cs.ID, Ops: 1}},
+		rest:     []agent.Event{agent.DoneEv{Reason: "stop", Rounds: 1}},
+		reached:  make(chan struct{}),
+		release:  released,
+	}
+	m := New(liveDeps(t, engine, turn1)).(*Model)
+	m = submitAndDrain(t, m, "stage something")
+	if m.stagedID != cs.ID {
+		t.Fatalf("setup: stagedID = %q after turn 1, want %q", m.stagedID, cs.ID)
+	}
+
+	turn2 := &gatedAgent{
+		sessions: store,
+		first:    []agent.Event{agent.TextDelta{Text: "reading"}},
+		rest:     []agent.Event{agent.TextDelta{Text: " and answering"}, agent.DoneEv{Reason: "stop", Rounds: 1}},
+		reached:  make(chan struct{}),
+		release:  make(chan struct{}),
+	}
+	m.deps.Agent = turn2
+	m, cmd := typeAndSubmit(t, m, "a read-only question")
+	if cmd == nil {
+		t.Fatal("submit produced no command")
+	}
+	m, _ = pump(t, m, cmd) // turnStartedMsg
+	<-turn2.reached
+	m = nextEvent(t, m)
+
+	if err := engine.Reject("rejected in Review"); err != nil {
+		t.Fatalf("Reject: %v", err)
+	}
+	pane, _ := m.Update(ui.StageChangedMsg{})
+	m = pane.(*Model)
+	if m.cancel == nil {
+		t.Fatal("a Review reject of the changeset turn 1 staged into cancelled the read-only turn 2")
+	}
+
+	close(turn2.release)
+	var seen []tea.Msg
+	m = runCmd(t, m, Listen(m.ch), &seen).(*Model)
+	if turn2.wasCancelled() {
+		t.Fatal("turn 2's context was cancelled")
+	}
+	if got := assistantText(m); len(got) == 0 || got[len(got)-1] != "reading and answering" {
+		t.Fatalf("assistant entries = %#v, want turn 2's whole answer", got)
+	}
+}

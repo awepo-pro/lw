@@ -87,9 +87,15 @@ func TestContextOrder(t *testing.T) {
 }
 
 // TestOrientDigestCachedOncePerSession checks both halves of backbone §9's
-// contract: the digest is NOT refetched on every Build call (a log.md edit,
-// which vault.orient also reads, must not appear until something forces a
-// refetch), and it IS refetched once index.md changes.
+// contract: the digest is NOT refetched on every Build call (while nothing
+// vault.orient reads has changed it is served from the cache), and it IS
+// refetched once something it reads changes. Since 057 FIX2 R5 "something it
+// reads" is all of it — SCHEMA.md, index.md, curator-memory.md and log.md's tail
+// — not index.md alone: this test used to assert that a log.md-only edit stayed
+// invisible until index.md changed, which was safe while every ask turn had a
+// session of its own (and so a fresh digest) and is a stale-digest bug now that
+// one conversation outlives a commit. The old assertion became
+// TestOrientDigestRefreshesOnEverythingItReads' log.md case.
 func TestOrientDigestCachedOncePerSession(t *testing.T) {
 	v, root := newTestVault(t)
 	reg := tools.NewRegistry(tools.Deps{Vault: v})
@@ -103,25 +109,25 @@ func TestOrientDigestCachedOncePerSession(t *testing.T) {
 	}
 	digest1 := msgs1[2].Content
 
-	// Mutate log.md only. vault.orient's own output includes log.md's tail,
-	// so if Build refetched on every call, digest2 would differ from
-	// digest1. It must not: the digest is cached per session until index.md
-	// changes.
-	logPath := filepath.Join(root, "log.md")
-	appendLine(t, logPath, "- 2026-09-06T00:00:00Z new log entry that must not appear yet\n")
+	// A page edit changes nothing vault.orient reads: Build must not refetch.
+	// Planting a sentinel in the cache is how a hit is told from a refetch that
+	// happens to produce the same bytes.
+	b.mu.Lock()
+	entry := b.orient[s.ID]
+	entry.digest = "CACHED"
+	b.orient[s.ID] = entry
+	b.mu.Unlock()
+	appendLine(t, filepath.Join(root, "wiki", "concepts", "kv-cache.md"), "\nAn edit the orientation digest does not read.\n")
 
 	msgs2, err := b.Build(s, "hello again")
 	if err != nil {
 		t.Fatalf("Build 2: %v", err)
 	}
-	digest2 := msgs2[2].Content
-	if digest2 != digest1 {
-		t.Fatalf("digest changed after a log.md-only edit; want it cached until index.md changes\n1: %q\n2: %q", digest1, digest2)
+	if msgs2[2].Content != "CACHED" {
+		t.Fatalf("digest was refetched though nothing vault.orient reads changed:\n%q", msgs2[2].Content)
 	}
 
-	// Now mutate index.md. This must force a refresh — and the refreshed
-	// digest also picks up the earlier log.md edit, since a real refetch
-	// reads everything vault.orient reads.
+	// Now mutate index.md. This must force a refresh.
 	indexPath := filepath.Join(root, "index.md")
 	appendLine(t, indexPath, "- [[new-page]] — added mid-session\n")
 
@@ -130,8 +136,42 @@ func TestOrientDigestCachedOncePerSession(t *testing.T) {
 		t.Fatalf("Build 3: %v", err)
 	}
 	digest3 := msgs3[2].Content
-	if digest3 == digest1 {
+	if digest3 == digest1 || digest3 == "CACHED" {
 		t.Fatalf("digest did not change after index.md changed")
+	}
+}
+
+// TestOrientDigestRefreshesOnEverythingItReads (057 FIX2 R5): the digest is
+// cached per session and one ask conversation now outlives a Review commit, so
+// the cache key must cover every file vault.orient reads. A commit appends to
+// log.md and may edit curator-memory.md without touching index.md; with an
+// index.md-only key the conversation kept the digest it was first given.
+func TestOrientDigestRefreshesOnEverythingItReads(t *testing.T) {
+	for _, tc := range []struct{ name, file, line string }{
+		{"curator_memory", "curator-memory.md", "- A standing preference added after the conversation began.\n"},
+		{"log_tail", "log.md", "- 2026-10-15T00:00:00Z a commit landed after the conversation began\n"},
+		{"schema", "SCHEMA.md", "\nA rule added after the conversation began.\n"},
+		{"index", "index.md", "- [[late-page]] — added after the conversation began\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v, root := newTestVault(t)
+			reg := tools.NewRegistry(tools.Deps{Vault: v})
+			b := NewContextBuilder(v, reg, 100_000)
+			s := &Session{ID: "cs-refresh", ChangesetID: "cs-refresh"}
+
+			if _, err := b.Build(s, "first"); err != nil {
+				t.Fatalf("Build 1: %v", err)
+			}
+			appendLine(t, filepath.Join(root, tc.file), tc.line)
+
+			msgs, err := b.Build(s, "second")
+			if err != nil {
+				t.Fatalf("Build 2: %v", err)
+			}
+			if !strings.Contains(msgs[2].Content, strings.TrimSpace(tc.line)) {
+				t.Fatalf("the digest still lacks the %s edit %q:\n%s", tc.file, strings.TrimSpace(tc.line), msgs[2].Content)
+			}
+		})
 	}
 }
 

@@ -52,9 +52,10 @@ type Loop struct {
 	// no wall time.
 	sleep func(ctx context.Context, d time.Duration) error
 
-	// beforeLazyOpen, when set, runs in lazyOpen between its check that nothing
-	// is open and its OpenOrJoin (057): the window in which another verb can open
-	// a changeset, which a test cannot hit by timing. nil in production.
+	// beforeLazyOpen, when set, runs between the loop's check that nothing is open
+	// and the open itself — lazyOpen's OpenOrJoin, or the model's own stage.open
+	// (057): the window in which another verb can open a changeset, which a test
+	// cannot hit by timing. nil in production.
 	beforeLazyOpen func()
 }
 

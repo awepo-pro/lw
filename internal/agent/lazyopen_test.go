@@ -10,6 +10,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -209,20 +210,35 @@ func TestLazyOpenAskWebFlow(t *testing.T) {
 	}
 }
 
-// TestLazyOpenDefaultIntent: a caller that sets no intent still gets a
-// readable one in `lw log` — the verb names the turn.
-func TestLazyOpenDefaultIntent(t *testing.T) {
+// TestLazyOpenOnlyWhenTheCallerOptedIn (was TestLazyOpenDefaultIntent, which
+// gave a caller with no intent the default "agent: <verb>"): the lazy open is
+// the Ask pane's, which puts the question on the ctx (WithOpenIntent). A caller
+// that sets none — `lw ingest` and `lint --fix` pre-open their own changeset —
+// keeps today's tool error when that changeset is not there, instead of the
+// loop quietly conjuring one with a made-up intent (057 FIX2 R3).
+func TestLazyOpenOnlyWhenTheCallerOptedIn(t *testing.T) {
 	f := newLazyFixture(t, [][]llm.Chunk{
 		{toolCallChunk("call-1", "stage_create_page", wireCreatePageArgs), {Finish: "tool_calls"}},
 		{{Text: "ok"}, {Finish: "stop"}},
 	})
-	f.send(t, context.Background(), trace.VerbFile)
-	cs, err := f.engine.Current()
-	if err != nil {
-		t.Fatalf("Current: %v", err)
+	before := f.journalBytes(t)
+
+	events := f.send(t, context.Background(), trace.VerbIngest)
+
+	var res []ToolResEv
+	for _, ev := range events {
+		if r, ok := ev.(ToolResEv); ok {
+			res = append(res, r)
+		}
 	}
-	if cs.Intent != "agent: file" {
-		t.Fatalf("Intent = %q, want %q", cs.Intent, "agent: file")
+	if len(res) != 1 || !res[0].IsError || !strings.Contains(res[0].Content, "no open changeset") {
+		t.Fatalf("tool result = %+v, want today's no-open-changeset tool error", res)
+	}
+	if n := f.changesetDirs(t); n != 0 {
+		t.Fatalf("%d changeset directories after a staging call from a caller that set no intent", n)
+	}
+	if after := f.journalBytes(t); string(after) != string(before) {
+		t.Fatalf("the journal changed:\n before %q\n after  %q", before, after)
 	}
 }
 
@@ -703,4 +719,158 @@ func TestLazyOpenCancelledTurnRejectsEmpty(t *testing.T) {
 	if rejected := f.rejectedDirs(t); len(rejected) != 1 {
 		t.Fatalf("rejected/ holds %v, want the lazily opened changeset", rejected)
 	}
+}
+
+// readChangesetIntent reads the intent out of <state>/<id>/changeset.json.
+func (f *lazyFixture) readChangesetIntent(t *testing.T, state, id string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(f.root, ".llmwiki", "changesets", state, id, "changeset.json"))
+	if err != nil {
+		t.Fatalf("read changeset.json: %v", err)
+	}
+	var cs struct {
+		Intent string `json:"intent"`
+	}
+	if err := json.Unmarshal(b, &cs); err != nil {
+		t.Fatalf("decode changeset.json: %v", err)
+	}
+	return cs.Intent
+}
+
+// TestStageOpenCreatedInAskTurnIsSettled (057 FIX2 R1): the ask web flow still
+// offers stage.open, and a model that calls it opens a changeset the lazy open
+// never saw. A changeset that call CREATED is the turn's, so it is settled like
+// a lazily opened one — rejected if the turn ends with nothing in it — and keeps
+// the intent the model gave it. One it only joined is someone else's.
+func TestStageOpenCreatedInAskTurnIsSettled(t *testing.T) {
+	const reason = "ask turn staged nothing"
+
+	t.Run("opened_and_abandoned_is_rejected_keeping_the_model_intent", func(t *testing.T) {
+		f := newLazyFixtureWeb(t, [][]llm.Chunk{
+			{toolCallChunk("call-1", "stage_open", `{"intent":"look into x"}`), {Finish: "tool_calls"}},
+			{{Text: "Nothing to ingest; answered from the vault."}, {Finish: "stop"}},
+		}, true)
+		events := f.send(t, WithOpenIntent(context.Background(), "ask: what is x?"), trace.VerbAsk)
+
+		if cs, err := f.engine.Current(); err == nil {
+			t.Fatalf("changeset %s (intent %q, %d live ops) is left open by an ask turn that staged nothing", cs.ID, cs.Intent, len(cs.Live()))
+		}
+		rejected := f.rejectedDirs(t)
+		if len(rejected) != 1 {
+			t.Fatalf("rejected/ holds %v, want the changeset stage.open created", rejected)
+		}
+		if got := f.readChangesetIntent(t, "rejected", rejected[0]); got != "look into x" {
+			t.Fatalf("Intent = %q, want the model's own %q (nothing is stamped over it)", got, "look into x")
+		}
+		if journal := string(f.journalBytes(t)); !strings.Contains(journal, `"message":"`+reason+`"`) {
+			t.Fatalf("journal lacks the reject reason %q:\n%s", reason, journal)
+		}
+		// Nothing was staged, so no trail was started: an abandoned changeset has
+		// no session.ndjson (the tee begins at the first staged op, not at open).
+		if _, ok := f.sessionAt(t, "rejected", rejected[0]); ok {
+			t.Fatalf("rejected/%s holds a session.ndjson though no op was ever staged", rejected[0])
+		}
+		emptyAt, doneAt := -1, -1
+		for i, ev := range events {
+			switch e := ev.(type) {
+			case StageEv:
+				if e.ChangesetID == "" {
+					emptyAt = i
+				}
+			case DoneEv:
+				doneAt = i
+			}
+		}
+		if emptyAt < 0 || doneAt < 0 || emptyAt > doneAt {
+			t.Fatalf("empty StageEv at %d, DoneEv at %d; want the StageEv first", emptyAt, doneAt)
+		}
+	})
+
+	t.Run("opened_then_staged_is_kept", func(t *testing.T) {
+		f := newLazyFixtureWeb(t, [][]llm.Chunk{
+			{toolCallChunk("call-1", "stage_open", `{"intent":"file x"}`), {Finish: "tool_calls"}},
+			{toolCallChunk("call-2", "stage_create_page", wireCreatePageArgs), {Finish: "tool_calls"}},
+			{{Text: "Filed."}, {Finish: "stop"}},
+		}, true)
+		f.send(t, WithOpenIntent(context.Background(), "ask: file it"), trace.VerbFile)
+
+		cs, err := f.engine.Current()
+		if err != nil {
+			t.Fatalf("Current: %v, want the changeset kept", err)
+		}
+		if cs.Intent != "file x" || len(cs.Live()) != 1 {
+			t.Fatalf("changeset = intent %q, %d live ops; want the model's intent and the staged page", cs.Intent, len(cs.Live()))
+		}
+		if rejected := f.rejectedDirs(t); len(rejected) != 0 {
+			t.Fatalf("rejected/ holds %v", rejected)
+		}
+	})
+
+	// The instant between the baseline check and stage.open's OpenOrJoin: another
+	// verb opens a changeset, stage.open JOINS it (rewriting its intent to
+	// "<existing> + <intent>"), and the turn must not claim it.
+	t.Run("joined_in_the_race_is_not_ours", func(t *testing.T) {
+		f := newLazyFixtureWeb(t, [][]llm.Chunk{
+			{toolCallChunk("call-1", "stage_open", `{"intent":"look into x"}`), {Finish: "tool_calls"}},
+			{{Text: "answered."}, {Finish: "stop"}},
+		}, true)
+		var other *stage.Changeset
+		f.loop.beforeLazyOpen = func() {
+			cs, err := f.engine.OpenChangeset("lw ingest b.md", stage.Author{Kind: "agent"})
+			if err != nil {
+				t.Errorf("OpenChangeset: %v", err)
+			}
+			other = cs
+		}
+
+		f.send(t, WithOpenIntent(context.Background(), "ask: what is x?"), trace.VerbAsk)
+
+		if other == nil {
+			t.Fatal("the hook never ran")
+		}
+		cs, err := f.engine.Current()
+		if err != nil || cs.ID != other.ID {
+			t.Fatalf("Current = %+v, %v; want the other verb's changeset, still open", cs, err)
+		}
+		if !strings.HasPrefix(cs.Intent, "lw ingest b.md + look into x") {
+			t.Fatalf("Intent = %q, want the join recorded (the premise of the test)", cs.Intent)
+		}
+		if rejected := f.rejectedDirs(t); len(rejected) != 0 {
+			t.Fatalf("rejected/ holds %v; a changeset stage.open joined must never be rejected", rejected)
+		}
+	})
+
+	t.Run("joined_is_not_ours", func(t *testing.T) {
+		f := newLazyFixtureWeb(t, [][]llm.Chunk{
+			{toolCallChunk("call-1", "stage_open", `{"intent":"look into x"}`), {Finish: "tool_calls"}},
+			{{Text: "answered."}, {Finish: "stop"}},
+		}, true)
+		opened, err := f.engine.OpenChangeset("lw ingest a.md", stage.Author{Kind: "agent"})
+		if err != nil {
+			t.Fatalf("OpenChangeset: %v", err)
+		}
+
+		f.send(t, WithOpenIntent(context.Background(), "ask: what is x?"), trace.VerbAsk)
+
+		cs, err := f.engine.Current()
+		if err != nil || cs.ID != opened.ID {
+			t.Fatalf("Current = %+v, %v; want the other verb's changeset, still open", cs, err)
+		}
+		if rejected := f.rejectedDirs(t); len(rejected) != 0 {
+			t.Fatalf("rejected/ holds %v; a changeset stage.open only joined must never be rejected", rejected)
+		}
+	})
+
+	// A caller that set no intent did not opt in (R3): its stage.open is the
+	// model's own business, as it was before 057.
+	t.Run("not_settled_without_caller_opt_in", func(t *testing.T) {
+		f := newLazyFixtureWeb(t, [][]llm.Chunk{
+			{toolCallChunk("call-1", "stage_open", `{"intent":"look into x"}`), {Finish: "tool_calls"}},
+			{{Text: "answered."}, {Finish: "stop"}},
+		}, true)
+		f.send(t, context.Background(), trace.VerbAsk)
+		if _, err := f.engine.Current(); err != nil {
+			t.Fatalf("Current: %v, want the changeset left as before 057", err)
+		}
+	})
 }

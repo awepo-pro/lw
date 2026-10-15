@@ -11,9 +11,12 @@ package agent
 // NewAskSessions removes the key. A conversation whose id starts "ask-" lives in
 // memory for as long as the TUI does and touches no file; every other id is the
 // file store's, unchanged. A turn that does stage gets its changeset lazily
-// (lazyopen.go) and is then adopted into that changeset's session.ndjson
-// (AdoptTurn), so design D9 — a session is bound to a changeset and travels with
-// it — still holds for every changeset that exists.
+// (lazyopen.go), and from its first staged op on the store TEEs the turn into
+// that changeset's session.ndjson as it happens (beginTee), so design D9 — a
+// session is bound to a changeset and travels with it — holds for every
+// changeset that has an op, through a crash or a Review commit mid-turn.
+// AdoptTurn, the copy-at-the-end 057 first shipped, is kept only as the
+// fallback for a turn nothing teed.
 
 import (
 	"errors"
@@ -49,6 +52,13 @@ type askSessions struct {
 
 	mu    sync.Mutex
 	convs map[string]*askConv
+	tees  map[string]*teeState // conversation id -> the changeset its running turn is mirrored into
+	teed  map[string]string    // conversation id -> the last turn that was teed (AdoptTurn's skip)
+}
+
+// teeState is one running tee: where the turn's records are mirrored to.
+type teeState struct {
+	csID string
 }
 
 var _ SessionStore = (*askSessions)(nil)
@@ -68,7 +78,13 @@ var _ SessionStore = (*askSessions)(nil)
 // still stores the full record; RawRecords (and AdoptTurn through it) is the one
 // reader of the unfiltered log.
 func NewAskSessions(file SessionStore) SessionStore {
-	return &askSessions{file: file, now: time.Now, convs: make(map[string]*askConv)}
+	return &askSessions{
+		file:  file,
+		now:   time.Now,
+		convs: make(map[string]*askConv),
+		tees:  make(map[string]*teeState),
+		teed:  make(map[string]string),
+	}
 }
 
 // Create starts the in-memory conversation id, or delegates a non-ask id to the
@@ -121,6 +137,15 @@ func (a *askSessions) Append(id string, r Record) error {
 		return fmt.Errorf("%w: %s", errSessionNotFound, id)
 	}
 	c.records = append(c.records, r)
+	// The tee (beginTee): while a turn that staged is running, the record is
+	// also the changeset's. fileSessions.Append finds the session in open/,
+	// committed/ or rejected/, so a Review verdict mid-turn does not lose it. A
+	// failure is the turn's: a file session fails its turn on a failed append too.
+	if t := a.tees[id]; t != nil {
+		if err := a.file.Append(t.csID, r); err != nil {
+			return fmt.Errorf("agent: tee to changeset %s: %w", t.csID, err)
+		}
+	}
 	return nil
 }
 
@@ -204,21 +229,132 @@ func attachOpen(ss SessionStore, id string) (bool, error) {
 	return true, nil
 }
 
+// turnTee is the optional capability the Loop uses to write a staging turn's
+// audit trail as it happens (057 FIX2 R2): the ask conversation store has it, a
+// plain file store (`lw ingest`, `lint --fix`, which write into the changeset's
+// own session already) does not, and the loop skips it there.
+type turnTee interface {
+	// beginTee starts mirroring conversation convID into changeset csID's
+	// session: the turn's records so far (preceded, when csID has no session yet,
+	// by the earlier prose as Carried records), then — until endTee — every
+	// record appended to the conversation. attached is false, with a nil error,
+	// when csID is not open (it left changesets/open/ between the staging call
+	// and now); nothing is created then.
+	beginTee(convID, csID, turnID string) (attached bool, err error)
+	// endTee stops the mirror; the turn is over.
+	endTee(convID string)
+}
+
+var _ turnTee = (*askSessions)(nil)
+
+// teedChecker answers AdoptTurn's question: was this turn already teed?
+type teedChecker interface {
+	wasTeed(convID, turnID string) bool
+}
+
+// beginTee implements turnTee. The Loop calls it once per turn, right after the
+// turn's first successful staging call, with the changeset that call staged into.
+//
+// Why a tee and not AdoptTurn at the turn's end: the copy happened only when the
+// turn finished, so a quit, a crash, or a Review commit/reject while the model
+// was still working left a changeset with live ops and no session.ndjson —
+// design D9 broken exactly when someone asks "why did it propose this?". From
+// the first op on, the conversation's records now reach the changeset's session
+// as they are appended.
+//
+// The attach never makes a directory (attachOpen, as AdoptTurn): the changeset
+// must be open with its changeset.json, or nothing happens.
+func (a *askSessions) beginTee(convID, csID, turnID string) (bool, error) {
+	if !isAskID(convID) || isAskID(csID) {
+		return false, nil
+	}
+	if turnID == "" {
+		return false, errors.New("agent: tee turn: turn id required")
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	c, ok := a.convs[convID]
+	if !ok {
+		return false, fmt.Errorf("%w: %s", errSessionNotFound, convID)
+	}
+
+	created, err := attachOpen(a.file, csID)
+	if errors.Is(err, errChangesetNotOpen) {
+		slog.Warn("ask turn not teed", "changeset", csID, "turn", turnID, "reason", "the changeset is no longer open")
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("agent: tee turn %s into %s: %w", turnID, csID, err)
+	}
+	if _, err := appendBacklog(a.file, c.records, csID, turnID, created); err != nil {
+		return false, fmt.Errorf("agent: tee turn %s into %s: %w", turnID, csID, err)
+	}
+	a.tees[convID] = &teeState{csID: csID}
+	a.teed[convID] = turnID
+	return true, nil
+}
+
+// endTee implements turnTee.
+func (a *askSessions) endTee(convID string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	delete(a.tees, convID)
+}
+
+// wasTeed reports whether turn turnID of conversation convID was teed into a
+// changeset (beginTee attached it): AdoptTurn's cue that the trail is already
+// written.
+func (a *askSessions) wasTeed(convID, turnID string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.teed[convID] == turnID
+}
+
+// appendBacklog appends to changeset csID's session what a turn's trail starts
+// with, from the conversation's raw records: when carry is set (csID had no
+// session), the prose of every OTHER turn as Carried records — what a seeded
+// session used to start with, so `lw session show` of the changeset reads as the
+// conversation that led to it — and then every raw record of turn turnID, tool
+// records and Staged flags included. It reports how many it appended. When csID
+// already has a session (the ingest that opened the changeset, or an earlier
+// turn) only the turn's own records go in: someone else's transcript is not
+// prefixed with a conversation it was not part of.
+func appendBacklog(ss SessionStore, raw []Record, csID, turnID string, carry bool) (int, error) {
+	n := 0
+	if carry {
+		for _, r := range raw {
+			if r.Turn == turnID {
+				continue
+			}
+			if carried, ok := carryRecord(r); ok {
+				if err := ss.Append(csID, carried); err != nil {
+					return n, err
+				}
+				n++
+			}
+		}
+	}
+	for _, r := range raw {
+		if r.Turn != turnID {
+			continue
+		}
+		if err := ss.Append(csID, r); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
+}
+
 // AdoptTurn copies the records of the conversation's turn turnID into the
 // session.ndjson of changeset csID (057 D4), and reports how many it appended.
-// It is how a turn that did stage keeps design D9's audit trail — "a session is
-// bound to a changeset" — now that the conversation itself lives in memory and
-// the changeset was opened by the staging call, not by the pane.
-//
-// When csID has no session yet, the earlier prose of the conversation (the
-// records of every other turn, as Get's prose view would give them) is appended
-// first, as Carried records: what a seeded session used to start with, so
-// `lw session show` of the changeset reads as the conversation that led to it.
-// Then every raw record of turn turnID is appended, tool records and Staged
-// flags included. When csID already has a session (the ingest that opened the
-// changeset, or an earlier adopted turn) only this turn's records are appended —
-// someone else's transcript is not prefixed with a conversation it was not part
-// of.
+// Since 057 FIX2 R2 it is the FALLBACK: the Loop tees a staging turn into its
+// changeset as it runs (beginTee), so for any turn the ask store teed — every
+// turn a Loop ran in the TUI — AdoptTurn finds the trail written and appends
+// nothing. It remains for a turn nothing teed (an agent that does not use the
+// Loop's tee, as the pane's scripted test agents do), where the copy at the end
+// is what the changeset gets; it carries the earlier prose first when csID has no
+// session, and only the turn's records when it has one (appendBacklog).
 //
 // A changeset that is no longer open (Review committed or rejected it while the
 // turn ran) is not adopted into: the call logs "ask turn not adopted" and
@@ -231,6 +367,9 @@ func AdoptTurn(ss SessionStore, convID, csID, turnID string) (int, error) {
 	}
 	if isAskID(csID) {
 		return 0, fmt.Errorf("agent: adopt turn: %s is a conversation, not a changeset", csID)
+	}
+	if t, ok := ss.(teedChecker); ok && t.wasTeed(convID, turnID) {
+		return 0, nil
 	}
 	raw, err := RawRecords(ss, convID)
 	if err != nil {
@@ -245,29 +384,9 @@ func AdoptTurn(ss SessionStore, convID, csID, turnID string) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("agent: adopt turn %s into %s: %w", turnID, csID, err)
 	}
-
-	n := 0
-	if created {
-		for _, r := range raw {
-			if r.Turn == turnID {
-				continue
-			}
-			if carried, ok := carryRecord(r); ok {
-				if err := ss.Append(csID, carried); err != nil {
-					return n, fmt.Errorf("agent: adopt turn %s into %s: %w", turnID, csID, err)
-				}
-				n++
-			}
-		}
-	}
-	for _, r := range raw {
-		if r.Turn != turnID {
-			continue
-		}
-		if err := ss.Append(csID, r); err != nil {
-			return n, fmt.Errorf("agent: adopt turn %s into %s: %w", turnID, csID, err)
-		}
-		n++
+	n, err := appendBacklog(ss, raw, csID, turnID, created)
+	if err != nil {
+		return n, fmt.Errorf("agent: adopt turn %s into %s: %w", turnID, csID, err)
 	}
 	return n, nil
 }

@@ -72,7 +72,7 @@ buffer with hunk-level review and a pre-approval audit trail.
 | D6 | **Plain word search**, no SQLite, no FTS5 | An in-memory inverted index is instant at vault scale and removes a cgo-free-but-still-heavy dependency. FTS5 → the v2 roadmap |
 | D7 | **One open changeset at a time**, single-threaded ingest | Matches git's index; keeps review comprehensible. Parallel ingest → the v2 roadmap |
 | D8 | **The vault is the agent's memory.** No second store | Standing editorial preferences live in a reviewable `curator-memory.md` the agent edits through `stage.*` like any other page. Its memory is diffable, auditable and revertable |
-| D9 | **Session per changeset** | Every changeset has a session; commit or reject archives the transcript beside it. Answers "why did it propose this?" months later — the archive is re-read with `lw session show`. The TUI's Ask conversation is held in memory until a turn stages, then written into that changeset's session (057): a question that only answers opens no changeset |
+| D9 | **Session per changeset** | Every changeset has a session; commit or reject archives the transcript beside it. Answers "why did it propose this?" months later — the archive is re-read with `lw session show`. The TUI's Ask conversation is held in memory and written into a changeset's session from the turn's first staged op on, as it happens (057): a question that only answers opens no changeset, and one opened but left empty is rejected with no session |
 | D10 | **Embedded chat, rendered in the TUI** | D2 makes this the cheap path: we own the stream, so there is no subprocess to supervise or parse. The tmux fallback is no longer needed |
 
 ---
@@ -435,8 +435,10 @@ than failing mysteriously mid-ingest.
 A session is bound to a changeset: `stage.open` starts one, commit or reject ends it and
 archives `session.ndjson` beside the changeset. `lw query` uses an ephemeral session, and so
 does the TUI's Ask pane until a turn stages: its conversation lives in memory, a changeset
-opens at the turn's first staging call, and that turn is then written into the changeset's
-session (057). One open changeset means one live session (D7). The archives stay out of git
+opens at the turn's first staging call, and from the turn's first staged op on every record
+is also written into that changeset's session as it happens (057), so a crash or a commit
+mid-turn keeps the trail; a changeset left with no op is rejected and has no session. One
+open changeset means one live session (D7). The archives stay out of git
 through the vault `.gitignore` that `lw init` writes, and `lw session show` re-reads one
 in full.
 
@@ -448,7 +450,8 @@ Context assembled per turn:
    round trip — orientation is item 3, not a prompted first move.
 2. **`curator-memory.md`** — verbatim. Small by design (D8).
 3. **Orientation digest** — from `vault.orient()`, injected once per session by
-   the engine, refreshed if `index.md` changes.
+   the engine, refreshed if anything it reads changes (`SCHEMA.md`, `index.md`,
+   `curator-memory.md`, the `log.md` tail).
 4. **Session history** — compacted when over budget.
 5. **User message.**
 

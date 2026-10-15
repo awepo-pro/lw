@@ -12,17 +12,16 @@
 //
 // Since 057 a turn runs in the pane's one in-memory conversation (session.go)
 // and opens no changeset of its own: the agent opens one at the turn's first
-// staging call, and a turn that staged is adopted into that changeset's
-// session.ndjson once its events have all been relayed (forwardTurn). Before
-// 057 every question opened a changeset here (C-124/D-DH, resolveTurnChangeset)
-// and rejected it unread when the turn staged nothing — half of a real vault's
-// changesets.
+// staging call and writes the turn into that changeset's session.ndjson as it
+// runs (the ask store's tee). forwardTurn's adopt step is the fallback for a turn
+// that was not teed. Before 057 every question opened a changeset here
+// (C-124/D-DH, resolveTurnChangeset) and rejected it unread when the turn staged
+// nothing — half of a real vault's changesets.
 package ask
 
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"time"
 
@@ -30,7 +29,6 @@ import (
 
 	"github.com/awepo-pro/lw/internal/agent"
 	"github.com/awepo-pro/lw/internal/logging"
-	"github.com/awepo-pro/lw/internal/stage"
 	"github.com/awepo-pro/lw/internal/trace"
 	"github.com/awepo-pro/lw/internal/ui"
 )
@@ -135,7 +133,6 @@ type turnSpec struct {
 // on the Update thread by whoever began it.
 func (m *Model) startTurn(msg, verb string) tea.Cmd {
 	ag := m.deps.Agent
-	e := m.deps.Engine
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancel = cancel
 
@@ -144,7 +141,7 @@ func (m *Model) startTurn(msg, verb string) tea.Cmd {
 	out := make(chan agent.Event, turnEventBuffer)
 	adopted := make(chan error, 1)
 	m.adopted = adopted
-	go runTurn(ctx, ag, e, spec, started, out, adopted)
+	go runTurn(ctx, ag, spec, started, out, adopted)
 
 	return func() tea.Msg { return <-started }
 }
@@ -156,7 +153,7 @@ func (m *Model) startTurn(msg, verb string) tea.Cmd {
 // changeset's session. runTurn never touches Update or m: everything it needs
 // is a parameter, and everything it produces goes out through started, out or
 // adopted.
-func runTurn(ctx context.Context, ag agent.Agent, e *stage.Engine, spec turnSpec, started chan<- turnStartedMsg, out chan agent.Event, adopted chan<- error) {
+func runTurn(ctx context.Context, ag agent.Agent, spec turnSpec, started chan<- turnStartedMsg, out chan agent.Event, adopted chan<- error) {
 	fail := func(err error) {
 		started <- turnStartedMsg{err: err}
 		close(started)
@@ -192,7 +189,7 @@ func runTurn(ctx context.Context, ag agent.Agent, e *stage.Engine, spec turnSpec
 		_ = ag.Send(tctx, spec.convID, spec.msg, sendCh)
 	}()
 
-	forwardTurn(ctx, ss, e, spec, sendCh, out, adopted)
+	forwardTurn(ctx, ss, spec, sendCh, out, adopted)
 }
 
 // forwardTurn relays sendCh — the channel Agent.Send actually writes into —
@@ -202,20 +199,22 @@ func runTurn(ctx context.Context, ag agent.Agent, e *stage.Engine, spec turnSpec
 // run, so the pane never renders "done" before the turn's records are where
 // `lw session show` will look for them.
 //
-// Adopt (057 D4): the last StageEv with a changeset id says the turn staged
-// into that changeset, X. Once sendCh has closed — every record the turn
-// appends is written by then — and Engine.Current still reports X open, the
-// turn's records go into X's session.ndjson (agent.AdoptTurn). X no longer open
-// (Review committed or rejected it while the turn ran) adopts nothing and logs
-// "ask turn not adopted"; AdoptTurn itself never makes a directory for a gone
-// changeset. A failure never fails the finished turn: it is logged and handed
-// to the pane through adopted, which shows it as a status line when the stream
-// closes. adopted is buffered, so this never blocks.
+// Adopt (057 D4, the FALLBACK since FIX2 R2): the last StageEv says which
+// changeset, X, the turn staged into ("" when the turn's own empty StageEv came
+// last: it is gone, rejected empty or never there). Once sendCh has closed —
+// every record the turn appends is written by then — agent.AdoptTurn copies the
+// turn into X's session.ndjson, but only if nothing did already: the Loop tees a
+// staging turn into its changeset as it runs, and AdoptTurn appends nothing for
+// a teed turn. A changeset that is no longer open adopts nothing (AdoptTurn logs
+// "ask turn not adopted" and creates no directory). A failure never fails the
+// finished turn: it is logged and handed to the pane through adopted, which shows
+// it as a status line when the stream closes. adopted is buffered, so this never
+// blocks.
 //
 // A turn that staged nothing — the normal ask, since 039 — has no changeset to
 // reject: it opened none (057), so unlike before there is no synthetic empty
 // StageEv here and no journal line.
-func forwardTurn(ctx context.Context, ss agent.SessionStore, e *stage.Engine, spec turnSpec, sendCh <-chan agent.Event, out chan<- agent.Event, adopted chan<- error) {
+func forwardTurn(ctx context.Context, ss agent.SessionStore, spec turnSpec, sendCh <-chan agent.Event, out chan<- agent.Event, adopted chan<- error) {
 	var terminal agent.Event
 	stagedInto := ""
 	for ev := range sendCh {
@@ -232,8 +231,8 @@ func forwardTurn(ctx context.Context, ss agent.SessionStore, e *stage.Engine, sp
 		}
 	}
 
-	if stagedInto != "" {
-		if err := adoptStagedTurn(ss, e, spec, stagedInto); err != nil {
+	if stagedInto != "" && ss != nil {
+		if _, err := agent.AdoptTurn(ss, spec.convID, stagedInto, spec.turnID); err != nil {
 			slog.Warn("ask turn not adopted", "changeset", stagedInto, "turn", spec.turnID, "error", err)
 			adopted <- err
 		}
@@ -246,25 +245,6 @@ func forwardTurn(ctx context.Context, ss agent.SessionStore, e *stage.Engine, sp
 		}
 	}
 	close(out)
-}
-
-// adoptStagedTurn is forwardTurn's adopt step for a turn that staged into
-// changeset id: nil when the turn was adopted or the changeset is gone (nothing
-// to adopt into is not an error), the AdoptTurn error otherwise.
-func adoptStagedTurn(ss agent.SessionStore, e *stage.Engine, spec turnSpec, id string) error {
-	if e == nil || ss == nil {
-		return nil
-	}
-	cs, err := e.Current()
-	if err != nil && !errors.Is(err, stage.ErrNoChangeset) {
-		return fmt.Errorf("ask: read the open changeset: %w", err)
-	}
-	if err != nil || cs.ID != id {
-		slog.Warn("ask turn not adopted", "changeset", id, "turn", spec.turnID, "reason", "the changeset is no longer open")
-		return nil
-	}
-	_, err = agent.AdoptTurn(ss, spec.convID, id, spec.turnID)
-	return err
 }
 
 // isTerminalEvent reports whether ev is one of backbone §9's two terminal

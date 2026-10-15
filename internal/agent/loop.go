@@ -101,11 +101,15 @@ const maxConsecutiveBadCalls = 2
 // (toolsFor, dispatchToolCall). The tool is unbudgeted and bills per call, and
 // an ingest compiles a source the user already supplied.
 //
-// Lazy open (057, lazyopen.go): a staging call with nothing open opens the
-// changeset it stages into. A turn that ends with no live op in the changeset its
-// own lazy open created rejects it (reason "ask turn staged nothing") before the
-// terminal event, streaming an empty StageEv; a changeset the turn did not create
-// is never touched.
+// Lazy open (057, lazyopen.go): when the caller put an intent on the ctx
+// (WithOpenIntent — the Ask pane), a staging call with nothing open opens the
+// changeset it stages into. A turn that ends with no live op in a changeset IT
+// created — by that lazy open, or by the model's own stage.open — rejects it
+// (reason "ask turn staged nothing") before the terminal event, streaming an
+// empty StageEv; a changeset the turn did not create is left alone. From the
+// turn's first successful staging call the turn is also written into that
+// changeset's session as it runs, when the session store can (the ask store's
+// tee, asksessions.go), so a crash or a Review verdict mid-turn keeps the trail.
 //
 // Repeat-call guard (051): in every verb, a guarded read whose identical twin
 // already ran this turn and whose result is still above, un-elided and
@@ -126,7 +130,10 @@ func (l *Loop) Send(ctx context.Context, sessionID, msg string, out chan<- Event
 	// as Send returns, before close(out) above it, for the exits that emit no
 	// terminal event; the exits that do settle before it.
 	ctx, _ = withLazyOpened(ctx)
-	defer func() { l.settleLazyOpen(ctx, out) }()
+	defer func() {
+		l.settleLazyOpen(ctx, out)
+		l.endTee(sessionID) // 057 FIX2 R2: the turn's tee (lazyopen.go teeTurn) ends with it
+	}()
 
 	var rec *trace.Recorder
 	started := time.Now()
@@ -986,6 +993,7 @@ func (l *Loop) dispatchToolCall(ctx context.Context, sessionID string, round int
 		return l.toolError(ctx, sessionID, round, tc, canonical, text, out, t0)
 	}
 
+	openedNone := l.stageOpenBaseline(ctx, canonical) // 057 FIX2 R1: could this stage.open create the changeset?
 	res, callErr := l.tools.Call(ctx, canonical, json.RawMessage(args))
 	if callErr != nil {
 		if errors.Is(callErr, tools.ErrUnknownTool) {
@@ -1005,6 +1013,7 @@ func (l *Loop) dispatchToolCall(ctx context.Context, sessionID string, round int
 	*badCalls = 0 // a dispatched call, whatever its result, resets the retry budget
 	budget.noteRead(canonical)
 	budget.noteSearch(canonical)
+	l.noteStageOpen(ctx, canonical, args, openedNone, res)
 	repeats.noteResult(tc.Function.Name, tc.Function.Arguments, tc.ID, round, res.IsError)
 
 	// 038 T4 (A7): one tool event per dispatched call, written the moment
@@ -1030,6 +1039,14 @@ func (l *Loop) dispatchToolCall(ctx context.Context, sessionID string, round int
 		}
 		if !l.send(ctx, out, ev) {
 			return llm.Message{}, true, ctx.Err()
+		}
+		// 057 FIX2 R2: the turn's first staged op starts its audit trail in the
+		// changeset's own session.ndjson, before the tool record below is appended
+		// so that record is the first one the tee mirrors.
+		if stagesOps(canonical) {
+			if terr := l.teeTurn(ctx, sessionID, ev.ChangesetID); terr != nil {
+				return llm.Message{}, true, l.fail(ctx, out, terr)
+			}
 		}
 		staged = true
 		stagedCalls[tc.ID] = true // 041 A-041-3: this call's page text is now in the open changeset
