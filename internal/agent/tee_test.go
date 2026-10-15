@@ -12,6 +12,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -351,5 +352,172 @@ func TestTeeGoneChangesetIsANoOp(t *testing.T) {
 	}
 	if strings.Contains(strings.Join(treeSnapshot(t, state), " "), "cs-gone") {
 		t.Fatal("an Append after a failed tee created cs-gone")
+	}
+}
+
+// useStore swaps f's store for st (creating the fixture's conversation in it)
+// and its loop for one over st.
+func (f *lazyFixture) useStore(t *testing.T, st SessionStore) {
+	t.Helper()
+	if _, err := st.Create(lazySession); err != nil {
+		t.Fatalf("Create(%s): %v", lazySession, err)
+	}
+	f.store = st
+	f.loop = newLoop(f.fake, f.reg, st, f.engine, f.loop.cfg)
+}
+
+// failingChangesetSessions is the file store with a disk that fills up: once
+// armed, only okLeft more records are written to a changeset's session.
+type failingChangesetSessions struct {
+	*fileSessions
+	okLeft int
+	armed  bool
+}
+
+func (f *failingChangesetSessions) Append(id string, r Record) error {
+	if f.armed && strings.HasPrefix(id, "cs-") {
+		if f.okLeft <= 0 {
+			return errors.New("disk full")
+		}
+		f.okLeft--
+	}
+	return f.fileSessions.Append(id, r)
+}
+
+// TestTeeSecondChangesetInTheSameTurn (057 FIX3 L1): Review rejects the
+// changeset the turn is teed into, the model keeps going, its next staging call
+// lazily opens a second changeset, and that one gets its own trail too. The tee
+// was once-per-turn (a bool), so the second changeset ended with live ops and no
+// session.ndjson — the loss the tee exists to prevent, and a regression against
+// the copy-at-the-end it replaced. The first keeps what was written to it.
+func TestTeeSecondChangesetInTheSameTurn(t *testing.T) {
+	f := newLazyFixture(t, [][]llm.Chunk{
+		{{Text: "A1 ^[raw/papers/leviathan-2023.md]"}, {Finish: "stop"}}, // turn 1, read-only
+		{toolCallChunk("call-1", "stage_create_page", wireCreatePageArgs), {Finish: "tool_calls"}},
+		{toolCallChunk("call-2", "stage_create_page", secondCreatePageArgs), {Finish: "tool_calls"}},
+		{{Text: "Filed."}, {Finish: "stop"}},
+	})
+	var first string
+	f.withHook(func(call int) {
+		if call == 3 { // between the two staging calls: the curator rejects the first changeset
+			first = f.openID(t)
+			if err := f.engine.Reject("review reject mid-turn"); err != nil {
+				t.Errorf("Reject: %v", err)
+			}
+		}
+	})
+	if err := f.sendMsg(t, WithOpenIntent(context.Background(), "ask: q1"), trace.VerbAsk, "q1"); err != nil {
+		t.Fatalf("turn 1: %v", err)
+	}
+	if err := f.sendMsg(t, WithOpenIntent(context.Background(), "ask: file it"), trace.VerbFile, "file it"); err != nil {
+		t.Fatalf("turn 2: %v", err)
+	}
+
+	second := f.openID(t)
+	if first == "" || second == first {
+		t.Fatalf("the test needs two changesets: first %q, second %q", first, second)
+	}
+	// The second changeset: the conversation's earlier prose, then the whole turn
+	// as beginTee's rules have it, and what follows.
+	got, ok := f.sessionAt(t, "open", second)
+	if !ok {
+		t.Fatalf("open/%s has live ops and no session.ndjson: the second changeset of a turn got no trail", second)
+	}
+	want := []brief{
+		{Role: "user", Content: "q1", Carried: true},
+		{Role: "assistant", Content: "A1 ^[raw/papers/leviathan-2023.md]", Carried: true},
+		{Role: "user", Content: "file it"},
+		{Role: "tool", Tool: "stage.create_page", Staged: true}, // the first changeset's staging call
+		{Role: "tool", Tool: "stage.create_page", Staged: true}, // this one's
+		{Role: "assistant", Content: "Filed."},
+	}
+	if b := briefs(got); !reflect.DeepEqual(b, want) {
+		t.Fatalf("second changeset's session:\n got  %+v\n want %+v", b, want)
+	}
+	// The store's record names both changesets the tee touched this turn, so the
+	// pane's fallback copy skips exactly those two.
+	turnID := ""
+	if raw, err := RawRecords(f.store, lazySession); err == nil && len(raw) > 0 {
+		turnID = raw[len(raw)-1].Turn
+	}
+	tc := f.store.(teedChecker)
+	if !tc.wasTeed(lazySession, first, turnID) || !tc.wasTeed(lazySession, second, turnID) {
+		t.Fatalf("wasTeed(first %v, second %v) for turn %q; want both teed", tc.wasTeed(lazySession, first, turnID), tc.wasTeed(lazySession, second, turnID), turnID)
+	}
+	// The first keeps the trail it had when it was rejected.
+	rejected, ok := f.sessionAt(t, "rejected", first)
+	wantFirst := []brief{
+		{Role: "user", Content: "q1", Carried: true},
+		{Role: "assistant", Content: "A1 ^[raw/papers/leviathan-2023.md]", Carried: true},
+		{Role: "user", Content: "file it"},
+		{Role: "tool", Tool: "stage.create_page", Staged: true},
+	}
+	if b := briefs(rejected); !ok || !reflect.DeepEqual(b, wantFirst) {
+		t.Fatalf("rejected/%s's trail (ok %v):\n got  %+v\n want %+v", first, ok, b, wantFirst)
+	}
+}
+
+// TestAdoptTurnSkipsOnlyTeedChangesets (057 FIX3 L1): the fallback copy is
+// skipped for a changeset the turn was teed into, and for no other — a turn that
+// staged into a changeset nothing teed still gets its copy.
+func TestAdoptTurnSkipsOnlyTeedChangesets(t *testing.T) {
+	f := newLazyFixture(t, [][]llm.Chunk{
+		{toolCallChunk("call-1", "stage_create_page", wireCreatePageArgs), {Finish: "tool_calls"}},
+		{{Text: "Filed."}, {Finish: "stop"}},
+	})
+	ctx := logging.WithTurn(WithOpenIntent(context.Background(), "ask: file it"), "turn-skip")
+	if err := f.sendMsg(t, ctx, trace.VerbFile, "file it"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	teedID := f.openID(t)
+	if _, err := f.engine.Commit("done"); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	other, err := f.engine.OpenChangeset("another verb's", stage.Author{Kind: "agent"})
+	if err != nil {
+		t.Fatalf("OpenChangeset: %v", err)
+	}
+
+	if n, err := AdoptTurn(f.store, lazySession, teedID, "turn-skip"); err != nil || n != 0 {
+		t.Fatalf("AdoptTurn into the teed changeset = %d, %v; want 0, nil", n, err)
+	}
+	n, err := AdoptTurn(f.store, lazySession, other.ID, "turn-skip")
+	if err != nil || n == 0 {
+		t.Fatalf("AdoptTurn into a changeset nothing teed = %d, %v; want the copy", n, err)
+	}
+}
+
+// TestTeeBacklogFailureIsNotRetriedByAdopt (057 FIX3 L2): the tee's first write
+// fails halfway (the disk fills up while the backlog goes in) and the turn ends
+// with the error. The pane then runs the fallback AdoptTurn on the changeset the
+// last StageEv named; it must not copy the turn in a second time on top of the
+// part the tee already wrote.
+func TestTeeBacklogFailureIsNotRetriedByAdopt(t *testing.T) {
+	f := newLazyFixture(t, [][]llm.Chunk{
+		{{Text: "thinking first"}, toolCallChunk("call-1", "stage_create_page", wireCreatePageArgs), {Finish: "tool_calls"}},
+		{{Text: "never"}, {Finish: "stop"}},
+	})
+	disk := &failingChangesetSessions{fileSessions: NewFileSessions(f.root).(*fileSessions), okLeft: 1, armed: true}
+	f.useStore(t, NewAskSessions(disk))
+	ctx := logging.WithTurn(WithOpenIntent(context.Background(), "ask: file it"), "turn-fail")
+
+	if err := f.sendMsg(t, ctx, trace.VerbFile, "file it"); err == nil {
+		t.Fatal("the turn survived a failing trail write; the test proves nothing")
+	}
+	csID := f.openID(t)
+	disk.armed = false // the disk has room again when the pane's fallback runs
+
+	if n, err := AdoptTurn(f.store, lazySession, csID, "turn-fail"); err != nil || n != 0 {
+		t.Fatalf("AdoptTurn after a failed tee = %d, %v; want 0, nil (the tee touched this turn)", n, err)
+	}
+	recs, _ := f.sessionAt(t, "open", csID)
+	users := 0
+	for _, r := range recs {
+		if r.Role == "user" && r.Content == "file it" {
+			users++
+		}
+	}
+	if users != 1 {
+		t.Fatalf("the turn's user record appears %d times in the session: %+v", users, briefs(recs))
 	}
 }

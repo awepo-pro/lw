@@ -57,7 +57,7 @@ const lazyOpenEmptyReason = "ask turn staged nothing"
 // lazyOpened is what a turn remembers about the changesets it made: the id of
 // the changeset THIS turn created (by its lazy open, or by a successful stage.open
 // of the model's), whether the turn has been settled (settleLazyOpen), and
-// whether it has been teed into a changeset's session (teeTurn). It rides the ctx
+// which changeset it is teed into (teedID, teeTurn). It rides the ctx
 // as a pointer, because the open happens deep in dispatchToolCall and the verdict
 // is Send's, at the end of the turn. Only a changeset that was CREATED is
 // recorded — one that OpenOrJoin joined (an `lw ingest` opened it between the
@@ -67,7 +67,7 @@ const lazyOpenEmptyReason = "ask turn staged nothing"
 type lazyOpened struct {
 	id      string
 	settled bool
-	teed    bool
+	teedID  string // the changeset the turn is currently teed into; "" before the first staged op
 }
 
 // lazyOpenedKey is the ctx key withLazyOpened stores under.
@@ -238,22 +238,29 @@ func (l *Loop) noteStageOpen(ctx context.Context, canonical, args string, wasNon
 	slog.InfoContext(ctx, "agent stage.open created", "changeset", cs.ID)
 }
 
-// teeTurn attaches the turn to changeset csID's session the first time one of
-// its staging calls succeeds (057 FIX2 R2): csID is the changeset that call
-// staged into, as the StageEv names it. It is a no-op without a tee-capable
-// store (a plain file store writes the changeset's own session already), after
-// the first attach, and when no changeset is open. An error is the turn's:
-// writing the audit trail is not optional once there is something to audit.
+// teeTurn attaches the turn to changeset csID's session when one of its staging
+// calls succeeds (057 FIX2 R2): csID is the changeset that call staged into, as
+// the StageEv names it. It attaches once per changeset, not once per turn
+// (FIX3 L1): if Review rejects the changeset the turn is teed into and the
+// model's next staging call lazily opens another, the turn moves its tee to the
+// new one — ending the old mirror first — so every changeset that gets an op
+// gets a trail. It is a no-op without a tee-capable store (a plain file store
+// writes the changeset's own session already), for the changeset it is already
+// teed into, and when no changeset is open. An error is the turn's: writing the
+// audit trail is not optional once there is something to audit.
 func (l *Loop) teeTurn(ctx context.Context, sessionID, csID string) error {
 	lz := lazyOpenedFrom(ctx)
-	if lz == nil || lz.teed || csID == "" {
+	if lz == nil || csID == "" || lz.teedID == csID {
 		return nil
 	}
 	tee, ok := l.sessions.(turnTee)
 	if !ok {
 		return nil
 	}
-	lz.teed = true
+	if lz.teedID != "" {
+		tee.endTee(sessionID)
+	}
+	lz.teedID = csID
 	attached, err := tee.beginTee(sessionID, csID, logging.TurnFrom(ctx))
 	if err != nil {
 		return fmt.Errorf("agent: write the turn into changeset %s's session: %w", csID, err)

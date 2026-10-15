@@ -53,7 +53,16 @@ type askSessions struct {
 	mu    sync.Mutex
 	convs map[string]*askConv
 	tees  map[string]*teeState // conversation id -> the changeset its running turn is mirrored into
-	teed  map[string]string    // conversation id -> the last turn that was teed (AdoptTurn's skip)
+	teed  map[string]*teedTurn // conversation id -> the changesets its last tee attempt touched (AdoptTurn's skip)
+}
+
+// teedTurn is a conversation's record of the turn it last tried to tee: which
+// turn, and every changeset the tee attached to or began writing into. A turn can
+// move through several (the curator rejects one mid-turn and the model's next
+// staging call opens another), and AdoptTurn must skip exactly those.
+type teedTurn struct {
+	turn string
+	ids  map[string]bool
 }
 
 // teeState is one running tee: where the turn's records are mirrored to.
@@ -83,7 +92,7 @@ func NewAskSessions(file SessionStore) SessionStore {
 		now:   time.Now,
 		convs: make(map[string]*askConv),
 		tees:  make(map[string]*teeState),
-		teed:  make(map[string]string),
+		teed:  make(map[string]*teedTurn),
 	}
 }
 
@@ -247,13 +256,16 @@ type turnTee interface {
 
 var _ turnTee = (*askSessions)(nil)
 
-// teedChecker answers AdoptTurn's question: was this turn already teed?
+// teedChecker answers AdoptTurn's question: did the tee already touch this
+// changeset for this turn?
 type teedChecker interface {
-	wasTeed(convID, turnID string) bool
+	wasTeed(convID, csID, turnID string) bool
 }
 
-// beginTee implements turnTee. The Loop calls it once per turn, right after the
-// turn's first successful staging call, with the changeset that call staged into.
+// beginTee implements turnTee. The Loop calls it right after a successful
+// staging call stages into a changeset the turn is not yet teed into — the
+// turn's first, and again if the curator rejects that one and the model opens
+// another — with the changeset that call staged into.
 //
 // Why a tee and not AdoptTurn at the turn's end: the copy happened only when the
 // turn finished, so a quit, a crash, or a Review commit/reject while the model
@@ -264,6 +276,12 @@ type teedChecker interface {
 //
 // The attach never makes a directory (attachOpen, as AdoptTurn): the changeset
 // must be open with its changeset.json, or nothing happens.
+//
+// The attempt is recorded (teed) as soon as the attach succeeds and BEFORE the
+// backlog is written (FIX3 L2): the attach may have created the session file and
+// the backlog may fail halfway, and the pane's fallback AdoptTurn must not then
+// copy the turn in again on top of what is there. A turn the tee touched is the
+// tee's, finished or failed.
 func (a *askSessions) beginTee(convID, csID, turnID string) (bool, error) {
 	if !isAskID(convID) || isAskID(csID) {
 		return false, nil
@@ -286,11 +304,16 @@ func (a *askSessions) beginTee(convID, csID, turnID string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("agent: tee turn %s into %s: %w", turnID, csID, err)
 	}
+	tt := a.teed[convID]
+	if tt == nil || tt.turn != turnID {
+		tt = &teedTurn{turn: turnID, ids: make(map[string]bool)}
+		a.teed[convID] = tt
+	}
+	tt.ids[csID] = true
 	if _, err := appendBacklog(a.file, c.records, csID, turnID, created); err != nil {
 		return false, fmt.Errorf("agent: tee turn %s into %s: %w", turnID, csID, err)
 	}
 	a.tees[convID] = &teeState{csID: csID}
-	a.teed[convID] = turnID
 	return true, nil
 }
 
@@ -301,13 +324,16 @@ func (a *askSessions) endTee(convID string) {
 	delete(a.tees, convID)
 }
 
-// wasTeed reports whether turn turnID of conversation convID was teed into a
-// changeset (beginTee attached it): AdoptTurn's cue that the trail is already
-// written.
-func (a *askSessions) wasTeed(convID, turnID string) bool {
+// wasTeed reports whether the tee touched changeset csID for turn turnID of
+// conversation convID (beginTee attached it, whether or not every write
+// succeeded): AdoptTurn's cue that the trail is the tee's, not to be copied
+// again. It is per changeset — a turn teed into one changeset and staged into
+// another the tee never reached still gets AdoptTurn's copy there.
+func (a *askSessions) wasTeed(convID, csID, turnID string) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.teed[convID] == turnID
+	tt := a.teed[convID]
+	return tt != nil && tt.turn == turnID && tt.ids[csID]
 }
 
 // appendBacklog appends to changeset csID's session what a turn's trail starts
@@ -368,7 +394,7 @@ func AdoptTurn(ss SessionStore, convID, csID, turnID string) (int, error) {
 	if isAskID(csID) {
 		return 0, fmt.Errorf("agent: adopt turn: %s is a conversation, not a changeset", csID)
 	}
-	if t, ok := ss.(teedChecker); ok && t.wasTeed(convID, turnID) {
+	if t, ok := ss.(teedChecker); ok && t.wasTeed(convID, csID, turnID) {
 		return 0, nil
 	}
 	raw, err := RawRecords(ss, convID)

@@ -317,10 +317,12 @@ one id. `lw ingest` and `lw lint --fix` record theirs as they go. A TUI Ask turn
 runs in memory until its first staged op; from that op on it is written into the
 changeset's transcript as it happens — the questions and answers that led to it
 first, when the changeset had no transcript yet — so a crash, a quit, or a Review
-commit in the middle of the turn keeps it. A turn that stages nothing leaves no
-transcript: a question that only answers writes nothing, and a ctrl+s filing
+commit in the middle of the turn keeps it. A turn that never stages an op leaves
+no transcript: a question that only answers writes nothing, and a ctrl+s filing
 turn whose staging calls were all refused has its empty changeset rejected.
-Where a transcript lives:
+(The transcript starts at the first staged op, so a changeset whose ops were
+staged and later dropped keeps the one already written.) Where a transcript
+lives:
 
 ```
 <vault>/.llmwiki/changesets/{open,committed,rejected}/<changeset-id>/session.ndjson

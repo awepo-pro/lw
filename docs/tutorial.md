@@ -770,8 +770,9 @@ rejected. (The Ask pane keeps its conversation in memory until a turn's first
 staged op; from there the turn is written into the changeset's transcript as it
 happens, together with the questions and answers that led to it, marked
 `· carried`. A question that only answered is not written anywhere, nor is a
-turn whose staging calls were all refused, and `lw session list` does not show
-them.) `lw session list` shows what is on disk, newest first:
+turn that never staged an op (every staging call refused), and `lw session list`
+does not show them; a changeset whose ops were staged and later dropped keeps
+the session already written.) `lw session list` shows what is on disk, newest first:
 
 ```
 $ lw session list
