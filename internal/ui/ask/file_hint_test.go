@@ -16,9 +16,9 @@ import (
 	"github.com/awepo-pro/lw/internal/index"
 )
 
-// hintTurn runs one real turn on a fresh vault (the turn opens its own
-// changeset, and auto-rejects it when it stages nothing) whose scripted
-// events are evs, and drains it fully.
+// hintTurn runs one real turn on a fresh vault (nothing opens, and since 057
+// nothing is rejected, when it stages nothing) whose scripted events are evs,
+// and drains it fully.
 func hintTurn(t *testing.T, evs ...agent.Event) *Model {
 	t.Helper()
 	_, engine := carryVault(t)
@@ -79,15 +79,11 @@ func TestFileHint(t *testing.T) {
 		if got := countStatusEntries(m, fileHint); got != 0 {
 			t.Fatalf("errored turn produced %d file hints, want none", got)
 		}
-		// The errored turn also auto-rejected its empty changeset, so the
-		// scrollback ends with the error line and then the kept hint — the
-		// error line is what directly precedes it.
-		kept := lastEntry(m)
-		if kept.kind != kindStatus || !strings.HasPrefix(kept.text, "nothing staged · conversation kept") {
-			t.Fatalf("last entry = %#v, want the errored turn's kept hint", kept)
-		}
-		if got := m.entries[len(m.entries)-2]; got.kind != kindError || !strings.Contains(got.text, "provider boom") {
-			t.Fatalf("entry before the kept hint = %#v, want the error line", got)
+		// 057: the errored turn opened no changeset, so it owes no kept hint —
+		// the scrollback ends with the error line itself.
+		last := lastEntry(m)
+		if last.kind != kindError || !strings.Contains(last.text, "provider boom") {
+			t.Fatalf("last entry = %#v, want the error line (no kept hint follows it)", last)
 		}
 	})
 
@@ -101,28 +97,29 @@ func TestFileHint(t *testing.T) {
 		}
 	})
 
-	t.Run("hint_after_kept_hint", func(t *testing.T) {
-		// A fresh vault: the turn opens its own changeset, stages nothing,
-		// and is auto-rejected — so the terminal line owes the kept hint
-		// first, and the file hint lands after it (009 contract §3.2).
+	t.Run("hint_directly_after_terminal_line", func(t *testing.T) {
+		// A fresh vault: the turn stages nothing and opens no changeset, so it
+		// owes no kept hint (057) and the file hint lands directly under the
+		// terminal line (009 contract §3.2). Was hint_after_kept_hint.
 		m := hintTurn(t,
 			agent.TextDelta{Text: "It is the attention cache.^[raw/articles/kv-cache-explained.md]"},
 			agent.DoneEv{Reason: "stop", Rounds: 1},
 		)
-		if n := len(m.entries); n < 3 {
+		if n := len(m.entries); n < 2 {
 			t.Fatalf("scrollback holds %d entries, want the turn's full tail", n)
 		}
-		done := m.entries[len(m.entries)-3]
-		kept := m.entries[len(m.entries)-2]
+		done := m.entries[len(m.entries)-2]
 		hint := m.entries[len(m.entries)-1]
 		if done.kind != kindStatus || done.text != "done · 1 rounds" {
-			t.Fatalf("third-to-last entry = %#v, want the \"done · 1 rounds\" terminal line", done)
-		}
-		if kept.kind != kindStatus || !strings.HasPrefix(kept.text, "nothing staged · conversation kept · lw session show ") {
-			t.Fatalf("second-to-last entry = %#v, want the kept hint", kept)
+			t.Fatalf("second-to-last entry = %#v, want the \"done · 1 rounds\" terminal line", done)
 		}
 		if hint.kind != kindStatus || hint.text != fileHint {
-			t.Fatalf("last entry = %#v, want the file hint directly after the kept hint", hint)
+			t.Fatalf("last entry = %#v, want the file hint directly after the terminal line", hint)
+		}
+		for _, e := range m.entries {
+			if strings.Contains(e.text, "nothing staged") || strings.Contains(e.text, "lw session show") {
+				t.Fatalf("entry %#v is a kept hint; an empty ask no longer leaves a session to point at", e)
+			}
 		}
 	})
 
@@ -156,11 +153,11 @@ func TestFileHint(t *testing.T) {
 		if got := countStatusEntries(m, fileHint); got != 1 {
 			t.Fatalf("scrollback holds %d file hints after the filing turn, want only the first turn's one", got)
 		}
-		// The filing turn auto-rejected its own empty changeset: its tail is
-		// the done line and the kept hint, with no file hint after them.
-		kept := lastEntry(m)
-		if kept.kind != kindStatus || !strings.HasPrefix(kept.text, "nothing staged · conversation kept") {
-			t.Fatalf("last entry = %#v, want the filing turn's kept hint (and no file hint after it)", kept)
+		// The filing turn's tail is its done line, with no file hint after it
+		// (and, since 057, no kept hint: it opened no changeset either).
+		last := lastEntry(m)
+		if last.kind != kindStatus || last.text != "done · 1 rounds" {
+			t.Fatalf("last entry = %#v, want the filing turn's done line (and no file hint after it)", last)
 		}
 	})
 
@@ -228,16 +225,17 @@ func TestFileHint(t *testing.T) {
 	// failed_filing_start_does_not_leak is C-907's case: a filing turn that
 	// fails before its stream exists (turnStartedMsg's error — no
 	// StreamClosedMsg can ever arrive) must drop its filing marker, or the
-	// next ordinary sourced answer is permanently unfileable.
+	// next ordinary sourced answer is permanently unfileable. Since 057 the
+	// failure at start is the conversation not opening (there is no seed to
+	// fail any more).
 	t.Run("failed_filing_start_does_not_leak", func(t *testing.T) {
 		root, engine := carryVault(t)
-		sessions := agent.NewFileSessions(root)
+		sessions := askStore(root)
 		ag := &fakeTurnAgent{sessions: sessions}
 		m := New(liveDeps(t, engine, ag)).(*Model)
 
 		// Turn 1 answers with a marker: fileable, exactly one hint. Its
-		// records persist, so the failed filing turn below really has a
-		// conversation to seed from.
+		// records persist in the conversation.
 		ag.script, ag.persist = turnScript("what is a kv cache?",
 			"It is the attention cache.^[raw/articles/kv-cache-explained.md]")
 		m = submitAndDrain(t, m, "what is a kv cache?")
@@ -245,10 +243,10 @@ func TestFileHint(t *testing.T) {
 			t.Fatalf("setup: first turn produced %d file hints, want exactly 1", got)
 		}
 
-		// ctrl+s starts the filing turn, but its store refuses every Append,
-		// so seeding its fresh session from turn 1's cannot write and the
-		// turn ends at start — before Send, with no stream to close.
-		ag.sessions = seedFailSessions{SessionStore: agent.NewFileSessions(root)}
+		// ctrl+s starts the filing turn, but its store cannot open the
+		// conversation, so the turn ends at start — before Send, with no
+		// stream to close.
+		ag.sessions = openFailSessions{SessionStore: sessions}
 		ag.script, ag.persist = nil, nil
 		pane, cmd := pressCtrlS(m)
 		m = pane.(*Model)
@@ -259,15 +257,15 @@ func TestFileHint(t *testing.T) {
 		m = runCmd(t, m, cmd, &seen).(*Model)
 
 		got := lastEntry(m)
-		if got.kind != kindError || !strings.HasPrefix(got.text, "ask: carry the conversation into ") {
-			t.Fatalf("filing turn's last entry = %#v, want the seed failure's error line", got)
+		if got.kind != kindError || !strings.HasPrefix(got.text, "ask: open the conversation ") {
+			t.Fatalf("filing turn's last entry = %#v, want the open failure's error line", got)
 		}
 		if m.turnActive || m.filingTurn {
 			t.Fatalf("the failed filing turn left turnActive %v / filingTurn %v, want both false", m.turnActive, m.filingTurn)
 		}
 
 		// Turn 3 is ordinary, and its sourced answer must still be fileable.
-		ag.sessions = agent.NewFileSessions(root)
+		ag.sessions = sessions
 		ag.script = []agent.Event{
 			agent.TextDelta{Text: "It decodes without recomputing.^[raw/articles/kv-cache-explained.md]"},
 			agent.DoneEv{Reason: "stop", Rounds: 1},

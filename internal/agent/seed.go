@@ -6,6 +6,11 @@ package agent
 // records (sessions are keyed by changeset, backbone §9 C-102).
 // SeedSession copies the previous session's conversation text into the
 // fresh one; wiring it into the Ask pane is T-C's job.
+//
+// Since 057 the Ask pane no longer seeds: its conversation is one in-memory
+// session (asksessions.go) whose history view IS this transform, through
+// carryRecord. SeedSession stays — it is the transform applied to a file session,
+// and seed_test.go pins what it carries.
 
 import "fmt"
 
@@ -29,13 +34,29 @@ func SeedSession(ss SessionStore, from, to string) (int, error) {
 
 	n := 0
 	for _, r := range src.Records {
-		if (r.Role != "user" && r.Role != "assistant") || r.Tool != "" || r.Content == "" {
+		carried, ok := carryRecord(r)
+		if !ok {
 			continue
 		}
-		if err := ss.Append(to, Record{TS: r.TS, Role: r.Role, Content: r.Content, Carried: true}); err != nil {
+		if err := ss.Append(to, carried); err != nil {
 			return n, fmt.Errorf("agent: seed session %s from %s: %w", to, from, err)
 		}
 		n++
 	}
 	return n, nil
+}
+
+// carryRecord is the one definition of what a conversation carries from one
+// session to the next: a record with Role "user" or "assistant", no Tool and
+// non-empty Content, reduced to Record{TS, Role, Content, Carried: true}. ok is
+// false for everything else — tool calls and results, reasoning-only records,
+// Finish. SeedSession applies it to copy a session; since 057 the in-memory ask
+// conversation's Get (asksessions.go) and AdoptTurn apply the same function, so
+// the history a multi-turn ask sends the model cannot drift from what the
+// seeding it replaced produced (TestAskSessionsViewEqualsSeed pins the parity).
+func carryRecord(r Record) (carried Record, ok bool) {
+	if (r.Role != "user" && r.Role != "assistant") || r.Tool != "" || r.Content == "" {
+		return Record{}, false
+	}
+	return Record{TS: r.TS, Role: r.Role, Content: r.Content, Carried: true}, true
 }

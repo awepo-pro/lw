@@ -51,6 +51,12 @@ type Loop struct {
 	// canceled ctx cuts short; tests set it to a recorder so a retry costs
 	// no wall time.
 	sleep func(ctx context.Context, d time.Duration) error
+
+	// beforeLazyOpen, when set, runs between the loop's check that nothing is open
+	// and the open itself — lazyOpen's OpenOrJoin, or the model's own stage.open
+	// (057): the window in which another verb can open a changeset, which a test
+	// cannot hit by timing. nil in production.
+	beforeLazyOpen func()
 }
 
 var _ Agent = (*Loop)(nil)

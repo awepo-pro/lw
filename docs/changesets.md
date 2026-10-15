@@ -83,7 +83,18 @@ rebase or drop.
 One session per changeset, and the transcript lives **inside the changeset
 directory**. Commit or reject moves the directory and the session moves with it,
 so "why did it propose this?" is answerable months later with no external
-store. `lw log --agent` filters the journal to agent-authored events;
+store. A TUI Ask conversation is the one exception to "created with the
+changeset": it lives in memory, so a question that only answers opens no
+changeset and writes nothing. From a turn's first staged op on, the turn is
+written into the changeset's `session.ndjson` as it happens — the earlier
+questions and answers first, marked carried, when the changeset had no session
+yet — so a crash or a Review commit mid-turn still leaves the trail. A changeset
+the turn opened but never staged an op in (every staging call refused, or a
+`stage.open` that led nowhere) is rejected at the end of the turn, journalled as
+`ask turn staged nothing`, and has no `session.ndjson`: the trail starts at the
+first staged op, so a changeset whose ops were staged and later dropped or
+retracted keeps the session already written.
+`lw log --agent` filters the journal to agent-authored events;
 `lw revert` opens a new reviewable changeset holding the inverse ops.
 
 ## The journal

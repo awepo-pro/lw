@@ -18,6 +18,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/awepo-pro/lw/internal/agent"
+	"github.com/awepo-pro/lw/internal/logging"
 	"github.com/awepo-pro/lw/internal/stage"
 	"github.com/awepo-pro/lw/internal/testutil"
 	"github.com/awepo-pro/lw/internal/ui"
@@ -39,13 +40,21 @@ import (
 // persist (009's carry-over tests) is what Send writes into the session
 // store under the turn's session id before the script replays — the
 // record-writing half of Loop.Send, without which a fake turn leaves no
-// transcript for a later session to be seeded from. Nil (the default
-// everywhere the carry tests are not running) leaves the store untouched,
-// exactly as before 009.
+// transcript for the conversation to carry. Each record is stamped with the
+// turn id the pane put on the ctx (057), as Loop.Send does, so AdoptTurn can
+// tell the turn's records from the conversation's earlier ones. Nil (the
+// default everywhere the carry tests are not running) leaves the store
+// untouched, exactly as before 009.
+//
+// mid (057) runs after the release wait and before persist and the script: the
+// place a test makes the turn stage — open a changeset, append an op — the way
+// the loop's lazy open does, and the events it returns (a StageEv naming the
+// changeset it just made) are replayed ahead of the script.
 type fakeTurnAgent struct {
 	mu       sync.Mutex
 	script   []agent.Event
 	persist  []agent.Record
+	mid      func() []agent.Event
 	release  chan struct{}
 	entered  chan struct{}
 	sends    int
@@ -72,8 +81,16 @@ func (f *fakeTurnAgent) Send(ctx context.Context, sessionID, msg string, out cha
 		<-f.release
 	}
 
+	if f.mid != nil {
+		script = append(f.mid(), script...)
+	}
+
 	if persist != nil && f.sessions != nil {
+		turn := logging.TurnFrom(ctx)
 		for _, r := range persist {
+			if r.Turn == "" {
+				r.Turn = turn
+			}
 			_ = f.sessions.Append(sessionID, r)
 		}
 	}
@@ -149,8 +166,10 @@ func (r *recordingSessions) closeErr(i int) error {
 }
 
 // liveVault copies the minimal fixture, opens a real engine on it and opens
-// one changeset, so a submitted question has a session to run under
-// (backbone §9, C-102: a session is keyed by its changeset).
+// one changeset — the state `lw ingest` leaves behind. Since 057 a submitted
+// question needs none (its conversation is its own), so a test that wants a
+// changeset open at submit says so by calling this; one that wants none uses
+// carryVault.
 func liveVault(t *testing.T) (root string, e *stage.Engine, csID string) {
 	t.Helper()
 	root = testutil.CopyFixture(t, "minimal")

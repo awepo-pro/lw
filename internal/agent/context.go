@@ -30,12 +30,13 @@ type ContextBuilder struct {
 	orient map[string]orientEntry // session id -> its last-fetched digest
 }
 
-// orientEntry caches one session's orientation digest against the
-// index.md hash that produced it, so Build can tell "index.md changed"
-// apart from "nothing changed" without re-fetching every turn.
+// orientEntry caches one session's orientation digest against the hash of
+// the vault files that produced it (orientInputHash), so Build can tell
+// "something the digest reads changed" apart from "nothing changed" without
+// re-fetching every turn.
 type orientEntry struct {
 	digest    string
-	indexHash string
+	inputHash string // orientInputHash at the fetch
 }
 
 // NewContextBuilder returns a ContextBuilder that reads pages through v,
@@ -153,14 +154,15 @@ func (b *ContextBuilder) buildFor(s *Session, userMsg string, plan turnPlan) ([]
 
 // orientDigest returns session s's cached orientation digest, fetching a
 // fresh one through the "vault.orient" tool the first time s is seen and
-// whenever index.md's content has changed since the last fetch.
+// whenever anything the digest reads has changed since the last fetch
+// (orientInputHash).
 func (b *ContextBuilder) orientDigest(s *Session) (string, error) {
-	hash := b.indexHash()
+	hash := b.orientInputHash()
 
 	b.mu.Lock()
 	entry, ok := b.orient[s.ID]
 	b.mu.Unlock()
-	if ok && entry.indexHash == hash {
+	if ok && entry.inputHash == hash {
 		return entry.digest, nil
 	}
 
@@ -170,18 +172,54 @@ func (b *ContextBuilder) orientDigest(s *Session) (string, error) {
 	}
 
 	b.mu.Lock()
-	b.orient[s.ID] = orientEntry{digest: res.Content, indexHash: hash}
+	b.orient[s.ID] = orientEntry{digest: res.Content, inputHash: hash}
 	b.mu.Unlock()
 	return res.Content, nil
 }
 
-// indexHash hashes index.md's current bytes so orientDigest can detect a
-// change. A vault with no index.md yet hashes to a constant (sha256 of
-// nil), so a session still caches correctly.
-func (b *ContextBuilder) indexHash() string {
-	data, _ := b.v.Read("index.md") // absence is not an error here
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
+// orientLogTailLines is how many trailing lines of log.md vault.orient includes
+// (tools.orientLogMaxLines): the part of log.md the cache key must cover.
+const orientLogTailLines = 30
+
+// orientInputHash hashes what vault.orient reads — SCHEMA.md, index.md,
+// curator-memory.md and the tail of log.md — so orientDigest refreshes when any
+// of them changes. It used to hash index.md alone, which was enough while every
+// ask turn had a session of its own and so a fresh digest; the one ask
+// conversation of 057 outlives a Review commit, and a commit appends to log.md
+// and may edit curator-memory.md without touching index.md, so the conversation
+// kept the digest it was first given (057 FIX2 R5). A file that does not exist
+// hashes as empty, so a vault with no index.md yet still caches correctly.
+func (b *ContextBuilder) orientInputHash() string {
+	h := sha256.New()
+	for _, name := range []string{"SCHEMA.md", "index.md", "curator-memory.md"} {
+		data, _ := b.v.Read(name) // absence is not an error here
+		h.Write([]byte(name))
+		h.Write([]byte{0})
+		h.Write(data)
+		h.Write([]byte{0})
+	}
+	logData, _ := b.v.Read("log.md")
+	h.Write([]byte("log.md"))
+	h.Write([]byte{0})
+	h.Write(lastLines(logData, orientLogTailLines))
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// lastLines returns the final n lines of data (a trailing newline does not
+// start a line), or all of it when it has fewer.
+func lastLines(data []byte, n int) []byte {
+	end := len(data)
+	if end > 0 && data[end-1] == '\n' {
+		end--
+	}
+	for i := end - 1; i >= 0; i-- {
+		if data[i] == '\n' {
+			if n--; n == 0 {
+				return data[i+1:]
+			}
+		}
+	}
+	return data
 }
 
 // recordToMessage folds one prose Record — user, assistant or the system

@@ -606,12 +606,16 @@ marked `…`.)
 
 ### Ask, then Review
 
-Type a question and press `enter`. If no changeset is open, an Ask turn
-opens one for you — the intent is literally `ask: <your question>` — and if
-the turn ends without staging anything, that changeset is discarded
-automatically; you never have to clean it up by hand. The message box takes
-all typing, so on this screen `q` and `?` type into the message instead of
-quitting or opening the overlay — quit from Ask with `ctrl+c`. A real
+Type a question and press `enter`. An Ask turn opens no changeset: the
+conversation runs in memory, and a question that only reads and answers
+leaves nothing behind — no changeset, no journal line, nothing to clean up.
+A changeset opens at the agent's first staging call (a filed answer, a web
+source it ingests), and its intent is literally `ask: <your question>`; if that
+turn ends with nothing staged in it — every staging call refused — the changeset
+is rejected for you (`ask turn staged nothing` in `lw log`).
+The message box takes all typing, so on this screen `q` and `?` type into the
+message instead of quitting or opening the overlay — quit from Ask with
+`ctrl+c`. A real
 capture, asking the vault to stage a patch to an existing page (the turn is
 abridged; the transcript tail-follows, so the earliest rows have scrolled up
 under the `↑ 28 earlier` note):
@@ -654,12 +658,11 @@ tool call as one collapsed `▸ name args → result` row, the answer under
 `assistant`, and a `done · N rounds` line at the end. The answer is rendered
 as markdown — headings, lists, code, tables, links — through the same
 renderer as Review's and Browse's previews, and the transcript panel's title
-carries the session id (`Transcript — cs-fd447f`), which is how you find the
-conversation again with `lw session show`; once review commits or rejects
-that changeset the title keeps the id with its state, and a turn that staged
-nothing adds a `nothing staged · conversation kept · lw session show <id>`
-line saying so. `↑`/`↓` select a tool
-call in the transcript and `enter` expands or collapses the selected one.
+carries the open changeset's id (`Transcript — cs-fd447f`), which is how you
+find that turn again with `lw session show`; once review commits or rejects
+the changeset the title keeps the id with its state. A turn that staged
+nothing has no id to show. `↑`/`↓` select a tool call in the transcript and
+`enter` expands or collapses the selected one.
 The header's right side tracks the buffer the whole time: the moment the
 agent stages something, `no changeset` becomes `cs-fd447f · 1 op · checks
 ✓`. Pressing `ctrl+r` jumps straight to Review:
@@ -753,20 +756,23 @@ returns to `no changeset`, and the journal gets its `commit_end` line.
 
 Not every Ask turn stages something. On an empty vault, `lw log` after an
 Ask turn that only answered a question (nothing to cite, nothing to stage)
-reads:
-
-```
-changeset_opened   … message="ask: Which pages exist so far?"
-changeset_rejected … message="ask turn staged nothing"
-```
+shows nothing new: the turn opened no changeset, so there is no
+`changeset_opened`/`changeset_rejected` pair to read and no `rejected/`
+directory to find.
 
 ### Reading a conversation back
 
-Nothing above is lost when the turn ends. Every agent conversation is
-recorded as it happens, in the vault, under the changeset it opened — a
-session *is* a changeset, and the session id in the Transcript panel's title
-is the changeset id — and the recording stays after the changeset is
-committed or rejected. `lw session list` shows what is on disk, newest first:
+A turn that staged something is not lost when it ends. The conversation is
+recorded in the vault, under the changeset the turn staged into — a session
+*is* a changeset, and the session id in the Transcript panel's title is the
+changeset id — and the recording stays after the changeset is committed or
+rejected. (The Ask pane keeps its conversation in memory until a turn's first
+staged op; from there the turn is written into the changeset's transcript as it
+happens, together with the questions and answers that led to it, marked
+`· carried`. A question that only answered is not written anywhere, nor is a
+turn that never staged an op (every staging call refused), and `lw session list`
+does not show them; a changeset whose ops were staged and later dropped keeps
+the session already written.) `lw session list` shows what is on disk, newest first:
 
 ```
 $ lw session list
@@ -1026,13 +1032,13 @@ its id and op count, `lw diff` shows what it would write — then either
 curator will not synthesize a claim it cannot cite: every page needs
 provenance back to something in `raw/`, and needs at least two outbound
 `[[wikilinks]]`. Asking the Ask screen to "create a page about X" before you
-have ingested anything gets a reasoned refusal, not a fabricated page (and
-the empty changeset that turn opened is discarded for you) — ingest a source
-first. `lw query` never writes pages at all; it only answers.
+have ingested anything gets a reasoned refusal, not a fabricated page —
+ingest a source first. `lw query` never writes pages at all; it only answers.
 
 **Where the state actually lives.** `.llmwiki/journal.ndjson` is the
 append-only event log; `.llmwiki/changesets/{open,committed,rejected}/`
 holds every changeset, each with the `session.ndjson` transcript that
-produced it, forever — git-ignored by the vault `.gitignore`, and readable
-again with `lw session show`. See [changesets.md](changesets.md) for the full
+produced it (an Ask turn that staged is written into it), forever —
+git-ignored by the vault `.gitignore`, and readable again with
+`lw session show`. See [changesets.md](changesets.md) for the full
 layout and lifecycle.

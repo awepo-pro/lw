@@ -6,7 +6,6 @@
 package ask
 
 import (
-	"os"
 	"strings"
 	"testing"
 
@@ -115,8 +114,8 @@ func TestThinkingStatusLine(t *testing.T) {
 // while the reasoning itself never enters the scrollback entries or the
 // session file.
 func TestReasoningToggle(t *testing.T) {
-	root, engine, csID := liveVault(t)
-	store := agent.NewFileSessions(engine.Vault().Root())
+	_, engine, _ := liveVault(t)
+	store := agent.NewAskSessions(agent.NewFileSessions(engine.Vault().Root()))
 
 	const r1 = "considering the vault layout and the question's scope. "
 	const r2 = "settling on the answer now."
@@ -201,9 +200,18 @@ func TestReasoningToggle(t *testing.T) {
 			t.Fatalf("entry %d carries reasoning text; the tail is pane state only: %+v", i, e)
 		}
 	}
-	if b, err := os.ReadFile(sessionPath(root, csID)); err == nil {
-		if strings.Contains(string(b), "vault layout") {
-			t.Fatal("session.ndjson carries reasoning text; reasoning is display-only in the pane")
+	// 057: the pane's transcript lives in its conversation, not a changeset's
+	// session.ndjson; its full log must not hold the thinking either.
+	if m.convID == "" {
+		t.Fatal("the turn left no conversation")
+	}
+	raw, err := agent.RawRecords(store, m.convID)
+	if err != nil {
+		t.Fatalf("RawRecords: %v", err)
+	}
+	for _, r := range raw {
+		if strings.Contains(r.Content, "vault layout") || strings.Contains(r.Reasoning, "vault layout") {
+			t.Fatalf("the conversation carries reasoning text in %+v; reasoning is display-only in the pane", r)
 		}
 	}
 }

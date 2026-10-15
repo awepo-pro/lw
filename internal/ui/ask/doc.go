@@ -5,7 +5,7 @@
 // transcript.go draws the transcript's contents (empty state, conversation
 // turn shape, tool rows); inline.go is the inline renderer and its
 // styled-cell wrap; state.go folds agent events into the scrollback;
-// stream.go is the event pump and turn start; session.go is the
-// session/changeset lifecycle; file.go is the file key (conversation
-// carry-over, the recorded answer, ctrl+s, 009).
+// stream.go is the event pump, turn start and the adopt fallback; session.go is
+// the in-memory conversation's lifecycle (057); file.go is the file key (the
+// recorded answer, ctrl+s, 009).
 package ask

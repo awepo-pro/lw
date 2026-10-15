@@ -88,16 +88,15 @@ func (m *Model) applyEvent(ev agent.Event) tea.Cmd {
 			// the partial text it streamed must not survive it (retry.go).
 			m.retryRound(e.Reason)
 		case agent.StageEv:
-			// Only the pane's own auto-reject streams an empty StageEv while
-			// its turn is active (stream.go forwardTurn) — the one turn that
-			// owes the `nothing staged` hint. The id is captured now because
-			// the StageChangedMsg this command produces comes back through
-			// changesetGone, which clears m.sessionID on its way; the hint
-			// itself lands after the turn's terminal line (title.go
-			// appendKeptHint).
-			if e.ChangesetID == "" && m.turnActive {
-				m.hintAfterTurn = m.sessionID
-			}
+			// 057: the changeset the turn staged into, remembered so a Review
+			// commit or reject of THAT changeset can cancel the turn
+			// (changesetGone) and an unrelated one cannot. The turn's own empty
+			// StageEv — a stage.* call that left nothing open, or the loop
+			// rejecting the empty changeset its lazy open made — says that
+			// changeset is gone, so it is forgotten: the ui.StageChangedMsg{} this
+			// command produces cannot be told from a Review verdict, and must not
+			// cancel the turn that is delivering its terminal event.
+			m.stagedID = e.ChangesetID
 			cmd = stageChangedCmd(e)
 		case agent.DoneEv:
 			// The frozen conversation grids render a clean stop's turn
@@ -115,16 +114,8 @@ func (m *Model) applyEvent(ev agent.Event) tea.Cmd {
 				// can file it (file.go).
 				m.recordLastAnswer()
 			}
-			// A-806: this turn ended cleanly, so if it is the one
-			// hintAfterTurn names — self-opened, staged nothing, auto-
-			// rejected — its kept state word displays as `answered`.
-			// Captured before appendKeptHint consumes the hint; an ErrorEv
-			// turn reaches appendKeptHint without this, and stays
-			// `rejected`.
-			m.answeredID = m.hintAfterTurn
-			m.appendKeptHint()
-			// 009 §3.2: the file hint lands after the terminal line and the
-			// kept hint, and only when the answer is fileable.
+			// 009 §3.2: the file hint lands after the terminal line, and
+			// only when the answer is fileable.
 			m.appendFileHint()
 		case agent.ErrorEv:
 			msg := "unknown error"
@@ -151,7 +142,6 @@ func (m *Model) applyEvent(ev agent.Event) tea.Cmd {
 			// fileable (009 §3.2).
 			m.forgetLastAnswer()
 			m.endTurnError(msg)
-			m.appendKeptHint()
 		}
 	})
 	return cmd

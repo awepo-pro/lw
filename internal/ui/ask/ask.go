@@ -39,10 +39,10 @@ type Model struct {
 	// turnErrored is the last finished turn's verdict (016 F.M4): endTurn
 	// clears it, endTurnError sets it, nothing else writes it, and the
 	// mascot reverses on it while the pane is idle. It deliberately does
-	// not read the scrollback tail instead: an errored nothing-staged turn
-	// ends with its kept hint (title.go appendKeptHint) and a refused
-	// submit appends a notice, either of which would hide a real error
-	// behind a kindStatus tail entry.
+	// not read the scrollback tail instead: a refused submit appends a
+	// notice, and a turn whose adopt step failed appends a status line after
+	// its terminal one, either of which would hide a real error behind a
+	// kindStatus tail entry.
 	turnErrored bool
 
 	input string // the box's current, unsent text
@@ -58,52 +58,42 @@ type Model struct {
 	// own W×H and does not need these).
 	vw, vh int
 
-	// sessionID is the changeset id the running (or most recent) turn ran
-	// under — a session is keyed by its changeset (backbone §9, C-102) —
-	// and "" when no turn of this pane's has a session to close. It is what
-	// changesetGone archives when the changeset is committed or rejected.
-	sessionID string
-
-	// convID is the session id the pane's most recent turn ran under (009
-	// §3.1). Unlike sessionID it is NOT cleared by changesetGone — the
-	// archived session is what the next turn seeds a fresh session from.
+	// convID is the id of the pane's ONE conversation (057 D3): minted on the
+	// first submit as "ask-" and 16 hex digits, created in the agent's session
+	// store (in memory in the TUI — agent.NewAskSessions), and reused by every
+	// turn, ask or filing, until the TUI ends. Before 057 each turn ran in its
+	// own changeset's session and the previous one was seeded into it (009).
 	convID string
+
+	// stagedID is the changeset the running (or most recent) turn staged into:
+	// the id of the last StageEv it emitted, "" for a turn that has staged
+	// nothing — the normal ask. changesetGone cancels a running turn only when
+	// this names the changeset that went away (session.go); the next turn
+	// resets it.
+	stagedID string
+
+	// adopted receives the error of the running turn's adopt step, if it had
+	// one (stream.go forwardTurn): read non-blockingly when the stream closes
+	// and shown as a status line. nil with no turn running.
+	adopted <-chan error
 
 	// titleID is the open changeset's id for the Transcript panel's title
 	// (005 contract §6), "" when none is open. It is maintained OFF the
 	// render path, exactly the way the shell maintains its own stage
 	// summary (app.go refreshStage): seeded once in New and refreshed on
-	// ui.StageChangedMsg / ui.VaultReloadedMsg / turnStartedMsg — all
-	// Update-thread — because Engine.Current both does filesystem I/O and
-	// writes the engine's unlocked open/nextOp fields, and the turn
-	// goroutine calls Current concurrently with rendering frames. The kept
-	// id and the hint below are the rest of the title's state machine
-	// (title.go).
+	// ui.StageChangedMsg / ui.VaultReloadedMsg — all Update-thread — because
+	// Engine.Current both does filesystem I/O and writes the engine's unlocked
+	// open/nextOp fields, and the turn goroutine calls Current concurrently
+	// with rendering frames. The kept id below is the rest of the title's state
+	// machine (title.go).
 	titleID string
 
-	// keptID and keptState hold the session the title keeps after its
-	// changeset stops being open (005 contract §6, as amended by R-509):
-	// keptState is resolved by a tea.Cmd (title.go fateCmd) and is "" — no
-	// suffix — until the answer lands, and after a failure or an "open"
-	// answer. Update-thread fields the render path only reads.
+	// keptID and keptState hold the changeset the title keeps after it stops
+	// being open (005 contract §6, as amended by R-509): keptState is resolved
+	// by a tea.Cmd (title.go fateCmd) and is "" — no suffix — until the answer
+	// lands, and after a failure or an "open" answer. Update-thread fields the
+	// render path only reads.
 	keptID, keptState string
-
-	// hintAfterTurn is the session id of a turn the pane just auto-rejected
-	// for staging nothing — the empty StageEv seen while turnActive — whose
-	// `nothing staged` hint is owed once that turn's terminal line lands
-	// (title.go appendKeptHint). "" when no hint is owed.
-	hintAfterTurn string
-
-	// answeredID is the changeset id of a turn that opened itself, staged
-	// nothing, and ended cleanly (DoneEv, not ErrorEv) — the same turn
-	// hintAfterTurn names, recorded when its terminal line lands (state.go's
-	// DoneEv case). While the title keeps this very id, its `rejected`
-	// engine state renders as the display word `answered`: a question
-	// stages no op, so the pane auto-rejects its own empty changeset, and
-	// `rejected` read as a verdict on the question (008 contract §13,
-	// A-806). Display only — disk and titleFateMsg keep `rejected` — and
-	// cleared wherever keptID is (title.go dropKeptTitle).
-	answeredID string
 
 	// cancel aborts the running turn's context; nil until startTurn runs.
 	cancel func()
@@ -250,7 +240,7 @@ func (m *Model) Init() tea.Cmd { return m.animArm() }
 
 // Update handles the shell's background-colour and colour-profile
 // broadcasts, the wheel, this screen's keymap, the event pump's own
-// messages, the session-closed outcome and the shell's broadcasts
+// messages and the shell's broadcasts
 // (backbone §12 C-80: matches tea.KeyPressMsg, never tea.KeyMsg).
 func (m *Model) Update(msg tea.Msg) (ui.Pane, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -292,15 +282,15 @@ func (m *Model) Update(msg tea.Msg) (ui.Pane, tea.Cmd) {
 		return m, m.rearm()
 
 	case turnStartedMsg:
-		// C-124/D-DH: runTurn's own report of the changeset it resolved to
-		// run this turn under (or a failure that ends the turn before
-		// Agent.Send ever ran) — delivered before any agent.Event so
-		// sessionID and m.ch are never behind the turn they track.
+		// runTurn's own report that the turn's conversation is open (or a
+		// failure that ends the turn before Agent.Send ever ran) — delivered
+		// before any agent.Event so m.ch is never behind the turn it tracks.
 		if msg.err != nil {
 			if m.cancel != nil {
 				m.cancel()
 				m.cancel = nil
 			}
+			m.adopted = nil
 			m.endTurnError(msg.err.Error())
 			// animArm even on the failure report: endTurnError flipped the
 			// round flags the waiting edge tracks (026 F.C3), and the NEXT
@@ -312,11 +302,7 @@ func (m *Model) Update(msg tea.Msg) (ui.Pane, tea.Cmd) {
 			// anim off.
 			return m, m.animArm()
 		}
-		m.sessionID = msg.sessionID
-		m.convID = msg.sessionID  // 009 §3.1: the pane remembers its latest session even after changesetGone
-		m.titleID = msg.sessionID // the turn's changeset is the open one now
-		m.dropKeptTitle()         // it replaces whatever the title kept
-		m.hintAfterTurn = ""      // a new turn owes nothing to the old one's hint
+		m.convID = msg.sessionID // 057: the conversation every turn of this pane runs in
 		m.ch = msg.ch
 		// animArm (025 F.W3) arms the wait blink when the turn reports in
 		// still waiting — the ctrl+s filing turn enters waiting through
@@ -334,7 +320,6 @@ func (m *Model) Update(msg tea.Msg) (ui.Pane, tea.Cmd) {
 		m.ch = nil
 		m.turnActive = false
 		m.resetReasoningRound() // a turn cut off mid-round leaves no thinking line behind
-		m.hintAfterTurn = ""    // a turn cancelled before its terminal line owes no hint
 		// ...and records nothing, so its filing marker (file.go) must not
 		// leak onto the next turn's answer either.
 		m.filingTurn = false
@@ -345,6 +330,18 @@ func (m *Model) Update(msg tea.Msg) (ui.Pane, tea.Cmd) {
 		if m.cancel != nil {
 			m.cancel()
 			m.cancel = nil
+		}
+		// 057 D4: the turn's adopt step ran before the stream closed (it holds
+		// the terminal event back), so its failure, if any, is already on the
+		// channel. It never failed the finished turn; it is shown here, after
+		// the terminal line, and logged where it happened (stream.go).
+		if m.adopted != nil {
+			select {
+			case err := <-m.adopted:
+				m.appendStatus("could not save this turn into its changeset's session: " + err.Error())
+			default:
+			}
+			m.adopted = nil
 		}
 		// The turn is over, idle again: animArm (023 F.A3) re-arms the
 		// blink the turn's ticks let die; nil with anim off.
@@ -377,12 +374,6 @@ func (m *Model) Update(msg tea.Msg) (ui.Pane, tea.Cmd) {
 		// stops the chain by not re-issuing (F.C3).
 		return m, m.handleSendCount(msg)
 
-	case sessionClosedMsg:
-		if msg.err != nil {
-			m.appendStatus("closing the session failed: " + msg.err.Error())
-		}
-		return m, m.fateIfOwed()
-
 	case titleFateMsg:
 		// The kept id's state lookup came back (title.go noteTitleFate);
 		// recording it is all there is to do — the next View renders the
@@ -394,17 +385,13 @@ func (m *Model) Update(msg tea.Msg) (ui.Pane, tea.Cmd) {
 		// Broadcast by the shell to every pane. The populated form is the
 		// pane's own StageEv coming back (or review reporting a change); the
 		// empty form is how review says "no changeset is open any more" —
-		// Commit and Reject both emit it — and that is when this pane's
-		// session has to close (backbone §9; s5-agent-loop.md S5-T5). The
-		// title's id rides the same message, and the empty form is also what
-		// keeps it (title.go noteStageChanged). The archive's command is the
-		// one Update returns — the session lifecycle pins it — and the kept
-		// id's state lookup rides the archive's outcome instead of batching
-		// beside it (fateIfOwed).
+		// Commit and Reject both emit it — and that is when a turn that staged
+		// into it must stop (changesetGone; the conversation itself is not the
+		// changeset's, 057). The title's id rides the same message, and the
+		// empty form is also what keeps it (title.go noteStageChanged); the
+		// kept id's state lookup is the command Update returns.
 		fate := m.noteStageChanged(msg.ChangesetID)
-		if close := m.changesetGone(msg.ChangesetID); close != nil {
-			return m, close
-		}
+		m.changesetGone(msg.ChangesetID)
 		return m, fate
 
 	case tea.KeyPressMsg:
@@ -492,24 +479,15 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (ui.Pane, tea.Cmd) {
 //     ask says so and every other screen carries on (S5-T5's degrade
 //     requirement).
 //
-// Everything past those refusals — the nil-agent degrade, the changeset
-// read, the echo, the bookkeeping and the start — is beginTurn (file.go),
-// the same path ctrl+s's filing turn runs on (009 §3.3).
+// Everything past those refusals — the nil-agent degrade, the echo, the
+// bookkeeping and the start — is beginTurn (file.go), the same path ctrl+s's
+// filing turn runs on (009 §3.3).
 //
 // A third refusal used to fire here — "no open changeset" — because a
-// session is keyed by its changeset (backbone §9, C-102) and a fresh
-// vault's first question had nowhere to run. C-124/D-DH removed it: when
-// this synchronous, bounded read finds nothing open, the turn opens its
-// own changeset itself, inside runTurn's goroutine where the filesystem and
-// lint work that entails belongs (backbone §9, C-105) — see stream.go's
-// runTurn and resolveTurnChangeset.
-//
-// The engine read this performs when a changeset IS already open —
-// Engine.Current, one small directory scan plus one small JSON file — is
-// bounded and local, the same order of work review's own commit path
-// already does in Update; finding one this way (rather than waiting on the
-// turn to report back) is what lets this pane's bookkeeping (m.sessionID)
-// stay synchronous for that case, exactly as before D-DH.
+// session was keyed by its changeset (backbone §9, C-102) and a fresh vault's
+// first question had nowhere to run. C-124/D-DH replaced it with a changeset
+// the turn opened for itself; 057 removed that too: the turn runs in the pane's
+// in-memory conversation and a changeset opens only if the turn stages (stream.go).
 func (m *Model) submitInput() tea.Cmd {
 	msg := m.input
 

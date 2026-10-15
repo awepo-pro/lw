@@ -99,8 +99,9 @@ lw lint && lw log --limit 20 && lw status
 ```
 
 `lw` with no command opens the TUI: browse, review, ask, lint, log. Typing a
-question on the Ask screen opens a changeset for you if none is open, and
-discards it automatically if the turn stages nothing. See
+question on the Ask screen opens nothing: it runs in an in-memory conversation,
+and a changeset opens only when the agent makes a staging call (and is rejected
+again for you if nothing ends up staged in it). See
 [docs/tutorial.md](docs/tutorial.md) for the full walkthrough, including the
 TUI.
 
@@ -220,11 +221,14 @@ Ask's message box takes all typing: `q` and `?` type into the message
 instead of quitting or opening the overlay — quit from Ask with `ctrl+c`.
 Its answers render as markdown — headings, lists, code, tables, links —
 through the same renderer as the previews and `lw diff --render`, and the
-Transcript panel's title carries the session id (`╭ Transcript — cs-1a2b3c ──…`),
-so `lw session show` can read the same conversation back later. When that
-changeset is committed or rejected the title keeps the id with its state
-(`Transcript — cs-1a2b3c · rejected`), and a turn that staged nothing says
-so and names `lw session show <id>`. Keys rebind
+Transcript panel's title carries the open changeset's id
+(`╭ Transcript — cs-1a2b3c ──…`; plain `Transcript` while none is open). A
+question that only answers leaves no changeset, no journal line and no
+transcript file — the conversation lives in memory for as long as the TUI does
+— and a turn that stages something is written into its changeset's
+transcript, so `lw session show` can read it back. When that changeset is
+committed or rejected the title keeps the id with its state
+(`Transcript — cs-1a2b3c · rejected`). Keys rebind
 from `~/.config/lw/hotkeys.toml`; see
 [docs/hotkeys.md](docs/hotkeys.md) for the table and the file format.
 
@@ -307,8 +311,18 @@ tools need nothing from it.
 
 ## Transcripts
 
-Every agent conversation is recorded as it happens, in the vault, under the
-changeset it opened — a session *is* a changeset, and the two share one id:
+Every agent conversation that stages something is recorded in the vault, under
+the changeset it staged into — a session *is* a changeset, and the two share
+one id. `lw ingest` and `lw lint --fix` record theirs as they go. A TUI Ask turn
+runs in memory until its first staged op; from that op on it is written into the
+changeset's transcript as it happens — the questions and answers that led to it
+first, when the changeset had no transcript yet — so a crash, a quit, or a Review
+commit in the middle of the turn keeps it. A turn that never stages an op leaves
+no transcript: a question that only answers writes nothing, and a ctrl+s filing
+turn whose staging calls were all refused has its empty changeset rejected.
+(The transcript starts at the first staged op, so a changeset whose ops were
+staged and later dropped keeps the one already written.) Where a transcript
+lives:
 
 ```
 <vault>/.llmwiki/changesets/{open,committed,rejected}/<changeset-id>/session.ndjson
