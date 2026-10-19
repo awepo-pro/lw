@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"path"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/awepo-pro/lw/internal/stage"
@@ -137,15 +136,24 @@ type stagePatchPageArgs struct {
 
 func stagePatchPageTool(d Deps) Tool {
 	// 043 T2: the pending shrink confirmations, keyed path+"\n"+section.
-	// They live on the tool instance — one per registry — because a
-	// confirmation is conversational state, not changeset state: it must not
-	// survive a restart (a fresh process re-asks, costing one round), and it
-	// must not be visible to another changeset. The mutex covers MCP, where
-	// calls arrive on many goroutines.
-	var (
-		armMu      sync.Mutex
-		shrinkArms = map[string]bool{}
-	)
+	// They are one set per registry — a confirmation is conversational
+	// state, not changeset state: it must not survive a restart (a fresh
+	// process re-asks, costing one round), and it must not be visible to
+	// another changeset. The set's mutex covers MCP, where calls arrive on
+	// many goroutines.
+	//
+	// 063: the set lives on the registry's copy of Deps instead of in this
+	// closure, so Registry.Replay can restore it. An external agent runs one
+	// `lw tool` process per call, and "re-asks, costing one round" turns into
+	// "can never confirm": the process that armed the key is gone before the
+	// call that carries allow_shrink. Replay is the only way an arm crosses a
+	// process (A-063-1); every registry that does not call it keeps 043's
+	// rule untouched. A Deps built without NewRegistry has no set and gets a
+	// private one here, as the closure's variable always was.
+	arms := d.arms
+	if arms == nil {
+		arms = newShrinkArms()
+	}
 	return Tool{Name: "stage.patch_page", Description: "Propose a section-level page patch. For a small edit — add a link, fix a sentence — use op replace_text: it changes only the text you quote. replace_section rewrites the whole section body, subsections included. When the open changeset already stages the page, the patch composes against that staged state, not the committed bytes.", Schema: json.RawMessage(stagePatchPageSchema), Handler: func(ctx context.Context, args json.RawMessage) (Result, error) {
 		var a stagePatchPageArgs
 		if err := decodeArgs(args, &a); err != nil {
@@ -211,27 +219,20 @@ func stagePatchPageTool(d Deps) Tool {
 		}
 		switch a.Op {
 		case "replace_section", "replace_text":
-			armMu.Lock()
-			confirmed := a.AllowShrink && shrinkArms[armKey]
-			if confirmed {
-				// The arm is consumed atomically with the check (043 T2r):
-				// check-then-act across the mutex would let two concurrent
-				// flagged calls both read the one arm and both apply.
-				delete(shrinkArms, armKey)
-			}
-			armMu.Unlock()
+			// The arm is consumed atomically with the check (043 T2r):
+			// check-then-act across the mutex would let two concurrent
+			// flagged calls both read the one arm and both apply.
+			confirmed := arms.confirm(armKey, a.AllowShrink)
 			newBody, refuse, shrinkFired := guardedReplace(page, sec, a, confirmed)
 			if refuse != nil {
-				armMu.Lock()
 				if confirmed || shrinkFired {
 					// confirmed: the arm was consumed above but this
 					// refusal means the shrink never landed, so it goes
 					// back; shrinkFired: the refusal arms the key for its
 					// repeat. A non-shrink refusal (nested loss, find
 					// problems) without the flag touches nothing.
-					shrinkArms[armKey] = true
+					arms.arm(armKey)
 				}
-				armMu.Unlock()
 				// The call set the flag but no refusal of this
 				// path+section had armed the key (043 T2), so the last
 				// line — which would have it repeat blindly — is swapped
@@ -287,14 +288,13 @@ func stagePatchPageTool(d Deps) Tool {
 		if err == nil && !res.IsError {
 			res = withNotes(res, notes)
 		}
-		armMu.Lock()
 		if err != nil || res.IsError {
 			if armConsumed {
 				// The check consumed the arm (043 T2r) but this call never
 				// staged, so the confirmation goes back — a staging refusal
 				// must not silently eat it. A call whose arm was not
 				// consumed touches nothing here.
-				shrinkArms[armKey] = true
+				arms.arm(armKey)
 			}
 		} else {
 			// 043 T3: ANY staged edit on path+section disarms the key —
@@ -302,9 +302,8 @@ func stagePatchPageTool(d Deps) Tool {
 			// directly follow its refusal: letting the arm survive a
 			// successful edit would admit a much later pre-emptive
 			// allow_shrink on a stale refusal.
-			delete(shrinkArms, armKey)
+			arms.disarm(armKey)
 		}
-		armMu.Unlock()
 		return res, err
 	}}
 }
@@ -327,6 +326,12 @@ const (
 // only counts as a confirmation after THIS refusal. The test file pins the
 // same text byte for byte.
 const shrinkConfirmLine = `"allow_shrink" counts only as a confirmation after this refusal. If deleting this text is intended, repeat the same call now.`
+
+// shrinkAdviceLine is the last line of a plain shrink refusal: the way out for
+// a small edit, and the confirmation for a meant deletion. ShrinkRefusal reads a
+// recorded refusal back by it and by shrinkConfirmLine (063), so both live in
+// one place.
+const shrinkAdviceLine = `For a small edit (a link, a sentence) use op replace_text. If deleting this text is intended, repeat the call with "allow_shrink": true.`
 
 // shrinkArmKey keys a pending shrink confirmation by path and section
 // (043 T2): a confirmation licenses deleting most of THAT section and
@@ -480,7 +485,7 @@ func refuseShrink(body string, sec vault.Section, newRegion string, a stagePatch
 	if more > 0 {
 		msg += fmt.Sprintf("\n- … and %d more", more)
 	}
-	return &Result{IsError: true, Content: msg + "\nFor a small edit (a link, a sentence) use op replace_text. If deleting this text is intended, repeat the call with \"allow_shrink\": true."}
+	return &Result{IsError: true, Content: msg + "\n" + shrinkAdviceLine}
 }
 
 // sectionParagraphs splits s into its blank-line-separated blocks, each the

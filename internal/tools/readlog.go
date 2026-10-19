@@ -37,6 +37,12 @@ type unreadSource struct {
 // registry are checked, because only for those does the log know the reads
 // it did not see are reads that did not happen.
 //
+// 063 adds the one way in: Registry.Replay. An external agent drives ingest
+// one `lw tool` process per call, and each process builds a fresh registry, so
+// the log of the call before is gone; Replay rebuilds it from the changeset's
+// own session (the live sources, the raw.get records, the last close refusal).
+// A registry that never calls Replay starts blind exactly as before.
+//
 // Tools may run concurrently within a round, so every method takes mu; the
 // log is -race clean. The methods are nil-safe so a Deps built by hand
 // (Deps{}) needs no log: a nil log records and reports nothing.
@@ -45,10 +51,11 @@ type readLog struct {
 	ingested map[string]int          // staged path → chunk count raw.get reports for it
 	read     map[string]map[int]bool // staged path → chunks served so far
 	refused  string                  // the unread set the last close refusal named; "" when none is outstanding
+	held     map[string]bool         // 063: sources Replay restored, live at every close though no ingest_source op names them
 }
 
 func newReadLog() *readLog {
-	return &readLog{ingested: map[string]int{}, read: map[string]map[int]bool{}}
+	return &readLog{ingested: map[string]int{}, read: map[string]map[int]bool{}, held: map[string]bool{}}
 }
 
 // noteIngest records that this registry staged path, whose body raw.get
@@ -87,6 +94,37 @@ func (l *readLog) seedRecompile(v *vault.Vault, paths []string) {
 			l.noteIngest(p, RawChunkCount(r.Body))
 		}
 	}
+}
+
+// hold marks path as live at every close of this registry, whether or not the
+// changeset names it (063). Registry.Replay holds each source it restores: a
+// 055 recompile target is a committed raw that no ingest_source op names, so
+// closeVerdict's changeset-derived live set would prune it as dropped. The
+// in-process recompile turn keeps it live through Deps.Recompile; a `lw tool`
+// process builds its registry fresh for one call, and Replay's live list is
+// then the one thing that names the target, so Replay must keep it live
+// itself. Only Replay calls it, so a registry that never replays has an empty
+// set and closeVerdict is exactly what it was.
+func (l *readLog) hold(path string) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.held[path] = true
+}
+
+// setRefused restores the unread set the last close refusal named — "" for
+// none outstanding — from a replayed history (063). closeVerdict is otherwise
+// the refusal memory's only writer; Replay applies the same transitions to the
+// close records it reads back.
+func (l *readLog) setRefused(key string) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.refused = key
 }
 
 // noteRead records that raw.get served chunk of path. A source this registry
@@ -172,6 +210,12 @@ func (l *readLog) closeVerdict(live func(path string) bool) (unread []unreadSour
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if live != nil && len(l.held) > 0 {
+		// 063: what Replay restored stays live whatever the changeset's own
+		// set says. held is read under the lock this call already holds.
+		changeset := live
+		live = func(p string) bool { return changeset(p) || l.held[p] }
+	}
 	if live != nil {
 		for p := range l.ingested {
 			if !live(p) {
@@ -210,10 +254,16 @@ func unreadClauses(unread []unreadSource) string {
 // rounds), and that a repeat closes anyway. The wording is a frozen
 // contract; the trace and the model both quote it.
 func unreadRefusal(unread []unreadSource) string {
-	return "stage.close: not every chunk of the sources ingested in this changeset was read — " +
-		unreadClauses(unread) +
-		". Read them with raw.get (request several chunks in one round), or call stage.close again to close anyway."
+	return unreadRefusalHead + unreadClauses(unread) + unreadRefusalTail
 }
+
+// The two fixed halves of the refusal, around the clauses. UnreadRefusalKey
+// reads a recorded refusal back by them (063), so they are named once and the
+// producer and the recogniser cannot drift apart.
+const (
+	unreadRefusalHead = "stage.close: not every chunk of the sources ingested in this changeset was read — "
+	unreadRefusalTail = ". Read them with raw.get (request several chunks in one round), or call stage.close again to close anyway."
+)
 
 // unreadLine is the final line a stage.close that went through over an
 // unread set appends to its summary, so the trace and the review show that
