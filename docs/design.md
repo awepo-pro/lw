@@ -283,6 +283,7 @@ and `index.gob` regenerate from them.
 
 The same Go functions are exposed twice: to the in-process agent loop, and over MCP
 (`lw mcp`) so external clients can drive the vault.
+For ingest only, `lw ingest --prepare` plus `lw tool <name> '<json>'` lets an external agent with a shell curate, one process per call ([docs/tools.md](tools.md)).
 
 **Read — no side effects**
 

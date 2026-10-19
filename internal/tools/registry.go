@@ -66,6 +66,12 @@ type Deps struct {
 	// (a Deps used without NewRegistry) disables the guard — every method of
 	// a nil *readLog is a no-op.
 	reads *readLog
+	// arms is the 043 shrink-confirmation set stage.patch_page keeps, made
+	// per registry exactly like reads. It sits here, not in the tool's closure
+	// (063), so Registry.Replay can restore it from a changeset's session; a
+	// Deps used without NewRegistry leaves it nil and stage.patch_page then
+	// keeps a private set of its own, as it did before 063.
+	arms *shrinkArms
 }
 
 // ErrUnknownTool is returned by Registry.Call for a name with no
@@ -89,8 +95,13 @@ type Registry struct {
 // and stage.close — which close over d — all see the same log. Each call
 // makes a fresh one: a second registry over the same engine (another
 // process, in 019's join) must not inherit what this one has read.
+//
+// 063: it makes the registry's one shrink-arm set the same way, so
+// Registry.Replay can reach it — and a registry that never calls Replay holds
+// exactly the state it always did.
 func NewRegistry(d Deps) *Registry {
 	d.reads = newReadLog()
+	d.arms = newShrinkArms()
 	// 055: the recompile turn's committed raws are read-log sources from the
 	// first round. The slice is copied so the guard answers to the paths the
 	// registry was built with, not to a caller's later edit of its own.

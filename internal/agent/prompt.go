@@ -145,6 +145,16 @@ func systemPromptFor(hasSearch bool) string {
 	return promptBase + web + promptTail
 }
 
+// IngestSystemPrompt is the curator prompt the in-process ingest turn sends:
+// systemPromptFor(false), the base and tail with no web-lookup paragraphs,
+// because an ingest turn is not offered web.search (056, planFor) and the
+// prompt must not promise it. `lw ingest --prepare` (063) prints it into the
+// brief an external agent reads, so the agent curates by the very rules the
+// remote model would have been given. It is exported as this one function so
+// cmd/lw does not copy the bytes or choose the flag itself, and cannot drift
+// from what the loop sends.
+func IngestSystemPrompt() string { return systemPromptFor(false) }
+
 // askPromptBase is the opening of the ask prompt (039): who the model is, what
 // it may reach for, how to ground an answer and how to cite it. It ends with
 // the blank line that joins it to whatever follows — the web paragraphs on an
