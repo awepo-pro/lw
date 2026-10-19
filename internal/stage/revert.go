@@ -7,6 +7,8 @@ package stage
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -355,6 +357,7 @@ func (e *Engine) buildRevertOps(commitID string, prev, cur Snapshot, renames []r
 			if r, ok := e.vault.RawSource(p); ok && r.Original != "" {
 				skipped = append(skipped, r.Original)
 			}
+			skipped = append(skipped, e.committedIngestAssets(commitID, p)...)
 			continue
 		}
 		op := Op{
@@ -370,6 +373,56 @@ func (e *Engine) buildRevertOps(commitID string, prev, cur Snapshot, renames []r
 	}
 
 	return ops, skipped, nil
+}
+
+var rawAssetLinkRE = regexp.MustCompile(`(?:\.\./\.\./raw/assets/|raw/assets/)([a-z0-9]+(?:-[a-z0-9]+)*\.[a-z0-9]+)`)
+
+// committedIngestAssets returns any raw/assets/<name> paths added alongside
+// rawPath in commitID (064 F-2): read from the committed changeset's
+// OpIngestSource.Assets when available, with a fallback scan of rawPath's body
+// links against e.vault.Exists.
+func (e *Engine) committedIngestAssets(commitID, rawPath string) []string {
+	seen := make(map[string]bool)
+	var out []string
+	add := func(ap string) {
+		if ap != "" && !seen[ap] {
+			seen[ap] = true
+			out = append(out, ap)
+		}
+	}
+
+	if events, err := e.Journal().Query(Filter{Kinds: []EventKind{EvCommitBegin, EvCommitEnd}}); err == nil {
+		for _, ev := range events {
+			if ev.Commit != commitID || ev.Changeset == "" {
+				continue
+			}
+			csBytes, rerr := os.ReadFile(filepath.Join(e.changesetCommittedDir(), ev.Changeset, "changeset.json"))
+			if rerr != nil {
+				continue
+			}
+			var cs Changeset
+			if json.Unmarshal(csBytes, &cs) != nil {
+				continue
+			}
+			for _, op := range cs.Live() {
+				if op.Kind == OpIngestSource && op.Path == rawPath {
+					for _, a := range op.Assets {
+						add(a.Path)
+					}
+				}
+			}
+		}
+	}
+
+	if r, ok := e.vault.RawSource(rawPath); ok {
+		for _, m := range rawAssetLinkRE.FindAllStringSubmatch(r.Body, -1) {
+			ap := "raw/assets/" + m[1]
+			if e.vault.Exists(ap) {
+				add(ap)
+			}
+		}
+	}
+	return out
 }
 
 // provenanceForRevert returns the Provenance a revert's create_page

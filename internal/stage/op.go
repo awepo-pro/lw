@@ -70,6 +70,11 @@ func opTouches(op Op) []string {
 	if op.OriginalPath != "" {
 		out = append(out, op.OriginalPath)
 	}
+	for _, a := range op.Assets {
+		if a.Path != "" {
+			out = append(out, a.Path)
+		}
+	}
 	if op.From != "" {
 		out = append(out, op.From)
 	}
@@ -182,6 +187,12 @@ func refreshOp(op *Op, v, chainV *vault.Vault) {
 		stale = !ok || cur != op.Before
 	case OpCreatePage, OpIngestSource:
 		stale = v.Exists(op.Path)
+		for _, a := range op.Assets {
+			if v.Exists(a.Path) {
+				stale = true
+				break
+			}
+		}
 	case OpRenamePage:
 		stale = sourcesChanged(v, []string{op.From}, op.SourceSHAs)
 	case OpMergePages:

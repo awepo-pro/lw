@@ -188,8 +188,8 @@ func TestSyncVerbOutputs(t *testing.T) {
 
 	t.Run("format too new on the remote", func(t *testing.T) {
 		_, b, remote := syncPair(t)
-		pushFromScratch(t, remote, ".llmwiki/format", "{\"version\": 2}\n", "bump format")
-		want := "lw: sync: the remote vault is format 2; this lw supports 1 — upgrade lw on this PC, then lw sync\n"
+		pushFromScratch(t, remote, ".llmwiki/format", "{\"version\": 3}\n", "bump format")
+		want := "lw: sync: the remote vault is format 3; this lw supports 2 — upgrade lw on this PC, then lw sync\n"
 		for _, args := range [][]string{{"sync"}, {"sync", "--take-remote"}} {
 			stdout, stderr, code := b.lw(args...)
 			if code != 1 || stdout != "" || !stderrEndsWith(stderr, want) {
@@ -547,10 +547,10 @@ func TestSyncClone(t *testing.T) {
 
 	t.Run("a remote in a newer format is refused before anything is created", func(t *testing.T) {
 		_, _, remote := syncPair(t)
-		pushFromScratch(t, remote, ".llmwiki/format", "{\"version\": 2}\n", "bump format")
+		pushFromScratch(t, remote, ".llmwiki/format", "{\"version\": 3}\n", "bump format")
 		c := newSyncPC(t, "c")
 		stdout, stderr, code := c.lw("sync", "clone", remote, c.root)
-		want := "lw: sync: the remote vault is format 2; this lw supports 1 — upgrade lw on this PC, then lw sync\n"
+		want := "lw: sync: the remote vault is format 3; this lw supports 2 — upgrade lw on this PC, then lw sync\n"
 		if code != 1 || stdout != "" || !stderrEndsWith(stderr, want) {
 			t.Fatalf("exit %d stdout %q stderr %q; want 1 and %q", code, stdout, stderr, want)
 		}
@@ -572,7 +572,7 @@ func TestSyncStatusLines(t *testing.T) {
 		pinSyncClock(t, stamp)
 		a, _, remote := syncPair(t)
 		stdout, stderr, code := a.lw("sync", "status")
-		want := "remote   " + remote + "\nahead    0\nbehind   0\nformat   1 (this lw: 1)\nlast     2026-10-09T12:00:00Z\n"
+		want := "remote   " + remote + "\nahead    0\nbehind   0\nformat   1 (this lw: 2)\nlast     2026-10-09T12:00:00Z\n"
 		if code != 0 || stdout != want {
 			t.Fatalf("exit %d\nstdout %q\nwant   %q\nstderr %q", code, stdout, want, stderr)
 		}
@@ -584,7 +584,7 @@ func TestSyncStatusLines(t *testing.T) {
 			t.Fatal(err)
 		}
 		stdout, _, code := a.lw("sync", "status")
-		want := "remote   " + remote + "\nahead    0\nbehind   0\nformat   1 (this lw: 1)\nlast     never\n"
+		want := "remote   " + remote + "\nahead    0\nbehind   0\nformat   1 (this lw: 2)\nlast     never\n"
 		if code != 0 || stdout != want {
 			t.Fatalf("exit %d stdout %q; want %q", code, stdout, want)
 		}
@@ -597,7 +597,7 @@ func TestSyncStatusLines(t *testing.T) {
 		a.git("add", "-A")
 		a.git("commit", "--quiet", "-m", "local work")
 		stdout, _, code := a.lw("sync", "status")
-		want := "remote   " + remote + "\nahead    1\nbehind   0\nformat   1 (this lw: 1)\nlast     2026-10-09T12:00:00Z\n"
+		want := "remote   " + remote + "\nahead    1\nbehind   0\nformat   1 (this lw: 2)\nlast     2026-10-09T12:00:00Z\n"
 		if code != 0 || stdout != want {
 			t.Fatalf("exit %d stdout %q; want %q", code, stdout, want)
 		}
@@ -611,7 +611,7 @@ func TestSyncStatusLines(t *testing.T) {
 			t.Fatal("A could not push")
 		}
 		stdout, _, code := b.lw("sync", "status")
-		want := "remote   " + remote + "\nahead    0\nbehind   1\nformat   1 (this lw: 1)\nlast     2026-10-09T12:00:00Z\n"
+		want := "remote   " + remote + "\nahead    0\nbehind   1\nformat   1 (this lw: 2)\nlast     2026-10-09T12:00:00Z\n"
 		if code != 0 || stdout != want {
 			t.Fatalf("exit %d stdout %q; want %q", code, stdout, want)
 		}
@@ -628,7 +628,7 @@ func TestSyncStatusLines(t *testing.T) {
 		b.git("add", "-A")
 		b.git("commit", "--quiet", "-m", "local work")
 		stdout, _, code := b.lw("sync", "status")
-		want := "remote   " + remote + "\nahead    1\nbehind   1\nformat   1 (this lw: 1)\nlast     2026-10-09T12:00:00Z\ndiverged — run lw sync for details\n"
+		want := "remote   " + remote + "\nahead    1\nbehind   1\nformat   1 (this lw: 2)\nlast     2026-10-09T12:00:00Z\ndiverged — run lw sync for details\n"
 		if code != 0 || stdout != want {
 			t.Fatalf("exit %d stdout %q; want %q", code, stdout, want)
 		}
@@ -639,7 +639,7 @@ func TestSyncStatusLines(t *testing.T) {
 		_, b, remote := syncPair(t)
 		pushFromScratch(t, remote, ".llmwiki/format", "{\"version\": 3}\n", "bump format")
 		stdout, _, code := b.lw("sync", "status")
-		want := "remote   " + remote + "\nahead    0\nbehind   1\nformat   3 (this lw: 1)\nlast     2026-10-09T12:00:00Z\n"
+		want := "remote   " + remote + "\nahead    0\nbehind   1\nformat   3 (this lw: 2)\nlast     2026-10-09T12:00:00Z\n"
 		if code != 0 || stdout != want {
 			t.Fatalf("exit %d stdout %q; want %q", code, stdout, want)
 		}

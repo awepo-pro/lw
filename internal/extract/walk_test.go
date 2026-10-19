@@ -156,3 +156,50 @@ func TestWalkSymlinkedRoot(t *testing.T) {
 		}
 	}
 }
+
+func TestWalkSuppressesReferencedMarkdownImages(t *testing.T) {
+	dir := t.TempDir()
+	write := func(rel string, data []byte) {
+		path := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", filepath.Dir(rel), err)
+		}
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+
+	write("images/used.png", []byte("used-png"))
+	write("sub/chart.svg", []byte("<svg>chart</svg>"))
+	write("images/unused.png", []byte("unused-png"))
+
+	noteContent := `# Note with Images
+
+![used](images/used.png)
+<img src="sub/chart.svg">
+`
+	write("note.md", []byte(noteContent))
+
+	files, skipped, err := Walk(dir, Chain(NewFile()))
+	if err != nil {
+		t.Fatalf("Walk error: %v", err)
+	}
+
+	wantFiles := []string{filepath.Join(dir, "note.md")}
+	if len(files) != len(wantFiles) {
+		t.Fatalf("files = %v, want %v", files, wantFiles)
+	}
+	if files[0] != wantFiles[0] {
+		t.Errorf("files[0] = %q, want %q", files[0], wantFiles[0])
+	}
+
+	wantSkipped := []Skipped{
+		{filepath.Join(dir, "images/unused.png"), "unsupported type"},
+	}
+	if len(skipped) != len(wantSkipped) {
+		t.Fatalf("skipped = %+v, want %+v", skipped, wantSkipped)
+	}
+	if skipped[0] != wantSkipped[0] {
+		t.Errorf("skipped[0] = %+v, want %+v", skipped[0], wantSkipped[0])
+	}
+}

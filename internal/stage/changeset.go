@@ -60,6 +60,15 @@ type Hunk struct {
 	Dropped bool     `json:"dropped,omitempty"`
 }
 
+// AssetRef is one non-markdown file staged under raw/assets/ alongside an
+// ingest_source op (064). Path and SHA256 persist in changeset.json; Content
+// is held in memory only until Engine.Append writes it to the CAS.
+type AssetRef struct {
+	Path    string `json:"path"`
+	SHA256  string `json:"sha256"`
+	Content []byte `json:"-"`
+}
+
 // Op is one proposed edit within a Changeset.
 type Op struct {
 	ID        string   `json:"id"` // "op1", "op2", … unique within the changeset
@@ -78,16 +87,17 @@ type Op struct {
 	// "raw/papers/x.pdf" — and the sha256 of its bytes, which is the CAS
 	// key the bytes are recoverable under. All three original fields are
 	// set together or not at all; every other kind leaves them empty.
-	OriginalPath    string   `json:"original_path,omitempty"`
-	Original        string   `json:"original,omitempty"`
-	OriginalContent []byte   `json:"-"` // bytes in, sha out (like Content, D-AY)
-	Hunks           []Hunk   `json:"hunks,omitempty"`
-	Cascade         []Op     `json:"cascade,omitempty"`     // rename: inbound wikilink rewrites
-	SourceSHAs      []string `json:"source_shas,omitempty"` // staleness anchor (MASTER §9 D-BC)
-	Rationale       string   `json:"rationale,omitempty"`
-	Provenance      []string `json:"provenance,omitempty"`
-	State           OpState  `json:"state"`
-	Content         []byte   `json:"-"` // post-image bytes in, sha out (MASTER §9 D-AY)
+	OriginalPath    string     `json:"original_path,omitempty"`
+	Original        string     `json:"original,omitempty"`
+	OriginalContent []byte     `json:"-"` // bytes in, sha out (like Content, D-AY)
+	Assets          []AssetRef `json:"assets,omitempty"`
+	Hunks           []Hunk     `json:"hunks,omitempty"`
+	Cascade         []Op       `json:"cascade,omitempty"`     // rename: inbound wikilink rewrites
+	SourceSHAs      []string   `json:"source_shas,omitempty"` // staleness anchor (MASTER §9 D-BC)
+	Rationale       string     `json:"rationale,omitempty"`
+	Provenance      []string   `json:"provenance,omitempty"`
+	State           OpState    `json:"state"`
+	Content         []byte     `json:"-"` // post-image bytes in, sha out (MASTER §9 D-AY)
 }
 
 // Contract — Content (MASTER §9 D-AY). The ONLY channel by which raw bytes
@@ -268,6 +278,7 @@ func (op Op) clone() Op {
 	op.Provenance = cloneStrings(op.Provenance)
 	op.Content = cloneBytes(op.Content)
 	op.OriginalContent = cloneBytes(op.OriginalContent)
+	op.Assets = cloneAssets(op.Assets)
 	op.Hunks = cloneHunks(op.Hunks)
 	op.Cascade = cloneOps(op.Cascade)
 	return op
@@ -314,5 +325,21 @@ func cloneBytes(b []byte) []byte {
 	}
 	out := make([]byte, len(b))
 	copy(out, b)
+	return out
+}
+
+// cloneAssets deep-copies an AssetRef slice, copying each element's Content slice.
+func cloneAssets(assets []AssetRef) []AssetRef {
+	if assets == nil {
+		return nil
+	}
+	out := make([]AssetRef, len(assets))
+	for i := range assets {
+		out[i] = AssetRef{
+			Path:    assets[i].Path,
+			SHA256:  assets[i].SHA256,
+			Content: cloneBytes(assets[i].Content),
+		}
+	}
 	return out
 }

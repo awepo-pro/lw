@@ -3,9 +3,19 @@ package extract
 import (
 	"context"
 	"fmt"
+	"path/filepath"
+	"strings"
 
 	"github.com/awepo-pro/lw/internal/slug"
 )
+
+// Asset is one local image file referenced by a markdown source and extracted
+// alongside it to be staged under raw/assets/<Name> (064).
+type Asset struct {
+	Name       string // filename under raw/assets/, e.g. "my-note-fig-1.png"
+	SourcePath string // cleaned local path the asset was read from
+	Bytes      []byte // verbatim bytes of the image file
+}
 
 // Doc is one source turned into deterministic markdown, ready for
 // stage.ingest_source to write under raw/ (backbone §10).
@@ -29,6 +39,10 @@ type Doc struct {
 	// OriginalExt is OriginalBytes' extension, lower-case with its dot
 	// (".html", ".htm", ".txt", ".md", ".markdown"). "" when OriginalBytes is nil.
 	OriginalExt string
+
+	// Assets lists local image files referenced by a markdown source and
+	// extracted alongside it to be staged under raw/assets/ (064).
+	Assets []Asset
 }
 
 // Extractor turns a URI into a Doc. Implementations must be deterministic:
@@ -114,4 +128,32 @@ func suggestSlug(title string) string {
 		return s
 	}
 	return "untitled"
+}
+
+// DocSlug derives the document slug for asset naming (064):
+// 1. slug.Make(title) if non-empty
+// 2. else slug.Make(stripMarkdownExt(filepath.Base(uri)))
+// 3. else "untitled"
+func DocSlug(title, uri string) string {
+	if s := slug.Make(title); s != "" {
+		return s
+	}
+	base := filepath.Base(uri)
+	if s := slug.Make(stripMarkdownExt(base)); s != "" {
+		return s
+	}
+	return "untitled"
+}
+
+// stripMarkdownExt strips one trailing .md or .markdown extension
+// case-insensitively.
+func stripMarkdownExt(name string) string {
+	lower := strings.ToLower(name)
+	if strings.HasSuffix(lower, ".markdown") {
+		return name[:len(name)-len(".markdown")]
+	}
+	if strings.HasSuffix(lower, ".md") {
+		return name[:len(name)-len(".md")]
+	}
+	return name
 }

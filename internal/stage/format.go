@@ -19,11 +19,11 @@ import (
 	"syscall"
 )
 
-// FormatVersion is the on-disk shape this lw reads and writes. It is 1: the
-// shape every vault had before 042 existed. A change to anything the
+// FormatVersion is the on-disk shape this lw reads and writes. It is 2 (064:
+// OpIngestSource carries Assets []AssetRef). A change to anything the
 // fingerprint test records means bumping this, adding a migration, and
 // regenerating testdata/format-fingerprint.txt — in that order.
-const FormatVersion = 1
+const FormatVersion = 2
 
 // formatFileName is the file inside .llmwiki/ that records a vault's format.
 // While FormatVersion is 1 lw writes none: a missing file means format 1, so
