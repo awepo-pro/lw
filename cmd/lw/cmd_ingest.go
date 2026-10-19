@@ -281,8 +281,29 @@ func cmdIngest(args []string) error {
 	kindFlag := fs.String("kind", "", "override the detected kind for every source: article|paper|transcript")
 	dryRun := fs.Bool("dry-run", false, "report what would be ingested and the limit verdict, then exit — opens no changeset, constructs no agent (URL sources are still fetched, to size them)")
 	recompile := fs.Bool("recompile", false, "write pages from sources the vault already holds as committed raw files; stages no new raw")
+	prepare := fs.Bool("prepare", false, "do the deterministic half of the ingest — extract, dedupe, limits, stage the raw sources — and print a brief for an external agent that curates the pages through lw tool; constructs no agent and resolves no API key")
+	agentName := fs.String("agent", "agy", "with --prepare: the name of the external agent, recorded as the changeset author's model")
 	sources, err := parseIngestSources(fs, args)
 	if err != nil {
+		return &exitError{code: 2}
+	}
+	// 063: the --prepare flags are checked before anything else, so a misuse
+	// opens nothing and reads no vault.
+	agentGiven := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "agent" {
+			agentGiven = true
+		}
+	})
+	switch {
+	case agentGiven && !*prepare:
+		fmt.Fprintln(os.Stderr, "lw: ingest: --agent needs --prepare")
+		return &exitError{code: 2}
+	case *prepare && *dryRun:
+		fmt.Fprintln(os.Stderr, "lw: ingest: cannot use --prepare with --dry-run")
+		return &exitError{code: 2}
+	case *prepare && !validAgentName(*agentName):
+		fmt.Fprintln(os.Stderr, "lw: ingest: --agent needs a name")
 		return &exitError{code: 2}
 	}
 	if len(sources) == 0 {
@@ -734,14 +755,30 @@ func cmdIngest(args []string) error {
 		items = append(items, ingestItem{path: tmpPath, kind: doc.Kind, title: doc.Title, source: src})
 	}
 
+	// The tools' Extract is pre chained in front of the shared agentExtractors
+	// chain (U7, capped per 007 F.W3) — see preExtracted above.
+	toolExtract := extract.Chain(pre, agentExtractors(e.Vault().Root(), cfg))
+
+	// 063: --prepare stops here. Its sources are staged and its brief printed
+	// by prepareIngest — no agent is constructed, so no API key is resolved,
+	// and the curation is an external agent's, through lw tool.
+	if *prepare {
+		return prepareIngest(ctx, prepareInput{
+			e:       e,
+			agent:   *agentName,
+			intent:  ingestTurnIntent(sources, keptSrcs, targets),
+			items:   items,
+			targets: targets,
+			extract: toolExtract,
+			cites:   citations(),
+		})
+	}
+
 	// Construct the agent (which resolves the configured API key) before
 	// opening a changeset: a bad or missing key must fail with nothing
 	// opened at all, not an empty changeset the caller has to notice and
-	// clean up by hand. The tools' Extract is pre chained in front of the
-	// shared agentExtractors chain (U7, capped per 007 F.W3) — see
-	// preExtracted above.
+	// clean up by hand.
 	sessions := agent.NewFileSessions(e.Vault().Root())
-	toolExtract := extract.Chain(pre, agentExtractors(e.Vault().Root(), cfg))
 	ag, err := newIngestAgent(e, cfg, sessions, toolExtract, recompilePaths(targets))
 	if err != nil {
 		return fmt.Errorf("construct agent: %w", err)
@@ -751,11 +788,10 @@ func cmdIngest(args []string) error {
 	// op count this verb found at open/join: on a failure its scoped
 	// rollback drops only the ops past this index, never the other work in
 	// the changeset.
-	intent := ingestIntent(sources)
+	intent := ingestTurnIntent(sources, keptSrcs, targets)
 	msg := buildIngestMessage(items)
 	if len(targets) > 0 {
-		// 055: the intent and the message describe both halves of the work.
-		intent = recompileIntent(keptSrcs, targets)
+		// 055: the message describes both halves of the work, as the intent does.
 		msg = buildRecompileMessage(items, targets, citations())
 	}
 	cs, joined, err := e.OpenOrJoin(intent, stage.Author{Kind: "agent", Model: cfg.LLM.Model})
@@ -814,6 +850,15 @@ func cmdIngest(args []string) error {
 		return rejectAndReturn(e, errors.New("agent proposed nothing for this ingest; the changeset was rejected"))
 	}
 
+	printIngestTail(e, final, joined)
+	return nil
+}
+
+// printIngestTail is what a successful ingest prints after its turn: a blank
+// line, the changeset summary, the raw-only warning and the lint-regression
+// warning. `lw tool stage.close` prints the same tail (063, plan R8), so an
+// ingest an external agent finished ends as one the in-process agent did.
+func printIngestTail(e *stage.Engine, final *stage.Changeset, joined bool) {
 	fmt.Println()
 	printChangesetSummary(os.Stdout, final, joined)
 
@@ -829,7 +874,6 @@ func cmdIngest(args []string) error {
 	// so here — not let the user discover it only when lw commit refuses.
 	// The warning is informational: exit 0, changeset left open for review.
 	warnIfLintRegresses(e)
-	return nil
 }
 
 // rejectAndReturn rolls back the changeset e currently has open when a
@@ -978,6 +1022,17 @@ type ingestItem struct {
 // the command line.
 func ingestIntent(sources []string) string {
 	return "ingest " + strings.Join(sources, ", ")
+}
+
+// ingestTurnIntent is the intent of the changeset an invocation opens or joins:
+// "ingest <sources>", or — with at least one recompile target (055) —
+// recompileIntent's. The in-process turn and `lw ingest --prepare` (063) share
+// it, so a changeset reads the same whichever way it was driven.
+func ingestTurnIntent(sources, keptSrcs []string, targets []recompileTarget) string {
+	if len(targets) > 0 {
+		return recompileIntent(keptSrcs, targets)
+	}
+	return ingestIntent(sources)
 }
 
 // buildIngestMessage is the first user message sent to the agent: it

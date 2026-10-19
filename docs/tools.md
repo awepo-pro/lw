@@ -7,14 +7,16 @@ ever added** — no `write`, no `edit`, no `delete`, no `bash`, no `exec`. Not
 denied: *not offered*. The registry is compiled into the binary, so there is
 nothing for a prompt or a permission profile to flip.
 
-Each tool is defined once in `internal/tools` and consumed twice:
+Each tool is defined once in `internal/tools` and consumed three ways:
 
 - by the **in-process agent loop** (`lw ingest`, `lw query`, `lw lint --fix`,
   the TUI's ask screen), under its canonical dotted name;
 - over **MCP** (`lw mcp`), where dots become underscores: `wiki.search` →
   `wiki_search`. The mapping is total and bijective over every registered
   name, `web.search` included, and the MCP layer adds no tool and changes no
-  semantics — it is a transport.
+  semantics — it is a transport;
+- by an **external agent** curating an ingest from its own shell, one process
+  per call, through `lw tool` ([below](#drive-ingest-from-your-own-agent)).
 
 ## Read — no side effects, ever
 
@@ -71,6 +73,46 @@ already holds a different source.`
   `index.md` at 200 lines. A handler cannot flood the context window.
 - **No handler touches the filesystem.** Reads go through the vault handle,
   writes through the staging engine.
+
+## Drive ingest from your own agent
+
+When the provider behind `lw ingest` is unfunded or rate-limited but you already
+run an agent with a shell (Claude Code, Codex, Antigravity), that agent can do
+the curation. `lw ingest --prepare [--agent <name>] <source>...` does the half
+that needs no model — extract, dedupe, the size limit, `stage.ingest_source` for
+each new source — opens (or joins) the changeset under that agent's name
+(default `agy`) and prints a **curator brief**: the staged raws with their chunk
+counts, how to work, the curator rules the in-process model would have been
+given, and the vault orientation. It builds no agent and reads no API key. The
+agent then works through `lw tool`, and a human reviews and commits as usual.
+
+```
+lw tool <tool-name> '<json-args>'
+lw tool <tool-name> --from -         # JSON on stdin; use a heredoc for page bodies
+lw tool --list                       # every offered tool, with its JSON schema
+```
+
+- **The tools offered** are the registry's, less two: `stage.open` (`--prepare`
+  already opened the changeset) and `web.search` (the agent has its own web) —
+  17 in all. Either spelling of a name works (`stage.create_page`,
+  `stage_create_page`). Any other name exits 2.
+- **Exit codes.** `0` the tool answered; `1` it refused — the refusal is on
+  stdout and says how to fix the call; `2` a usage mistake, or a changeset that
+  `lw ingest --prepare` did not open (`lw tool` drives only those).
+- **Each call is its own process, so the guards that need memory are rebuilt.**
+  A call replays the changeset's own `session.ndjson` into its registry: the
+  `stage.close` read-every-chunk refusal is once per unread set, the
+  `allow_shrink` confirmation counts only after the refusal, and a source whose
+  op was dropped is not held. Every call appends its record to that session, so
+  `lw session show` reads the whole conversation. Calls may run in parallel:
+  each takes an exclusive lock on `.llmwiki/tmp/tool.lock` for its whole length.
+- **A `stage.close` that succeeds** ends with the changeset summary and the
+  raw-only and lint-regression warnings `lw ingest` prints.
+- **What is not here.** The agent loop's cost guards — the ingest read budget,
+  the repeat-call guard, the search budget, the round nudge — belong to a loop,
+  and the external agent owns its own. Every correctness check stays: the
+  read-every-chunk rule, the shrink rule and each tool's validation.
+- To abandon the work, `lw doctor --discard-changeset`.
 
 ## Related
 
