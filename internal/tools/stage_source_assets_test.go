@@ -325,4 +325,76 @@ func TestToolIngestSourceStagesMarkdownAssets(t *testing.T) {
 			t.Errorf("staged content does not contain ../../raw/assets/alpha-beta-chart-2.png:\n%s", stagedTextB)
 		}
 	})
+
+	// 6. Regression for F-1: no cascading link replacement or sibling collision when vault already holds -fig.png
+	t.Run("no cascading replacement collision when sibling assets collide with vault", func(t *testing.T) {
+		for _, existing := range []string{"cascade-doc-fig.png", "cascade-doc-fig-2.png"} {
+			p := filepath.Join(vaultDir, "raw", "assets", existing)
+			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(p, []byte("\x89PNG\r\n\x1a\npreexisting-"+existing), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		vReloaded, err := vault.Open(vaultDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		reg.deps.Vault = vReloaded
+
+		subA := filepath.Join(tmpDir, "subA")
+		subB := filepath.Join(tmpDir, "subB")
+		for _, d := range []string{subA, subB} {
+			if err := os.MkdirAll(d, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.WriteFile(filepath.Join(subA, "fig.png"), []byte("\x89PNG\r\n\x1a\nsubA-fig"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(subB, "fig.png"), []byte("\x89PNG\r\n\x1a\nsubB-fig"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		docCPath := filepath.Join(tmpDir, "cascade.md")
+		docCContent := "# Cascade Doc\n\nFirst: ![A](subA/fig.png)\n\nSecond: ![B](subB/fig.png)\n"
+		if err := os.WriteFile(docCPath, []byte(docCContent), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		callIngest(t, stageIngestSourceArgs{URI: docCPath})
+
+		curr, err := e.Current()
+		if err != nil {
+			t.Fatalf("Current: %v", err)
+		}
+		var foundC *stage.Op
+		for _, op := range curr.Live() {
+			if op.Path == "raw/articles/cascade-doc.md" {
+				copyOp := op
+				foundC = &copyOp
+				break
+			}
+		}
+		if foundC == nil {
+			t.Fatal("op raw/articles/cascade-doc.md not found")
+		}
+		if len(foundC.Assets) != 2 {
+			t.Fatalf("foundC.Assets length = %d, want 2", len(foundC.Assets))
+		}
+		if foundC.Assets[0].Path != "raw/assets/cascade-doc-fig-3.png" {
+			t.Errorf("asset[0].Path = %q, want raw/assets/cascade-doc-fig-3.png", foundC.Assets[0].Path)
+		}
+		if foundC.Assets[1].Path != "raw/assets/cascade-doc-fig-2-2.png" {
+			t.Errorf("asset[1].Path = %q, want raw/assets/cascade-doc-fig-2-2.png", foundC.Assets[1].Path)
+		}
+		stagedTextC := readStagedRaw(t, foundC)
+		if !strings.Contains(stagedTextC, "![A](../../raw/assets/cascade-doc-fig-3.png)") {
+			t.Errorf("staged text missing first rewritten link:\n%s", stagedTextC)
+		}
+		if !strings.Contains(stagedTextC, "![B](../../raw/assets/cascade-doc-fig-2-2.png)") {
+			t.Errorf("staged text missing second rewritten link:\n%s", stagedTextC)
+		}
+	})
 }

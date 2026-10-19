@@ -284,7 +284,7 @@ func validateIngestAssets(op Op, v *vault.Vault) error {
 	}
 	seen := make(map[string]bool, len(op.Assets))
 	for _, a := range op.Assets {
-		if !assetPathRE.MatchString(a.Path) || path.Ext(a.Path) == ".md" {
+		if !assetPathRE.MatchString(a.Path) || path.Ext(a.Path) == ".md" || path.Ext(a.Path) == ".markdown" {
 			return fmt.Errorf("%w: ingest_source: asset path %q must be raw/assets/<name>.<ext> with a non-.md extension", ErrValidation, a.Path)
 		}
 		if seen[a.Path] {

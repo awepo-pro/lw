@@ -186,36 +186,50 @@ func stageIngestSourceTool(d Deps) Tool {
 		docSlug := extract.DocSlug(doc.Title, uri)
 
 		var opAssets []stage.AssetRef
-		claimedInOp := make(map[string]bool, len(doc.Assets))
+		peerInitialPaths := make(map[string]bool, len(doc.Assets))
 		for _, asset := range doc.Assets {
 			if len(asset.Bytes) == 0 || asset.Name == "" {
 				continue
 			}
-			candidateName := asset.Name
-			if docSlug != "" && finalSlug != docSlug {
-				if strings.HasPrefix(candidateName, docSlug+"-") {
-					candidateName = finalSlug + "-" + strings.TrimPrefix(candidateName, docSlug+"-")
-				} else if strings.TrimSuffix(candidateName, path.Ext(candidateName)) == docSlug {
-					candidateName = finalSlug + path.Ext(candidateName)
-				}
+			cand := rePrefixAssetName(asset.Name, docSlug, finalSlug)
+			ext := strings.ToLower(path.Ext(cand))
+			stem := strings.TrimSuffix(cand, path.Ext(cand))
+			peerInitialPaths["raw/assets/"+stem+ext] = true
+		}
+
+		claimedInOp := make(map[string]bool, len(doc.Assets))
+		var replacements []string
+		for _, asset := range doc.Assets {
+			if len(asset.Bytes) == 0 || asset.Name == "" {
+				continue
 			}
+			candidateName := rePrefixAssetName(asset.Name, docSlug, finalSlug)
 			ext := strings.ToLower(path.Ext(candidateName))
 			stem := strings.TrimSuffix(candidateName, path.Ext(candidateName))
 			finalName := stem + ext
 			finalPath := "raw/assets/" + finalName
-			for n := 2; assetPathTaken(d, finalPath, claimedInOp); n++ {
+			for n := 2; assetPathTaken(d, finalPath, claimedInOp) || (n > 2 && peerInitialPaths[finalPath]); n++ {
 				finalName = fmt.Sprintf("%s-%d%s", stem, n, ext)
 				finalPath = "raw/assets/" + finalName
+				for peerInitialPaths[finalPath] || assetPathTaken(d, finalPath, claimedInOp) {
+					n++
+					finalName = fmt.Sprintf("%s-%d%s", stem, n, ext)
+					finalPath = "raw/assets/" + finalName
+				}
+				break
 			}
 			claimedInOp[finalPath] = true
 			if finalName != asset.Name {
-				body = strings.ReplaceAll(body, "../../raw/assets/"+asset.Name, "../../raw/assets/"+finalName)
+				replacements = append(replacements, "../../raw/assets/"+asset.Name, "../../raw/assets/"+finalName)
 			}
 			opAssets = append(opAssets, stage.AssetRef{
 				Path:    finalPath,
 				SHA256:  vault.BodySHA256(string(asset.Bytes)),
 				Content: asset.Bytes,
 			})
+		}
+		if len(replacements) > 0 {
+			body = strings.NewReplacer(replacements...).Replace(body)
 		}
 		bodySHA = vault.BodySHA256(body)
 
@@ -317,6 +331,18 @@ func stageIngestSourceTool(d Deps) Tool {
 // whole name and gains .orig instead (058: x.md -> x.md.orig; the s47
 // decision). Raw loading reads *.md only, so x.md.orig never shows up as a
 // second raw.
+func rePrefixAssetName(name, docSlug, finalSlug string) string {
+	if docSlug != "" && finalSlug != docSlug {
+		if strings.HasPrefix(name, docSlug+"-") {
+			return finalSlug + "-" + strings.TrimPrefix(name, docSlug+"-")
+		}
+		if strings.TrimSuffix(name, path.Ext(name)) == docSlug {
+			return finalSlug + path.Ext(name)
+		}
+	}
+	return name
+}
+
 func originalPathFor(sourcePath, ext string) string {
 	if ext == ".md" {
 		return sourcePath + ".orig"

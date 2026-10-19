@@ -581,6 +581,20 @@ func (e *Engine) Append(op Op) (string, error) {
 	if err := validateOpForAppend(op, cv, e.vault, cv.Schema()); err != nil {
 		return "", err
 	}
+	if op.Kind == OpIngestSource && len(op.Assets) > 0 {
+		for _, prev := range c.Live() {
+			if prev.Kind != OpIngestSource {
+				continue
+			}
+			for _, pa := range prev.Assets {
+				for _, a := range op.Assets {
+					if a.Path != "" && a.Path == pa.Path {
+						return "", fmt.Errorf("%w: ingest_source: asset %s already exists (staged in this changeset by %s)", ErrValidation, a.Path, prev.ID)
+					}
+				}
+			}
+		}
+	}
 
 	// OQ-9 L2's mirror direction, closed for real (S4-T0 repair-2), widened
 	// by 020 T-A: cv is a rootless fstest.MapFS projection (cascadeBase,

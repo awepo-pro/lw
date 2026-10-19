@@ -222,13 +222,15 @@ func TestValidateIngestAssets(t *testing.T) {
 		}
 	})
 
-	// 3. .md extension:
-	t.Run("rejects .md extension", func(t *testing.T) {
-		op := baseIngest()
-		op.Assets = []AssetRef{{Path: "raw/assets/some-asset.md", SHA256: validSHA, Content: data}}
-		err := ValidateOp(op, v, s)
-		if err == nil || !errors.Is(err, ErrValidation) || !strings.Contains(err.Error(), "non-.md extension") {
-			t.Errorf("ValidateOp = %v, want ErrValidation naming non-.md extension", err)
+	// 3. .md and .markdown extensions:
+	t.Run("rejects .md and .markdown extensions", func(t *testing.T) {
+		for _, bad := range []string{"raw/assets/some-asset.md", "raw/assets/some-asset.markdown"} {
+			op := baseIngest()
+			op.Assets = []AssetRef{{Path: bad, SHA256: validSHA, Content: data}}
+			err := ValidateOp(op, v, s)
+			if err == nil || !errors.Is(err, ErrValidation) || !strings.Contains(err.Error(), "non-.md extension") {
+				t.Errorf("ValidateOp(%s) = %v, want ErrValidation naming non-.md extension", bad, err)
+			}
 		}
 	})
 
@@ -292,4 +294,83 @@ func TestValidateIngestAssets(t *testing.T) {
 			t.Errorf("ValidateOp = %v, want ErrValidation naming not the declared", err)
 		}
 	})
+}
+
+func TestAppendRejectsCollidingAssetInOpenChangeset(t *testing.T) {
+	dir := testutil.CopyFixture(t, "minimal")
+	e, err := OpenEngine(dir)
+	if err != nil {
+		t.Fatalf("OpenEngine: %v", err)
+	}
+	defer e.Close()
+
+	if _, err := e.OpenChangeset("collision test", Author{Kind: "agent"}); err != nil {
+		t.Fatalf("OpenChangeset: %v", err)
+	}
+
+	img := []byte("\x89PNG\r\n\x1a\nshared")
+	h := sha256.Sum256(img)
+	sha := hex.EncodeToString(h[:])
+
+	op1 := Op{
+		Kind:      OpIngestSource,
+		Path:      "raw/articles/first.md",
+		Content:   stagedRawDoc("https://example.test/1", "# First\n\nBody one.\n"),
+		Extractor: "local",
+		Assets:    []AssetRef{{Path: "raw/assets/shared-fig.png", SHA256: sha, Content: img}},
+	}
+	if _, err := e.Append(op1); err != nil {
+		t.Fatalf("Append op1: %v", err)
+	}
+
+	op2 := Op{
+		Kind:      OpIngestSource,
+		Path:      "raw/articles/second.md",
+		Content:   stagedRawDoc("https://example.test/2", "# Second\n\nBody two.\n"),
+		Extractor: "local",
+		Assets:    []AssetRef{{Path: "raw/assets/shared-fig.png", SHA256: sha, Content: img}},
+	}
+	_, err = e.Append(op2)
+	if err == nil || !errors.Is(err, ErrValidation) || !strings.Contains(err.Error(), "staged in this changeset") {
+		t.Fatalf("Append op2 = %v, want ErrValidation naming staged in this changeset", err)
+	}
+}
+
+func TestRevertReportsSkippedIngestAssets(t *testing.T) {
+	e, _ := newTestEngine(t)
+
+	if _, err := e.OpenChangeset("ingest with assets", testAuthor); err != nil {
+		t.Fatalf("OpenChangeset: %v", err)
+	}
+	img := []byte("\x89PNG\r\n\x1a\nrevert-asset")
+	h := sha256.Sum256(img)
+	sha := hex.EncodeToString(h[:])
+
+	const rawPath = "raw/articles/with-asset.md"
+	const assetPath = "raw/assets/with-asset-fig.png"
+	if _, err := e.Append(Op{
+		Kind:      OpIngestSource,
+		Path:      rawPath,
+		Extractor: "local",
+		Content:   stagedRawDoc("https://example.test/with-asset", "# With Asset\n\n![fig](../../raw/assets/with-asset-fig.png)\n"),
+		Assets:    []AssetRef{{Path: assetPath, SHA256: sha, Content: img}},
+	}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	commitID, err := e.Commit("commit source with asset")
+	if err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	revertCS, err := e.Revert(commitID)
+	if err != nil {
+		t.Fatalf("Revert(%s): %v", commitID, err)
+	}
+	if !strings.Contains(revertCS.Intent, rawPath) || !strings.Contains(revertCS.Intent, assetPath) {
+		t.Errorf("revertCS.Intent = %q, want both %s and %s", revertCS.Intent, rawPath, assetPath)
+	}
+	skipped := lastRevertedSkipped(t, e)
+	if !containsString(skipped, rawPath) || !containsString(skipped, assetPath) {
+		t.Fatalf("skipped = %v, want both %s and %s", skipped, rawPath, assetPath)
+	}
 }
