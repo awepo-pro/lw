@@ -90,6 +90,7 @@ agent then works through `lw tool`, and a human reviews and commits as usual.
 lw tool <tool-name> '<json-args>'
 lw tool <tool-name> --from -         # JSON on stdin; use a heredoc for page bodies
 lw tool --list                       # every offered tool, with its JSON schema
+lw tool --brief                      # print the curator brief again, after a compaction
 ```
 
 - **The tools offered** are the registry's, less two: `stage.open` (`--prepare`
@@ -105,14 +106,24 @@ lw tool --list                       # every offered tool, with its JSON schema
   `allow_shrink` confirmation counts only after the refusal, and a source whose
   op was dropped is not held. Every call appends its record to that session, so
   `lw session show` reads the whole conversation. Calls may run in parallel:
-  each takes an exclusive lock on `.llmwiki/tmp/tool.lock` for its whole length.
+  each takes an exclusive lock on `.llmwiki/tmp/tool.lock` for its whole length,
+  and so does `lw ingest --prepare` while it opens or joins the changeset. A
+  call that waits past two minutes gives up and says another call is still
+  running; wait for it or stop that process, and never delete the lock file. An
+  in-process `lw ingest` or the TUI joining the same changeset while an external
+  agent works is not serialized with it.
 - **A `stage.close` that succeeds** ends with the changeset summary and the
   raw-only and lint-regression warnings `lw ingest` prints.
 - **What is not here.** The agent loop's cost guards — the ingest read budget,
   the repeat-call guard, the search budget, the round nudge — belong to a loop,
   and the external agent owns its own. Every correctness check stays: the
   read-every-chunk rule, the shrink rule and each tool's validation.
-- To abandon the work, `lw doctor --discard-changeset`.
+- **The agent keeps the review gate by convention.** It has a shell, so nothing
+  stops it editing vault files or running `lw commit`; the brief tells it not to,
+  and everything it changes goes through `lw tool stage.*`.
+- To abandon the work, `lw doctor --discard-changeset`. It prints `discarded open
+  changeset …` first; with no API key it then exits 1 on its api_key check, which
+  is expected — the discard has happened.
 
 ## Related
 

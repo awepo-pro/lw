@@ -20,6 +20,10 @@ package main
 //   - appends its own record, the way the loop does, so the next call can
 //     replay it and `lw session show` reads the whole conversation.
 //
+// `lw tool --brief` prints the curator brief again for an agent whose context
+// compacted since `lw ingest --prepare` printed it: the same renderer, over the
+// same changeset state, so the same bytes.
+//
 // A changeset that was not opened by --prepare — its session holds no prepare
 // record — is refused: the guards above are rebuilt from records this command
 // wrote, and a changeset without them would be a source of silent passes.
@@ -55,6 +59,7 @@ import (
 const toolUsage = `usage: lw tool [--vault <path>] <tool-name> [<json-args>]
        lw tool [--vault <path>] <tool-name> --from <file|->
        lw tool [--vault <path>] --list
+       lw tool [--vault <path>] --brief
 `
 
 // toolNow is the clock the records of `lw ingest --prepare` and `lw tool` are
@@ -86,6 +91,7 @@ func cmdTool(args []string) error {
 	vaultPath := fs.String("vault", "", "vault root (default: nearest ancestor directory containing SCHEMA.md)")
 	from := fs.String("from", "", "read the JSON arguments from a file, or from standard input with -")
 	list := fs.Bool("list", false, "print every tool lw tool offers, with its JSON schema, and exit")
+	brief := fs.Bool("brief", false, "print the curator brief of the open changeset again, and exit")
 	pos, err := parseIngestSources(fs, args)
 	if err != nil {
 		return &exitError{code: 2}
@@ -101,9 +107,12 @@ func cmdTool(args []string) error {
 		return &exitError{code: 2}
 	}
 
-	if *list {
-		if len(pos) > 0 || fromSet {
+	if *list || *brief {
+		if len(pos) > 0 || fromSet || (*list && *brief) {
 			return usage()
+		}
+		if *brief {
+			return toolBrief(*vaultPath)
 		}
 		return toolList(*vaultPath)
 	}
@@ -138,9 +147,12 @@ func cmdTool(args []string) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
-	// The lock comes before the engine: an engine caches the changeset it first
-	// reads, and one opened while another call was still writing would answer
-	// from a changeset that call had already changed.
+	// The lock comes before anything reads the changeset. An engine caches the
+	// changeset the first time it is read (Current), not when it is opened, so
+	// what the lock must precede is that read — runToolCall's gate — and a call
+	// that waited behind another then sees what that one staged. Opening the
+	// engine first would be harmless; this order simply has nothing before the
+	// lock.
 	release, err := lockTool(root)
 	if err != nil {
 		return err
@@ -256,7 +268,10 @@ func lockTool(root string) (release func(), err error) {
 		case errors.Is(err, syscall.EWOULDBLOCK):
 			if time.Now().After(deadline) {
 				f.Close()
-				return nil, fmt.Errorf("another lw tool call holds %s (waited %s); if none is running, delete the file", path, toolLockWait)
+				// Never advise deleting the file: a new file is a new inode, which the
+				// running call's flock does not cover, and the kernel already frees
+				// the flock of a holder that died.
+				return nil, fmt.Errorf("another lw tool call or lw ingest --prepare is still running (it holds %s; waited %s): wait for it or stop that process", path, toolLockWait)
 			}
 			time.Sleep(toolLockPoll)
 		default:
@@ -266,40 +281,45 @@ func lockTool(root string) (release func(), err error) {
 	}
 }
 
-// runToolCall is the body of a call, under the lock: the gate, the replay, the
-// one Call, the record and the output.
-func runToolCall(e *stage.Engine, cfg *config.Config, canonical, callArgs string) error {
+// preparedChangeset is the open changeset a call is allowed to work in, with
+// what its session says: the prepare records and the tool calls so far.
+type preparedChangeset struct {
+	cs       *stage.Changeset
+	prepares []prepareRecord  // oldest first, at least one
+	targets  []string         // recompile raws any prepare record names, in order
+	past     []tools.PastCall // the session's tool records, oldest first
+}
+
+// loadPrepared is the gate (R2): it returns the open changeset only when its
+// session holds a prepare record, and otherwise reports why — no changeset, or
+// one `lw ingest --prepare` did not open — as the usage error exit 2 `lw tool`
+// and `lw tool --brief` share.
+func loadPrepared(e *stage.Engine) (*preparedChangeset, error) {
 	root := e.Vault().Root()
 	cs, err := e.Current()
 	if err != nil {
 		if errors.Is(err, stage.ErrNoChangeset) {
 			fmt.Fprintln(os.Stderr, "lw: tool: no open changeset — start with lw ingest --prepare <source>")
-			return &exitError{code: 2}
+			return nil, &exitError{code: 2}
 		}
-		return fmt.Errorf("read changeset: %w", err)
+		return nil, fmt.Errorf("read changeset: %w", err)
 	}
-	notPrepared := func() error {
+	notPrepared := func() (*preparedChangeset, error) {
 		fmt.Fprintf(os.Stderr, "lw: tool: changeset %s was not opened by lw ingest --prepare\n", cs.ID)
-		return &exitError{code: 2}
+		return nil, &exitError{code: 2}
 	}
-	sessions := agent.NewFileSessions(root)
 	if _, ok := sessionStateOf(root, cs.ID); !ok {
 		return notPrepared()
 	}
-	sess, err := sessions.Get(cs.ID)
+	sess, err := agent.NewFileSessions(root).Get(cs.ID)
 	if err != nil {
-		return fmt.Errorf("read session %s: %w", cs.ID, err)
+		return nil, fmt.Errorf("read session %s: %w", cs.ID, err)
 	}
 
 	// A record the Ask pane copied in from an earlier conversation (Carried)
 	// happened in another changeset: it neither makes this one prepared nor
 	// counts as a read of its raws.
-	var (
-		prepared  bool
-		agentName string
-		targets   []string // recompile raws any prepare record names, in order
-		past      []tools.PastCall
-	)
+	pc := &preparedChangeset{cs: cs}
 	for _, r := range sess.Records {
 		if r.Carried {
 			continue
@@ -310,32 +330,71 @@ func runToolCall(e *stage.Engine, cfg *config.Config, canonical, callArgs string
 			if !ok {
 				continue
 			}
-			prepared, agentName = true, p.agent
+			pc.prepares = append(pc.prepares, p)
 			for _, ent := range p.entries {
-				if ent.kind == "recompile" && !slices.Contains(targets, ent.path) {
-					targets = append(targets, ent.path)
+				if ent.kind == "recompile" && !slices.Contains(pc.targets, ent.path) {
+					pc.targets = append(pc.targets, ent.path)
 				}
 			}
 		case "tool":
-			past = append(past, tools.PastCall{Tool: r.Tool, Args: r.Args, Result: r.Result})
+			pc.past = append(pc.past, tools.PastCall{Tool: r.Tool, Args: r.Args, Result: r.Result})
 		}
 	}
-	if !prepared {
+	if len(pc.prepares) == 0 {
 		return notPrepared()
 	}
-	live, err := replayLive(e, cs, targets)
+	return pc, nil
+}
+
+// toolBrief prints the curator brief of the open, prepared changeset again. It is
+// a read: it takes no lock (a call in flight changes the changeset atomically,
+// and the brief describes the work, not its progress), writes no record and
+// needs neither a config nor a provider.
+func toolBrief(vaultPath string) error {
+	root, err := findVaultRoot(vaultPath)
+	if err != nil {
+		return err
+	}
+	attachLoggingAt(root) // read-only: join the trail, never create it
+	e, err := openVaultEngine(root, nil)
+	if err != nil {
+		return fmt.Errorf("open engine: %w", err)
+	}
+	defer e.Close()
+	pc, err := loadPrepared(e)
+	if err != nil {
+		return err
+	}
+	text, err := briefOf(context.Background(), e, pc.cs, pc.prepares)
+	if err != nil {
+		return err
+	}
+	fmt.Print(text)
+	return nil
+}
+
+// runToolCall is the body of a call, under the lock: the gate, the replay, the
+// one Call, the record and the output.
+func runToolCall(e *stage.Engine, cfg *config.Config, canonical, callArgs string) error {
+	root := e.Vault().Root()
+	pc, err := loadPrepared(e)
+	if err != nil {
+		return err
+	}
+	cs := pc.cs
+	live, err := replayLive(e, cs, pc.targets)
 	if err != nil {
 		return err
 	}
 
-	reg := tools.NewRegistry(externalToolDeps(e, agentExtractors(root, cfg), agentName, nil))
-	reg.Replay(live, past)
+	reg := tools.NewRegistry(externalToolDeps(e, agentExtractors(root, cfg), pc.prepares[len(pc.prepares)-1].agent, nil))
+	reg.Replay(live, pc.past)
 
 	start := time.Now()
 	res, callErr := reg.Call(context.Background(), canonical, json.RawMessage(callArgs))
 	slog.Info("lw tool", "tool", canonical, "changeset", cs.ID, "is_error", callErr != nil || res.IsError, "dur_ms", msSince(start))
 
-	recErr := sessions.Append(cs.ID, toolRecord(toolNow().UTC(), canonical, callArgs, res, callErr))
+	recErr := agent.NewFileSessions(root).Append(cs.ID, toolRecord(toolNow().UTC(), canonical, callArgs, res, callErr))
 	if callErr != nil {
 		if recErr != nil {
 			return fmt.Errorf("%w (and recording the call in the session failed: %v)", callErr, recErr)
@@ -372,12 +431,12 @@ func replayLive(e *stage.Engine, cs *stage.Changeset, targets []string) ([]tools
 		if op.Kind != stage.OpIngestSource || seen[op.Path] {
 			continue
 		}
-		n, err := stagedRawChunks(e, op.Path)
+		src, err := stagedSourceInfo(e, op.Path)
 		if err != nil {
 			return nil, err
 		}
 		seen[op.Path] = true
-		live = append(live, tools.LiveSource{Path: op.Path, Chunks: n})
+		live = append(live, tools.LiveSource{Path: op.Path, Chunks: src.chunks})
 	}
 	for _, p := range targets {
 		if seen[p] {

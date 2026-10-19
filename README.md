@@ -142,15 +142,19 @@ lw tool stage.create_page --from - <<'JSON'
 JSON
 lw tool stage.close                          # ends with the changeset summary
 lw tool --list                               # every tool, with its JSON schema
+lw tool --brief                              # the brief again, if the agent lost it
 ```
 
 Each `lw tool` call is its own process, so the checks that need memory — a
 `stage.close` that refuses once while a chunk is unread, an `allow_shrink` that
 counts only after its refusal — are rebuilt from the changeset's transcript, and
 calls may run in parallel. A refusal exits `1` with its text on stdout; `lw tool`
-refuses a changeset `lw ingest --prepare` did not open. You review with
-`lw tui` or `lw diff` and commit as always; to drop the work,
-`lw doctor --discard-changeset`. See [docs/tools.md](docs/tools.md).
+refuses a changeset `lw ingest --prepare` did not open. The agent has a shell,
+so the review gate is a convention it keeps — the brief tells it never to edit
+vault files directly or run `lw commit`; everything goes through `lw tool
+stage.*`. You review with `lw tui` or `lw diff` and commit as always; to drop the
+work, `lw doctor --discard-changeset` (with no API key it exits 1 on its api_key
+check after discarding — expected). See [docs/tools.md](docs/tools.md).
 
 ## Command reference
 
@@ -164,7 +168,8 @@ commands:
   ingest --prepare [--agent <name>] <url|path>...
                                open a changeset for the sources and print a brief for an external agent
   tool <name> [<json> | --from <file|->]
-                               run one tool of that agent's ingest; tool --list prints every schema
+                               run one tool of that agent's ingest; tool --list prints every schema,
+                               tool --brief prints the agent's brief again
   status                       show the open changeset, if any
   diff [--op <id>]             show the projected diff of the open changeset
   commit -m "..." [--force]    commit the open changeset
@@ -195,7 +200,7 @@ are the same flag). Exit codes: `0` success, `1` failure, `2` usage error.
 | `init` | `--schema <domain>`, `--force` | Scaffolds the full vault layout. Without `--schema` it asks: domain, tags, page-type conventions. Refuses a non-empty directory unless `--force`. The result passes `lw lint` with zero errors |
 | `config` | `set <key> <value>`, `--probe` | Prints the resolved config; `set` writes `~/.config/lw/config.toml`; `--probe` checks the provider is reachable and that tool calling actually works. The API key is printed only as `env:NAME (set)` / `(missing)` |
 | `ingest` | `-kind article\|paper\|transcript`, `-recompile`, `-dry-run`, `-prepare`, `-agent <name>` | One or more URLs or local paths. Extracts every source *before* opening a changeset, so a bad URL fails the whole command with nothing created. `-prepare` does the part that needs no model — extract, dedupe, limits, stage the raws — and prints a curator brief for an external agent, which curates through `lw tool`; it builds no agent and reads no API key. `-agent` names that agent (default `agy`) and needs `-prepare`, which cannot be combined with `-dry-run` |
-| `tool` | (positional) `<name> [<json>]`, `-from <file\|->`, `-list` | One tool call of an `lw ingest --prepare` changeset, for the agent that prepare briefed: the tools of [docs/tools.md](docs/tools.md) except `stage.open` and `web.search`. `-list` prints their JSON schemas. Output is the tool's text; exit `1` when it refused, `2` for a usage mistake or a changeset `--prepare` did not open. Calls serialize on a lock, so they may run in parallel |
+| `tool` | (positional) `<name> [<json>]`, `-from <file\|->`, `-list` | One tool call of an `lw ingest --prepare` changeset, for the agent that prepare briefed: the tools of [docs/tools.md](docs/tools.md) except `stage.open` and `web.search`. `-list` prints their JSON schemas and `-brief` the curator brief again. Output is the tool's text; exit `1` when it refused, `2` for a usage mistake or a changeset `--prepare` did not open. Calls serialize on a lock, so they may run in parallel |
 | `status` | — | The open changeset, if any |
 | `diff` | `-op <id>`, `-stat`, `-render` | The projected diff of the buffer — what commit would write. `lw diff --render [--op <id>]` renders each changed page as it will read after commit, as plain text when stdout is not a terminal; it cannot be combined with `--stat` |
 | `commit` | `-m <msg>` (required), `-force` | Re-hashes the tree first; an op whose `before` hash no longer matches is stale and the commit is refused. Refuses a lint regression unless `--force`, which is journalled |

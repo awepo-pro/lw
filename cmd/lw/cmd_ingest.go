@@ -770,7 +770,6 @@ func cmdIngest(args []string) error {
 			items:   items,
 			targets: targets,
 			extract: toolExtract,
-			cites:   citations(),
 		})
 	}
 

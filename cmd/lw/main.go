@@ -173,7 +173,8 @@ commands:
   ingest --prepare [--agent <name>] <url|path|dir>...
                                open a changeset for the sources and print a brief for an external agent
   tool <name> [<json> | --from <file|->]
-                               run one tool of that agent's ingest; tool --list prints every schema
+                               run one tool of that agent's ingest; tool --list prints every schema,
+                               tool --brief prints the agent's brief again
   note [-m "..." | -F <file>]  capture a quick raw note outside the wiki (no LLM, no review)
   note list [-n N]             list captured notes, newest first
   status                       show the open changeset, if any

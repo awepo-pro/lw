@@ -620,8 +620,14 @@ func TestToolLock(t *testing.T) {
 		defer f.Close()
 		before := len(toolRecords(t, pv.root, pv.csID))
 		_, stderr, code := lwTool(t, pv.root, "", "raw.get", getArgs(pv.raw, 1))
-		if code != 1 || !strings.HasPrefix(stderr, "lw: tool: ") || !strings.Contains(stderr, "another lw tool call") {
-			t.Errorf("exit %d stderr %q, want 1 and an error naming the other call", code, stderr)
+		if code != 1 || !strings.HasPrefix(stderr, "lw: tool: ") || !strings.Contains(stderr, "another lw tool call or lw ingest --prepare is still running") || !strings.Contains(stderr, "wait for it or stop that process") {
+			t.Errorf("exit %d stderr %q, want 1 and an error naming the other call and what to do", code, stderr)
+		}
+		// FIX2 F3: never advise deleting the lock file. A new file is a new inode,
+		// which the running call's flock does not cover, so two calls would run
+		// at once; the kernel frees the flock of a holder that died.
+		if strings.Contains(strings.ToLower(stderr), "delete") || strings.Contains(strings.ToLower(stderr), "remove") {
+			t.Errorf("the lock error advises deleting the lock file: %q", stderr)
 		}
 		if n := len(toolRecords(t, pv.root, pv.csID)); n != before {
 			t.Errorf("a call that never got the lock wrote a record (%d, had %d)", n, before)
@@ -629,11 +635,13 @@ func TestToolLock(t *testing.T) {
 	})
 }
 
-// TestToolReadsTheChangesetAfterTheLock: a call reads the changeset only once
-// it holds the lock. A call waiting behind another must see what that one
-// staged: an engine opened (and its changeset cached) before the wait would
-// answer from the changeset as it was, and refuse to patch a page the call
-// before it had just created.
+// TestToolReadsTheChangesetAfterTheLock: a call reads the changeset — the gate's
+// Current(), which fills the engine's cache — only once it holds the lock. A call
+// waiting behind another must see what that one staged: a changeset read before
+// the wait would be answered from as it was, and the patch below refused for a
+// page the call before it had just created. (Opening the engine before the lock
+// would not fail this test: OpenEngine reads no changeset. What it pins is the
+// order of the first read and the lock.)
 func TestToolReadsTheChangesetAfterTheLock(t *testing.T) {
 	pv := prepareVault(t, 100)
 	patch := `{"path":"wiki/concepts/late-page.md","section":"## Abstract","op":"append_section","content":"One more sentence. See [[kv-cache]].","rationale":"extend the page the call before staged"}`
@@ -837,5 +845,154 @@ func TestToolRecordShape(t *testing.T) {
 				t.Errorf("toolRecord = %+v\nwant %+v", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestToolBriefMatchesPrepare (FIX2 F4): an agent whose context compacted has
+// lost the brief, and `lw tool --brief` prints it again. Both commands render
+// the brief from the one state — the changeset's live raws, the recompile
+// targets its prepare records name, the last record's agent — so right after a
+// prepare they print the same bytes, whatever the prepare did (opened a
+// changeset, recompiled a committed raw, joined one) and however much the agent
+// has done since.
+func TestToolBriefMatchesPrepare(t *testing.T) {
+	brief := func(t *testing.T, root string) (string, string, int) {
+		t.Helper()
+		return captureRun(t, func() int { return run([]string{"tool", "--brief", "--vault", root}) })
+	}
+
+	t.Run("opened", func(t *testing.T) {
+		prepHermetic(t)
+		prepNoAgent(t)
+		root := testutil.CopyFixture(t, "minimal")
+		src := prepSource(t, "long-source.md", "Long Source", 20000)
+		want, stderr, code := prepareRun(t, root, "--agent", "claude-code", src)
+		if code != 0 {
+			t.Fatalf("prepare: exit %d stderr %q", code, stderr)
+		}
+		got, stderr, code := brief(t, root)
+		if code != 0 || stderr != "" || got != want {
+			t.Fatalf("--brief: exit %d stderr %q\n%s\nwant the prepare's brief\n%s", code, stderr, got, want)
+		}
+
+		// After the agent has read, staged and closed, the brief is the same: it
+		// describes the work, not the progress.
+		cs := rcOpenChangeset(t, root)
+		raw := prepLiveIngest(cs)[0]
+		if _, _, code := lwTool(t, root, "", "raw.get", getArgs(raw, 1)); code != 0 {
+			t.Fatal("raw.get failed")
+		}
+		if _, _, code := lwTool(t, root, "", "stage.create_page", pageArgs(t, "wiki/concepts/after-notes.md", "After Notes", raw)); code != 0 {
+			t.Fatal("stage.create_page failed")
+		}
+		before := len(prepSession(t, root, cs.ID).Records)
+		if got, _, code := brief(t, root); code != 0 || got != want {
+			t.Errorf("--brief after the agent's work: exit %d\n%s\nwant the prepare's brief", code, got)
+		}
+		if n := len(prepSession(t, root, cs.ID).Records); n != before {
+			t.Errorf("--brief wrote to the session: %d records, had %d", n, before)
+		}
+	})
+
+	t.Run("recompile", func(t *testing.T) {
+		prepHermetic(t)
+		prepNoAgent(t)
+		root, _ := rcVault(t)
+		rcWritePage(t, root, "wiki/concepts/alpha-notes.md", []string{rcRawA}, "Notes on alpha.^["+rcRawA+"]\n")
+		want, stderr, code := prepareRun(t, root, "--recompile", rcRawA)
+		if code != 0 {
+			t.Fatalf("prepare: exit %d stderr %q", code, stderr)
+		}
+		if !strings.Contains(want, "- recompile: "+rcRawA+"\n") {
+			t.Fatalf("the prepare's brief lists no recompile target:\n%s", want)
+		}
+		if got, stderr, code := brief(t, root); code != 0 || got != want {
+			t.Errorf("--brief: exit %d stderr %q\n%s\nwant the prepare's brief\n%s", code, stderr, got, want)
+		}
+	})
+
+	t.Run("joined", func(t *testing.T) {
+		prepHermetic(t)
+		prepNoAgent(t)
+		root := testutil.CopyFixture(t, "minimal")
+		openCreatePageChangeset(t, root, "wiki/concepts/earlier-page.md", "Earlier Page")
+		src := prepSource(t, "joined.md", "Joined Source", 100)
+		want, stderr, code := prepareRun(t, root, "--agent", "codex", src)
+		if code != 0 {
+			t.Fatalf("prepare: exit %d stderr %q", code, stderr)
+		}
+		if !strings.Contains(want, " (joined)   agent: codex\n") {
+			t.Fatalf("the prepare's brief does not say it joined:\n%s", want)
+		}
+		if got, stderr, code := brief(t, root); code != 0 || got != want {
+			t.Errorf("--brief: exit %d stderr %q\n%s\nwant the prepare's brief\n%s", code, stderr, got, want)
+		}
+	})
+}
+
+// TestToolBriefGate (FIX2 F4): --brief answers for a prepared changeset only, with
+// the gate's own texts; it takes no argument; and it is a read, so it neither
+// waits for the tool lock nor writes a record.
+func TestToolBriefGate(t *testing.T) {
+	prepHermetic(t)
+
+	t.Run("no changeset", func(t *testing.T) {
+		root := testutil.CopyFixture(t, "minimal")
+		stdout, stderr, code := captureRun(t, func() int { return run([]string{"tool", "--brief", "--vault", root}) })
+		if want := "lw: tool: no open changeset — start with lw ingest --prepare <source>\n"; code != 2 || stderr != want || stdout != "" {
+			t.Errorf("exit %d stderr %q stdout %q; want 2 and %q", code, stderr, stdout, want)
+		}
+	})
+
+	t.Run("changeset not opened by prepare", func(t *testing.T) {
+		root := testutil.CopyFixture(t, "minimal")
+		cs := openCreatePageChangeset(t, root, "wiki/concepts/earlier-page.md", "Earlier Page")
+		stdout, stderr, code := captureRun(t, func() int { return run([]string{"tool", "--brief", "--vault", root}) })
+		if want := "lw: tool: changeset " + cs.ID + " was not opened by lw ingest --prepare\n"; code != 2 || stderr != want || stdout != "" {
+			t.Errorf("exit %d stderr %q stdout %q; want 2 and %q", code, stderr, stdout, want)
+		}
+	})
+
+	t.Run("takes no argument", func(t *testing.T) {
+		pv := prepareVault(t, 100)
+		for _, args := range [][]string{{"--brief", "raw.get"}, {"--brief", "--list"}, {"--brief", "--from", "-"}} {
+			full := append([]string{"tool", "--vault", pv.root}, args...)
+			stdout, stderr, code := captureRun(t, func() int { return run(full) })
+			if code != 2 || stdout != "" || !strings.HasPrefix(stderr, "usage: lw tool") || !strings.Contains(stderr, "--brief") {
+				t.Errorf("%v: exit %d stdout %q stderr %q; want 2 and the usage naming --brief", args, code, stdout, stderr)
+			}
+		}
+	})
+
+	t.Run("does not wait for the lock", func(t *testing.T) {
+		pv := prepareVault(t, 100)
+		captureRun(t, func() int {
+			f := holdToolLock(t, pv.root)
+			defer f.Close()
+			done := make(chan int, 1)
+			go func() { done <- run([]string{"tool", "--brief", "--vault", pv.root}) }()
+			select {
+			case code := <-done:
+				if code != 0 {
+					t.Errorf("--brief while a call holds the lock: exit %d", code)
+				}
+			case <-time.After(5 * time.Second):
+				t.Error("--brief waited for the tool lock")
+			}
+			return 0
+		})
+	})
+}
+
+// TestToolUsageNamesBrief: the usage a mistaken `lw tool` prints and the top-level
+// help both tell the agent --brief exists.
+func TestToolUsageNamesBrief(t *testing.T) {
+	_, stderr, code := captureRun(t, func() int { return run([]string{"tool"}) })
+	if code != 2 || !strings.Contains(stderr, "lw tool [--vault <path>] --brief") {
+		t.Errorf("tool usage: exit %d stderr %q, want it to show --brief", code, stderr)
+	}
+	stdout, _, code := captureRun(t, func() int { return run([]string{"--help"}) })
+	if code != 0 || !strings.Contains(stdout, "tool --brief") {
+		t.Errorf("--help: exit %d, want a tool row naming --brief:\n%s", code, stdout)
 	}
 }

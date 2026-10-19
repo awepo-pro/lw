@@ -11,12 +11,18 @@ package main
 // Permanent regression tests (D-10C).
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/awepo-pro/lw/internal/agent"
 	"github.com/awepo-pro/lw/internal/config"
@@ -552,6 +558,14 @@ func TestPrepareBriefHowToWork(t *testing.T) {
 		"lw doctor --discard-changeset",
 		"lw tui",
 		"lw diff",
+		// FIX2 F2: the discard's first line, and why its exit code is 1.
+		"discarded open changeset",
+		"api_key",
+		// FIX2 F4: a lost brief can be printed again.
+		"lw tool --brief",
+		// FIX2 F6: a shell is not permission.
+		"never edit vault files directly",
+		"never run `lw commit`",
 	} {
 		if !strings.Contains(how, want) {
 			t.Errorf("the how-to-work text does not say %q:\n%s", want, how)
@@ -584,6 +598,8 @@ func TestPrepareRecordRoundTrip(t *testing.T) {
 			{kind: "recompile", path: "raw/articles/d.md", chunks: 3},
 		}},
 		{agent: "x", entries: []prepareEntry{{kind: "recompile", path: "raw/articles/my file.md", chunks: 1}}},
+		{agent: "joiner", joined: true},
+		{agent: "joiner", joined: true, entries: []prepareEntry{{kind: "source", path: "raw/articles/a.md", chunks: 2}, {kind: "recompile", path: "raw/articles/b.md", chunks: 1}}},
 	}
 	for _, x := range tests {
 		text := prepareRecordText(x)
@@ -596,6 +612,12 @@ func TestPrepareRecordRoundTrip(t *testing.T) {
 		}
 	}
 
+	if text := prepareRecordText(tests[5]); text != "lw ingest --prepare (agent: joiner)\nsource: raw/articles/a.md (2 chunk(s))\nrecompile: raw/articles/b.md (1 chunk(s))\nchangeset: joined" {
+		t.Errorf("joined record text = %q", text)
+	}
+	if text := prepareRecordText(tests[0]); text != "lw ingest --prepare (agent: agy)" {
+		t.Errorf("opened record text = %q: an opened changeset adds no line", text)
+	}
 	if text := prepareRecordText(tests[2]); text != "lw ingest --prepare (agent: codex (v2))\nsource: raw/papers/a-b.md (11 chunk(s))\nsource: raw/articles/c.md (1 chunk(s))\nrecompile: raw/articles/d.md (3 chunk(s))" {
 		t.Errorf("record text = %q", text)
 	}
@@ -611,9 +633,309 @@ func TestPrepareRecordRoundTrip(t *testing.T) {
 		"lw ingest --prepare (agent: x)\nnote: raw/articles/a.md (1 chunk(s))",
 		"please run lw ingest --prepare (agent: x)",
 		"New source material has been extracted and saved locally, ready to ingest.",
+		"lw ingest --prepare (agent: x)\nchangeset: opened",
+		"lw ingest --prepare (agent: x)\nchangeset: joined\nsource: raw/articles/a.md (1 chunk(s))",
+		"lw ingest --prepare (agent: x)\nchangeset: joined\nchangeset: joined",
 	} {
 		if p, ok := parsePrepareRecord(plain); ok {
 			t.Errorf("parsePrepareRecord(%q) = %+v, true; want not a prepare record", plain, p)
 		}
 	}
+}
+
+// openChangesetCount is how many changesets sit in root's open/ directory, 0
+// when there is none yet.
+func openChangesetCount(root string) int {
+	entries, err := os.ReadDir(filepath.Join(root, ".llmwiki", "changesets", "open"))
+	if err != nil {
+		return 0
+	}
+	return len(entries)
+}
+
+// TestPrepareTakesToolLock (FIX2 F1): `lw ingest --prepare` holds the tool lock
+// from before it opens or joins the changeset until the brief is built. Without
+// it a prepare joining a changeset while parallel `lw tool` calls ran lost its
+// own ingest_source op and acknowledged create_page ops, and left duplicate op
+// ids in the session: both sides read the changeset, changed it and wrote it
+// back whole. The lock is taken after the extraction, so a slow PDF holds
+// nothing up.
+func TestPrepareTakesToolLock(t *testing.T) {
+	prepHermetic(t)
+	prepNoAgent(t)
+
+	t.Run("waits for a running call and opens nothing meanwhile", func(t *testing.T) {
+		root := testutil.CopyFixture(t, "minimal")
+		src := prepSource(t, "locked.md", "Locked Source", 100)
+		captureRun(t, func() int {
+			f := holdToolLock(t, root)
+			done := make(chan int, 1)
+			go func() { done <- run([]string{"ingest", "--prepare", "--vault", root, src}) }()
+			select {
+			case code := <-done:
+				f.Close()
+				t.Errorf("--prepare ran while the tool lock was held (exit %d)", code)
+				return 0
+			case <-time.After(300 * time.Millisecond):
+			}
+			if n := openChangesetCount(root); n != 0 {
+				t.Errorf("--prepare opened %d changeset(s) while it waited for the lock", n)
+			}
+			f.Close()
+			select {
+			case code := <-done:
+				if code != 0 {
+					t.Errorf("--prepare after the lock was released: exit %d", code)
+				}
+			case <-time.After(10 * time.Second):
+				t.Error("--prepare never ran after the lock was released")
+			}
+			return 0
+		})
+		if raws := prepLiveIngest(rcOpenChangeset(t, root)); len(raws) != 1 {
+			t.Errorf("live raws = %v, want the prepare's one", raws)
+		}
+	})
+
+	t.Run("gives up with the lock error", func(t *testing.T) {
+		root := testutil.CopyFixture(t, "minimal")
+		src := prepSource(t, "locked.md", "Locked Source", 100)
+		orig := toolLockWait
+		toolLockWait = 100 * time.Millisecond
+		t.Cleanup(func() { toolLockWait = orig })
+		f := holdToolLock(t, root)
+		defer f.Close()
+
+		stdout, stderr, code := prepareRun(t, root, src)
+		if code != 1 || stdout != "" || !strings.HasPrefix(stderr, "lw: ingest: ") || !strings.Contains(stderr, "another lw tool call or lw ingest --prepare is still running") {
+			t.Errorf("exit %d stdout %q stderr %q; want 1, no brief and the lock error", code, stdout, stderr)
+		}
+		if n := openChangesetCount(root); n != 0 {
+			t.Errorf("a prepare that never got the lock opened %d changeset(s)", n)
+		}
+	})
+}
+
+// TestPrepareJoinWhileToolCallsRun (FIX2 F1, the reproduction): a prepare joining
+// a changeset while eight `lw tool` calls stage pages in it. Before the lock the
+// prepare's own ingest_source and one or two acknowledged pages were lost in
+// about half the runs, and the session held duplicate op ids. Everything that
+// was acknowledged is in the changeset, once.
+func TestPrepareJoinWhileToolCallsRun(t *testing.T) {
+	const n = 8
+	pv := prepareVault(t, 100)
+	src2 := prepSource(t, "second.md", "Second Source", 100)
+	calls := make([][]string, n)
+	for i := range n {
+		calls[i] = []string{"--vault", pv.root, "stage.create_page", pageArgs(t, "wiki/concepts/while-"+strconv.Itoa(i)+".md", "While Page "+strconv.Itoa(i), pv.raw)}
+	}
+
+	errs := make([]error, n)
+	var prepCode int
+	captureRun(t, func() int {
+		var wg sync.WaitGroup
+		for i := range n {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				errs[i] = cmdTool(calls[i])
+			}()
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			prepCode = run([]string{"ingest", "--prepare", "--vault", pv.root, src2})
+		}()
+		wg.Wait()
+		return 0
+	})
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("tool call %d: %v", i, err)
+		}
+	}
+	if prepCode != 0 {
+		t.Errorf("the joining prepare exited %d", prepCode)
+	}
+
+	cs := rcOpenChangeset(t, pv.root)
+	if got := rcCount(cs, stage.OpCreatePage); got != n {
+		t.Errorf("changeset holds %d create_page op(s), want %d", got, n)
+	}
+	if raws := prepLiveIngest(cs); len(raws) != 2 {
+		t.Errorf("live raws = %v, want the first prepare's and the joining one's", raws)
+	}
+	ids := map[string]bool{}
+	for _, op := range cs.Ops {
+		ids[op.ID] = true
+	}
+	if len(ids) != len(cs.Ops) {
+		t.Errorf("duplicate op ids: %d ids for %d ops", len(ids), len(cs.Ops))
+	}
+	s := prepSession(t, pv.root, pv.csID)
+	if recs := prepRecords(s); len(recs) != 2 {
+		t.Errorf("session holds %d prepare record(s), want 2", len(recs))
+	}
+}
+
+// TestPrepareOrientationFailureLeavesNoRecord (FIX2 F5): the prepare record is
+// the `lw tool` gate, so it is written only once the brief is built. A prepare
+// whose orientation fails rolls back as any failed prepare does, and a joined
+// changeset is left without a record that says it was prepared.
+func TestPrepareOrientationFailureLeavesNoRecord(t *testing.T) {
+	prepHermetic(t)
+	prepNoAgent(t)
+	orig := orientBrief
+	orientBrief = func(context.Context, *tools.Registry) (tools.Result, error) {
+		return tools.Result{}, errors.New("orientation is down")
+	}
+	t.Cleanup(func() { orientBrief = orig })
+
+	t.Run("joined", func(t *testing.T) {
+		root := testutil.CopyFixture(t, "minimal")
+		earlier := openCreatePageChangeset(t, root, "wiki/concepts/earlier-page.md", "Earlier Page")
+		sessions := agent.NewFileSessions(root)
+		if _, err := sessions.Create(earlier.ID); err != nil {
+			t.Fatal(err)
+		}
+		if err := sessions.Append(earlier.ID, agent.Record{Role: "user", Content: "earlier work"}); err != nil {
+			t.Fatal(err)
+		}
+		src := prepSource(t, "joined.md", "Joined Source", 100)
+
+		stdout, stderr, code := prepareRun(t, root, src)
+		if code != 1 || stdout != "" || !strings.Contains(stderr, "orientation is down") {
+			t.Fatalf("exit %d stdout %q stderr %q; want 1, no brief and the orientation error", code, stdout, stderr)
+		}
+		s := prepSession(t, root, earlier.ID)
+		if recs := prepRecords(s); len(recs) != 0 {
+			t.Errorf("the failed prepare left %d prepare record(s) in the joined session: %+v", len(recs), s.Records)
+		}
+		if live := rcOpenChangeset(t, root).Live(); len(live) != 1 || live[0].Path != "wiki/concepts/earlier-page.md" {
+			t.Errorf("live ops = %+v, want only the earlier page", live)
+		}
+	})
+
+	t.Run("opened here", func(t *testing.T) {
+		root := testutil.CopyFixture(t, "minimal")
+		src := prepSource(t, "opened.md", "Opened Source", 100)
+		if _, stderr, code := prepareRun(t, root, src); code != 1 || !strings.Contains(stderr, "orientation is down") {
+			t.Fatalf("exit %d stderr %q", code, stderr)
+		}
+		if got := countChangesets(t, root, "open"); got != 0 {
+			t.Errorf("open changesets = %d, want 0", got)
+		}
+		ids, err := agent.NewFileSessions(root).List()
+		if err != nil || len(ids) != 1 {
+			t.Fatalf("sessions = %v, err %v, want the rejected changeset's one", ids, err)
+		}
+		if recs := prepRecords(prepSession(t, root, ids[0])); len(recs) != 0 {
+			t.Errorf("the rejected changeset's session holds a prepare record: %+v", recs)
+		}
+	})
+}
+
+// schemaOf is the JSON schema of the ingest tool name, as `lw tool --list`
+// prints it.
+func schemaOf(t *testing.T, name string) (props map[string]struct {
+	Type string `json:"type"`
+	Enum []any  `json:"enum"`
+}, required []string, closed bool) {
+	t.Helper()
+	tl, ok := tools.NewRegistry(tools.Deps{}).Get(name)
+	if !ok {
+		t.Fatalf("%s is not registered", name)
+	}
+	var schema struct {
+		Properties map[string]struct {
+			Type string `json:"type"`
+			Enum []any  `json:"enum"`
+		} `json:"properties"`
+		Required             []string `json:"required"`
+		AdditionalProperties *bool    `json:"additionalProperties"`
+	}
+	if err := json.Unmarshal(tl.Schema, &schema); err != nil {
+		t.Fatalf("%s schema: %v", name, err)
+	}
+	return schema.Properties, schema.Required, schema.AdditionalProperties != nil && !*schema.AdditionalProperties
+}
+
+// TestBriefArgShapesMatchSchemas (FIX2 F7): the brief shows the exact one-line
+// argument shape of the tools an agent reaches for first, because a live agent
+// sent wiki.search {"query": …} — the key is "q" — and was refused. Each
+// example is read back out of the brief's own text and held to its tool's real
+// schema: only known keys, every required key, values of the declared type.
+// The read-only ones are also run against a prepared vault.
+func TestBriefArgShapesMatchSchemas(t *testing.T) {
+	re := regexp.MustCompile("(?m)^    lw tool ([a-z_.]+) '(\\{.*\\})'$")
+	found := map[string]string{}
+	for _, m := range re.FindAllStringSubmatch(prepareHowToWork, -1) {
+		found[m[1]] = m[2]
+	}
+	for _, want := range []string{"raw.get", "wiki.search", "wiki.get", "raw.list", "stage.close"} {
+		if _, ok := found[want]; !ok {
+			t.Errorf("the brief shows no argument shape for %s", want)
+		}
+	}
+	for name, args := range found {
+		props, required, closed := schemaOf(t, name)
+		var got map[string]any
+		if err := json.Unmarshal([]byte(args), &got); err != nil {
+			t.Errorf("%s example %s is not a JSON object: %v", name, args, err)
+			continue
+		}
+		for key, val := range got {
+			p, ok := props[key]
+			if !ok {
+				if closed {
+					t.Errorf("%s example %s uses %q, which is not in the tool's schema", name, args, key)
+				}
+				continue
+			}
+			switch p.Type {
+			case "string":
+				if _, ok := val.(string); !ok {
+					t.Errorf("%s example: %q must be a string, got %v", name, key, val)
+				}
+			case "integer":
+				if f, ok := val.(float64); !ok || f != float64(int(f)) {
+					t.Errorf("%s example: %q must be an integer, got %v", name, key, val)
+				}
+			case "boolean":
+				if _, ok := val.(bool); !ok {
+					t.Errorf("%s example: %q must be a boolean, got %v", name, key, val)
+				}
+			case "array":
+				if _, ok := val.([]any); !ok {
+					t.Errorf("%s example: %q must be an array, got %v", name, key, val)
+				}
+			}
+			if len(p.Enum) > 0 && !containsAny(p.Enum, val) {
+				t.Errorf("%s example: %q = %v is not one of %v", name, key, val, p.Enum)
+			}
+		}
+		for _, key := range required {
+			if _, ok := got[key]; !ok {
+				t.Errorf("%s example %s lacks the required %q", name, args, key)
+			}
+		}
+	}
+
+	// The read-only examples are accepted as they stand by a real vault.
+	pv := prepareVault(t, 100)
+	for _, name := range []string{"wiki.search", "wiki.get", "raw.list"} {
+		if stdout, stderr, code := lwTool(t, pv.root, "", name, found[name]); code != 0 {
+			t.Errorf("lw tool %s '%s': exit %d stdout %q stderr %q, want the example to be accepted", name, found[name], code, stdout, stderr)
+		}
+	}
+}
+
+// containsAny reports whether list holds val.
+func containsAny(list []any, val any) bool {
+	for _, v := range list {
+		if v == val {
+			return true
+		}
+	}
+	return false
 }
