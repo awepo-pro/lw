@@ -243,11 +243,12 @@ footer { margin-top: 80px; color: var(--muted); font-size: 14px; border-top: 1px
     <li><a href="#history"><span class="tick"></span>8 · History &amp; undo</a></li>
     <li><a href="#health"><span class="tick"></span>9 · Keeping it healthy</a></li>
     <li><a href="#more"><span class="tick"></span>10 · Notes, PDFs, MCP</a></li>
-    <li><a href="#trouble"><span class="tick"></span>11 · Troubleshooting</a></li>
+    <li><a href="#agent"><span class="tick"></span>11 · Curate with your own agent</a></li>
+    <li><a href="#trouble"><span class="tick"></span>12 · Troubleshooting</a></li>
     <li><a href="#cheat"><span class="tick"></span>Cheat sheet</a></li>
   </ol>
   <div class="progress">
-    <span id="progText">0 of 12 lessons done</span>
+    <span id="progText">0 of 13 lessons done</span>
     <div class="bar"><span id="progBar"></span></div>
   </div>
   <button class="theme-btn" id="themeBtn">Toggle theme</button>
@@ -255,7 +256,7 @@ footer { margin-top: 80px; color: var(--muted); font-size: 14px; border-top: 1px
 
 <main>
 <header class="hero">
-  <div class="ver">Covers lw v2.35.0 · 2026-10-06</div>
+  <div class="ver">Covers lw v2.35.0 · 2026-10-06 · lesson 11: v2.45.0</div>
   <h1>Learn <code>lw</code> by doing</h1>
   <p class="lede">You start with sources — an article, a paper, a saved chat — and end with a small, cross-linked markdown wiki where every claim cites where it came from. <code>lw</code> is the compiler in the middle. An agent proposes the pages, and you decide what lands.</p>
   <div class="callout">
@@ -267,6 +268,7 @@ footer { margin-top: 80px; color: var(--muted); font-size: 14px; border-top: 1px
     <p>This page was checked against <strong>lw v2.35.0</strong>. Run <code>lw version</code>. If yours is older, some behaviour below won't match. If it's newer, trust <code>lw --help</code> where they disagree.</p>
     <p>Changes since the last edition of this page (v2.30.0):</p>
     <ul>
+      <li><strong>v2.45.0</strong>: new lesson 11. Your own agent (Claude Code, Codex, Antigravity) can curate an ingest with <code>lw ingest --prepare</code> and <code>lw tool</code>, with no API key. Only lesson 11 was checked against v2.45.0. The rest of the page still describes v2.35.0.</li>
       <li><strong>v2.35.0</strong>: an ingest that adds to an already-open changeset now says <code>joined changeset …</code> instead of <code>opened</code> (lesson 3).</li>
       <li><strong>v2.34.0</strong>: dropping or restoring a hunk in Review puts the text back exactly where it was, byte for byte. A frontmatter change is always its own hunk (lesson 4).</li>
       <li><strong>v2.33.0</strong>: the agent can't repeat a read whose answer it already has (lesson 3).</li>
@@ -708,12 +710,120 @@ lw config set open.pdf "papers -i {page} {file}"   <span class="c"># or: mupdf {
   }
 }</code></pre>
   <p>This exposes the same 18 vault tools, plus <code>web.search</code> when it's configured. <code>lw mcp</code> itself needs no API key, because the client brings its own model. On the wire, dots become underscores (<code>wiki.search</code> → <code>wiki_search</code>). See <a href="tools.md">tools.md</a>.</p>
+  <p>Over MCP, the client gets the tools but none of <code>lw ingest</code>'s preparation: no folder walk, no dedupe, no size limits. If the agent's job is to ingest, use lesson 11 instead.</p>
   <button class="mark-done" data-for="more">Mark lesson done</button>
 </section>
 
 <!-- 11 -->
+<section id="agent" data-lesson>
+  <h2><span class="num">11</span>Curate with your own agent</h2>
+  <p class="goal">Goal: let Claude Code, Codex or Antigravity write the pages for an ingest, with no API key in lw and the same review at the end. Needs v2.45.0+.</p>
+
+  <p>A normal <code>lw ingest</code> does two jobs. First it extracts the sources and stages them, which needs no model. Then it runs a curator agent on your configured provider. If the provider is unfunded or rate-limited, or you'd rather use the agent you already have open, split the two jobs:</p>
+  <div class="table-wrap"><table>
+    <tr><th>Step</th><th>Who</th><th>Command</th></tr>
+    <tr><td>1 · Prepare</td><td>lw, no model</td><td><code>lw ingest --prepare &lt;source&gt;…</code>: extract, dedupe, check limits, stage the raw sources, print a brief</td></tr>
+    <tr><td>2 · Curate</td><td>your agent</td><td><code>lw tool &lt;name&gt; '&lt;json&gt;'</code>, one call per tool use: read chunks, search, stage pages</td></tr>
+    <tr><td>3 · Close</td><td>your agent</td><td><code>lw tool stage.close</code>: checks every chunk was read and prints the changeset</td></tr>
+    <tr><td>4 · Review &amp; commit</td><td>you</td><td><code>lw tui</code> → Review, or <code>lw diff</code> then <code>lw commit</code>, as in lessons 4–5</td></tr>
+  </table></div>
+
+  <h3>1 · Prepare</h3>
+<pre><code><span class="p">$ </span>lw ingest --prepare --agent claude-code ~/Downloads/kv-cache-explained.md
+# lw ingest --prepare — curator brief
+changeset: cs-276a28a44de5dfc3 (opened)   agent: claude-code
+
+## Sources to compile
+
+- raw: raw/articles/kv-cache-explained.md
+  chunks: 2
+  title: KV Cache Explained
+  original source: /home/you/Downloads/kv-cache-explained.md
+
+## How to work
+…
+## Curator rules
+…
+## Vault orientation
+…</code></pre>
+  <p>It takes the same sources as <code>lw ingest</code> (files, URLs, folders, PDFs, <code>--recompile</code>) with the same limits. It never reads <code>llm.api_key</code>. The changeset is opened as usual, or joined if one is already open. The brief on stdout is everything the agent needs:</p>
+  <ul>
+    <li><strong>Sources to compile</strong>: each staged <code>raw/</code> path and its chunk count.</li>
+    <li><strong>How to work</strong>: the exact argument shape of each tool the agent will reach for first, and the rules for finishing.</li>
+    <li><strong>Curator rules</strong>: the same instructions lw's own curator gets (Abstract first, two wikilinks, tags from <code>SCHEMA.md</code>, cite every claim).</li>
+    <li><strong>Vault orientation</strong>: <code>SCHEMA.md</code>, <code>index.md</code>, <code>curator-memory.md</code> and the tail of <code>log.md</code>.</li>
+  </ul>
+  <p><code>--agent</code> names the curator. The name becomes the changeset's author, so <code>lw log</code> and Review show who wrote the pages. It defaults to <code>agy</code>, so pass <code>--agent claude-code</code> (or <code>codex</code>) when it's someone else.</p>
+
+  <h3>2 · Curate through <code>lw tool</code></h3>
+<pre><code><span class="p">$ </span>lw tool raw.get '{"source":"raw/articles/kv-cache-explained.md","chunk":1}'
+(staged in the open changeset, not yet committed)
+
+chunk 1 of 2
+…
+<span class="p">$ </span>lw tool wiki.search '{"q":"kv cache","limit":5}'
+<span class="p">$ </span>lw tool stage.create_page --from - &lt;&lt;'EOF'
+{"path": "wiki/concepts/kv-cache.md", "title": "KV Cache", "type": "concept",
+ "tags": ["basics"], "sources": ["raw/articles/kv-cache-explained.md"],
+ "confidence": "low", "contested": false,
+ "body": "## Abstract\n\n…", "rationale": "Central concept of the source."}
+EOF
+proposed op2 (create_page)</code></pre>
+  <ul>
+    <li>Arguments are one JSON object: either a quoted argument, or <code>--from -</code> with a heredoc (<code>--from file.json</code> also works). Use the heredoc for page bodies, so shell quoting never touches them.</li>
+    <li><code>lw tool --list</code> prints every tool with its JSON schema. Wire names work too: <code>raw_get</code> is the same as <code>raw.get</code>.</li>
+    <li>Only the ingest tools are offered: 17 of them, with no <code>web.search</code> and no <code>stage.open</code>.</li>
+    <li>Parallel calls are safe. Each call takes <code>.llmwiki/tmp/tool.lock</code>, so 8 calls at once give 8 ops and none are lost.</li>
+    <li>Every call is recorded in the changeset's session, so <code>lw session show</code> shows the whole trail: the prepare step, each read, each stage.</li>
+  </ul>
+
+  <div class="table-wrap"><table>
+    <tr><th>Exit</th><th>Means</th><th>Agent should</th></tr>
+    <tr><td><code>0</code></td><td>Done. The result is on stdout</td><td>continue</td></tr>
+    <tr><td><code>1</code></td><td>The tool refused (bad args, a check failed). The reason and the fix are on stdout</td><td>fix the call and retry</td></tr>
+    <tr><td><code>2</code></td><td>Usage: tool not offered, bad JSON, or no changeset from <code>--prepare</code></td><td>fix the command</td></tr>
+  </table></div>
+
+  <h3>3 · Close</h3>
+  <p>The read-every-chunk rule still holds, even though each call is a separate process. The first close over unread chunks is refused:</p>
+<pre><code><span class="p">$ </span>lw tool stage.close
+stage.close: not every chunk of the sources ingested in this changeset was read — raw/articles/kv-cache-explained.md chunks 2 of 2 unread. Read them with raw.get (request several chunks in one round), or call stage.close again to close anyway.
+<span class="c"># exit 1 — read chunk 2, then close again</span>
+<span class="p">$ </span>lw tool stage.close
+changeset cs-276a28a44de5dfc3
+intent: ingest ~/Downloads/kv-cache-explained.md
+operations: 2
+…
+checks: schema=pass <span class="bad">lint=fail</span> orphans=1 broken_links=2
+
+opened changeset cs-276a28a44de5dfc3: ingest ~/Downloads/kv-cache-explained.md (2 op(s))
+  op1 ingest_source raw/articles/kv-cache-explained.md
+  op2 create_page wiki/concepts/kv-cache.md
+<span class="hl">warning: lint regresses — 2 error(s) projected vs 0 in the last commit; lw commit will refuse this (review with lw diff)</span></code></pre>
+  <p>A close ends the same way a normal ingest does: the summary, a raw-only warning if no pages were staged, and the lint-regression warning. In the run above, the page links to two pages that don't exist yet, so the agent should stage them or remove the links before handing over.</p>
+
+  <h3>4 · You review, as always</h3>
+  <div class="callout warn">
+    <strong>The agent has a shell, so the gate is a convention</strong>
+    The brief tells it never to edit vault files directly and never to run <code>lw commit</code>. Everything goes through <code>lw tool stage.*</code>, and you commit after Review. Use this with an agent you trust to follow its brief.
+  </div>
+<pre><code>lw tui                           <span class="c"># Review → y / n per hunk → C to commit</span>
+lw session show --plain          <span class="c"># what the agent read and staged, call by call</span>
+lw doctor --discard-changeset    <span class="c"># or throw the whole thing away</span></code></pre>
+
+  <h3>Telling Claude Code to do it</h3>
+  <p>You don't have to dictate the steps. Say <em>"ingest ~/Downloads/paper.pdf into my lw vault"</em>. With the <code>lw-ingest</code> skill installed (<code>~/.claude/skills/lw-ingest/SKILL.md</code>), Claude Code runs prepare, reads every chunk, stages pages, closes, and then tells you the changeset id to review. Without the skill, point the agent at <code>lw ingest --prepare</code>; the brief it prints is self-contained. If the agent's context gets compacted mid-ingest, <code>lw tool --brief</code> prints the brief again.</p>
+
+  <details class="quiz"><summary>Check: the agent runs <code>lw tool web.search '{}'</code>. What happens?</summary>
+    <p>Exit 2: <code>lw: tool: web.search is not offered for ingest (lw tool --list shows the tools)</code>. An ingest compiles the sources you gave it, nothing fetched from the web.</p></details>
+  <details class="quiz"><summary>Check: you ran <code>lw tui</code>, asked a question, and staged a page. Can the agent now <code>lw tool stage.create_page</code> into that changeset?</summary>
+    <p>No. <code>lw tool</code> only works on a changeset that <code>lw ingest --prepare</code> opened or joined. Otherwise it exits 2: <code>changeset … was not opened by lw ingest --prepare</code>.</p></details>
+  <button class="mark-done" data-for="agent">Mark lesson done</button>
+</section>
+
+<!-- 11 -->
 <section id="trouble" data-lesson>
-  <h2><span class="num">11</span>Troubleshooting</h2>
+  <h2><span class="num">12</span>Troubleshooting</h2>
   <p class="goal">Goal: recognise the common failures by their symptoms.</p>
   <div class="table-wrap"><table>
     <tr><th>Symptom</th><th>Cause → fix</th></tr>
@@ -722,6 +832,8 @@ lw config set open.pdf "papers -i {page} {file}"   <span class="c"># or: mupdf {
     <tr><td><code>lw revert</code>: "a changeset is already open"</td><td>Revert needs a clean slate. Run <code>lw status</code> → <code>lw diff</code>, then commit, press <kbd>X</kbd>, or run <code>lw doctor --discard-changeset</code>. (Ingest, Ask and <code>lint --fix</code> join the open changeset instead.)</td></tr>
     <tr><td>Ingest stops: output limit reached</td><td>The default is 32768. If your config sets it lower, raise it with <code>lw config set llm.max_tokens 32768</code> (<code>lw doctor</code> warns below 16000). Thinking models use a lot of it.</td></tr>
     <tr><td>Agent refuses to write a page</td><td>It won't write a claim it can't cite. Ingest a source first. Pages also need at least two outbound <code>[[wikilinks]]</code>.</td></tr>
+    <tr><td><code>lw: tool: no open changeset — start with lw ingest --prepare &lt;source&gt;</code></td><td><code>lw tool</code> works only inside a prepared ingest. Run <code>lw ingest --prepare</code> first (lesson 11).</td></tr>
+    <tr><td><code>lw tool</code> exits 1</td><td>Not a crash: the tool refused the call, and stdout says why (a wrong key such as <code>query</code> instead of <code>q</code>, unread chunks, a missing <code>## Abstract</code>). Fix the arguments and call again.</td></tr>
     <tr><td><code>warning: lint regresses</code> after ingest</td><td>The changeset is still open. Review it with <code>lw diff</code>, drop the bad hunks, or commit with <code>--force</code> (which is recorded in the journal).</td></tr>
   </table></div>
   <button class="mark-done" data-for="trouble">Mark lesson done</button>
@@ -735,6 +847,8 @@ lw config set open.pdf "papers -i {page} {file}"   <span class="c"># or: mupdf {
     <tr><td><code>lw init [--schema d]</code></td><td>Scaffold a vault</td><td>no</td></tr>
     <tr><td><code>lw config [set k v] [--probe]</code></td><td>Show, edit, or test config</td><td>probe only</td></tr>
     <tr><td><code>lw ingest &lt;path|url|dir&gt;… [--dry-run]</code></td><td>Propose pages from sources</td><td>yes</td></tr>
+    <tr><td><code>lw ingest --prepare [--agent name] &lt;…&gt;</code></td><td>Stage sources + print a brief for your own agent</td><td>no</td></tr>
+    <tr><td><code>lw tool &lt;name&gt; ['&lt;json&gt;' | --from -]</code></td><td>One tool call in a prepared ingest; <code>--list</code> schemas, <code>--brief</code> reprint</td><td>no</td></tr>
     <tr><td><code>lw note [-m "…" | -F &lt;file|-&gt;] | note list</code></td><td>Quick capture outside the wiki</td><td>no</td></tr>
     <tr><td><code>lw status</code></td><td>Committed counts + open changeset</td><td>no</td></tr>
     <tr><td><code>lw diff [--stat] [--op id]</code></td><td>Projected diff</td><td>no</td></tr>
