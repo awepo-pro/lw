@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/awepo-pro/lw/internal/extract"
 	"github.com/awepo-pro/lw/internal/stage"
 	"github.com/awepo-pro/lw/internal/vault"
 )
@@ -180,6 +181,44 @@ func stageIngestSourceTool(d Deps) Tool {
 			originalSHA = vault.BodySHA256(string(originalContent))
 			originalPath = originalPathFor(sourcePath, originalExt)
 		}
+
+		finalSlug := strings.TrimSuffix(path.Base(sourcePath), ".md")
+		docSlug := extract.DocSlug(doc.Title, uri)
+
+		var opAssets []stage.AssetRef
+		claimedInOp := make(map[string]bool, len(doc.Assets))
+		for _, asset := range doc.Assets {
+			if len(asset.Bytes) == 0 || asset.Name == "" {
+				continue
+			}
+			candidateName := asset.Name
+			if docSlug != "" && finalSlug != docSlug {
+				if strings.HasPrefix(candidateName, docSlug+"-") {
+					candidateName = finalSlug + "-" + strings.TrimPrefix(candidateName, docSlug+"-")
+				} else if strings.TrimSuffix(candidateName, path.Ext(candidateName)) == docSlug {
+					candidateName = finalSlug + path.Ext(candidateName)
+				}
+			}
+			ext := strings.ToLower(path.Ext(candidateName))
+			stem := strings.TrimSuffix(candidateName, path.Ext(candidateName))
+			finalName := stem + ext
+			finalPath := "raw/assets/" + finalName
+			for n := 2; assetPathTaken(d, finalPath, claimedInOp); n++ {
+				finalName = fmt.Sprintf("%s-%d%s", stem, n, ext)
+				finalPath = "raw/assets/" + finalName
+			}
+			claimedInOp[finalPath] = true
+			if finalName != asset.Name {
+				body = strings.ReplaceAll(body, "../../raw/assets/"+asset.Name, "../../raw/assets/"+finalName)
+			}
+			opAssets = append(opAssets, stage.AssetRef{
+				Path:    finalPath,
+				SHA256:  vault.BodySHA256(string(asset.Bytes)),
+				Content: asset.Bytes,
+			})
+		}
+		bodySHA = vault.BodySHA256(body)
+
 		content := rawSourceDocumentWithOriginal(sourceURL, ingestDate(), body, originalPath, originalSHA)
 		if defect := rawDocumentDefect(sourceURL, body, originalPath, originalSHA, content); defect != "" {
 			return Result{IsError: true, Content: defect}, nil
@@ -239,6 +278,7 @@ func stageIngestSourceTool(d Deps) Tool {
 			OriginalPath:    originalPath,
 			Original:        originalSHA,
 			OriginalContent: originalContent,
+			Assets:          opAssets,
 		})
 		if err != nil || res.IsError {
 			return res, err

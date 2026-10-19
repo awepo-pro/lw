@@ -373,6 +373,18 @@ func (e *Engine) storeOpContent(op *Op) error {
 		op.Original = sha
 		op.OriginalContent = nil
 	}
+	if op.Kind == OpIngestSource {
+		for i := range op.Assets {
+			if op.Assets[i].Content != nil {
+				sha, err := e.store.Put(op.Assets[i].Content)
+				if err != nil {
+					return fmt.Errorf("stage: store op asset %s: %w", op.Assets[i].Path, err)
+				}
+				op.Assets[i].SHA256 = sha
+				op.Assets[i].Content = nil
+			}
+		}
+	}
 	for i := range op.Cascade {
 		if err := e.storeOpContent(&op.Cascade[i]); err != nil {
 			return err

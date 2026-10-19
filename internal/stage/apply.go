@@ -530,6 +530,13 @@ func (e *Engine) planOp(m *commitMaterialization, op Op, retractedDate string) e
 			}
 			m.writes[op.OriginalPath] = orig
 		}
+		for _, a := range op.Assets {
+			ab, err := e.store.Get(a.SHA256)
+			if err != nil {
+				return fmt.Errorf("commit %s: asset %s: %w", op.ID, a.Path, err)
+			}
+			m.writes[a.Path] = ab
+		}
 
 	case OpCreatePage, OpPatchPage:
 		b, err := e.postImage(op)

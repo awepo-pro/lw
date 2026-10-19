@@ -110,6 +110,31 @@ func originalPathTaken(d Deps, path, originalExt string) bool {
 	return originalExt != "" && d.Vault != nil && d.Vault.Exists(path)
 }
 
+// assetPathTaken reports whether assetPath is already claimed in claimed,
+// exists in the committed vault, or is staged in any live OpIngestSource in the open changeset (064).
+func assetPathTaken(d Deps, assetPath string, claimed map[string]bool) bool {
+	if claimed[assetPath] {
+		return true
+	}
+	if d.Vault != nil && d.Vault.Exists(assetPath) {
+		return true
+	}
+	if d.Engine != nil {
+		if cs, err := d.Engine.Current(); err == nil {
+			for _, op := range cs.Live() {
+				if op.Kind == stage.OpIngestSource {
+					for _, a := range op.Assets {
+						if a.Path == assetPath {
+							return true
+						}
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
 // slugSourceName slugs a title or basename into the raw source's file-name
 // fragment: internal/slug.Make, the one slug rule the whole tree shares
 // (A-805) and the exact lowercase-ASCII shape the engine's validator

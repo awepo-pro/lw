@@ -162,7 +162,7 @@ func formatTooNewVault(t *testing.T, version string) string {
 // and not one file under the vault changes.
 func TestEngineFormatTooNewFromCLI(t *testing.T) {
 	syncHermetic(t)
-	const text = "vault format 2 is newer than this lw supports (1): upgrade lw"
+	const text = "vault format 3 is newer than this lw supports (2): upgrade lw"
 
 	// lw stage reads its ops file before it looks for the vault, so the
 	// refusal is only reachable with one that parses.
@@ -205,7 +205,7 @@ func TestEngineFormatTooNewFromCLI(t *testing.T) {
 	for _, v := range verbs {
 		args := v.args("")
 		t.Run(strings.Join(args[:min(len(args), 2)], "_"), func(t *testing.T) {
-			root := formatTooNewVault(t, "2")
+			root := formatTooNewVault(t, "3")
 			before := treeDigest(t, root)
 			stdout, stderr, code := captureRun(t, func() int { return run(v.args(root)) })
 			if code != 1 {
@@ -224,7 +224,7 @@ func TestEngineFormatTooNewFromCLI(t *testing.T) {
 	}
 
 	t.Run("a bare lw is the tui", func(t *testing.T) {
-		root := formatTooNewVault(t, "2")
+		root := formatTooNewVault(t, "3")
 		chdir(t, root)
 		_, stderr, code := captureRun(t, func() int { return run(nil) })
 		if want := "lw: tui: " + text + "\n"; code != 1 || stderr != want {
@@ -235,7 +235,7 @@ func TestEngineFormatTooNewFromCLI(t *testing.T) {
 	t.Run("a version above 2 names that version", func(t *testing.T) {
 		root := formatTooNewVault(t, "7")
 		_, stderr, code := captureRun(t, func() int { return run([]string{"status", "--vault", root}) })
-		if want := "lw: status: vault format 7 is newer than this lw supports (1): upgrade lw\n"; code != 1 || stderr != want {
+		if want := "lw: status: vault format 7 is newer than this lw supports (2): upgrade lw\n"; code != 1 || stderr != want {
 			t.Errorf("exit %d stderr %q, want 1 and %q", code, stderr, want)
 		}
 	})

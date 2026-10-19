@@ -25,6 +25,9 @@ var vaultPathFilenameRE = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*\.md$`)
 // vaultPathSegmentRE matches one lowercase-hyphen directory segment.
 var vaultPathSegmentRE = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 
+// assetPathRE matches raw/assets/<lowercase-hyphen-name>.<ext> (064).
+var assetPathRE = regexp.MustCompile(`^raw/assets/[a-z0-9]+(-[a-z0-9]+)*\.[a-z0-9]+$`)
+
 // validVaultPath reports whether p is vault-relative, slash-separated, and
 // every segment is lowercase-hyphen, with the final segment ending ".md".
 func validVaultPath(p string) bool {
@@ -120,6 +123,9 @@ func validateOpForAppend(op Op, v, committed *vault.Vault, s *vault.Schema) erro
 	if len(op.Cascade) > 0 && op.Kind != OpRenamePage && op.Kind != OpMergePages {
 		return fmt.Errorf("%w: %s: cascade is not accepted; only rename_page and merge_pages carry one, and Append builds it itself", ErrValidation, op.Kind)
 	}
+	if len(op.Assets) > 0 && op.Kind != OpIngestSource {
+		return fmt.Errorf("%w: %s: assets are only allowed on ingest_source", ErrValidation, op.Kind)
+	}
 
 	if op.Kind == OpPatchPage && isKnownRootFile(op.Path) {
 		if err := validateHunks(op.Hunks); err != nil {
@@ -195,7 +201,10 @@ func validateIngestSource(op Op, v *vault.Vault) error {
 			return fmt.Errorf("%w: ingest_source: content already ingested at %s (sha256 %s); dedupe by hash", ErrValidation, r.Path, sha)
 		}
 	}
-	return validateIngestOriginal(op, v)
+	if err := validateIngestOriginal(op, v); err != nil {
+		return err
+	}
+	return validateIngestAssets(op, v)
 }
 
 // validateIngestOriginal enforces the 033 original pair's shape, in the
@@ -262,6 +271,35 @@ func validateIngestOriginal(op Op, v *vault.Vault) error {
 	if src.Original != op.OriginalPath || src.OriginalSHA256 != op.Original {
 		return fmt.Errorf("%w: ingest_source: raw frontmatter declares original %q / original_sha256 %q, but the op stages %q / %q",
 			ErrValidation, src.Original, src.OriginalSHA256, op.OriginalPath, op.Original)
+	}
+	return nil
+}
+
+// validateIngestAssets enforces: each asset in op.Assets sits under raw/assets/
+// with a non-.md extension, has no duplicates, carries non-empty sha256 and content
+// whose hash matches, and does not already exist in v (064).
+func validateIngestAssets(op Op, v *vault.Vault) error {
+	if len(op.Assets) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(op.Assets))
+	for _, a := range op.Assets {
+		if !assetPathRE.MatchString(a.Path) || path.Ext(a.Path) == ".md" {
+			return fmt.Errorf("%w: ingest_source: asset path %q must be raw/assets/<name>.<ext> with a non-.md extension", ErrValidation, a.Path)
+		}
+		if seen[a.Path] {
+			return fmt.Errorf("%w: ingest_source: duplicate asset path %q", ErrValidation, a.Path)
+		}
+		seen[a.Path] = true
+		if a.SHA256 == "" || len(a.Content) == 0 {
+			return fmt.Errorf("%w: ingest_source: asset %s requires both sha256 and content", ErrValidation, a.Path)
+		}
+		if got := sha256Hex(a.Content); got != a.SHA256 {
+			return fmt.Errorf("%w: ingest_source: asset %s content hashes to %s, not the declared %s", ErrValidation, a.Path, got, a.SHA256)
+		}
+		if v.Exists(a.Path) {
+			return fmt.Errorf("%w: ingest_source: asset %s already exists", ErrValidation, a.Path)
+		}
 	}
 	return nil
 }

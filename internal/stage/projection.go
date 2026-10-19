@@ -161,6 +161,11 @@ func (e *Engine) applyOp(tree map[string][]byte, atts map[string]string, op Op) 
 		if op.OriginalPath != "" && op.Original != "" {
 			atts[op.OriginalPath] = op.Original
 		}
+		for _, a := range op.Assets {
+			if a.Path != "" && a.SHA256 != "" {
+				atts[a.Path] = a.SHA256
+			}
+		}
 	case OpCreatePage, OpPatchPage:
 		b, err := e.postImage(op)
 		if err != nil {
@@ -369,4 +374,22 @@ func (e *Engine) recomputeChecks(c *Changeset) (Checks, error) {
 		return Checks{}, err
 	}
 	return e.computeChecks(tree, atts)
+}
+
+// ProjectedVault returns the vault representing the open changeset's
+// projected tree and attachments (064). If no changeset is open, it returns
+// the committed vault.
+func (e *Engine) ProjectedVault() (*vault.Vault, error) {
+	c, err := e.currentOpen()
+	if err != nil {
+		if errors.Is(err, ErrNoChangeset) {
+			return e.vault, nil
+		}
+		return nil, err
+	}
+	tree, atts, err := e.project(c.Live())
+	if err != nil {
+		return nil, err
+	}
+	return e.openProjection(tree, atts)
 }
