@@ -100,5 +100,60 @@ func Walk(dir string, ex Extractor) (files []string, skipped []Skipped, err erro
 	if err != nil {
 		return nil, nil, fmt.Errorf("walk: %s: %w", dir, err)
 	}
+
+	// 064 D2: suppress false skips for referenced folder images
+	hasSkippedImages := false
+	for _, sk := range skipped {
+		if sk.Reason == "unsupported type" && isSupportedImageExt(sk.Path) {
+			hasSkippedImages = true
+			break
+		}
+	}
+	hasMarkdownFiles := false
+	for _, f := range files {
+		ext := strings.ToLower(filepath.Ext(f))
+		if ext == ".md" || ext == ".markdown" {
+			hasMarkdownFiles = true
+			break
+		}
+	}
+
+	if hasSkippedImages && hasMarkdownFiles {
+		referencedSet := make(map[string]bool)
+		for _, f := range files {
+			ext := strings.ToLower(filepath.Ext(f))
+			if ext != ".md" && ext != ".markdown" {
+				continue
+			}
+			b, rerr := os.ReadFile(f)
+			if rerr != nil {
+				continue
+			}
+			_, _, paths := scanImageRefs(string(b), f, "", false)
+			for _, p := range paths {
+				referencedSet[filepath.Clean(p)] = true
+				if resolved, rerr := filepath.EvalSymlinks(p); rerr == nil {
+					referencedSet[filepath.Clean(resolved)] = true
+				}
+			}
+		}
+
+		filtered := skipped[:0]
+		for _, sk := range skipped {
+			if sk.Reason == "unsupported type" && isSupportedImageExt(sk.Path) {
+				clean := filepath.Clean(sk.Path)
+				resolved := ""
+				if r, rerr := filepath.EvalSymlinks(sk.Path); rerr == nil {
+					resolved = filepath.Clean(r)
+				}
+				if referencedSet[clean] || (resolved != "" && referencedSet[resolved]) {
+					continue // Suppress!
+				}
+			}
+			filtered = append(filtered, sk)
+		}
+		skipped = filtered
+	}
+
 	return files, skipped, nil
 }
