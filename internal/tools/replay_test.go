@@ -333,6 +333,76 @@ func TestReplayDroppedSourceNotHeld(t *testing.T) {
 	}
 }
 
+// TestReplayReingestStartsOver: a path ingested again is a new body (A-040-4,
+// TestStageCloseRefusesAgainAfterReingest, TestStageCloseReingestStartsOver), so
+// reads made of the old body, and a refusal made over it, are forgotten when the
+// source is staged again at the same path — and Replay must forget them too
+// (C-063-5). Without that, the old reads count toward the new body and the close
+// passes over chunks nobody has read of it.
+func TestReplayReingestStartsOver(t *testing.T) {
+	dropAndReingest := func(rig *rpRig, path string) {
+		t.Helper()
+		cs, err := rig.e.Current()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var id string
+		for _, op := range cs.Live() {
+			if op.Path == path {
+				id = op.ID
+			}
+		}
+		if id == "" {
+			t.Fatalf("no live op for %s", path)
+		}
+		if err := rig.e.DropOp(id); err != nil {
+			t.Fatalf("DropOp: %v", err)
+		}
+		if again, _ := rig.ingest("long.md"); again != path {
+			t.Fatalf("re-ingest landed at %q, want the same path %q", again, path)
+		}
+	}
+	docs := map[string]*extract.Doc{"long.md": guardDoc("Long Source", 20000)}
+
+	t.Run("reads of the old body do not count", func(t *testing.T) {
+		rig := rpGuardRig(t, docs)
+		path, _ := rig.ingest("long.md")
+		rig.call("raw.get", rpRead(path, 1))
+		rig.call("raw.get", rpRead(path, 2))
+		dropAndReingest(rig, path)
+
+		b := rpFresh(rig.e, guardExtractor{docs: docs})
+		b.Replay(rpLive(t, rig.e), rig.past)
+		want := closeRefusalHead + path + " chunks 1, 2 of 2 unread" + closeRefusalTail
+		got := callTool(t, b, "stage.close", `{}`)
+		if !got.IsError || got.Content != want {
+			t.Fatalf("B's close = %+v, want the all-unread refusal %q", got, want)
+		}
+		// The long-lived registry that ran the same calls says the same.
+		if a := rig.call("stage.close", `{}`); !a.IsError || a.Content != got.Content {
+			t.Errorf("A's close = %+v, B's = %q", a, got.Content)
+		}
+	})
+
+	t.Run("a refusal over the old body is forgotten", func(t *testing.T) {
+		rig := rpGuardRig(t, docs)
+		path, _ := rig.ingest("long.md")
+		rig.call("raw.get", rpRead(path, 1))
+		first := rig.call("stage.close", `{}`) // refused: {2}
+		if !first.IsError {
+			t.Fatalf("first close not refused: %s", first.Content)
+		}
+		dropAndReingest(rig, path)
+		rig.call("raw.get", rpRead(path, 1)) // the same reads again: the same unread set {2}
+
+		b := rpFresh(rig.e, guardExtractor{docs: docs})
+		b.Replay(rpLive(t, rig.e), rig.past)
+		if got := callTool(t, b, "stage.close", `{}`); !got.IsError || got.Content != first.Content {
+			t.Fatalf("B's close = %+v, want a fresh refusal %q (the re-ingest is a new body)", got, first.Content)
+		}
+	})
+}
+
 // TestReplayCleanCloseForgetsRefusal: a close that went through over an EMPTY
 // unread set clears the remembered refusal (closeVerdict does), so an identical
 // unread set that recurs later is fresh again and is refused once more. A, in

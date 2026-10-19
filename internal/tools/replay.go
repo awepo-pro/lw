@@ -31,9 +31,11 @@ type PastCall struct{ Tool, Args, Result string }
 // stage.close that was refused (UnreadRefusalKey) restores the refusal key; a
 // stage.close that went through over an empty unread set clears it, and one
 // that went through over a non-empty set leaves it, as closeVerdict does. A
-// stage.ingest_source record is not replayed: live already holds every staged
-// source at its count, and a source whose op was dropped must not come back
-// from its old record. A refused raw.get is not a read.
+// stage.ingest_source record that staged a path in live starts that path over
+// (reads and refusal forgotten, count taken from live), because a path
+// ingested again is a new body; a record naming a path not in live is ignored,
+// so a source whose op was dropped does not come back from its old record. A
+// refused raw.get is not a read.
 //
 // 043 shrink arms. In order, per (path, section) from a stage.patch_page
 // record's arguments: a shrink refusal (ShrinkRefusal, either form) arms the
@@ -51,12 +53,16 @@ type PastCall struct{ Tool, Args, Result string }
 // target, which no ingest_source op names, is not pruned as dropped.
 func (r *Registry) Replay(live []LiveSource, past []PastCall) {
 	reads := r.deps.reads
+	chunks := make(map[string]int, len(live))
 	for _, s := range live {
 		reads.noteIngest(s.Path, s.Chunks)
 		reads.hold(s.Path)
+		chunks[s.Path] = s.Chunks
 	}
 	for _, c := range past {
 		switch recordedToolName(c.Tool) {
+		case "stage.ingest_source":
+			r.replayIngest(c, chunks)
 		case "raw.get":
 			r.replayRawGet(c)
 		case "stage.close":
@@ -77,6 +83,25 @@ func recordedToolName(name string) string {
 		return name
 	}
 	return CanonicalName(name)
+}
+
+// replayIngest starts over the read log of a source a recorded
+// stage.ingest_source staged again (C-063-5). A path ingested again is a new
+// body — the changeset dropped the old op and staged another at the same path —
+// so noteIngest forgets the reads, and the refusal, made of the old one
+// (A-040-4); without this the reads that came before the re-ingest in the
+// history would count toward a body they never covered. Only a path in live is
+// noted, and at live's count: live already holds every source the changeset
+// stages, so a record whose op was dropped and never staged again names a path
+// that is not in it and stays gone.
+func (r *Registry) replayIngest(c PastCall, live map[string]int) {
+	path, ok := stagedSourcePath(c.Result)
+	if !ok {
+		return
+	}
+	if n, held := live[path]; held {
+		r.deps.reads.noteIngest(path, n)
+	}
 }
 
 // replayRawGet marks the chunk a recorded raw.get served as read.

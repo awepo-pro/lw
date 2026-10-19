@@ -304,3 +304,37 @@ func TestRecognisersRejectLookalikes(t *testing.T) {
 		t.Errorf("RawGetServed rejected an empty chunk")
 	}
 }
+
+// TestStagedSourcePathReadsRealIngestResult: the path Replay re-notes a source
+// under (C-063-5) is read out of the real stage.ingest_source result — plain, and
+// with the "named … because …" suffix a taken candidate gets — and nothing is
+// read out of a refusal or any other tool's text.
+func TestStagedSourcePathReadsRealIngestResult(t *testing.T) {
+	reg, _ := guardRegistry(t, map[string]*extract.Doc{
+		"a.md": guardDoc("Same Title", 20000),
+		"b.md": guardDoc("Same Title", 30000), // another body under the same title: lands at -2
+	})
+	guardOpen(t, reg)
+	first := rcText(t, reg, "stage.ingest_source", `{"uri":"a.md"}`, false)
+	second := rcText(t, reg, "stage.ingest_source", `{"uri":"b.md"}`, false)
+	if !strings.Contains(second, " named raw/articles/same-title-2.md because ") {
+		t.Fatalf("fixture drift: the second ingest is\n%s", second)
+	}
+	for text, want := range map[string]string{first: "raw/articles/same-title.md", second: "raw/articles/same-title-2.md"} {
+		if got, ok := stagedSourcePath(text); !ok || got != want {
+			t.Errorf("stagedSourcePath(%q) = (%q, %v), want (%q, true)", text, got, ok, want)
+		}
+	}
+	for name, text := range map[string]string{
+		"duplicate refusal": rcText(t, reg, "stage.ingest_source", `{"uri":"a.md"}`, true),
+		"missing uri":       rcText(t, reg, "stage.ingest_source", `{}`, true),
+		"raw.get chunk":     rcText(t, reg, "raw.get", `{"source":"raw/articles/same-title.md"}`, false),
+		"empty":             "",
+		"hint, no proposal": `; read it with raw.get {"source":"raw/articles/x.md","chunk":1}`,
+		"unterminated path": `proposed op-1 (ingest_source) at raw/a.md — 1 chunk(s); read it with raw.get {"source":"raw/a.md`,
+	} {
+		if got, ok := stagedSourcePath(text); ok {
+			t.Errorf("%s: stagedSourcePath = (%q, true), want false", name, got)
+		}
+	}
+}

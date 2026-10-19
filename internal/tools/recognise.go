@@ -15,6 +15,7 @@ package tools
 
 import (
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/awepo-pro/lw/internal/stage"
@@ -109,4 +110,35 @@ func closeWentThrough(result string) (through, overUnread bool) {
 	}
 	last := result[strings.LastIndexByte(result, '\n')+1:]
 	return true, strings.HasPrefix(last, "unread chunks: ")
+}
+
+// ingestedReadHint is what a stage.ingest_source that staged names right after
+// its chunk count: the raw.get call that reads the source back, with the staged
+// path as a quoted JSON string ("…; read it with raw.get {"source":%q,…").
+const ingestedReadHint = `; read it with raw.get {"source":`
+
+// stagedSourcePath returns the staged raw path a stage.ingest_source result
+// names, and whether result is one that staged (063, C-063-5). The path is the
+// raw.get hint's own quoted string, read back the way %q wrote it, not
+// scraped from the prose around it: the " named X because …" suffix and a
+// source title in the path cannot confuse it. A refusal opens differently and
+// carries no hint.
+func stagedSourcePath(result string) (string, bool) {
+	first, _, _ := strings.Cut(result, "\n")
+	if !strings.HasPrefix(first, "proposed ") {
+		return "", false
+	}
+	_, rest, ok := strings.Cut(first, ingestedReadHint)
+	if !ok {
+		return "", false
+	}
+	quoted, err := strconv.QuotedPrefix(rest)
+	if err != nil {
+		return "", false
+	}
+	path, err := strconv.Unquote(quoted)
+	if err != nil || path == "" {
+		return "", false
+	}
+	return path, true
 }
