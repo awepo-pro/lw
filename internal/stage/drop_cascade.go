@@ -178,7 +178,7 @@ func (e *Engine) depFacts(n *depNode) {
 	n.prov = map[string]bool{}
 	var walk func(o Op)
 	walk = func(o Op) {
-		if o.Kind == OpIngestSource && o.Path != "" {
+		if o.Kind == OpIngestSource && o.Before == "" && o.Path != "" {
 			n.ingested[o.Path] = true
 		}
 		for _, r := range o.Provenance {

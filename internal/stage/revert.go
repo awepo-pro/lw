@@ -288,6 +288,11 @@ func (e *Engine) buildRevertOps(commitID string, prev, cur Snapshot, renames []r
 		if !ok {
 			if !isRevertableRootFile(p) {
 				skipped = append(skipped, p)
+				if strings.HasPrefix(p, "raw/") {
+					if r, ok := e.vault.RawSource(p); ok && r.Original != "" {
+						skipped = append(skipped, r.Original)
+					}
+				}
 				continue
 			}
 			raw, rok := canonicalContent(e.vault, p)

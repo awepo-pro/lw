@@ -298,7 +298,7 @@ func briefOf(ctx context.Context, e *stage.Engine, cs *stage.Changeset, prepares
 	b := prepareBrief{changeset: cs.ID, joined: last.joined, agent: last.agent}
 	seen := make(map[string]bool)
 	for _, op := range cs.Live() {
-		if op.Kind != stage.OpIngestSource || seen[op.Path] {
+		if op.Kind != stage.OpIngestSource || op.Before != "" || seen[op.Path] {
 			continue
 		}
 		seen[op.Path] = true
@@ -429,7 +429,7 @@ func prepareIngest(ctx context.Context, p prepareInput) error {
 	staged := 0
 	for i := n0; i < len(final.Ops); i++ {
 		op := final.Ops[i]
-		if op.Kind != stage.OpIngestSource || op.State == stage.StateDropped || op.State == stage.StateRejected {
+		if op.Kind != stage.OpIngestSource || op.Before != "" || op.State == stage.StateDropped || op.State == stage.StateRejected {
 			continue
 		}
 		src, serr := stagedSourceInfo(e, op.Path)

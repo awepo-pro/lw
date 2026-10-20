@@ -361,6 +361,7 @@ func runDoctor(ctx context.Context, root string, o doctorOptions) doctorReport {
 	}
 
 	rep.Checks = append(rep.Checks, checkTracked(root))
+	rep.Checks = append(rep.Checks, checkOriginals(v))
 
 	cfg, cfgErr := config.Load()
 	rep.Checks = append(rep.Checks, checkConfig(cfg, cfgErr))
@@ -1170,5 +1171,32 @@ func checkProvider(ctx context.Context, cfg *config.Config) doctorCheck {
 		Name:   name,
 		OK:     true,
 		Detail: fmt.Sprintf("%s reachable, tool calling ok (%dms)", res.Model, res.Latency.Milliseconds()),
+	}
+}
+
+// checkOriginals reports how many committed raw sources carry a verbatim
+// original beside them (058 S2). Always OK: true (a vault with legacy raws is
+// healthy; the line provides visibility and names the backfill verb).
+func checkOriginals(v *vault.Vault) doctorCheck {
+	const name = "originals"
+	raws := v.RawSources()
+	total := len(raws)
+	if total == 0 {
+		return doctorCheck{Name: name, OK: true, Detail: "0 raw source(s)"}
+	}
+	withOrig := 0
+	for _, r := range raws {
+		if r.Original != "" {
+			withOrig++
+		}
+	}
+	if withOrig == total {
+		return doctorCheck{Name: name, OK: true, Detail: fmt.Sprintf("all %d raw source(s) have an original", total)}
+	}
+	without := total - withOrig
+	return doctorCheck{
+		Name:   name,
+		OK:     true,
+		Detail: fmt.Sprintf("%d of %d raw source(s) have an original (%d without; backfill with lw ingest --attach <file>)", withOrig, total, without),
 	}
 }

@@ -428,7 +428,7 @@ func replayLive(e *stage.Engine, cs *stage.Changeset, targets []string) ([]tools
 	var live []tools.LiveSource
 	seen := make(map[string]bool)
 	for _, op := range cs.Live() {
-		if op.Kind != stage.OpIngestSource || seen[op.Path] {
+		if op.Kind != stage.OpIngestSource || op.Before != "" || seen[op.Path] {
 			continue
 		}
 		src, err := stagedSourceInfo(e, op.Path)

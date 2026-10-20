@@ -347,7 +347,7 @@ func (e *Engine) currentOpen() (*Changeset, error) {
 // post-image bytes travel through the identical channels (backbone
 // §5.3/§5.4, MASTER §9 D-AY).
 func (e *Engine) storeOpContent(op *Op) error {
-	if op.Kind == OpPatchPage {
+	if op.Kind == OpPatchPage || (op.Kind == OpIngestSource && op.Before != "") {
 		if pre, ok := canonicalContent(e.vault, op.Path); ok {
 			if _, err := e.store.Put(pre); err != nil {
 				return fmt.Errorf("stage: store pre-image: %w", err)
@@ -581,10 +581,16 @@ func (e *Engine) Append(op Op) (string, error) {
 	if err := validateOpForAppend(op, cv, e.vault, cv.Schema()); err != nil {
 		return "", err
 	}
-	if op.Kind == OpIngestSource && len(op.Assets) > 0 {
+	if op.Kind == OpIngestSource {
 		for _, prev := range c.Live() {
 			if prev.Kind != OpIngestSource {
 				continue
+			}
+			if op.Before != "" && prev.Path == op.Path {
+				return "", fmt.Errorf("%w: ingest_source: %s already has a staged attach in this changeset (%s)", ErrValidation, op.Path, prev.ID)
+			}
+			if op.OriginalPath != "" && prev.OriginalPath == op.OriginalPath {
+				return "", fmt.Errorf("%w: ingest_source: original_path %s already exists (staged in this changeset by %s)", ErrValidation, op.OriginalPath, prev.ID)
 			}
 			for _, pa := range prev.Assets {
 				for _, a := range op.Assets {

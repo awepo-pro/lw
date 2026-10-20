@@ -220,7 +220,11 @@ func (c *Changeset) RawOnly() (raws []string, ok bool) {
 	other := false
 	for _, op := range c.Live() {
 		if op.Kind == OpIngestSource {
-			raws = append(raws, op.Path)
+			if op.Before == "" {
+				raws = append(raws, op.Path)
+				continue
+			}
+			other = true
 			continue
 		}
 		other = true

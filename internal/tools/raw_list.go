@@ -139,7 +139,7 @@ func rawListRows(d Deps) []rawListRow {
 	if d.Engine != nil {
 		if cs, err := d.Engine.Current(); err == nil {
 			for _, op := range cs.Live() {
-				if op.Kind != stage.OpIngestSource {
+				if op.Kind != stage.OpIngestSource || op.Before != "" {
 					continue
 				}
 				title, sourceURL := stagedRawIdentity(d, op.Path)

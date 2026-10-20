@@ -185,8 +185,15 @@ func refreshOp(op *Op, v, chainV *vault.Vault) {
 	case OpPatchPage:
 		cur, ok := canonicalSHA(chainV, op.Path)
 		stale = !ok || cur != op.Before
-	case OpCreatePage, OpIngestSource:
+	case OpCreatePage:
 		stale = v.Exists(op.Path)
+	case OpIngestSource:
+		if op.Before != "" {
+			cur, ok := canonicalSHA(v, op.Path)
+			stale = !ok || cur != op.Before || (op.OriginalPath != "" && v.Exists(op.OriginalPath))
+		} else {
+			stale = v.Exists(op.Path) || (op.OriginalPath != "" && v.Exists(op.OriginalPath))
+		}
 		for _, a := range op.Assets {
 			if v.Exists(a.Path) {
 				stale = true

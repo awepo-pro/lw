@@ -510,8 +510,8 @@ func TestDoctorJSON(t *testing.T) {
 		if !out.OK || out.Vault != root {
 			t.Errorf("report = %+v, want ok with vault %q", out, root)
 		}
-		if len(out.Checks) != 10 {
-			t.Errorf("%d checks, want 10 (the 008 llm budget and 007 pdf extractor checks included): %+v", len(out.Checks), out.Checks)
+		if len(out.Checks) != 11 {
+			t.Errorf("%d checks, want 11 (the 008 llm budget, 007 pdf extractor, and 058 originals checks included): %+v", len(out.Checks), out.Checks)
 		}
 		for _, c := range out.Checks {
 			if !c.OK || c.Remedy != "" {
@@ -1124,6 +1124,92 @@ func TestDoctorPDFExtractor(t *testing.T) {
 		wantRemedy := "reinstall: uv tool install --force docling==2.130.0"
 		if c.Remedy != wantRemedy {
 			t.Errorf("remedy = %q, want %q", c.Remedy, wantRemedy)
+		}
+	})
+}
+
+// TestDoctorOriginalsCount pins 058 D10: lw doctor reports the originals count
+// on committed raw sources (OK: true in all cases; provides visibility into
+// legacy raws lacking originals and names the backfill verb).
+func TestDoctorOriginalsCount(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("legacy_raws_without_originals", func(t *testing.T) {
+		root := testutil.CopyFixture(t, "minimal")
+		rep := runDoctor(ctx, root, doctorOptions{})
+		c := checkByName(t, rep, "originals")
+		if !c.OK || c.Warn || c.Remedy != "" {
+			t.Fatalf("check = %+v, want OK: true with no warn/remedy", c)
+		}
+		want := "0 of 2 raw source(s) have an original (2 without; backfill with lw ingest --attach <file>)"
+		if c.Detail != want {
+			t.Errorf("detail = %q, want %q", c.Detail, want)
+		}
+	})
+
+	t.Run("partially_backfilled", func(t *testing.T) {
+		root := testutil.CopyFixture(t, "minimal")
+		kvPath := filepath.Join(root, "raw", "articles", "kv-cache-explained.md")
+		origPath := "raw/articles/kv-cache-explained.html"
+		origSHA := "1111222233334444111122223333444411112222333344441111222233334444"
+		data, err := os.ReadFile(kvPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		updated := strings.Replace(string(data), "---\n\n", fmt.Sprintf("original: %s\noriginal_sha256: %s\n---\n\n", origPath, origSHA), 1)
+		if err := os.WriteFile(kvPath, []byte(updated), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		rep := runDoctor(ctx, root, doctorOptions{})
+		c := checkByName(t, rep, "originals")
+		if !c.OK || c.Warn || c.Remedy != "" {
+			t.Fatalf("check = %+v, want OK: true", c)
+		}
+		want := "1 of 2 raw source(s) have an original (1 without; backfill with lw ingest --attach <file>)"
+		if c.Detail != want {
+			t.Errorf("detail = %q, want %q", c.Detail, want)
+		}
+	})
+
+	t.Run("all_have_originals", func(t *testing.T) {
+		root := testutil.CopyFixture(t, "minimal")
+		for _, rel := range []string{"raw/articles/kv-cache-explained.md", "raw/papers/leviathan-2023.md"} {
+			p := filepath.Join(root, filepath.FromSlash(rel))
+			data, err := os.ReadFile(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			origPath := rel + ".orig"
+			origSHA := "1111222233334444111122223333444411112222333344441111222233334444"
+			updated := strings.Replace(string(data), "---\n\n", fmt.Sprintf("original: %s\noriginal_sha256: %s\n---\n\n", origPath, origSHA), 1)
+			if err := os.WriteFile(p, []byte(updated), 0644); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		rep := runDoctor(ctx, root, doctorOptions{})
+		c := checkByName(t, rep, "originals")
+		if !c.OK || c.Warn || c.Remedy != "" {
+			t.Fatalf("check = %+v, want OK: true", c)
+		}
+		want := "all 2 raw source(s) have an original"
+		if c.Detail != want {
+			t.Errorf("detail = %q, want %q", c.Detail, want)
+		}
+	})
+
+	t.Run("zero_raw_sources", func(t *testing.T) {
+		root := testutil.CopyFixture(t, "minimal")
+		_ = os.RemoveAll(filepath.Join(root, "raw"))
+		rep := runDoctor(ctx, root, doctorOptions{})
+		c := checkByName(t, rep, "originals")
+		if !c.OK || c.Warn || c.Remedy != "" {
+			t.Fatalf("check = %+v, want OK: true", c)
+		}
+		want := "0 raw source(s)"
+		if c.Detail != want {
+			t.Errorf("detail = %q, want %q", c.Detail, want)
 		}
 	})
 }

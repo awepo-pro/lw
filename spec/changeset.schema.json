@@ -118,6 +118,8 @@
             "id": { "$ref": "#/$defs/opId" },
             "op": { "const": "ingest_source" },
             "path": { "$ref": "#/$defs/vaultPath" },
+            "before": { "type": "string" },
+            "after": { "type": "string" },
             "sha256": { "type": "string" },
             "extractor": { "type": "string", "minLength": 1 },
             "original_path": {

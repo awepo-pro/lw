@@ -4,6 +4,7 @@
 package stage
 
 import (
+	"bytes"
 	"fmt"
 	"path"
 	"regexp"
@@ -185,9 +186,13 @@ func validateOpForAppend(op Op, v, committed *vault.Vault, s *vault.Schema) erro
 // the body parsed from op.Content — 008 contract §3), a non-empty
 // Extractor (the schema's required set, D-BH), and — 033 — the original
 // pair's self-consistency (validateIngestOriginal below).
+// When op.Before != "", it routes to validateIngestAttach (058 S2).
 func validateIngestSource(op Op, v *vault.Vault) error {
 	if !strings.HasPrefix(op.Path, "raw/") {
 		return fmt.Errorf("%w: ingest_source: path %q must be under raw/", ErrValidation, op.Path)
+	}
+	if op.Before != "" {
+		return validateIngestAttach(op, v)
 	}
 	if v.Exists(op.Path) {
 		return fmt.Errorf("%w: ingest_source: %s already exists", ErrValidation, op.Path)
@@ -203,6 +208,48 @@ func validateIngestSource(op Op, v *vault.Vault) error {
 	}
 	if err := validateIngestOriginal(op, v); err != nil {
 		return err
+	}
+	return validateIngestAssets(op, v)
+}
+
+// validateIngestAttach enforces the 058 S2 attach backfill rule:
+// the target raw source must already exist in the committed vault without
+// an original, Before must match its current canonical sha, an original
+// is required and self-consistent, source_url, ingested, sha256 and body
+// are immutable, and op.Content is the canonical serialized raw source.
+func validateIngestAttach(op Op, v *vault.Vault) error {
+	r, ok := v.RawSource(op.Path)
+	if !ok {
+		return fmt.Errorf("%w: ingest_source: attach target %s does not exist", ErrValidation, op.Path)
+	}
+	if r.Original != "" {
+		return fmt.Errorf("%w: ingest_source: %s already has original %s", ErrValidation, op.Path, r.Original)
+	}
+	cur, ok := canonicalSHA(v, op.Path)
+	if !ok || cur != op.Before {
+		return fmt.Errorf("%w: ingest_source: %s: before does not match the current content", ErrValidation, op.Path)
+	}
+	if op.Extractor == "" {
+		return fmt.Errorf("%w: ingest_source: extractor is required", ErrValidation)
+	}
+	if op.OriginalPath == "" && op.Original == "" && op.OriginalContent == nil {
+		return fmt.Errorf("%w: ingest_source: attach on %s requires an original", ErrValidation, op.Path)
+	}
+	if err := validateIngestOriginal(op, v); err != nil {
+		return err
+	}
+	src, err := vault.ParseRawSource(op.Path, op.Content)
+	if err != nil {
+		return fmt.Errorf("%w: ingest_source: raw file does not parse: %v", ErrValidation, err)
+	}
+	if src.SourceURL != r.SourceURL || src.Ingested != r.Ingested || src.SHA256 != r.SHA256 || src.Body != r.Body {
+		return fmt.Errorf("%w: ingest_source: attach on %s may only set original and original_sha256; source_url, ingested, sha256 and body are immutable", ErrValidation, op.Path)
+	}
+	expected := *r
+	expected.Original = op.OriginalPath
+	expected.OriginalSHA256 = op.Original
+	if !bytes.Equal(op.Content, expected.Serialize()) {
+		return fmt.Errorf("%w: ingest_source: attach on %s content is not canonical", ErrValidation, op.Path)
 	}
 	return validateIngestAssets(op, v)
 }

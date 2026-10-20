@@ -281,6 +281,7 @@ func cmdIngest(args []string) error {
 	kindFlag := fs.String("kind", "", "override the detected kind for every source: article|paper|transcript")
 	dryRun := fs.Bool("dry-run", false, "report what would be ingested and the limit verdict, then exit — opens no changeset, constructs no agent (URL sources are still fetched, to size them)")
 	recompile := fs.Bool("recompile", false, "write pages from sources the vault already holds as committed raw files; stages no new raw")
+	attach := fs.Bool("attach", false, "backfill the original file for a committed raw source whose body matches; stages no wiki pages and calls no model")
 	prepare := fs.Bool("prepare", false, "do the deterministic half of the ingest — extract, dedupe, limits, stage the raw sources — and print a brief for an external agent that curates the pages through lw tool; constructs no agent and resolves no API key")
 	agentName := fs.String("agent", "agy", "with --prepare: the name of the external agent, recorded as the changeset author's model")
 	sources, err := parseIngestSources(fs, args)
@@ -304,6 +305,15 @@ func cmdIngest(args []string) error {
 		return &exitError{code: 2}
 	case *prepare && !validAgentName(*agentName):
 		fmt.Fprintln(os.Stderr, "lw: ingest: --agent needs a name")
+		return &exitError{code: 2}
+	case *attach && *recompile:
+		fmt.Fprintln(os.Stderr, "lw: ingest: cannot use --attach with --recompile")
+		return &exitError{code: 2}
+	case *attach && *prepare:
+		fmt.Fprintln(os.Stderr, "lw: ingest: cannot use --attach with --prepare")
+		return &exitError{code: 2}
+	case *attach && *kindFlag != "":
+		fmt.Fprintln(os.Stderr, "lw: ingest: cannot use --attach with --kind")
 		return &exitError{code: 2}
 	}
 	if len(sources) == 0 {
@@ -427,6 +437,10 @@ func cmdIngest(args []string) error {
 	// the work, a deliberate abort does not.
 	ctx, stopInterrupt := notifyInterrupt(ctx)
 	defer stopInterrupt()
+
+	if *attach {
+		return runIngestAttach(ctx, openEng, func() *stage.Engine { return e }, canonRoot, ex, sources, *dryRun)
+	}
 
 	// 004 F.I1: an argument that stats as a directory is replaced, in
 	// place, by extract.Walk's eligible files — the same chain extracts
