@@ -168,8 +168,8 @@ func TestBuildUsesAskPromptForAsk(t *testing.T) {
 		{"query_web_registry_still_no_web", "query", true, askPromptFor(false)},
 		{"ask", "ask", false, askPromptFor(false)},
 		{"ask_with_web", "ask", true, askPromptFor(true)},
-		{"ingest", "ingest", false, systemPromptFor(false)},
-		{"ingest_with_web", "ingest", true, systemPromptFor(false)}, // 056: ingest is not offered web.search
+		{"ingest", "ingest", false, IngestSystemPrompt()},
+		{"ingest_with_web", "ingest", true, IngestSystemPrompt()}, // 056 / 065 (A-065-1): ingest is not offered web.search and receives IngestSystemPrompt
 		{"lint", "lint", false, systemPromptFor(false)},
 		{"file", "file", true, systemPromptFor(true)},
 		{"no_verb", "", false, systemPromptFor(false)},

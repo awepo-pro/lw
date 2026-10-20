@@ -93,16 +93,20 @@ func (b *ContextBuilder) buildFor(s *Session, userMsg string, plan turnPlan) ([]
 	// promises web.search only when the registry itself offers the verb
 	// (012 contract §1) — never a constructor parameter, never a stored
 	// field. 056 (TD-16): and only to a turn that is offered it. An ingest turn
-	// is not (toolsFor withholds the tool), so it gets the prompt of a vault
-	// with no web provider, byte for byte: the 010/017 "search the web with
-	// web.search before you answer" paragraphs are an instruction for answering,
-	// and the user's real ingest turns were sent them 8 times in 8.
+	// is not (toolsFor withholds the tool), so it gets IngestSystemPrompt (065).
 	_, hasSearch := b.r.Get("web.search")
-	system := systemPromptFor(hasSearch && !plan.noWeb)
-	if plan.mode == modeAsk {
+	system := systemPromptFor(hasSearch)
+	switch {
+	case plan.mode == modeAsk:
 		// 039: the ask prompt promises web.search only to a turn that is
 		// offered it — the registry has the verb AND the verb allows it.
 		system = askPromptFor(hasSearch && plan.web)
+	case plan.noWeb:
+		// 056 / 063 / 065 (A-065-1): an ingest turn sends IngestSystemPrompt
+		// (no web.search, no ask/filing-only paragraphs, plus the 064
+		// raw/assets image rule) — the exact bytes `lw ingest --prepare`
+		// prints into the curator brief.
+		system = IngestSystemPrompt()
 	}
 	msgs := []llm.Message{
 		{Role: "system", Content: system},

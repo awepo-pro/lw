@@ -43,13 +43,12 @@ const (
 	promptAnswerVoice  = `Answer the question itself, in the answer's own voice. Never narrate your sources or your process: do not say which notes, pages, wiki entries or searches you used, do not recommend "the wiki page on X", and do not state whether the vault covers the topic — the provenance markers carry that record. The one exception is the exact line "Not from your vault:", which, when it applies, must stand alone as the answer's first line with nothing else on it.`
 )
 
-// The opening half of the curator's system prompt: everything through the
-// "Not from your vault:" rule — including the blank line that joined it to
-// whatever followed, which is what keeps every paragraph join at exactly one
-// blank line. 022 removed the old orientation-ritual paragraph: the digest
-// is ContextBuilder.Build's injection (§11.3 item 3), and vault.orient stays
-// registered for on-demand calls.
-const promptBase = `You are the llmwiki curator: an agent that turns raw sources into a
+// promptCuratorCore is the opening of the curator's system prompt: identity,
+// page thresholds, provenance rules, PDF page citation, the single-source rule,
+// and the index.md invariant. Factored out in 065 so IngestSystemPrompt can
+// share the curation opening without pulling in the ask-mode outside-vault and
+// answer-voice paragraphs. It ends with a single newline after the index.md line.
+const promptCuratorCore = `You are the llmwiki curator: an agent that turns raw sources into a
 reviewable markdown wiki. You have no filesystem verbs — no write, edit,
 delete or shell access, not denied but simply never offered. Every change
 you want to make goes through a stage.* tool, which proposes a hunk-level
@@ -87,7 +86,12 @@ Write the page exactly as "p.N" — one space after the path, no "pp.", no
 
 A raw source you were asked to ingest is the only source for that ingest: never read, cite or patch from a different raw file in its place. If stage.ingest_source fails, stop and report the error instead of working around it; use raw.list to find a raw source whose path you do not know.
 index.md is derived by the engine: every stage.create_page adds its index line automatically, so never patch or create index.md.
-` + promptOutsideVault + "\n" + promptAnswerVoice + "\n\n"
+`
+
+// promptBase is the opening half of the curator's system prompt: promptCuratorCore
+// followed by the "Not from your vault:" and answer-voice rules. TestCuratorPromptUnchanged
+// pins that factoring promptCuratorCore changed nothing systemPromptFor sends.
+const promptBase = promptCuratorCore + promptOutsideVault + "\n" + promptAnswerVoice + "\n\n"
 
 // The two 010 §5 web-lookup paragraphs: the search rule carries 017 §5's
 // auto-search + quota-fallback bytes (amendment TS-17A), the injection rule
@@ -106,6 +110,11 @@ const (
 // the rule now forbids both and names the ops that move a section.
 // TestPromptAbstractRule pins the bytes.
 const abstractRuleParagraph = "Every page you stage into wiki/ must open with a ## Abstract section: two to four\nself-contained sentences that state the page's claim in plain prose, before any other\nsection. A reader or the search index should get the page's point from the abstract\nalone; detail lives in the sections after it. Keep the abstract pure prose — never\nput a ^[...] provenance marker inside it. To add an abstract to a page that lacks\none, or to move one that does not open the page, stage.patch_page's insert_before\nplaces a section ahead of an existing one and remove_section takes the old copy\ndown; never duplicate or re-parent an existing heading to fake a prepend."
+
+// ingestAssetRuleParagraph is 064/065's rule for raw/assets figure preservation
+// (amendment A-065-1): when raw sources embed local figures under ../../raw/assets/,
+// preserve relevant image links across page creation or patching.
+const ingestAssetRuleParagraph = `When a raw source embeds figures or diagrams under "../../raw/assets/", preserve the relevant "![alt](../../raw/assets/<name>)" markdown image links in the wiki pages you create or patch — the relative path resolves identically from both raw/ and wiki/. Never invent an asset path that does not appear in the source.`
 
 // The closing half of the curator's system prompt: everything from the
 // query-page filing rule to the end, bytes unchanged. 014 §5 (TS-14A) added
@@ -145,15 +154,15 @@ func systemPromptFor(hasSearch bool) string {
 	return promptBase + web + promptTail
 }
 
-// IngestSystemPrompt is the curator prompt the in-process ingest turn sends:
-// systemPromptFor(false), the base and tail with no web-lookup paragraphs,
-// because an ingest turn is not offered web.search (056, planFor) and the
-// prompt must not promise it. `lw ingest --prepare` (063) prints it into the
-// brief an external agent reads, so the agent curates by the very rules the
-// remote model would have been given. It is exported as this one function so
-// cmd/lw does not copy the bytes or choose the flag itself, and cannot drift
-// from what the loop sends.
-func IngestSystemPrompt() string { return systemPromptFor(false) }
+// IngestSystemPrompt is the curator prompt the in-process ingest turn sends
+// (056 / 063 / 065 A-065-1) and `lw ingest --prepare` prints into the curator
+// brief an external agent reads. It carries promptCuratorCore, the 014 abstract
+// rule, the 064/065 raw/assets image preservation rule, and promptTailRest. It
+// omits ask-only instructions (promptOutsideVault, promptAnswerVoice), the
+// query-page filing rule (promptTailHead), and web.search rules.
+func IngestSystemPrompt() string {
+	return promptCuratorCore + "\n" + abstractRuleParagraph + "\n\n" + ingestAssetRuleParagraph + "\n\n" + promptTailRest
+}
 
 // askPromptBase is the opening of the ask prompt (039): who the model is, what
 // it may reach for, how to ground an answer and how to cite it. It ends with
