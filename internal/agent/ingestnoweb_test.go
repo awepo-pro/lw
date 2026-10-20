@@ -155,8 +155,8 @@ func TestIngestTurnOmitsWebSearch(t *testing.T) {
 				t.Fatalf("round %d advertises web_search", i+1)
 			}
 		}
-		if req.Messages[0].Role != "system" || req.Messages[0].Content != systemPromptFor(false) {
-			t.Fatalf("round %d message 0 is not systemPromptFor(false):\n%q", i+1, req.Messages[0].Content)
+		if req.Messages[0].Role != "system" || req.Messages[0].Content != IngestSystemPrompt() {
+			t.Fatalf("round %d message 0 is not IngestSystemPrompt():\n%q", i+1, req.Messages[0].Content)
 		}
 		if strings.Contains(req.Messages[0].Content, "web.search") {
 			t.Fatalf("round %d system prompt still mentions web.search", i+1)
@@ -421,11 +421,9 @@ func TestNonIngestVerbsKeepWebSearch(t *testing.T) {
 }
 
 // TestIngestNoWebRegistryByteIdentical: a vault with no web provider has no
-// web_search to withhold, so its ingest request is exactly the pre-056 shape —
-// Definitions() whole, systemPromptFor(false) — and, as a curator turn
-// indistinguishable from a lint turn over the same registry, equal to a lint
-// request in every byte. lweval's registry has no web tool, so none of its
-// ingest numbers move.
+// web_search to withhold, so its ingest request advertises Definitions() whole,
+// sends IngestSystemPrompt() as message 0 (065), and matches a lint turn over
+// the same registry in tools and every message beyond message 0.
 func TestIngestNoWebRegistryByteIdentical(t *testing.T) {
 	f := newInwFixture(t, false, [][]llm.Chunk{inwStopRound()})
 	if _, err := f.send(t, "ingest"); err != nil {
@@ -436,15 +434,19 @@ func TestIngestNoWebRegistryByteIdentical(t *testing.T) {
 	if got, w := inwJSON(t, req.Tools), inwJSON(t, full); got != w {
 		t.Fatalf("tools = %v, want Definitions() = %v", inwNames(req.Tools), inwNames(full))
 	}
-	if req.Messages[0].Content != systemPromptFor(false) {
-		t.Fatalf("message 0 is not systemPromptFor(false)")
+	if req.Messages[0].Content != IngestSystemPrompt() {
+		t.Fatalf("message 0 is not IngestSystemPrompt()")
 	}
 
 	g := newInwFixture(t, false, [][]llm.Chunk{inwStopRound()})
 	if _, err := g.send(t, "lint"); err != nil {
 		t.Fatalf("lint Send: %v", err)
 	}
-	if got, w := inwJSON(t, req), inwJSON(t, g.fake.Requests()[0]); got != w {
-		t.Errorf("an ingest request over a registry without web differs from a lint request:\n got  %s\n want %s", got, w)
+	lint := g.fake.Requests()[0]
+	if got, w := inwJSON(t, req.Tools), inwJSON(t, lint.Tools); got != w {
+		t.Errorf("an ingest request tools differ from a lint request:\n got  %s\n want %s", got, w)
+	}
+	if got, w := inwJSON(t, req.Messages[1:]), inwJSON(t, lint.Messages[1:]); got != w {
+		t.Errorf("an ingest request beyond message 0 differs from a lint request:\n got  %s\n want %s", got, w)
 	}
 }
