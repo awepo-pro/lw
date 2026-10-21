@@ -1,9 +1,8 @@
 package vaultsync
 
-// objects.go is the payload store beside the git remote (066, replacing 062's
-// SyncStorage). git carries the catalog (.llmwiki/storage.json: name -> sha256
-// and size); the bytes travel here, addressed by their hash, the shape git-LFS,
-// git-annex and DVC share:
+// objects.go is the payload store beside the git remote (066). git carries the
+// catalog (.llmwiki/storage.json: name -> sha256 and size); the bytes travel
+// here, addressed by their hash, the shape git-LFS, git-annex and DVC share:
 //
 //	<remote>.storage/objects/<sha[0:2]>/<sha[2:]>
 //
@@ -11,8 +10,11 @@ package vaultsync
 // same-size replace that was lost; plan M2) and two PCs cannot overwrite each
 // other. An object is written once, through a temp name whose byte count is
 // checked, and is never deleted here (a removal is a catalog change,
-// recoverable like git; plan M4). Files directly under <remote>.storage/ —
-// 062's name layout — are never read or touched (R10).
+// recoverable like git; plan M4). The one thing that is replaced is an object
+// whose byte count is wrong: it is damaged, not a copy, and counting it as one
+// (HaveObjects) or leaving it (PutObject) made every PC that fetched it fail and
+// nothing able to repair it (066 FIX1 X-4, F-7). Files directly under
+// <remote>.storage/ — 062's name layout — are never read or touched (R10).
 //
 // Content before pointer (plan M5, B6) is the caller's order, not this file's:
 // cmd/lw asks HaveObjects and calls PutObject for what is missing before every
@@ -51,6 +53,19 @@ type Object struct {
 // is a state to wait in, not damage.
 var ErrObjectMissing = errors.New("storage object not on the remote")
 
+// ErrObjectDamaged is what GetObject returns, wrapped, when the object is on the
+// remote but is not the catalog's: its length is wrong. Waiting does not mend it
+// and the remote is not unreachable, so a caller that can tell the user (cmd/lw's
+// fetch) must be able to tell it from both (066 X-4).
+var ErrObjectDamaged = errors.New("storage object on the remote is damaged")
+
+// damagedError is a message that errors.Is ErrObjectDamaged without repeating
+// the sentinel's words after its own.
+type damagedError struct{ msg string }
+
+func (e *damagedError) Error() string        { return e.msg }
+func (e *damagedError) Is(target error) bool { return target == ErrObjectDamaged }
+
 // shaRe is the only form of hash that reaches a path: the catalog's lower-case
 // hex. It also keeps a hostile "sha" from walking out of objects/ or into a
 // shell.
@@ -68,6 +83,19 @@ func (o Object) validate() error {
 
 // objRel is the object's place under <remote>.storage/objects/.
 func objRel(o Object) string { return o.SHA256[:2] + "/" + o.SHA256[2:] }
+
+// HoldsObjects reports whether spec names a remote that can hold storage objects:
+// an ssh or local path remote. An https:// or git:// remote carries git and
+// nothing else, and the callers that know (cmd/lw) say so once instead of
+// failing every sync (066 X-7, F-4). It is the check the object store itself makes
+// before it runs a script, so the two cannot drift.
+func HoldsObjects(spec string) bool {
+	rem, err := parseRemote(spec)
+	return err == nil && rem.holdsObjects()
+}
+
+// holdsObjects is the rule: git carries only itself over https:// and git://.
+func (rem remote) holdsObjects() bool { return rem.kind != kindOther }
 
 // storeRoot is <remote>.storage — where 062 kept its mirror, and where 066 keeps
 // objects/ beside it. A local remote is the directory's absolute path (a
@@ -89,26 +117,42 @@ func (rem remote) storeRoot() string {
 // parameters, never spliced into the text, so a path with a space, a quote or a
 // $ in it stays one literal word.
 const (
-	// haveScript: $1 = store root; stdin = one object path per line. Prints
-	// the paths whose object exists. The question travels on stdin so one round
-	// trip answers any number of objects without meeting an argument-length limit.
+	// haveScript: $1 = store root; stdin = one "<object path> <size>" per line.
+	// Prints the paths whose object exists AND has that many bytes: a file of
+	// another length is damaged, not a copy (X-4). A line with no size asks for
+	// existence alone. The question travels on stdin so one round trip answers any
+	// number of objects without meeting an argument-length limit.
 	haveScript = `r=$1
-while read -r p; do
-  if [ -f "$r/objects/$p" ]; then echo "$p"; fi
+while read -r p n; do
+  f=$r/objects/$p
+  [ -f "$f" ] || continue
+  if [ -n "$n" ]; then
+    c=$(wc -c < "$f") || continue
+    [ "$c" -eq "$n" ] || continue
+  fi
+  echo "$p"
 done
 exit 0
 `
 
 	// putScript: $1 = store root, $2 = object path, $3 = size, $4 = unique temp
-	// suffix; stdin = the bytes. An existing object is left as it is (write-once).
-	// Otherwise the bytes go to a temp name beside the final one and are renamed
+	// suffix; stdin = the bytes. An existing object of the right length is left as
+	// it is (write-once). One of another length is damaged and is replaced:
+	// otherwise the bytes go to a temp name beside the final one and are renamed
 	// into place only when the count equals $3, so a cut connection or a wrong
-	// stream leaves no object; the trap removes the temp on every exit path.
+	// stream leaves no object and a damaged one stays as it was; the trap removes
+	// the temp on every exit path. A winner that appears while the temp is being
+	// written is left alone unless it was the damaged object seen at the start.
 	putScript = `r=$1; p=$2; n=$3
 f=$r/objects/$p
 d=${f%/*}
 t=$d/.tmp.$4
-if [ -f "$f" ]; then exit 0; fi
+w=
+if [ -f "$f" ]; then
+  c=$(wc -c < "$f") || exit 1
+  if [ "$c" -eq "$n" ]; then exit 0; fi
+  w=1
+fi
 mkdir -p -- "$d" || exit 1
 cleanup() { rm -f -- "$t"; }
 trap cleanup EXIT
@@ -119,7 +163,7 @@ if [ "$c" -ne "$n" ]; then
   echo "object has $c bytes, expected $n" >&2
   exit 2
 fi
-if [ -e "$f" ]; then exit 0; fi
+if [ -e "$f" ] && [ -z "$w" ]; then exit 0; fi
 mv -f -- "$t" "$f" || exit 1
 `
 
@@ -206,7 +250,7 @@ func (r *runner) storeEach(ctx context.Context, try func(rem remote) error) (str
 			return "", err
 		}
 		rem, err := parseRemote(spec)
-		if err == nil && rem.kind == kindOther {
+		if err == nil && !rem.holdsObjects() {
 			err = errors.New("object storage needs an ssh or local path remote")
 		}
 		if err == nil {
@@ -265,6 +309,8 @@ func (r *runner) objRun(ctx context.Context, rem remote, script string, args []s
 // HaveObjects reports which of objs the first usable remote in o.Remotes holds.
 // One process/ssh round trip per call for an ssh remote, whatever len(objs) is.
 //
+// An object counts as held only if its byte count is obj.Size (X-4): a file of
+// any other length at the object's path is damaged, and PutObject replaces it.
 // The map has an entry (true) for each held object, keyed by SHA256; an absent
 // key means not held. remote is the o.Remotes entry that answered. Asking
 // changes nothing on the remote: a remote with no store answers "none" and no
@@ -281,6 +327,8 @@ func HaveObjects(ctx context.Context, o Options, objs []Object) (have map[string
 		if _, dup := byRel[rel]; !dup {
 			byRel[rel] = obj.SHA256
 			ask.WriteString(rel)
+			ask.WriteByte(' ')
+			ask.WriteString(strconv.FormatInt(obj.Size, 10))
 			ask.WriteByte('\n')
 		}
 	}
@@ -320,7 +368,9 @@ func (r *runner) haveObjects(ctx context.Context, byRel map[string]string, ask s
 
 // PutObject uploads the file at path as obj. Remote side: mkdir -p, write a temp
 // name, check the byte count equals obj.Size, rename into place. An existing
-// object is left as is.
+// object of the right length is left as is; one of the wrong length is damaged
+// and is replaced (temp and mv over it, so a failed replacement leaves it as it
+// was).
 //
 // The sender also checks what it sends (R9: every object is verified before it
 // becomes one). The remote can count bytes but has no portable sha256, so the
@@ -381,7 +431,7 @@ func GetObject(ctx context.Context, o Options, obj Object, w io.Writer) error {
 		switch {
 		case err == nil:
 			if cw.n != obj.Size {
-				return &finalError{fmt.Errorf("get %s: the remote object has %d bytes, the catalog says %d", obj.SHA256[:12], cw.n, obj.Size)}
+				return &finalError{&damagedError{fmt.Sprintf("get %s: the remote object has %d bytes, the catalog says %d", obj.SHA256[:12], cw.n, obj.Size)}}
 			}
 			return nil
 		case cw.n == 0 && errors.As(err, &ce) && ce.exitCode() == missingExit:

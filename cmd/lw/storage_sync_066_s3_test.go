@@ -429,8 +429,11 @@ func TestStorageFetchRefusesAWrongObject(t *testing.T) {
 			if left, _ := filepath.Glob(filepath.Join(b.root, "storage", ".*")); len(left) > 0 {
 				t.Errorf("b left temp files behind: %v", left)
 			}
-			if c := s066Doctor(t, b); !c.OK || !c.Warn || c.Detail != "0 of 1 verified; 1 pending (not arrived yet)" {
-				t.Errorf("b: doctor storage check = %+v, want it still pending", c)
+			// 066 FIX1 (X-4) amended the wording: the entry is still pending and still
+			// only a warning, but a fetch that failed its check marks the remote's
+			// object as damaged, and doctor says so instead of "not arrived yet".
+			if c := s066Doctor(t, b); !c.OK || !c.Warn || c.Detail != "0 of 1 verified; 1 pending (remote object is damaged)" {
+				t.Errorf("b: doctor storage check = %+v, want it still pending, with the remote object called damaged", c)
 			}
 		})
 	}

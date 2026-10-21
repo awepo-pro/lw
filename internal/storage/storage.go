@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -31,10 +30,14 @@ type Entry struct {
 	Note   string    `json:"note,omitempty"`
 }
 
-// Storage manages non-wiki storage files in a vault.
+// Storage manages non-wiki storage files in a vault. A handle holds no state
+// between calls but the vault's path and the remote its confirmations refer to
+// (BindRemote): the catalog, the ledger and the disk are re-read by every call,
+// and the writers serialize on a file lock (lock.go), not on the handle - every
+// lw process has handles of its own.
 type Storage struct {
 	vaultDir string
-	mu       sync.Mutex
+	remote   string // see BindRemote
 }
 
 // Open creates a new Storage handle for vaultDir.
@@ -91,11 +94,11 @@ func (s *Storage) loadManifest() (*Manifest, error) {
 		return &Manifest{Version: 1, Entries: []Entry{}}, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("storage: read manifest: %w", err)
+		return nil, fmt.Errorf("storage: read manifest %s: %w", path, err)
 	}
 	var m Manifest
 	if err := json.Unmarshal(data, &m); err != nil {
-		return nil, fmt.Errorf("storage: parse manifest: %w", err)
+		return nil, fmt.Errorf("storage: parse manifest %s: %w", path, err)
 	}
 	if m.Version == 0 {
 		m.Version = 1
@@ -154,7 +157,19 @@ func (s *Storage) saveManifest(m *Manifest) error {
 	return nil
 }
 
-func (s *Storage) copyFileAtomic(srcPath, destPath string) error {
+// addHook runs inside Add between the hash that decides what to do and the copy
+// that does it: the window in which a source can change (X-9). Tests set it.
+var addHook func()
+
+// copyVerified copies srcPath to destPath through a temp file in destPath's
+// directory and renames it into place only if the bytes copied are exactly
+// wantSize bytes of sha256 wantSHA - the hash and size Add computed from the
+// source a moment earlier and is about to write into the catalog. The first
+// version hashed the source and then copied it in a second pass, so a source that
+// changed in between (an editor saving, a download still writing) was stored as
+// bytes the catalog did not describe, and the object store then refused the file
+// forever (066 X-9, F-8).
+func (s *Storage) copyVerified(srcPath, destPath, wantSHA string, wantSize int64) error {
 	destDir := filepath.Dir(destPath)
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
 		return fmt.Errorf("storage: create directory: %w", err)
@@ -162,12 +177,14 @@ func (s *Storage) copyFileAtomic(srcPath, destPath string) error {
 
 	tmp, err := os.CreateTemp(destDir, ".storage-tmp-*")
 	if err != nil {
+		s.pruneEmptyDirs(destPath)
 		return fmt.Errorf("storage: create temp file: %w", err)
 	}
 	tmpName := tmp.Name()
 	defer func() {
 		if tmpName != "" {
 			_ = os.Remove(tmpName)
+			s.pruneEmptyDirs(destPath)
 		}
 	}()
 
@@ -178,9 +195,15 @@ func (s *Storage) copyFileAtomic(srcPath, destPath string) error {
 	}
 	defer src.Close()
 
-	if _, err := io.Copy(tmp, src); err != nil {
+	h := sha256.New()
+	n, err := io.Copy(io.MultiWriter(tmp, h), src)
+	if err != nil {
 		_ = tmp.Close()
 		return fmt.Errorf("storage: copy file content: %w", err)
+	}
+	if got := hex.EncodeToString(h.Sum(nil)); n != wantSize || got != wantSHA {
+		_ = tmp.Close()
+		return fmt.Errorf("storage: %s changed while it was being stored (sha256 %s, %d bytes when read; %s, %d bytes as copied); nothing was stored", srcPath, wantSHA, wantSize, got, n)
 	}
 	if err := tmp.Sync(); err != nil {
 		_ = tmp.Close()
@@ -200,7 +223,12 @@ func (s *Storage) copyFileAtomic(srcPath, destPath string) error {
 // Add copies srcPath to storage/<name> and records it in the manifest and in
 // this PC's ledger (066: the ledger says lw put these bytes here, which is what
 // lets a later removal on another PC delete them). Order matters for a crash:
-// the file first, then the catalog, then the ledger row.
+// the file first, then the catalog, then the ledger row. The copy is verified
+// against the hash the catalog will carry before anything moves (X-9), and the
+// whole read-modify-write is under the storage lock (X-5).
+//
+// Add --force and Remove are the user's own verbs: they replace or delete bytes
+// on request and are exempt from rule P, which is about what lw does on its own.
 func (s *Storage) Add(srcPath string, customName string, note string, force bool) (Entry, error) {
 	fi, err := os.Stat(srcPath)
 	if err != nil {
@@ -230,9 +258,15 @@ func (s *Storage) Add(srcPath string, customName string, note string, force bool
 		return Entry{}, fmt.Errorf("storage: hash source file: %w", err)
 	}
 	sum := hex.EncodeToString(h.Sum(nil))
+	if addHook != nil {
+		addHook()
+	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	unlock, err := s.lock()
+	if err != nil {
+		return Entry{}, err
+	}
+	defer unlock()
 
 	m, err := s.loadManifest()
 	if err != nil {
@@ -259,7 +293,21 @@ func (s *Storage) Add(srcPath string, customName string, note string, force bool
 	if idx >= 0 {
 		existing := m.Entries[idx]
 		if existing.SHA256 == sum {
-			// Identical SHA256: no-op, update note if provided
+			// Identical SHA256: the catalog already describes these bytes. If the file is
+			// absent they are what this PC is waiting for, and the user is holding them:
+			// put them there (066 X-4, F-7). Without this a PC with the right bytes in
+			// hand could not repair its own pending entry, nor, by uploading them, a
+			// damaged object on the remote. A file that is there is left alone, whatever
+			// it holds: healing an absent file is not licence to replace somebody's bytes.
+			if _, err := os.Lstat(targetPath); errors.Is(err, os.ErrNotExist) {
+				if err := s.copyVerified(srcPath, targetPath, sum, size); err != nil {
+					return Entry{}, err
+				}
+				if err := s.recordAdded(led, clean, sum); err != nil {
+					return Entry{}, err
+				}
+			}
+			// update the note if one was given
 			if note != "" && existing.Note != note {
 				existing.Note = note
 				m.Entries[idx] = existing
@@ -277,7 +325,7 @@ func (s *Storage) Add(srcPath string, customName string, note string, force bool
 		// Force overwrite
 		targetFi, err := os.Stat(targetPath)
 		if err != nil || !os.SameFile(fi, targetFi) {
-			if err := s.copyFileAtomic(srcPath, targetPath); err != nil {
+			if err := s.copyVerified(srcPath, targetPath, sum, size); err != nil {
 				return Entry{}, err
 			}
 		}
@@ -306,7 +354,7 @@ func (s *Storage) Add(srcPath string, customName string, note string, force bool
 	// New entry
 	targetFi, err := os.Stat(targetPath)
 	if err != nil || !os.SameFile(fi, targetFi) {
-		if err := s.copyFileAtomic(srcPath, targetPath); err != nil {
+		if err := s.copyVerified(srcPath, targetPath, sum, size); err != nil {
 			return Entry{}, err
 		}
 	}
@@ -341,9 +389,6 @@ func (s *Storage) recordAdded(led *ledger, clean, sum string) error {
 
 // List returns all entries in the storage manifest, sorted by name.
 func (s *Storage) List() ([]Entry, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	m, err := s.loadManifest()
 	if err != nil {
 		return nil, err
@@ -362,9 +407,6 @@ func (s *Storage) Show(name string) (Entry, bool, error) {
 	if err != nil {
 		return Entry{}, false, fmt.Errorf("storage: invalid name %q: %w", name, err)
 	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	m, err := s.loadManifest()
 	if err != nil {
@@ -385,10 +427,8 @@ func (s *Storage) Get(name string) (io.ReadCloser, Entry, error) {
 		return nil, Entry{}, fmt.Errorf("storage: invalid name %q: %w", name, err)
 	}
 
-	s.mu.Lock()
 	m, err := s.loadManifest()
 	if err != nil {
-		s.mu.Unlock()
 		return nil, Entry{}, err
 	}
 	var entry Entry
@@ -400,7 +440,6 @@ func (s *Storage) Get(name string) (io.ReadCloser, Entry, error) {
 			break
 		}
 	}
-	s.mu.Unlock()
 
 	if !found {
 		return nil, Entry{}, fmt.Errorf("storage: entry %q not found", clean)
@@ -423,8 +462,11 @@ func (s *Storage) Remove(name string) error {
 		return fmt.Errorf("storage: invalid name %q: %w", name, err)
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	unlock, err := s.lock()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 
 	m, err := s.loadManifest()
 	if err != nil {
@@ -482,9 +524,6 @@ func (s *Storage) pruneEmptyDirs(targetPath string) {
 
 // Validate checks every manifest entry against disk (existence, size, sha256).
 func (s *Storage) Validate() (total int, ok bool, issues []string, err error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if _, err := os.Stat(s.manifestPath()); errors.Is(err, os.ErrNotExist) {
 		return 0, true, nil, nil
 	}

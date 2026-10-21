@@ -53,10 +53,12 @@ and nothing changes; --take-remote then keeps the remote and saves this PC's
 commits on a branch named lw-diverged-<time>.
 
 Files stored with lw storage travel beside git, never inside it: lw sync uploads the
-ones the catalog names to <remote>.storage/objects/ before it pushes, removes the
-ones the catalog dropped, and fetches the ones this PC lacks. A storage problem never
-stops the wiki from syncing; it is printed after the push, lw sync exits 1, and the
-next lw sync tries again.
+ones the catalog names to <remote>.storage/objects/ before it pulls and again before
+it pushes, removes the ones the catalog dropped, and fetches the ones this PC lacks.
+It never deletes or replaces a file it stored unless a copy is on the remote: it
+uploads the file first, or keeps it and says so. A storage problem never stops the
+wiki from syncing; it is printed after the push, lw sync exits 1, and the next lw
+sync tries again.
 `)
 }
 
@@ -293,10 +295,12 @@ func syncPreflight(root string) error {
 // the push run without it (A-042-7 d, A-042-10).
 //
 // 066: files stored with `lw storage` ride beside git, and none of it may stand
-// between the wiki and the remote. After the pull the PC reconciles storage/
-// with the catalog; before the push (and on every run, push or not) it uploads
-// the payloads the catalog names; after the git phase it fetches the ones it
-// lacks. A storage failure is printed once, after the push, and exits 1.
+// between the wiki and the remote. The payloads go up FIRST - before the pull, so a
+// pull that is refused or reshaped (a divergence, --take-remote) cannot strand a
+// file whose only copy is here (FIX1 X-2, F-1) - and again before the push if the
+// first attempt worked; after the pull the PC reconciles storage/ with the catalog;
+// after the git phase it fetches the ones it lacks. A storage failure is printed
+// once, after the push, and exits 1.
 func syncRun(vaultPath string, takeRemote bool) error {
 	mode := syncModeWrite
 	if takeRemote {
@@ -309,6 +313,22 @@ func syncRun(vaultPath string, takeRemote bool) error {
 	ctx, stop := syncContext()
 	defer stop()
 
+	// 066: what storage does is told AFTER the git phase (R5), so its errors are
+	// collected, not returned. If the git phase itself fails they are only logged:
+	// the lines say "wiki synced", and it did not.
+	var issues storageIssues
+	if warn := storageUnsupportedWarning(root, o); warn != "" {
+		fmt.Fprintln(os.Stderr, warn)
+	}
+	say := onceSay(os.Stderr) // the upload runs twice; what it tells the user, once
+	// X-2: the payloads this PC holds go up before anything can refuse or reshape
+	// the vault. A catalog edit that is about to be taken away (--take-remote) or
+	// rebased still names bytes that must exist somewhere afterwards.
+	endNotice := slowNotice(os.Stderr, "uploading storage files")
+	firstUpload := storageUploadTo(ctx, root, o, 0, say)
+	endNotice()
+	issues.add(firstUpload)
+
 	if takeRemote {
 		if err := syncPreflight(root); err != nil {
 			return err
@@ -319,7 +339,7 @@ func syncRun(vaultPath string, takeRemote bool) error {
 		if err := syncTake(ctx, root, o); err != nil {
 			return syncExplicitErr(err, vaultsync.State{})
 		}
-		return nil
+		return issues.finish(os.Stderr)
 	}
 
 	st, committed, err := syncPullAndCommit(ctx, root, o)
@@ -327,12 +347,10 @@ func syncRun(vaultPath string, takeRemote bool) error {
 		recordSyncAhead(root, "", err, st.Ahead)
 		return syncExplicitErr(err, st)
 	}
-	// 066: what storage does is told AFTER the git phase (R5), so its errors are
-	// collected, not returned. The pull may have brought a catalog without files
-	// this PC holds; deleting them is storageReconcile's job and nothing else's
-	// (B1: `lw storage rm` came back).
-	var issues storageIssues
-	issues.add(storageReconcile(root))
+	// The pull may have brought a catalog without files this PC holds; deleting
+	// them is storageReconcile's job and nothing else's (B1: `lw storage rm` came
+	// back), and it never deletes the only copy (B7).
+	issues.add(storageReconcile(ctx, root, o))
 	pulled := st.Pulled
 	remote := st.Remote
 	if pulled > 0 {
@@ -350,10 +368,13 @@ func syncRun(vaultPath string, takeRemote bool) error {
 	// The payloads go up on EVERY run, before the push if there is one, not only
 	// when something is pushed (C-066-1): a failed upload leaves git pushed and
 	// nothing ahead, so the "run lw sync again" it asks for would otherwise find
-	// no push to hang the upload on. Content before pointer (B6).
-	endNotice := slowNotice(os.Stderr, "uploading storage files")
-	issues.add(storageUpload(ctx, root, o))
-	endNotice()
+	// no push to hang the upload on. Content before pointer (B6). A first attempt
+	// that failed is not repeated: the remote would fail the same way again.
+	if firstUpload == nil {
+		endNotice = slowNotice(os.Stderr, "uploading storage files")
+		issues.add(storageUploadTo(ctx, root, o, 0, say))
+		endNotice()
+	}
 
 	// Only a commit this run made, or one that was already waiting (Ahead), has
 	// anything to push — and a second fetch to pay for.
@@ -473,6 +494,9 @@ func syncStatus(vaultPath string) error {
 		// the line (and sync.json's last_error with it).
 		fmt.Printf("unpushed %d\n", rec.Unpushed)
 	}
+	if line := storageStatusLine(root); line != "" {
+		fmt.Println(line)
+	}
 	if st.Diverged() {
 		fmt.Println("diverged — run lw sync for details")
 	}
@@ -554,7 +578,7 @@ func syncClone(remote, dir string) error {
 	// The clone is complete whatever happens to the payloads (R5): they are
 	// fetched after it, and a failure is told once the vault is set up.
 	var issues storageIssues
-	issues.add(storageReconcile(abs))
+	issues.add(storageReconcile(ctx, abs, o))
 	endNotice := slowNotice(os.Stderr, "fetching storage files")
 	issues.add(storageFetch(ctx, abs, o))
 	endNotice()

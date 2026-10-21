@@ -449,6 +449,9 @@ func TestPutObjectMissingSource(t *testing.T) {
 }
 
 // Objects are write-once (M2): an object already there is left exactly as it is.
+// 066 FIX1 (X-4) amended the fixture: the object that is there has the catalog's
+// length (14 bytes, like "the real bytes"); one of another length is damaged, not
+// a copy, and TestPutReplacesWrongSizeObject pins that it is replaced.
 func TestPutObjectExistingIsKept(t *testing.T) {
 	eachStore(t, func(t *testing.T, c storeCase) {
 		obj := objOf("the real bytes")
@@ -456,7 +459,7 @@ func TestPutObjectExistingIsKept(t *testing.T) {
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(p, []byte("OLD"), 0o644); err != nil {
+		if err := os.WriteFile(p, []byte("OLD OLD OLD OL"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		past := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
@@ -470,7 +473,7 @@ func TestPutObjectExistingIsKept(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := readFile(t, p); got != "OLD" || !fi.ModTime().Equal(past) {
+		if got := readFile(t, p); got != "OLD OLD OLD OL" || !fi.ModTime().Equal(past) {
 			t.Errorf("an existing object was overwritten: %q, mtime %v", got, fi.ModTime())
 		}
 		noTemp(t, c.root)

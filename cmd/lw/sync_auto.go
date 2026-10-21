@@ -64,9 +64,11 @@ type autoSync struct {
 	remotes []string
 	pusher  *syncPusher // the TUI's; nil for a CLI verb, which pushes in place
 
-	mu     sync.Mutex // one CLI push at a time
-	queued bool       // a CLI verb has asked for its push at the end (atVerbEnd)
-	notes  []string   // storage lines the TUI's pusher held back for the exit report (storageSay)
+	mu           sync.Mutex      // one CLI push at a time
+	queued       bool            // a CLI verb has asked for its push at the end (atVerbEnd)
+	notes        []string        // storage lines the TUI's pusher held back for the exit report (storageSay)
+	said         map[string]bool // storage lines a CLI verb already printed (storageSay)
+	warnedRemote bool            // the "remote cannot hold storage files" line was said (once per run, X-7)
 }
 
 // notSyncingLine is what a writing verb says when [sync] remotes are
@@ -339,7 +341,9 @@ func (a *autoSync) pull() {
 	recordSyncAhead(a.root, st.Remote, nil, st.Ahead)
 	slog.Info("sync pull", "remote", st.Remote, "pulled", st.Pulled, "ahead", st.Ahead)
 	// Before the engine opens, so nothing owns the screen yet: say it at once.
-	a.reconcileStorage(func(line string) { fmt.Fprintln(os.Stderr, line) })
+	say := func(line string) { fmt.Fprintln(os.Stderr, line) }
+	a.warnUnsupportedRemote(say)
+	a.reconcileStorage(ctx, say)
 	a.retryIfAhead(st)
 	if st.Pulled == 0 {
 		return
@@ -413,10 +417,24 @@ func (a *autoSync) pushOnce(ctx context.Context) syncPushResult {
 }
 
 func (a *autoSync) push(ctx context.Context) syncPushResult {
+	a.warnUnsupportedRemote(a.storageSay)
+	// The payloads the catalog names go up before git does (066 B6: the catalog
+	// is a tracked file, so every push publishes it, and a PC that read an entry
+	// whose bytes were nowhere else called it corrupt) - and before the PULL as
+	// well (FIX1 X-2, F-1): a pull that is refused (a divergence, a dirty tree) or
+	// that reshapes the vault must not leave this PC's only copies stranded. A
+	// failed upload is a warning for the report below, never a reason to skip the
+	// push (B5), and it is retried by the next push of anything. Each attempt gets
+	// half of what is left of the step's deadline so the push always has the rest,
+	// and a payload over storageAutoMaxObject is left for an explicit lw sync.
+	storageErr := a.uploadStorage(ctx)
 	pulled, err := a.commitAndPull(ctx)
 	if err != nil {
 		recordSyncAhead(a.root, "", err, pulled.Ahead)
-		return syncPushResult{Remote: pulled.Remote, Err: err}
+		if storageErr != nil {
+			slog.Warn("sync: storage upload", "err", storageErr)
+		}
+		return syncPushResult{Remote: pulled.Remote, Err: err, StorageErr: storageErr}
 	}
 	if pulled.Pulled > 0 {
 		// The remote's commits are in the tree now (a divergence was rebased):
@@ -425,15 +443,12 @@ func (a *autoSync) push(ctx context.Context) syncPushResult {
 			slog.Warn("sync: rebuild index after push", "err", ierr)
 		}
 	}
-	// The payloads the catalog names go up before git does (066 B6: the catalog
-	// is a tracked file, so every push publishes it, and a PC that read an entry
-	// whose bytes were nowhere else called it corrupt). A failed upload is a
-	// warning for the report below, never a reason to skip the push (B5), and it
-	// is retried by the next push of anything. It gets half of what is left of
-	// the step's deadline so the push always has the other half.
-	upCtx, upCancel := storageBudget(ctx)
-	storageErr := storageUpload(upCtx, a.root, a.options())
-	upCancel()
+	if storageErr == nil {
+		// The pull can have changed what the catalog names. A first attempt that
+		// failed is not repeated: the remote would fail the same way after the same
+		// timeout, and the push needs the time.
+		storageErr = a.uploadStorage(ctx)
+	}
 	if storageErr != nil {
 		slog.Warn("sync: storage upload", "err", storageErr)
 	}
@@ -490,7 +505,7 @@ func (a *autoSync) commitAndPull(ctx context.Context) (vaultsync.State, error) {
 	pull := func() (vaultsync.State, error) {
 		st, err := syncPull(ctx, a.options(), stage.FormatVersion)
 		if err == nil {
-			a.reconcileStorage(a.storageSay)
+			a.reconcileStorage(ctx, a.storageSay)
 		}
 		return st, err
 	}
@@ -514,26 +529,72 @@ func (a *autoSync) commitAndPull(ctx context.Context) (vaultsync.State, error) {
 
 // reconcileStorage is storageReconcile for an auto-sync step that has just
 // pulled: what it removed or kept goes to say, and a failure becomes one more
-// line. Nothing here fails the verb (auto-sync never does).
-func (a *autoSync) reconcileStorage(say func(line string)) {
-	if err := storageReconcileTo(a.root, say); err != nil {
+// line. Nothing here fails the verb (auto-sync never does). Rule P may make it
+// ask the remote for a copy of a file about to be deleted, so it gets half of
+// what is left of the step's deadline and the rest stays for what follows.
+func (a *autoSync) reconcileStorage(ctx context.Context, say func(line string)) {
+	rctx, cancel := storageBudget(ctx)
+	defer cancel()
+	if err := storageReconcileTo(rctx, a.root, a.options(), say); err != nil {
 		say("storage: " + storageReason(err))
 	}
+}
+
+// uploadStorage is the payload upload of an auto-sync push (storageUpload under
+// the auto-sync limits): half of what is left of the step's deadline, nothing
+// over storageAutoMaxObject, lines to storageSay.
+func (a *autoSync) uploadStorage(ctx context.Context) error {
+	upCtx, cancel := storageBudget(ctx)
+	defer cancel()
+	return storageUploadTo(upCtx, a.root, a.options(), storageAutoMaxObject, a.storageSay)
+}
+
+// warnUnsupportedRemote says, once per auto-sync, that no configured remote can
+// hold storage files while the catalog has some (X-7). It is not a failure: git
+// syncs, and the payloads stay on the PCs that stored them.
+func (a *autoSync) warnUnsupportedRemote(say func(line string)) {
+	a.mu.Lock()
+	done := a.warnedRemote
+	a.mu.Unlock()
+	if done {
+		return
+	}
+	line := storageUnsupportedWarning(a.root, a.options())
+	if line == "" {
+		return
+	}
+	a.mu.Lock()
+	a.warnedRemote = true
+	a.mu.Unlock()
+	say(line)
 }
 
 // storageSay prints a storage line from a push step. A CLI verb writes it to
 // stderr at once. The TUI's pusher runs while the screen is up and must not
 // write to it, so it logs the line and holds it for report, which runs after
-// the terminal is restored (finish).
+// the terminal is restored (finish). A line already said is not said twice: the
+// upload runs before the pull and again before the push, and a pusher that runs
+// on every commit would otherwise repeat it for the whole session.
 func (a *autoSync) storageSay(line string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	if a.pusher == nil {
-		fmt.Fprintln(os.Stderr, line)
+		if a.said == nil {
+			a.said = map[string]bool{}
+		}
+		if !a.said[line] {
+			a.said[line] = true
+			fmt.Fprintln(os.Stderr, line)
+		}
 		return
 	}
 	slog.Info("storage", "line", line)
-	a.mu.Lock()
+	for _, n := range a.notes {
+		if n == line {
+			return
+		}
+	}
 	a.notes = append(a.notes, line)
-	a.mu.Unlock()
 }
 
 // pushInline is the CLI's push after a change: run when the verb has finished

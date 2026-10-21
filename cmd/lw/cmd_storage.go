@@ -2,11 +2,13 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -15,6 +17,35 @@ import (
 
 // cmdStorage dispatches lw storage subcommands (062 S1).
 func cmdStorage(args []string) error {
+	return storageCLIError(cmdStorageDispatch(args))
+}
+
+// prefixedError is err shown with a prefix its own text repeated, without the
+// repetition; it still unwraps to err.
+type prefixedError struct {
+	err error
+	msg string
+}
+
+func (e *prefixedError) Error() string { return e.msg }
+func (e *prefixedError) Unwrap() error { return e.err }
+
+// storageCLIError drops the "storage: " that internal/storage puts at the front
+// of its errors: dispatch already prints "lw: storage: " before every error of
+// this verb, and `lw: storage: storage: entry "x" not found` said it twice (066
+// X-15, C-066-9). An *exitError is the verb's own exit code and passes through.
+func storageCLIError(err error) error {
+	var ee *exitError
+	if err == nil || errors.As(err, &ee) {
+		return err
+	}
+	if msg := err.Error(); strings.HasPrefix(msg, "storage: ") {
+		return &prefixedError{err: err, msg: strings.TrimPrefix(msg, "storage: ")}
+	}
+	return err
+}
+
+func cmdStorageDispatch(args []string) error {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "lw storage: a subcommand is required")
 		storageUsage(os.Stderr)
@@ -47,6 +78,11 @@ func storageUsage(w io.Writer) {
        lw storage show <name> [--vault P]
        lw storage get <name> [-o <outpath>] [--vault P]
        lw storage rm <name> [--vault P]
+
+Stored files live in storage/ and are listed in .llmwiki/storage.json, which git
+carries; the bytes travel beside git, in <remote>.storage/objects/, and lw sync
+moves them. lw storage rm removes the file and its catalog entry on every PC that
+syncs; the object stays on the remote until a future lw storage gc.
 `)
 }
 
@@ -89,31 +125,28 @@ const storageVerifiedWord = "present"
 
 // storageStateWord is the word a listing prints for a catalog entry's state
 // (066 D4): pending is "not arrived yet", never "missing", and corrupt is
-// reserved for bytes that something other than lw put there (B6).
+// reserved for bytes that something other than lw put there (B6). A pending entry
+// says why when it is more than late: its file is an older version (X-12) or the
+// object on the remote is damaged (X-4).
 func storageStateWord(es storage.EntryStatus) string {
-	if es.State == storage.StateVerified {
+	switch {
+	case es.State == storage.StateVerified:
 		return storageVerifiedWord
+	case es.State == storage.StatePending && es.Stale:
+		return "pending (replaced on another PC)"
+	case es.State == storage.StatePending && es.Damaged:
+		return "pending (remote object is damaged)"
 	}
 	return es.State.String()
 }
 
-// storageEntryWord is the state word of one entry. A file that equals the
-// catalog is verified without reading any other file; only a file that does
-// not needs the ledger (is it stale or corrupt?), and then Status reads them all.
+// storageEntryWord is the state word of one entry, read from its file alone.
 func storageEntryWord(st *storage.Storage, e storage.Entry) (string, error) {
-	if storageDiskMatches(st.Path(e.Name), e) {
-		return storageVerifiedWord, nil
-	}
-	rep, err := st.Status()
+	es, err := st.Verify(e.Name)
 	if err != nil {
 		return "", err
 	}
-	for _, es := range rep.Entries {
-		if es.Entry.Name == e.Name {
-			return storageStateWord(es), nil
-		}
-	}
-	return "", fmt.Errorf("storage: entry %q not found", e.Name)
+	return storageStateWord(es), nil
 }
 
 func cmdStorageAdd(args []string) error {
@@ -142,6 +175,12 @@ func cmdStorageAdd(args []string) error {
 	srcFile := positional[0]
 	root, err := storageVaultRoot(*vaultPath)
 	if err != nil {
+		return err
+	}
+	// A stored file is a tracked catalog change like a note: refused while a
+	// checkout collision is unresolved, before anything is pulled or written
+	// (X-15, C-066-9), exactly as lw note does it.
+	if err := collisionRefusal(root); err != nil {
 		return err
 	}
 	attachLoggingAt(root)
@@ -421,6 +460,9 @@ func cmdStorageRemove(args []string) error {
 	name := positional[0]
 	root, err := storageVaultRoot(*vaultPath)
 	if err != nil {
+		return err
+	}
+	if err := collisionRefusal(root); err != nil {
 		return err
 	}
 	attachLoggingAt(root)

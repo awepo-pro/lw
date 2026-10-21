@@ -286,7 +286,7 @@ func TestReconcileDeletesOnlyLedgerBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := st.Reconcile()
+	res, err := st.Reconcile(t.Context(), holdsAll)
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -332,7 +332,7 @@ func TestReconcileDeletesOnlyLedgerBytes(t *testing.T) {
 	}
 
 	// Idempotent: the rows are gone, so a second pass has nothing to decide.
-	res, err = st.Reconcile()
+	res, err = st.Reconcile(t.Context(), holdsAll)
 	if err != nil {
 		t.Fatalf("second Reconcile: %v", err)
 	}
@@ -356,7 +356,7 @@ func TestReconcileIgnoresHostileLedgerNames(t *testing.T) {
 	if err := os.WriteFile(ledgerFile(vault), []byte(led), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	res, err := st.Reconcile()
+	res, err := st.Reconcile(t.Context(), holdsAll)
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -380,7 +380,7 @@ func TestReconcileRefusesMissingCatalog(t *testing.T) {
 	if err := os.Remove(filepath.Join(vault, ".llmwiki", "storage.json")); err != nil {
 		t.Fatal(err)
 	}
-	res, err := st.Reconcile()
+	res, err := st.Reconcile(t.Context(), holdsAll)
 	if err == nil {
 		t.Fatal("Reconcile deleted against a missing catalog")
 	}
@@ -395,7 +395,7 @@ func TestReconcileRefusesMissingCatalog(t *testing.T) {
 	}
 	// An emptied catalog (the file exists, no entries) is a real removal.
 	writeCatalog(t, vault)
-	res, err = st.Reconcile()
+	res, err = st.Reconcile(t.Context(), holdsAll)
 	if err != nil || !reflect.DeepEqual(res.Removed, []string{"a.bin", "b.bin"}) {
 		t.Errorf("Reconcile against an empty catalog = %+v, %v; want both removed", res, err)
 	}
@@ -422,7 +422,7 @@ func TestReconcileAdoptsVerifiedWithoutLedger(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := st.Reconcile()
+	res, err := st.Reconcile(t.Context(), holdsAll)
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -443,7 +443,7 @@ func TestReconcileAdoptsVerifiedWithoutLedger(t *testing.T) {
 
 	// The point of adopting: the next catalog without a.bin deletes it, and keeps c.bin.
 	writeCatalog(t, vault, entryFor("b.bin", "bravo bytes"), entryFor("d.bin", "delta bytes"))
-	res, err = st.Reconcile()
+	res, err = st.Reconcile(t.Context(), holdsAll)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -466,7 +466,7 @@ func TestMaterializeVerifiesSHAAndSize(t *testing.T) {
 		vault, st := newStore(t)
 		writeCatalog(t, vault, good)
 		wrong := strings.ToUpper(content) // same length, different sha
-		err := st.Materialize("docs/paper.pdf", strings.NewReader(wrong))
+		err := st.Materialize(t.Context(), "docs/paper.pdf", strings.NewReader(wrong), holdsAll)
 		if err == nil {
 			t.Fatal("Materialize accepted bytes with the wrong sha256")
 		}
@@ -479,7 +479,7 @@ func TestMaterializeVerifiesSHAAndSize(t *testing.T) {
 	t.Run("truncated", func(t *testing.T) {
 		vault, st := newStore(t)
 		writeCatalog(t, vault, good)
-		err := st.Materialize("docs/paper.pdf", strings.NewReader(content[:5]))
+		err := st.Materialize(t.Context(), "docs/paper.pdf", strings.NewReader(content[:5]), holdsAll)
 		if err == nil {
 			t.Fatal("Materialize accepted a truncated stream")
 		}
@@ -492,7 +492,7 @@ func TestMaterializeVerifiesSHAAndSize(t *testing.T) {
 	t.Run("longer than the catalog says", func(t *testing.T) {
 		vault, st := newStore(t)
 		writeCatalog(t, vault, good)
-		err := st.Materialize("docs/paper.pdf", strings.NewReader(content+" and then some"))
+		err := st.Materialize(t.Context(), "docs/paper.pdf", strings.NewReader(content+" and then some"), holdsAll)
 		if err == nil {
 			t.Fatal("Materialize accepted a stream longer than the catalog size")
 		}
@@ -503,7 +503,7 @@ func TestMaterializeVerifiesSHAAndSize(t *testing.T) {
 		vault, st := newStore(t)
 		writeCatalog(t, vault, good)
 		r := io.MultiReader(strings.NewReader(content[:7]), iotest.ErrReader(errors.New("connection reset")))
-		err := st.Materialize("docs/paper.pdf", r)
+		err := st.Materialize(t.Context(), "docs/paper.pdf", r, holdsAll)
 		if err == nil || !strings.Contains(err.Error(), "connection reset") {
 			t.Fatalf("Materialize error = %v, want the stream's error", err)
 		}
@@ -513,10 +513,10 @@ func TestMaterializeVerifiesSHAAndSize(t *testing.T) {
 	t.Run("not in the catalog", func(t *testing.T) {
 		vault, st := newStore(t)
 		writeCatalog(t, vault, good)
-		if err := st.Materialize("other.bin", strings.NewReader(content)); err == nil {
+		if err := st.Materialize(t.Context(), "other.bin", strings.NewReader(content), holdsAll); err == nil {
 			t.Error("Materialize accepted a name the catalog does not list")
 		}
-		if err := st.Materialize("../escape.bin", strings.NewReader(content)); err == nil {
+		if err := st.Materialize(t.Context(), "../escape.bin", strings.NewReader(content), holdsAll); err == nil {
 			t.Error("Materialize accepted a name that escapes storage/")
 		}
 		if exists(diskPath(vault, "other.bin")) || exists(filepath.Join(vault, "escape.bin")) {
@@ -527,7 +527,7 @@ func TestMaterializeVerifiesSHAAndSize(t *testing.T) {
 	t.Run("right bytes land, verified, with a ledger row", func(t *testing.T) {
 		vault, st := newStore(t)
 		writeCatalog(t, vault, good)
-		if err := st.Materialize("docs/paper.pdf", strings.NewReader(content)); err != nil {
+		if err := st.Materialize(t.Context(), "docs/paper.pdf", strings.NewReader(content), holdsAll); err != nil {
 			t.Fatalf("Materialize: %v", err)
 		}
 		if b, _ := os.ReadFile(diskPath(vault, "docs/paper.pdf")); string(b) != content {
@@ -553,7 +553,7 @@ func TestMaterializeVerifiesSHAAndSize(t *testing.T) {
 		if len(rep.Entries) != 1 || rep.Entries[0].State != storage.StatePending || !rep.Entries[0].Stale {
 			t.Fatalf("setup: Status = %+v, want f.bin pending+stale", rep)
 		}
-		if err := st.Materialize("f.bin", strings.NewReader("version two, newer")); err != nil {
+		if err := st.Materialize(t.Context(), "f.bin", strings.NewReader("version two, newer"), holdsAll); err != nil {
 			t.Fatalf("Materialize over a stale file: %v", err)
 		}
 		if b, _ := os.ReadFile(diskPath(vault, "f.bin")); string(b) != "version two, newer" {
@@ -590,7 +590,7 @@ func TestMaterializeRefusesCorrupt(t *testing.T) {
 	// Bytes lw never put there and the catalog does not describe.
 	writeDisk(t, vault, "f.bin", "somebody's own edit")
 
-	err := st.Materialize("f.bin", strings.NewReader(want))
+	err := st.Materialize(t.Context(), "f.bin", strings.NewReader(want), holdsAll)
 	if err == nil {
 		t.Fatal("Materialize overwrote a corrupt file")
 	}
@@ -662,7 +662,7 @@ func TestAddRemoveMaintainLedger(t *testing.T) {
 
 	// Add then a catalog removal elsewhere: Reconcile deletes what Add put there.
 	writeCatalog(t, vault)
-	res, err := st.Reconcile()
+	res, err := st.Reconcile(t.Context(), holdsAll)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -724,7 +724,7 @@ func TestLedgerAtomicWrite(t *testing.T) {
 		}
 		t.Cleanup(func() { os.Chmod(tmpDir, 0o755) })
 
-		if _, err := st.Reconcile(); err == nil {
+		if _, err := st.Reconcile(t.Context(), holdsAll); err == nil {
 			t.Fatal("Reconcile reported success although the ledger could not be written")
 		}
 		os.Chmod(tmpDir, 0o755)
@@ -748,7 +748,7 @@ func TestLedgerAtomicWrite(t *testing.T) {
 		if !strings.Contains(err.Error(), "storage-local.json") {
 			t.Errorf("error does not name the ledger file: %v", err)
 		}
-		if _, err := st.Reconcile(); err == nil {
+		if _, err := st.Reconcile(t.Context(), holdsAll); err == nil {
 			t.Error("Reconcile ran on a corrupt ledger")
 		}
 		if err := os.WriteFile(ledgerFile(vault), []byte(`{"version":2,"materialized":{}}`), 0o644); err != nil {
