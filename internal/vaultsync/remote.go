@@ -198,19 +198,10 @@ func (r *runner) ensureRemote(ctx context.Context, rem remote) error {
 		}
 		out, stderr, err = r.procErr(ctx, "sh", call{args: []string{"-c", remoteScript, "sh", abs}})
 	case kindSSH:
-		var args []string
-		if !r.o.Interactive {
-			args = append(args, "-o", "BatchMode=yes", "-o", "ConnectTimeout=5")
-		}
-		args = append(args, r.muxArgs(ctx, rem.dest, rem.port)...)
-		if rem.port != "" {
-			args = append(args, "-p", rem.port)
-		}
 		// One argument: ssh joins the rest with spaces anyway, and the
 		// remote login shell parses it. The path is regex-safe, and unquoted
 		// so the shell expands a leading ~.
-		args = append(args, "--", rem.dest, "sh -c '"+remoteScript+"' sh "+rem.path)
-		out, stderr, err = r.runSSH(ctx, args)
+		out, stderr, err = r.runSSH(ctx, r.sshArgs(ctx, rem, "sh -c '"+remoteScript+"' sh "+rem.path))
 	default:
 		return fmt.Errorf("remote %s: lw sync init needs an ssh or local path remote", rem.raw)
 	}
@@ -239,12 +230,38 @@ func (r *runner) ensureRemote(ctx context.Context, rem remote) error {
 	}
 }
 
+// sshArgs is the argument list of one ssh call that runs command on rem's host:
+// the non-interactive options, the multiplexing options (mux.go), the port, then
+// "--", the destination and the command as ONE argument — ssh joins the rest
+// with spaces anyway and the remote login shell parses the result. Init's probe
+// (ensureRemote) and the object store (objects.go) both build their argv here,
+// so every ssh call lw makes carries the same options.
+func (r *runner) sshArgs(ctx context.Context, rem remote, command string) []string {
+	var args []string
+	if !r.o.Interactive {
+		args = append(args, "-o", "BatchMode=yes", "-o", "ConnectTimeout=5")
+	}
+	args = append(args, r.muxArgs(ctx, rem.dest, rem.port)...)
+	if rem.port != "" {
+		args = append(args, "-p", rem.port)
+	}
+	return append(args, "--", rem.dest, command)
+}
+
 // runSSH runs the user's ssh command (see sshCommand) with args. Plain "ssh" is
 // executed directly; anything else is a command line for sh, which keeps the
 // quoting the user wrote in GIT_SSH_COMMAND or core.sshCommand.
 func (r *runner) runSSH(ctx context.Context, args []string) (stdout, stderr string, err error) {
+	return r.sshCall(ctx, call{args: args})
+}
+
+// sshCall is runSSH for a call that needs more than argv: a stdin to stream, a
+// stdout to stream into, a timeout of its own. It is always a network call.
+func (r *runner) sshCall(ctx context.Context, c call) (stdout, stderr string, err error) {
+	c.net = true
 	if base := r.sshCommand(ctx); base != "ssh" {
-		return r.procErr(ctx, "sh", call{args: append([]string{"-c", base + ` "$@"`, "sh"}, args...), net: true})
+		c.args = append([]string{"-c", base + ` "$@"`, "sh"}, c.args...)
+		return r.procErr(ctx, "sh", c)
 	}
-	return r.procErr(ctx, "ssh", call{args: args, net: true})
+	return r.procErr(ctx, "ssh", c)
 }
