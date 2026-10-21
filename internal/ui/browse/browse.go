@@ -1,6 +1,8 @@
 package browse
 
 import (
+	"strings"
+
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 
@@ -91,6 +93,7 @@ func (m *Model) FooterHelp() []key.Binding {
 	return []key.Binding{
 		m.deps.Keys.MoveDown, // help "j/k", "move"
 		key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "open")),
+		key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit")),
 		key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "cited PDF")),
 		key.NewBinding(key.WithKeys("h", "l"), key.WithHelp("h/l", "collapse/expand")),
 		key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "find")),
@@ -104,6 +107,7 @@ func (m *Model) OverlayHelp() (string, []ui.HelpEntry) {
 	return "Browse", []ui.HelpEntry{
 		{Key: "j/k", Desc: "down / up"},
 		{Key: "enter", Desc: "open / toggle"},
+		{Key: "e", Desc: "edit in $EDITOR"},
 		{Key: "o", Desc: "cited PDF"},
 		{Key: "h/l", Desc: "collapse / expand"},
 		{Key: "/", Desc: "find"},
@@ -168,6 +172,9 @@ func (m *Model) Update(msg tea.Msg) (ui.Pane, tea.Cmd) {
 		m.selectPath(msg.Path)
 		return m, nil
 
+	case editFinishedMsg:
+		return m.handleEditFinished(msg)
+
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}
@@ -228,6 +235,8 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (ui.Pane, tea.Cmd) {
 			m.expandCurrent()
 		case "enter":
 			m.toggleOrOpen()
+		case "e":
+			return m.editCurrent()
 		case "/":
 			m.openFinder()
 		case "o":
@@ -371,12 +380,20 @@ func (m *Model) reload() {
 // otherwise — the first build included — the cursor lands on the first file
 // row (C8), never on a directory node.
 func (m *Model) rebuildTree() {
+	if m.deps.Engine == nil {
+		return
+	}
 	v := m.deps.Engine.Vault()
 
 	pages := v.Pages()
-	pagePaths := make([]string, len(pages))
-	for i, p := range pages {
-		pagePaths[i] = p.Path
+	pagePaths := make([]string, 0, len(pages))
+	for _, p := range pages {
+		pagePaths = append(pagePaths, p.Path)
+	}
+	for _, pe := range v.ParseErrors() {
+		if strings.HasPrefix(pe.Path, "wiki/") {
+			pagePaths = append(pagePaths, pe.Path)
+		}
 	}
 	rawSources := v.RawSources()
 	rawPaths := make([]string, len(rawSources))
