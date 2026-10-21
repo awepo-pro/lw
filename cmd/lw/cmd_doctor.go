@@ -30,6 +30,7 @@ import (
 	"github.com/awepo-pro/lw/internal/index"
 	"github.com/awepo-pro/lw/internal/llm"
 	"github.com/awepo-pro/lw/internal/stage"
+	"github.com/awepo-pro/lw/internal/storage"
 	"github.com/awepo-pro/lw/internal/vault"
 )
 
@@ -362,6 +363,7 @@ func runDoctor(ctx context.Context, root string, o doctorOptions) doctorReport {
 
 	rep.Checks = append(rep.Checks, checkTracked(root))
 	rep.Checks = append(rep.Checks, checkOriginals(v))
+	rep.Checks = append(rep.Checks, checkStorage(v))
 
 	cfg, cfgErr := config.Load()
 	rep.Checks = append(rep.Checks, checkConfig(cfg, cfgErr))
@@ -1198,5 +1200,51 @@ func checkOriginals(v *vault.Vault) doctorCheck {
 		Name:   name,
 		OK:     true,
 		Detail: fmt.Sprintf("%d of %d raw source(s) have an original (%d without; backfill with lw ingest --attach <file>)", withOrig, total, without),
+	}
+}
+
+// checkStorage verifies the integrity of files cataloged in .llmwiki/storage.json (062 S1, A-062-2).
+func checkStorage(v *vault.Vault) doctorCheck {
+	const name = "storage"
+	if v == nil || v.Root() == "" {
+		return doctorCheck{Name: name, OK: true, Detail: "0 stored file(s)"}
+	}
+	st, err := storage.Open(v.Root())
+	if err != nil {
+		return doctorCheck{
+			Name:   name,
+			OK:     false,
+			Detail: fmt.Sprintf("storage could not be opened: %v", err),
+			Remedy: "check permissions on the vault directory and .llmwiki",
+		}
+	}
+	total, ok, issues, err := st.Validate()
+	if err != nil {
+		return doctorCheck{
+			Name:   name,
+			OK:     false,
+			Detail: fmt.Sprintf("storage manifest unreadable: %v", err),
+			Remedy: "inspect or repair .llmwiki/storage.json",
+		}
+	}
+	if total == 0 {
+		return doctorCheck{
+			Name:   name,
+			OK:     true,
+			Detail: "0 stored file(s)",
+		}
+	}
+	if ok {
+		return doctorCheck{
+			Name:   name,
+			OK:     true,
+			Detail: fmt.Sprintf("all %d storage file(s) present and verified", total),
+		}
+	}
+	return doctorCheck{
+		Name:   name,
+		OK:     false,
+		Detail: fmt.Sprintf("%d of %d storage file(s) missing or corrupt", len(issues), total),
+		Remedy: "restore missing or corrupt storage files from a backup or remove invalid entries with lw storage rm",
 	}
 }

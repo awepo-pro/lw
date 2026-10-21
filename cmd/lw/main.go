@@ -45,6 +45,7 @@ var verbs = []verb{
 	{"sync", cmdSync},
 	{"tui", cmdTUI},
 	{"stage", cmdStage},
+	{"storage", cmdStorage},
 	{"version", cmdVersion},
 }
 
@@ -197,6 +198,8 @@ commands:
   sync clone <remote> <dir>    copy a synced vault from its remote to this PC
                                (lw sync owns the vault's .gitignore and rewrites it)
   tui                          launch the terminal UI (default with no command)
+  storage [add|list|show|get|rm]
+                               manage non-wiki storage files in the vault
   version                      print the build version and exit
 
 flags:
