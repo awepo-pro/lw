@@ -7,6 +7,9 @@ package stage
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -200,5 +203,106 @@ func TestReloadIfChanged(t *testing.T) {
 		}
 		close(stop)
 		wg.Wait()
+	})
+}
+
+func TestEngineReloadVault(t *testing.T) {
+	t.Run("reload_reflects_disk_and_flips_stale", func(t *testing.T) {
+		e, dir := newTestEngine(t)
+
+		// Open a changeset and stage a patch targeting kv-cache.md.
+		if _, err := e.OpenChangeset("reload vault test", testAuthor); err != nil {
+			t.Fatalf("OpenChangeset: %v", err)
+		}
+		opID := stageKVCachePatch(t, e)
+
+		c, err := e.Current()
+		if err != nil {
+			t.Fatalf("Current: %v", err)
+		}
+		op, ok := c.Op(opID)
+		if !ok {
+			t.Fatalf("op %s not found in changeset", opID)
+		}
+		if op.State == StateStale {
+			t.Fatalf("op.State = %v before reload, want non-stale", op.State)
+		}
+
+		// Read the original page from Vault to ensure it exists.
+		const targetPath = "wiki/concepts/kv-cache.md"
+		page, ok := e.Vault().Page(targetPath)
+		if !ok {
+			t.Fatalf("target page %s not found in initial vault", targetPath)
+		}
+
+		// Directly modify the page on disk outside of stage engine.
+		onDisk := filepath.Join(dir, filepath.FromSlash(targetPath))
+		const magicKeyword = "hyperparameterized"
+		const appendedLine = "\n\nDirectly edited on disk with " + magicKeyword + " token.\n"
+		newContent := append([]byte(page.Serialize()), []byte(appendedLine)...)
+		if err := os.WriteFile(onDisk, newContent, 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+
+		// ReloadVault must re-read pages, rebuild index, save index.gob, refresh staleness, stamp journal.
+		if err := e.ReloadVault(); err != nil {
+			t.Fatalf("ReloadVault: %v", err)
+		}
+
+		// 1. Verify e.Vault().Page() reflects the new content.
+		reloadedPage, ok := e.Vault().Page(targetPath)
+		if !ok {
+			t.Fatalf("target page %s missing after ReloadVault", targetPath)
+		}
+		if !strings.Contains(reloadedPage.Body, magicKeyword) {
+			t.Fatalf("reloaded page body does not contain %q; got:\n%s", magicKeyword, reloadedPage.Body)
+		}
+
+		// 2. Verify e.Index() reflects the new content.
+		hits := e.Index().Search(magicKeyword, index.Options{})
+		var foundInIndex bool
+		for _, hit := range hits {
+			if hit.Path == targetPath {
+				foundInIndex = true
+				break
+			}
+		}
+		if !foundInIndex {
+			t.Fatalf("Index().Search(%q) did not find %s; hits = %+v", magicKeyword, targetPath, hits)
+		}
+
+		// 3. Verify index.gob was written to disk and is non-empty.
+		indexGobPath := filepath.Join(e.llmwikiDir(), "index.gob")
+		stat, err := os.Stat(indexGobPath)
+		if err != nil {
+			t.Fatalf("stat index.gob: %v", err)
+		}
+		if stat.Size() == 0 {
+			t.Fatal("saved index.gob is empty")
+		}
+
+		// 4. Verify open changeset's patch_page op targeting the modified page flips to StateStale.
+		cAfter, err := e.Current()
+		if err != nil {
+			t.Fatalf("Current after reload: %v", err)
+		}
+		opAfter, ok := cAfter.Op(opID)
+		if !ok {
+			t.Fatalf("op %s not found after reload", opID)
+		}
+		if opAfter.State != StateStale {
+			t.Fatalf("op.State after ReloadVault = %v, want %v", opAfter.State, StateStale)
+		}
+	})
+
+	t.Run("reload_error_on_corrupted_schema", func(t *testing.T) {
+		e, dir := newTestEngine(t)
+		schemaPath := filepath.Join(dir, "SCHEMA.md")
+		if err := os.WriteFile(schemaPath, []byte("invalid schema ::: [}"), 0o644); err != nil {
+			t.Fatalf("WriteFile SCHEMA.md: %v", err)
+		}
+		if err := e.ReloadVault(); err == nil {
+			t.Fatal("ReloadVault = nil on corrupted SCHEMA.md, want error")
+		}
 	})
 }

@@ -2,6 +2,8 @@ package ui
 
 import (
 	"fmt"
+	"os/exec"
+	"reflect"
 	"testing"
 
 	"charm.land/bubbles/v2/key"
@@ -328,5 +330,22 @@ func TestPaneEmittedBroadcastStillReachesTheShell(t *testing.T) {
 		if got := countOf(p.got, tea.Msg(bc)); got != 1 {
 			t.Fatalf("%s pane received the broadcast %d time(s), want exactly 1: %#v", p.name, got, p.got)
 		}
+	}
+}
+
+// TestProducedByExecMsgBare verifies that producedBy passes Bubble Tea runtime's
+// tea.execMsg through bare (not wrapped in paneMsg), so ExecProcess can pause
+// the program and run external interactive processes like $EDITOR.
+func TestProducedByExecMsgBare(t *testing.T) {
+	cmd := producedBy(ScreenBrowse, tea.ExecProcess(exec.Command("true"), nil))
+	if cmd == nil {
+		t.Fatal("producedBy returned nil cmd")
+	}
+	msg := cmd()
+	if _, ok := msg.(paneMsg); ok {
+		t.Fatalf("producedBy wrapped tea.execMsg in paneMsg: %#v", msg)
+	}
+	if got := reflect.TypeOf(msg).String(); got != "tea.execMsg" {
+		t.Fatalf("producedBy returned %q, want tea.execMsg", got)
 	}
 }

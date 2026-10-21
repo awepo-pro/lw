@@ -6,7 +6,11 @@
 // they're declared in.
 package ui
 
-import tea "charm.land/bubbletea/v2"
+import (
+	"reflect"
+
+	tea "charm.land/bubbletea/v2"
+)
 
 // switchTo moves focus to s, a no-op if s is not one of the five screens in
 // a.order.
@@ -211,6 +215,9 @@ func shellOwned(msg tea.Msg) bool {
 		StreamClosedMsg, SwitchScreenMsg, OpenPathMsg:
 		return true
 	default:
+		if msg != nil && reflect.TypeOf(msg).String() == "tea.execMsg" {
+			return true
+		}
 		return false
 	}
 }

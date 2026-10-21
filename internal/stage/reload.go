@@ -153,3 +153,19 @@ func (e *Engine) ReloadIfChanged() (bool, error) {
 	e.journalStampMu.Unlock()
 	return true, nil
 }
+
+// ReloadVault re-reads SCHEMA.md and every *.md under wiki/ and raw/ from disk,
+// rebuilds the search index in place, saves index.gob, and refreshes staleness
+// of any open changeset ops (flipping ops to StateStale if their target page changed).
+func (e *Engine) ReloadVault() error {
+	if err := e.vault.Reload(); err != nil {
+		return fmt.Errorf("stage: reload vault: %w", err)
+	}
+	e.index.Rebuild(e.vault)
+	if err := e.index.Save(filepath.Join(e.llmwikiDir(), "index.gob")); err != nil {
+		return fmt.Errorf("stage: reload vault: save index: %w", err)
+	}
+	_ = e.Refresh()
+	e.stampJournal()
+	return nil
+}
