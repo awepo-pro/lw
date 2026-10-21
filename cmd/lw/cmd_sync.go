@@ -489,6 +489,9 @@ func syncInit(vaultPath, remote string) error {
 	if err := stage.EnsureJournalLock(filepath.Join(root, stateDirName)); err != nil {
 		return err
 	}
+	if err := vaultsync.SyncStorage(ctx, o); err != nil {
+		return err
+	}
 	fmt.Printf("pushed %d commit(s) to %s\n", st.Pushed, st.Remote)
 	return adoptSyncConfig(os.Stdout, root, remote)
 }
