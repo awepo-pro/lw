@@ -32,6 +32,7 @@ import (
 	"github.com/awepo-pro/lw/internal/stage"
 	"github.com/awepo-pro/lw/internal/storage"
 	"github.com/awepo-pro/lw/internal/vault"
+	"github.com/awepo-pro/lw/internal/vaultsync"
 )
 
 // The on-disk state layout doctor inspects (backbone §14). Paths printed to
@@ -367,6 +368,9 @@ func runDoctor(ctx context.Context, root string, o doctorOptions) doctorReport {
 
 	cfg, cfgErr := config.Load()
 	rep.Checks = append(rep.Checks, checkConfig(cfg, cfgErr))
+	if c := checkStorageRemote(v, cfg, cfgErr); c != nil {
+		rep.Checks = append(rep.Checks, *c)
+	}
 	if c := checkWeb(cfg, cfgErr); c != nil {
 		rep.Checks = append(rep.Checks, *c)
 	}
@@ -1203,7 +1207,48 @@ func checkOriginals(v *vault.Vault) doctorCheck {
 	}
 }
 
-// checkStorage verifies the integrity of files cataloged in .llmwiki/storage.json (062 S1, A-062-2).
+// checkStorageRemote flags a configuration under which stored files can never
+// leave this PC: [sync] remotes are set, the catalog lists stored files, and no
+// remote is an ssh or local path one (an https:// or git:// remote carries git
+// and nothing else, X-7). It is a warning, not a failure - the wiki syncs fine -
+// and it is absent when there is nothing to say, so a vault that stores nothing
+// or syncs to an ssh remote sees no extra line.
+func checkStorageRemote(v *vault.Vault, cfg *config.Config, cfgErr error) *doctorCheck {
+	if v == nil || v.Root() == "" || cfgErr != nil || cfg == nil {
+		return nil
+	}
+	warn := storageUnsupportedWarning(v.Root(), vaultsync.Options{Remotes: cfg.Sync.RemoteList()})
+	if warn == "" {
+		return nil
+	}
+	return &doctorCheck{
+		Name:   "storage remote",
+		OK:     true,
+		Warn:   true,
+		Detail: strings.TrimPrefix(warn, "storage: "),
+		Remedy: "add an ssh or local path remote to [sync] remotes (host:path) so stored files can leave this PC; until then they stay on the PC that stored them",
+	}
+}
+
+// checkStorage tells the four things that can be true of the files cataloged in
+// .llmwiki/storage.json and of storage/ (062 S1, A-062-2; 066 R7, A-066-1).
+// 062 had one verdict, "N of M missing or corrupt", with one remedy ("restore
+// from a backup, or lw storage rm"), and it was wrong for every PC that had
+// simply not received a file yet (B6): that file is pending, not damaged. Now
+// the states are counted apart (internal/storage.Status):
+//
+//	verified  the bytes equal the catalog's
+//	pending   not here yet, or an older version lw put here; lw sync brings it.
+//	          Said with its reason when it is more than late: the file is the
+//	          older version (replaced on another PC, X-12) or the object on the
+//	          remote failed a fetch's check (remote object damaged, X-4)
+//	corrupt   bytes lw did not put there and the catalog does not name: damage;
+//	          also a catalog record that cannot be acted on (a bad sha256, X-8)
+//	orphan    a file in storage/ the catalog has never heard of
+//
+// Only corrupt fails the check. Pending and orphan are warnings, and the remedy
+// is the first applicable one: a corrupt file needs a person, a damaged remote
+// object a PC that holds the file, a pending one a sync, an orphan a decision.
 func checkStorage(v *vault.Vault) doctorCheck {
 	const name = "storage"
 	if v == nil || v.Root() == "" {
@@ -1218,33 +1263,85 @@ func checkStorage(v *vault.Vault) doctorCheck {
 			Remedy: "check permissions on the vault directory and .llmwiki",
 		}
 	}
-	total, ok, issues, err := st.Validate()
+	rep, err := st.Status()
 	if err != nil {
 		return doctorCheck{
 			Name:   name,
 			OK:     false,
-			Detail: fmt.Sprintf("storage manifest unreadable: %v", err),
-			Remedy: "inspect or repair .llmwiki/storage.json",
+			Detail: fmt.Sprintf("storage could not be read: %v", err),
+			Remedy: "inspect or repair .llmwiki/storage.json; a ledger error names .llmwiki/tmp/storage-local.json, which is per PC and safe to delete",
 		}
 	}
-	if total == 0 {
-		return doctorCheck{
-			Name:   name,
-			OK:     true,
-			Detail: "0 stored file(s)",
+
+	var verified, late, replaced, damaged, corrupt int
+	firstCorrupt, firstDamaged, firstDamagedSHA := "", "", ""
+	for _, es := range rep.Entries {
+		switch {
+		case es.State == storage.StateVerified:
+			verified++
+		case es.State == storage.StatePending && es.Stale:
+			replaced++
+		case es.State == storage.StatePending && es.Damaged:
+			if damaged == 0 {
+				firstDamaged, firstDamagedSHA = es.Entry.Name, es.Entry.SHA256
+			}
+			damaged++
+		case es.State == storage.StatePending:
+			late++
+		default:
+			if corrupt == 0 {
+				firstCorrupt = es.Entry.Name
+			}
+			corrupt++
 		}
 	}
-	if ok {
-		return doctorCheck{
-			Name:   name,
-			OK:     true,
-			Detail: fmt.Sprintf("all %d storage file(s) present and verified", total),
-		}
+	pending := late + replaced + damaged
+	total, orphans := len(rep.Entries), len(rep.Orphans)
+	if total == 0 && orphans == 0 {
+		return doctorCheck{Name: name, OK: true, Detail: "0 stored file(s)"}
 	}
-	return doctorCheck{
-		Name:   name,
-		OK:     false,
-		Detail: fmt.Sprintf("%d of %d storage file(s) missing or corrupt", len(issues), total),
-		Remedy: "restore missing or corrupt storage files from a backup or remove invalid entries with lw storage rm",
+
+	var parts []string
+	switch {
+	case total == 0:
+		// Nothing is catalogued: "all 0 verified" would read literally (C-066-3).
+	case verified == total:
+		parts = append(parts, fmt.Sprintf("all %d storage file(s) present and verified", total))
+	default:
+		parts = append(parts, fmt.Sprintf("%d of %d verified", verified, total))
 	}
+	if late > 0 {
+		parts = append(parts, fmt.Sprintf("%d pending (not arrived yet)", late))
+	}
+	if replaced > 0 {
+		parts = append(parts, fmt.Sprintf("%d pending (replaced on another PC)", replaced))
+	}
+	if damaged > 0 {
+		parts = append(parts, fmt.Sprintf("%d pending (remote object is damaged)", damaged))
+	}
+	if corrupt > 0 {
+		parts = append(parts, fmt.Sprintf("%d corrupt (changed on disk)", corrupt))
+	}
+	if orphans > 0 {
+		parts = append(parts, fmt.Sprintf("%d untracked file(s) in storage/", orphans))
+	}
+
+	c := doctorCheck{Name: name, OK: corrupt == 0, Detail: strings.Join(parts, "; ")}
+	c.Warn = c.OK && (pending > 0 || orphans > 0)
+	switch {
+	case corrupt > 0:
+		// The first corrupt entry by name, not a placeholder: the user can paste it (C-066-4).
+		c.Remedy = fmt.Sprintf("lw storage show %s names the expected sha256; restore the file or lw storage rm it", firstCorrupt)
+	case damaged > 0:
+		// lw replaces a remote object of the wrong LENGTH when a PC that holds the file
+		// uploads it. One of the right length with wrong bytes looks held to the
+		// remote's length check (it has no sha256 tool), so that one is removed by hand.
+		sha := firstDamagedSHA
+		c.Remedy = fmt.Sprintf("the object for %s on the remote is damaged: on a PC that holds the file run lw storage add <file> --name %s, then lw sync; if its length is right and only its bytes are wrong, delete <remote>.storage/objects/%s/%s first", firstDamaged, firstDamaged, sha[:2], sha[2:])
+	case pending > 0:
+		c.Remedy = "run lw sync; if it stays pending, run lw sync on the PC that stored it"
+	case orphans > 0:
+		c.Remedy = "move untracked files out of storage/, or lw storage add them"
+	}
+	return c
 }

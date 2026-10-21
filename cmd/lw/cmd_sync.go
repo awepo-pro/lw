@@ -51,6 +51,14 @@ different pages — and pushes them; HEAD from before is kept in refs/lw/pre-reb
 A conflict (the same page edited on both, or an lw commit on each side) is refused
 and nothing changes; --take-remote then keeps the remote and saves this PC's
 commits on a branch named lw-diverged-<time>.
+
+Files stored with lw storage travel beside git, never inside it: lw sync uploads the
+ones the catalog names to <remote>.storage/objects/ before it pulls (so before it
+pushes), removes the ones the catalog dropped, and fetches the ones this PC lacks.
+It never deletes or replaces a file it stored unless it has just seen a copy on the
+remote: it uploads the file first, or keeps it and says so. A storage problem never
+stops the wiki from syncing; it is printed after the push, lw sync exits 1, and the
+next lw sync tries again.
 `)
 }
 
@@ -285,6 +293,14 @@ func syncPreflight(root string) error {
 // (the carried lines) is committed, and the commit pushed. The vault lock covers
 // each commit, and the pull's local mutation inside its quiesce; the fetch and
 // the push run without it (A-042-7 d, A-042-10).
+//
+// 066: files stored with `lw storage` ride beside git, and none of it may stand
+// between the wiki and the remote. The payloads go up FIRST - before the pull, so a
+// pull that is refused or reshaped (a divergence, --take-remote) cannot strand a
+// file whose only copy is here (FIX1 X-2, F-1); that is also before the push, with
+// nothing in between that could add a payload to upload (Y-7). After the pull the PC
+// reconciles storage/ with the catalog; after the git phase it fetches the ones it
+// lacks. A storage failure is printed once, after the push, and exits 1.
 func syncRun(vaultPath string, takeRemote bool) error {
 	mode := syncModeWrite
 	if takeRemote {
@@ -297,6 +313,23 @@ func syncRun(vaultPath string, takeRemote bool) error {
 	ctx, stop := syncContext()
 	defer stop()
 
+	// 066: what storage does is told AFTER the git phase (R5), so its errors are
+	// collected, not returned. If the git phase itself fails they are only logged:
+	// the lines say "wiki synced", and it did not.
+	var issues storageIssues
+	if warn := storageUnsupportedWarning(root, o); warn != "" {
+		fmt.Fprintln(os.Stderr, warn)
+	}
+	// X-2: the payloads this PC holds go up before anything can refuse or reshape
+	// the vault, and on EVERY run, not only when it pushes (C-066-1): a failed upload
+	// leaves git pushed and nothing ahead, so the "run lw sync again" it asks for would
+	// otherwise find no push to hang the upload on. A catalog edit that is about to be
+	// taken away (--take-remote) or rebased still names bytes that must exist
+	// somewhere afterwards. Content before pointer (B6).
+	endNotice := slowNotice(os.Stderr, "uploading storage files")
+	issues.add(storageUpload(ctx, root, o))
+	endNotice()
+
 	if takeRemote {
 		if err := syncPreflight(root); err != nil {
 			return err
@@ -307,7 +340,7 @@ func syncRun(vaultPath string, takeRemote bool) error {
 		if err := syncTake(ctx, root, o); err != nil {
 			return syncExplicitErr(err, vaultsync.State{})
 		}
-		return nil
+		return issues.finish(os.Stderr)
 	}
 
 	st, committed, err := syncPullAndCommit(ctx, root, o)
@@ -315,9 +348,10 @@ func syncRun(vaultPath string, takeRemote bool) error {
 		recordSyncAhead(root, "", err, st.Ahead)
 		return syncExplicitErr(err, st)
 	}
-	if err := vaultsync.SyncStorage(ctx, o); err != nil {
-		return err
-	}
+	// The pull may have brought a catalog without files this PC holds; deleting
+	// them is storageReconcile's job and nothing else's (B1: `lw storage rm` came
+	// back), and it never deletes the only copy (B7).
+	issues.add(storageReconcile(ctx, root, o))
 	pulled := st.Pulled
 	remote := st.Remote
 	if pulled > 0 {
@@ -342,9 +376,6 @@ func syncRun(vaultPath string, takeRemote bool) error {
 			return syncExplicitErr(err, pst)
 		}
 		pushed, remote = pst.Pushed, pst.Remote
-		if err := vaultsync.SyncStorage(ctx, o); err != nil {
-			return err
-		}
 	}
 	recordSync(root, remote, nil)
 
@@ -354,7 +385,13 @@ func syncRun(vaultPath string, takeRemote bool) error {
 	case pulled == 0 && st.Rebased == 0:
 		fmt.Printf("up to date with %s\n", remote)
 	}
-	return nil
+
+	// The git phase is done: bring in the payloads this PC lacks, then tell what
+	// went wrong with storage, if anything, and fail the command (R5).
+	endNotice = slowNotice(os.Stderr, "fetching storage files")
+	issues.add(storageFetch(ctx, root, o))
+	endNotice()
+	return issues.finish(os.Stderr)
 }
 
 // syncPullAndCommit is the local half of an explicit sync: with no commit
@@ -447,6 +484,9 @@ func syncStatus(vaultPath string) error {
 		// the line (and sync.json's last_error with it).
 		fmt.Printf("unpushed %d\n", rec.Unpushed)
 	}
+	if line := storageStatusLine(root); line != "" {
+		fmt.Println(line)
+	}
 	if st.Diverged() {
 		fmt.Println("diverged — run lw sync for details")
 	}
@@ -479,6 +519,12 @@ func syncInit(vaultPath, remote string) error {
 	defer release()
 
 	o := vaultsync.Options{Dir: root, Remotes: []string{remote}, Interactive: true, Stderr: os.Stderr}
+	// Init is a push too: whatever the vault has stored before it is put under
+	// sync goes up first, and a failure waits until Init has pushed (B5, B6).
+	var issues storageIssues
+	endNotice := slowNotice(os.Stderr, "uploading storage files")
+	issues.add(storageUpload(ctx, root, o))
+	endNotice()
 	st, err := vaultsync.Init(ctx, o)
 	if err != nil {
 		recordSync(root, "", err)
@@ -489,11 +535,11 @@ func syncInit(vaultPath, remote string) error {
 	if err := stage.EnsureJournalLock(filepath.Join(root, stateDirName)); err != nil {
 		return err
 	}
-	if err := vaultsync.SyncStorage(ctx, o); err != nil {
+	fmt.Printf("pushed %d commit(s) to %s\n", st.Pushed, st.Remote)
+	if err := adoptSyncConfig(os.Stdout, root, remote); err != nil {
 		return err
 	}
-	fmt.Printf("pushed %d commit(s) to %s\n", st.Pushed, st.Remote)
-	return adoptSyncConfig(os.Stdout, root, remote)
+	return issues.finish(os.Stderr)
 }
 
 // syncClone is `lw sync clone <remote> <dir>`: copy a synced vault to this PC,
@@ -519,15 +565,22 @@ func syncClone(remote, dir string) error {
 	if _, err := rebuildIndex(abs, v); err != nil {
 		return fmt.Errorf("index the cloned vault: %w", err)
 	}
-	if err := vaultsync.SyncStorage(ctx, o); err != nil {
-		return err
-	}
+	// The clone is complete whatever happens to the payloads (R5): they are
+	// fetched after it, and a failure is told once the vault is set up.
+	var issues storageIssues
+	issues.add(storageReconcile(ctx, abs, o))
+	endNotice := slowNotice(os.Stderr, "fetching storage files")
+	issues.add(storageFetch(ctx, abs, o))
+	endNotice()
 	recordSync(abs, remote, nil)
 	if err := stage.EnsureJournalLock(filepath.Join(abs, stateDirName)); err != nil {
 		return err
 	}
 	fmt.Printf("cloned %s into %s\n", remote, abs)
-	return adoptSyncConfig(os.Stdout, abs, remote)
+	if err := adoptSyncConfig(os.Stdout, abs, remote); err != nil {
+		return err
+	}
+	return issues.finish(os.Stderr)
 }
 
 // adoptSyncConfig writes the config keys sync init and sync clone imply — and

@@ -1,14 +1,14 @@
 package main
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -17,6 +17,35 @@ import (
 
 // cmdStorage dispatches lw storage subcommands (062 S1).
 func cmdStorage(args []string) error {
+	return storageCLIError(cmdStorageDispatch(args))
+}
+
+// prefixedError is err shown with a prefix its own text repeated, without the
+// repetition; it still unwraps to err.
+type prefixedError struct {
+	err error
+	msg string
+}
+
+func (e *prefixedError) Error() string { return e.msg }
+func (e *prefixedError) Unwrap() error { return e.err }
+
+// storageCLIError drops the "storage: " that internal/storage puts at the front
+// of its errors: dispatch already prints "lw: storage: " before every error of
+// this verb, and `lw: storage: storage: entry "x" not found` said it twice (066
+// X-15, C-066-9). An *exitError is the verb's own exit code and passes through.
+func storageCLIError(err error) error {
+	var ee *exitError
+	if err == nil || errors.As(err, &ee) {
+		return err
+	}
+	if msg := err.Error(); strings.HasPrefix(msg, "storage: ") {
+		return &prefixedError{err: err, msg: strings.TrimPrefix(msg, "storage: ")}
+	}
+	return err
+}
+
+func cmdStorageDispatch(args []string) error {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "lw storage: a subcommand is required")
 		storageUsage(os.Stderr)
@@ -49,6 +78,11 @@ func storageUsage(w io.Writer) {
        lw storage show <name> [--vault P]
        lw storage get <name> [-o <outpath>] [--vault P]
        lw storage rm <name> [--vault P]
+
+Stored files live in storage/ and are listed in .llmwiki/storage.json, which git
+carries; the bytes travel beside git, in <remote>.storage/objects/, and lw sync
+moves them. lw storage rm removes the file and its catalog entry on every PC that
+syncs; the object stays on the remote until a future lw storage gc.
 `)
 }
 
@@ -82,28 +116,37 @@ func formatStorageSize(n int64) string {
 	}
 }
 
-func entryDiskStatus(root string, e storage.Entry) string {
-	path := filepath.Join(root, "storage", filepath.FromSlash(e.Name))
-	fi, err := os.Stat(path)
+// storageVerifiedWord is what `lw storage list -v` and `lw storage show` print
+// for a file whose bytes equal the catalog's. 062 printed "present" for exactly
+// this (it hashed the file), TestStorageAddAndList and TestStorageShow pin that
+// word, and 066 D4 asks for "verified"; the pinned word wins until those two
+// assertions are amended. The other states are internal/storage's own words.
+const storageVerifiedWord = "present"
+
+// storageStateWord is the word a listing prints for a catalog entry's state
+// (066 D4): pending is "not arrived yet", never "missing", and corrupt is
+// reserved for bytes that something other than lw put there (B6). A pending entry
+// says why when it is more than late: its file is an older version (X-12) or the
+// object on the remote is damaged (X-4).
+func storageStateWord(es storage.EntryStatus) string {
+	switch {
+	case es.State == storage.StateVerified:
+		return storageVerifiedWord
+	case es.State == storage.StatePending && es.Stale:
+		return "pending (replaced on another PC)"
+	case es.State == storage.StatePending && es.Damaged:
+		return "pending (remote object is damaged)"
+	}
+	return es.State.String()
+}
+
+// storageEntryWord is the state word of one entry, read from its file alone.
+func storageEntryWord(st *storage.Storage, e storage.Entry) (string, error) {
+	es, err := st.Verify(e.Name)
 	if err != nil {
-		return "missing"
+		return "", err
 	}
-	if !fi.Mode().IsRegular() || fi.Size() != e.Size {
-		return "corrupt"
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		return "corrupt"
-	}
-	defer f.Close()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "corrupt"
-	}
-	if hex.EncodeToString(h.Sum(nil)) != e.SHA256 {
-		return "corrupt"
-	}
-	return "present"
+	return storageStateWord(es), nil
 }
 
 func cmdStorageAdd(args []string) error {
@@ -130,8 +173,14 @@ func cmdStorageAdd(args []string) error {
 	}
 
 	srcFile := positional[0]
-	root, err := findVaultRoot(*vaultPath)
+	root, err := storageVaultRoot(*vaultPath)
 	if err != nil {
+		return err
+	}
+	// A stored file is a tracked catalog change like a note: refused while a
+	// checkout collision is unresolved, before anything is pulled or written
+	// (X-15, C-066-9), exactly as lw note does it.
+	if err := collisionRefusal(root); err != nil {
 		return err
 	}
 	attachLoggingAt(root)
@@ -140,6 +189,13 @@ func cmdStorageAdd(args []string) error {
 	if err != nil {
 		return err
 	}
+
+	// 066: a stored file is a catalog change like a note is a file change, so it
+	// is pulled-for and pushed the way lw note does it (047, 059): the newest
+	// catalog first, so two PCs rarely edit the one storage.json from the same
+	// base, and the upload and the push once the verb has said what it did.
+	auto := loadAutoSync(root)
+	auto.pull()
 
 	entry, err := st.Add(srcFile, *name, *note, *force)
 	if err != nil {
@@ -151,6 +207,7 @@ func cmdStorageAdd(args []string) error {
 		shaPrefix = shaPrefix[:8]
 	}
 	fmt.Printf("stored %s (%s, sha256: %s...)\n", entry.Name, formatStorageSize(entry.Size), shaPrefix)
+	auto.afterNote()
 	return nil
 }
 
@@ -171,7 +228,7 @@ func cmdStorageList(args []string) error {
 		return &exitError{code: 2}
 	}
 
-	root, err := findVaultRoot(*vaultPath)
+	root, err := storageVaultRoot(*vaultPath)
 	if err != nil {
 		return err
 	}
@@ -199,23 +256,40 @@ func cmdStorageList(args []string) error {
 		return nil
 	}
 
-	if len(entries) == 0 {
+	var rep storage.Report
+	if *verbose {
+		// One pass over the disk: the state of every entry, and the files in
+		// storage/ the catalog has never heard of (066 R7).
+		if rep, err = st.Status(); err != nil {
+			return err
+		}
+		if len(rep.Entries) == 0 && len(rep.Orphans) == 0 {
+			return nil
+		}
+	} else if len(entries) == 0 {
 		return nil
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 	if *verbose {
 		fmt.Fprintln(w, "NAME\tSIZE\tSHA256\tSTATUS\tADDED\tNOTE")
-		for _, e := range entries {
-			status := entryDiskStatus(root, e)
+		for _, es := range rep.Entries {
+			e := es.Entry
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
 				e.Name,
 				formatStorageSize(e.Size),
 				e.SHA256,
-				status,
+				storageStateWord(es),
 				e.Added.UTC().Format("2006-01-02 15:04:05"),
 				e.Note,
 			)
+		}
+		for _, name := range rep.Orphans {
+			size := "-"
+			if fi, err := os.Stat(st.Path(name)); err == nil {
+				size = formatStorageSize(fi.Size())
+			}
+			fmt.Fprintf(w, "%s\t%s\t-\torphan\t-\t\n", name, size)
 		}
 	} else {
 		fmt.Fprintln(w, "NAME\tSIZE\tADDED\tNOTE")
@@ -252,7 +326,7 @@ func cmdStorageShow(args []string) error {
 	}
 
 	name := positional[0]
-	root, err := findVaultRoot(*vaultPath)
+	root, err := storageVaultRoot(*vaultPath)
 	if err != nil {
 		return err
 	}
@@ -271,7 +345,10 @@ func cmdStorageShow(args []string) error {
 		return fmt.Errorf("storage: entry %q not found", name)
 	}
 
-	status := entryDiskStatus(root, entry)
+	status, err := storageEntryWord(st, entry)
+	if err != nil {
+		return err
+	}
 	relPath := filepath.ToSlash(filepath.Join("storage", filepath.FromSlash(entry.Name)))
 
 	fmt.Printf("Name:    %s\n", entry.Name)
@@ -308,7 +385,7 @@ func cmdStorageGet(args []string) error {
 	}
 
 	name := positional[0]
-	root, err := findVaultRoot(*vaultPath)
+	root, err := storageVaultRoot(*vaultPath)
 	if err != nil {
 		return err
 	}
@@ -316,6 +393,20 @@ func cmdStorageGet(args []string) error {
 
 	st, err := storage.Open(root)
 	if err != nil {
+		return err
+	}
+
+	// 066 R6: serve only bytes that equal the catalog. A pending entry is
+	// fetched now, once, instead of failing with an ENOENT until the user thinks
+	// of a lw sync (B6); a corrupt one is refused by name and sha.
+	entry, found, err := st.Show(name)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("storage: entry %q not found", name)
+	}
+	if err := storageEnsureLocal(st, root, entry); err != nil {
 		return err
 	}
 
@@ -367,8 +458,11 @@ func cmdStorageRemove(args []string) error {
 	}
 
 	name := positional[0]
-	root, err := findVaultRoot(*vaultPath)
+	root, err := storageVaultRoot(*vaultPath)
 	if err != nil {
+		return err
+	}
+	if err := collisionRefusal(root); err != nil {
 		return err
 	}
 	attachLoggingAt(root)
@@ -378,9 +472,15 @@ func cmdStorageRemove(args []string) error {
 		return err
 	}
 
+	// The removal travels as a catalog change; the other PCs delete their copy
+	// when they pull it (B1). Pulled first and pushed after, as lw storage add.
+	auto := loadAutoSync(root)
+	auto.pull()
+
 	if err := st.Remove(name); err != nil {
 		return err
 	}
 	fmt.Printf("removed %s\n", name)
+	auto.afterNote()
 	return nil
 }

@@ -64,8 +64,11 @@ type autoSync struct {
 	remotes []string
 	pusher  *syncPusher // the TUI's; nil for a CLI verb, which pushes in place
 
-	mu     sync.Mutex // one CLI push at a time
-	queued bool       // a CLI verb has asked for its push at the end (atVerbEnd)
+	mu           sync.Mutex      // one CLI push at a time
+	queued       bool            // a CLI verb has asked for its push at the end (atVerbEnd)
+	notes        []string        // storage lines the TUI's pusher held back for the exit report (storageSay)
+	said         map[string]bool // storage lines a CLI verb already printed (storageSay)
+	warnedRemote bool            // the "remote cannot hold storage files" line was said (once per run, X-7)
 }
 
 // notSyncingLine is what a writing verb says when [sync] remotes are
@@ -337,6 +340,10 @@ func (a *autoSync) pull() {
 	}
 	recordSyncAhead(a.root, st.Remote, nil, st.Ahead)
 	slog.Info("sync pull", "remote", st.Remote, "pulled", st.Pulled, "ahead", st.Ahead)
+	// Before the engine opens, so nothing owns the screen yet: say it at once.
+	say := func(line string) { fmt.Fprintln(os.Stderr, line) }
+	a.warnUnsupportedRemote(say)
+	a.reconcileStorage(ctx, say)
 	a.retryIfAhead(st)
 	if st.Pulled == 0 {
 		return
@@ -405,15 +412,31 @@ func (a *autoSync) warnStart(step string, err error, st vaultsync.State) {
 // its result to lw.log, never to a screen.
 func (a *autoSync) pushOnce(ctx context.Context) syncPushResult {
 	res := a.push(ctx)
-	slog.Info("sync push", "remote", res.Remote, "pushed", res.Pushed, "err", res.Err)
+	slog.Info("sync push", "remote", res.Remote, "pushed", res.Pushed, "err", res.Err, "storage_err", res.StorageErr)
 	return res
 }
 
 func (a *autoSync) push(ctx context.Context) syncPushResult {
+	a.warnUnsupportedRemote(a.storageSay)
+	// The payloads the catalog names go up before git does (066 B6: the catalog
+	// is a tracked file, so every push publishes it, and a PC that read an entry
+	// whose bytes were nowhere else called it corrupt) - and before the PULL as
+	// well (FIX1 X-2, F-1): a pull that is refused (a divergence, a dirty tree) or
+	// that reshapes the vault must not leave this PC's only copies stranded. A
+	// failed upload is a warning for the report below, never a reason to skip the
+	// push (B5), and it is retried by the next push of anything. It gets half of what
+	// is left of the step's deadline so the push always has the rest, and a payload
+	// over storageAutoMaxObject is left for an explicit lw sync. It is not repeated
+	// after the pull: nothing the pull brings in is a payload this PC holds and the
+	// remote lacks (Y-7).
+	storageErr := a.uploadStorage(ctx)
 	pulled, err := a.commitAndPull(ctx)
 	if err != nil {
 		recordSyncAhead(a.root, "", err, pulled.Ahead)
-		return syncPushResult{Remote: pulled.Remote, Err: err}
+		if storageErr != nil {
+			slog.Warn("sync: storage upload", "err", storageErr)
+		}
+		return syncPushResult{Remote: pulled.Remote, Err: err, StorageErr: storageErr}
 	}
 	if pulled.Pulled > 0 {
 		// The remote's commits are in the tree now (a divergence was rebased):
@@ -422,6 +445,9 @@ func (a *autoSync) push(ctx context.Context) syncPushResult {
 			slog.Warn("sync: rebuild index after push", "err", ierr)
 		}
 	}
+	if storageErr != nil {
+		slog.Warn("sync: storage upload", "err", storageErr)
+	}
 	// No lock is held: the push touches no file of the vault (it sends HEAD),
 	// and holding one across a network round trip would make a foreground
 	// commit fail with "vault is locked" for as long as the server is slow
@@ -429,7 +455,7 @@ func (a *autoSync) push(ctx context.Context) syncPushResult {
 	// vault lock is taken inside the pull's quiesce and not around it
 	// (A-042-10).
 	st, err := syncPush(ctx, a.options())
-	res := syncPushResult{Remote: st.Remote, Pushed: st.Pushed, Pulled: pulled.Pulled, Rebased: pulled.Rebased}
+	res := syncPushResult{Remote: st.Remote, Pushed: st.Pushed, Pulled: pulled.Pulled, Rebased: pulled.Rebased, StorageErr: storageErr}
 	if err != nil {
 		recordSyncAhead(a.root, "", err, st.Ahead)
 		res.Err = err
@@ -470,7 +496,16 @@ func (a *autoSync) commitAndPull(ctx context.Context) (vaultsync.State, error) {
 	if err := commit(); err != nil {
 		return vaultsync.State{}, err
 	}
-	st, err := syncPull(ctx, a.options(), stage.FormatVersion)
+	// The pull may bring a catalog that dropped files this PC holds: reconcile
+	// after every pull that worked (066 B1), saying so where the step can.
+	pull := func() (vaultsync.State, error) {
+		st, err := syncPull(ctx, a.options(), stage.FormatVersion)
+		if err == nil {
+			a.reconcileStorage(ctx, a.storageSay)
+		}
+		return st, err
+	}
+	st, err := pull()
 	if errors.Is(err, vaultsync.ErrDirty) {
 		if err := commit(); err != nil {
 			return st, err
@@ -480,12 +515,81 @@ func (a *autoSync) commitAndPull(ctx context.Context) (vaultsync.State, error) {
 			// way of nothing: it is committed now and the push sends it.
 			return st, nil
 		}
-		st, err = syncPull(ctx, a.options(), stage.FormatVersion)
+		st, err = pull()
 		if errors.Is(err, vaultsync.ErrDirty) {
 			return st, nil
 		}
 	}
 	return st, err
+}
+
+// reconcileStorage is storageReconcile for an auto-sync step that has just
+// pulled: what it removed or kept goes to say, and a failure becomes one more
+// line. Nothing here fails the verb (auto-sync never does). Rule P may make it
+// ask the remote for a copy of a file about to be deleted, so it gets half of
+// what is left of the step's deadline and the rest stays for what follows.
+func (a *autoSync) reconcileStorage(ctx context.Context, say func(line string)) {
+	rctx, cancel := storageBudget(ctx)
+	defer cancel()
+	if err := storageReconcileTo(rctx, a.root, a.options(), say); err != nil {
+		say("storage: " + storageReason(err))
+	}
+}
+
+// uploadStorage is the payload upload of an auto-sync push (storageUpload under
+// the auto-sync limits): half of what is left of the step's deadline, nothing
+// over storageAutoMaxObject, lines to storageSay.
+func (a *autoSync) uploadStorage(ctx context.Context) error {
+	upCtx, cancel := storageBudget(ctx)
+	defer cancel()
+	return storageUploadTo(upCtx, a.root, a.options(), storageAutoMaxObject, a.storageSay)
+}
+
+// warnUnsupportedRemote says, once per auto-sync, that no configured remote can
+// hold storage files while the catalog has some (X-7). It is not a failure: git
+// syncs, and the payloads stay on the PCs that stored them.
+func (a *autoSync) warnUnsupportedRemote(say func(line string)) {
+	a.mu.Lock()
+	done := a.warnedRemote
+	a.mu.Unlock()
+	if done {
+		return
+	}
+	line := storageUnsupportedWarning(a.root, a.options())
+	if line == "" {
+		return
+	}
+	a.mu.Lock()
+	a.warnedRemote = true
+	a.mu.Unlock()
+	say(line)
+}
+
+// storageSay prints a storage line from a push step. A CLI verb writes it to
+// stderr at once. The TUI's pusher runs while the screen is up and must not
+// write to it, so it logs the line and holds it for report, which runs after
+// the terminal is restored (finish). A line already said is not said twice: a
+// pusher that runs on every commit would otherwise repeat it for the whole session.
+func (a *autoSync) storageSay(line string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.pusher == nil {
+		if a.said == nil {
+			a.said = map[string]bool{}
+		}
+		if !a.said[line] {
+			a.said[line] = true
+			fmt.Fprintln(os.Stderr, line)
+		}
+		return
+	}
+	slog.Info("storage", "line", line)
+	for _, n := range a.notes {
+		if n == line {
+			return
+		}
+	}
+	a.notes = append(a.notes, line)
 }
 
 // pushInline is the CLI's push after a change: run when the verb has finished
@@ -518,6 +622,13 @@ func rebasedLine(prefix string, n int, remote string) string {
 // vault; then the success line when it sent commits, the failure line when it
 // failed, nothing when there was nothing to send.
 func (a *autoSync) report(w io.Writer, res syncPushResult) {
+	a.mu.Lock()
+	notes := a.notes
+	a.notes = nil
+	a.mu.Unlock()
+	for _, line := range notes {
+		fmt.Fprintln(w, line)
+	}
 	if res.Pulled > 0 {
 		fmt.Fprintf(w, "sync: pulled %d commit(s) from %s\n", res.Pulled, res.Remote)
 	}
@@ -529,6 +640,11 @@ func (a *autoSync) report(w io.Writer, res syncPushResult) {
 		fmt.Fprintln(w, pushFailureLine(res))
 	case res.Pushed > 0:
 		fmt.Fprintf(w, "sync: pushed %d commit(s) to %s\n", res.Pushed, res.Remote)
+	}
+	// "wiki synced" must be true: a push that failed says so above, and the
+	// upload that failed with it is only in lw.log.
+	if res.Err == nil && res.StorageErr != nil {
+		fmt.Fprintln(w, storageWarning(res.StorageErr))
 	}
 }
 

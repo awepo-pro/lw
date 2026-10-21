@@ -10,6 +10,12 @@ import (
 // TestSyncStorage verifies that lw sync synchronizes storage files between two
 // vaults sharing a local remote, that .llmwiki/storage.json is tracked by git,
 // and that git history contains zero blobs from storage/.
+//
+// A-066-2: the scenario is 062's, unchanged. What moved is where the remote
+// holds the bytes: 062 mirrored storage/ by file name directly under
+// <remote>.storage/, 066 keeps content-addressed objects at
+// <remote>.storage/objects/<sha[0:2]>/<sha[2:]> (s066ObjectPath), and a PC's
+// storage/<name> is materialized from them by lw sync and lw sync clone.
 func TestSyncStorage(t *testing.T) {
 	a, b, remote := syncPair(t)
 
@@ -42,10 +48,10 @@ func TestSyncStorage(t *testing.T) {
 		t.Fatalf("sync on A: exit %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
 	}
 
-	// Verify that remote storage directory contains the storage file.
-	remoteStorageFile := filepath.Join(remote+".storage", "docs", "sample.pdf")
+	// Verify that the remote object store holds the storage file's bytes.
+	remoteStorageFile := s066ObjectPath(remote+".storage", string(docAContent))
 	if data, err := os.ReadFile(remoteStorageFile); err != nil || string(data) != string(docAContent) {
-		t.Fatalf("remote storage file = %q, err: %v", string(data), err)
+		t.Fatalf("remote storage object = %q, err: %v", string(data), err)
 	}
 
 	// 3. Verify git history on PC A:
@@ -104,10 +110,10 @@ func TestSyncStorage(t *testing.T) {
 		t.Fatalf("sync on B after adding data.bin: exit %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
 	}
 
-	// Remote now has data.bin.
-	remoteDocB := filepath.Join(remote+".storage", "data.bin")
+	// Remote now has data.bin's object.
+	remoteDocB := s066ObjectPath(remote+".storage", string(docBContent))
 	if data, err := os.ReadFile(remoteDocB); err != nil || string(data) != string(docBContent) {
-		t.Fatalf("remote storage data.bin = %q, err: %v", string(data), err)
+		t.Fatalf("remote storage object for data.bin = %q, err: %v", string(data), err)
 	}
 
 	// Sync PC A to pull data.bin.

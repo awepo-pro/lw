@@ -1274,6 +1274,11 @@ func TestDoctorStorageCheck(t *testing.T) {
 		}
 	})
 
+	// A-066-1: 062 called both a file that is not there and a file with the wrong
+	// bytes "missing or corrupt" (failing the check, remedy "restore or rm").
+	// The scenario is kept; the verdicts are split. A file that is not there is
+	// pending - it has not arrived, lw sync brings it - and only wrong bytes are
+	// corrupt, which fails the check and keeps the "storage rm" remedy.
 	t.Run("missing_or_corrupt_files", func(t *testing.T) {
 		root := testutil.CopyFixture(t, "minimal")
 		manifest := `{
@@ -1296,14 +1301,34 @@ func TestDoctorStorageCheck(t *testing.T) {
 
 		rep := runDoctor(ctx, root, doctorOptions{})
 		c := checkByName(t, rep, "storage")
-		if c.OK {
-			t.Fatalf("check = %+v, want OK: false", c)
+		if !c.OK || !c.Warn {
+			t.Fatalf("missing file: check = %+v, want OK with Warn (it is pending, not damaged)", c)
 		}
-		if want := "1 of 1 storage file(s) missing or corrupt"; c.Detail != want {
-			t.Errorf("detail = %q, want %q", c.Detail, want)
+		if want := "0 of 1 verified; 1 pending (not arrived yet)"; c.Detail != want {
+			t.Errorf("missing file: detail = %q, want %q", c.Detail, want)
+		}
+		if want := "run lw sync; if it stays pending, run lw sync on the PC that stored it"; c.Remedy != want {
+			t.Errorf("missing file: remedy = %q, want %q", c.Remedy, want)
+		}
+
+		// The same entry with bytes that are not the catalog's and that lw did
+		// not put there: damage.
+		if err := os.MkdirAll(filepath.Join(root, "storage"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, "storage", "missing.csv"), []byte("wrong bytes\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		rep = runDoctor(ctx, root, doctorOptions{})
+		c = checkByName(t, rep, "storage")
+		if c.OK {
+			t.Fatalf("wrong bytes: check = %+v, want OK: false", c)
+		}
+		if want := "0 of 1 verified; 1 corrupt (changed on disk)"; c.Detail != want {
+			t.Errorf("wrong bytes: detail = %q, want %q", c.Detail, want)
 		}
 		if !strings.Contains(c.Remedy, "storage rm") {
-			t.Errorf("remedy = %q, want reference to storage rm", c.Remedy)
+			t.Errorf("wrong bytes: remedy = %q, want reference to storage rm", c.Remedy)
 		}
 	})
 }
