@@ -197,7 +197,10 @@ func (s *Storage) copyFileAtomic(srcPath, destPath string) error {
 	return nil
 }
 
-// Add copies srcPath to storage/<name> and records it in the manifest.
+// Add copies srcPath to storage/<name> and records it in the manifest and in
+// this PC's ledger (066: the ledger says lw put these bytes here, which is what
+// lets a later removal on another PC delete them). Order matters for a crash:
+// the file first, then the catalog, then the ledger row.
 func (s *Storage) Add(srcPath string, customName string, note string, force bool) (Entry, error) {
 	fi, err := os.Stat(srcPath)
 	if err != nil {
@@ -232,6 +235,12 @@ func (s *Storage) Add(srcPath string, customName string, note string, force bool
 	defer s.mu.Unlock()
 
 	m, err := s.loadManifest()
+	if err != nil {
+		return Entry{}, err
+	}
+	// Read the ledger before changing anything: an unreadable one stops Add
+	// here, not after the file and the catalog already moved.
+	led, err := s.loadLedger()
 	if err != nil {
 		return Entry{}, err
 	}
@@ -288,6 +297,9 @@ func (s *Storage) Add(srcPath string, customName string, note string, force bool
 		if err := s.saveManifest(m); err != nil {
 			return Entry{}, err
 		}
+		if err := s.recordAdded(led, clean, sum); err != nil {
+			return Entry{}, err
+		}
 		return entry, nil
 	}
 
@@ -310,7 +322,21 @@ func (s *Storage) Add(srcPath string, customName string, note string, force bool
 	if err := s.saveManifest(m); err != nil {
 		return Entry{}, err
 	}
+	if err := s.recordAdded(led, clean, sum); err != nil {
+		return Entry{}, err
+	}
 	return entry, nil
+}
+
+// recordAdded puts the bytes Add just stored into this PC's ledger (066), after
+// the file and the catalog are in place. A --force replacement overwrites the
+// old row, so the old bytes can no longer be mistaken for "what lw put here"
+// (B2: the replaced file is verified here and stale on the other PCs).
+func (s *Storage) recordAdded(led *ledger, clean, sum string) error {
+	if err := s.record(led, clean, sum); err != nil {
+		return fmt.Errorf("storage: %q is catalogued, but this PC's ledger could not be updated: %w", clean, err)
+	}
+	return nil
 }
 
 // List returns all entries in the storage manifest, sorted by name.
@@ -388,8 +414,9 @@ func (s *Storage) Get(name string) (io.ReadCloser, Entry, error) {
 	return f, entry, nil
 }
 
-// Remove deletes the file and its entry from the manifest. Empty parent directories
-// under storage/ are cleaned up.
+// Remove deletes the file and its entry from the manifest and drops its ledger
+// row. Empty parent directories under storage/ are cleaned up. Other PCs learn
+// of the removal from the catalog and delete their copy in Reconcile (066 B1).
 func (s *Storage) Remove(name string) error {
 	clean, err := s.CleanName(name)
 	if err != nil {
@@ -400,6 +427,10 @@ func (s *Storage) Remove(name string) error {
 	defer s.mu.Unlock()
 
 	m, err := s.loadManifest()
+	if err != nil {
+		return err
+	}
+	led, err := s.loadLedger()
 	if err != nil {
 		return err
 	}
@@ -423,8 +454,22 @@ func (s *Storage) Remove(name string) error {
 	if err := os.Remove(targetPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("storage: remove file: %w", err)
 	}
+	s.pruneEmptyDirs(targetPath)
 
-	// Clean empty parent directories up to storageDir
+	// The row goes last. A crash before this line leaves a row for a name the
+	// catalog no longer lists and a file already gone, which Reconcile drops.
+	if _, ok := led.Materialized[clean]; ok {
+		delete(led.Materialized, clean)
+		if err := s.saveLedger(led); err != nil {
+			return fmt.Errorf("storage: %q was removed, but this PC's ledger could not be updated: %w", clean, err)
+		}
+	}
+	return nil
+}
+
+// pruneEmptyDirs removes the empty parent directories of targetPath, nearest
+// first, stopping at storage/ itself (which stays).
+func (s *Storage) pruneEmptyDirs(targetPath string) {
 	storageBase := filepath.Clean(s.storageDir())
 	dir := filepath.Dir(targetPath)
 	for dir != storageBase && strings.HasPrefix(dir, storageBase+string(filepath.Separator)) {
@@ -433,8 +478,6 @@ func (s *Storage) Remove(name string) error {
 		}
 		dir = filepath.Dir(dir)
 	}
-
-	return nil
 }
 
 // Validate checks every manifest entry against disk (existence, size, sha256).

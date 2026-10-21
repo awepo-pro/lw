@@ -224,6 +224,17 @@ type call struct {
 	// connection can be multiplexed (mux.go); empty for a remote that is not
 	// reached over ssh.
 	sshDest, sshPort string
+
+	// stdin is the child's standard input (nil: none). stdout, when set,
+	// receives the child's standard output as it arrives instead of the string
+	// procErr returns — a payload transfer is streamed, never held in memory
+	// (066 object store).
+	stdin  io.Reader
+	stdout io.Writer
+
+	// timeout, when set, bounds a timed call instead of Options.Timeout: a
+	// transfer takes as long as its size needs, a git call does not (066).
+	timeout time.Duration
 }
 
 // cmdError is a failed child process. Error() is the one-line reason a user
@@ -306,10 +317,14 @@ func (r *runner) proc(ctx context.Context, bin string, c call) (string, error) {
 // descendant found at that moment are signalled one by one.
 func (r *runner) procErr(ctx context.Context, bin string, c call) (string, string, error) {
 	timed := c.net && !r.o.Interactive
+	limit := r.timeout()
+	if c.timeout > 0 {
+		limit = c.timeout
+	}
 	pctx := ctx
 	if timed {
 		var cancel context.CancelFunc
-		pctx, cancel = context.WithTimeout(ctx, r.timeout())
+		pctx, cancel = context.WithTimeout(ctx, limit)
 		defer cancel()
 	}
 	sshCmd := ""
@@ -334,7 +349,11 @@ func (r *runner) procErr(ctx context.Context, bin string, c call) (string, strin
 	}
 	cmd.Env = r.env(c.env, sshCmd)
 	var stdout, stderr bytes.Buffer
+	cmd.Stdin = c.stdin
 	cmd.Stdout = &stdout
+	if c.stdout != nil {
+		cmd.Stdout = c.stdout
+	}
 	if c.net && r.o.Interactive && r.o.Stderr != nil {
 		cmd.Stderr = io.MultiWriter(&stderr, r.o.Stderr)
 	} else {
@@ -398,7 +417,7 @@ func (r *runner) procErr(ctx context.Context, bin string, c call) (string, strin
 		if muxed {
 			r.exitMaster(c.sshDest, c.sshPort) // a stuck master would hang the next call too
 		}
-		return "", "", &cmdError{err: err, timeout: r.timeout()}
+		return "", "", &cmdError{err: err, timeout: limit}
 	}
 	return stdout.String(), stderr.String(), &cmdError{stderr: stderr.String(), err: err}
 }
