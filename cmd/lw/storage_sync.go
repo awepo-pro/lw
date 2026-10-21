@@ -5,11 +5,13 @@ package main
 // through vaultsync's content-addressed object store, and internal/storage
 // decides, per file, what this PC may do with them. This file only decides WHEN:
 //
-//	storageUpload     before EVERY git push, and (FIX1 X-2) before the pull as
-//	                  well: content before pointer, so a catalog entry never
-//	                  reaches another PC ahead of its bytes (B6), and a pull that
-//	                  is refused or reshaped (diverged, dirty, a rebase) still
+//	storageUpload     before the pull (FIX1 X-2), and so before EVERY git push:
+//	                  content before pointer, so a catalog entry never reaches
+//	                  another PC ahead of its bytes (B6), and a pull that is
+//	                  refused or reshaped (diverged, dirty, a rebase) still
 //	                  leaves this PC's payloads where another PC can fetch them.
+//	                  It is not repeated after the pull (Y-7): the pull brings in
+//	                  no payload this PC holds and the remote lacks.
 //	storageReconcile  after EVERY successful pull: the catalog may have dropped
 //	                  files this PC holds, and the only thing that deletes them
 //	                  is this call (B1: `lw storage rm` came back).
@@ -27,8 +29,10 @@ package main
 // Rule P (066 FIX1, plan R13): lw never deletes or overwrites bytes it put in
 // storage/ unless a copy of them is known to be on the remote. That is
 // internal/storage's rule; what this file contributes is the way to prove it
-// (storageEnsure: one HaveObjects for the batch, an upload for what is missing)
-// and the scope of the proof (storageScope: a confirmation is about one remote).
+// (storageEnsure: one HaveObjects for the batch, an upload for what is missing),
+// which is asked afresh before every destroy (Y-3: a stored confirmation says what
+// was true once, not now), and the scope of what is remembered (storageScope: a
+// confirmation is about one remote).
 
 import (
 	"context"
@@ -350,20 +354,6 @@ func storageEnsure(o vaultsync.Options) storage.Ensure {
 	}
 }
 
-// onceSay returns a say function that writes each distinct line to w once: an
-// upload that runs twice in one command (before the pull and again before the
-// push) must not tell the user the same thing twice.
-func onceSay(w io.Writer) func(line string) {
-	seen := map[string]bool{}
-	return func(line string) {
-		if seen[line] {
-			return
-		}
-		seen[line] = true
-		fmt.Fprintln(w, line)
-	}
-}
-
 // storageUpload puts into the remote's object store every payload the catalog
 // lists that the remote lacks and this PC holds verified. It runs before every
 // git push (B6) and, since FIX1, before the pull: the push publishes the
@@ -534,6 +524,11 @@ func storageReconcileTo(ctx context.Context, root string, o vaultsync.Options, s
 		say("storage: kept " + name + ": changed locally since it was removed elsewhere")
 	}
 	for _, nc := range res.NoCopy {
+		if nc.Confirmed {
+			// This PC saw the remote hold it; only today's proof failed (Y-3).
+			say("storage: kept " + nc.Name + ": remote unreachable, will remove on a later sync")
+			continue
+		}
 		say("storage: kept " + nc.Name + ": no copy on the remote yet (" + nc.Reason + ")")
 	}
 	if res.Skipped {
@@ -758,13 +753,15 @@ func storageEnsureLocal(st *storage.Storage, root string, e storage.Entry) error
 // storageStatusLine is the line `lw sync status` adds when the catalog lists
 // stored files (plan R5, X-11): how many are verified, pending and corrupt on this
 // PC. "" when the catalog has no entries, so a vault that stores nothing prints
-// what it always did.
+// what it always did. It is a read-only look, so a file the ledger vouches for is
+// counted without being read (StatusQuick); hashing every stored file for it cost
+// 0.39 s per 600 MB (Y-5, G-5). lw doctor and `lw storage list -v` read them all.
 func storageStatusLine(root string) string {
 	st, err := storage.Open(root)
 	if err != nil {
 		return ""
 	}
-	rep, err := st.Status()
+	rep, err := st.StatusQuick()
 	if err != nil {
 		return "storage: " + storageReason(err)
 	}

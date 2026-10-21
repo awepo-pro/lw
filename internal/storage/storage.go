@@ -88,17 +88,26 @@ func (s *Storage) storageDir() string {
 }
 
 func (s *Storage) loadManifest() (*Manifest, error) {
+	m, _, err := s.readManifest()
+	return m, err
+}
+
+// readManifest is loadManifest that also says whether the catalog file was there:
+// a missing file reads as an empty catalog, and the one caller that must tell the
+// two apart (Reconcile) gets both from the single read, not from a read and a
+// stat that a checkout can slip between (066 Y-6, G-6).
+func (s *Storage) readManifest() (m *Manifest, exists bool, err error) {
 	path := s.manifestPath()
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return &Manifest{Version: 1, Entries: []Entry{}}, nil
+		return &Manifest{Version: 1, Entries: []Entry{}}, false, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("storage: read manifest %s: %w", path, err)
+		return nil, false, fmt.Errorf("storage: read manifest %s: %w", path, err)
 	}
-	var m Manifest
-	if err := json.Unmarshal(data, &m); err != nil {
-		return nil, fmt.Errorf("storage: parse manifest %s: %w", path, err)
+	m = &Manifest{}
+	if err := json.Unmarshal(data, m); err != nil {
+		return nil, false, fmt.Errorf("storage: parse manifest %s: %w", path, err)
 	}
 	if m.Version == 0 {
 		m.Version = 1
@@ -106,7 +115,7 @@ func (s *Storage) loadManifest() (*Manifest, error) {
 	if m.Entries == nil {
 		m.Entries = []Entry{}
 	}
-	return &m, nil
+	return m, true, nil
 }
 
 func (s *Storage) saveManifest(m *Manifest) error {
@@ -157,78 +166,113 @@ func (s *Storage) saveManifest(m *Manifest) error {
 	return nil
 }
 
-// addHook runs inside Add between the hash that decides what to do and the copy
-// that does it: the window in which a source can change (X-9). Tests set it.
+// tempPrefix starts the name of every temp file lw makes under storage/ (a copy
+// being stored, a payload being fetched). Reconcile sweeps those that are old, so
+// a stored file may not carry the prefix (reservedName).
+const tempPrefix = ".storage-tmp-"
+
+// reservedName reports whether clean, a name under storage/, is one lw keeps for
+// its own temp files: the sweep of killed fetches deletes an old regular file by
+// that name, and a payload called .storage-tmp-keep was deleted as debris an hour
+// after it was stored (066 Y-2, G-2).
+func reservedName(clean string) bool { return strings.HasPrefix(path.Base(clean), tempPrefix) }
+
+// addHook runs inside Add's copy of the source, after the hash that decided what
+// to do and before the first byte is read: the window in which a source can
+// change (X-9), and the one in which a test can look at what else is allowed to
+// happen while a large copy is under way (Y-6). Tests set it.
 var addHook func()
 
-// copyVerified copies srcPath to destPath through a temp file in destPath's
-// directory and renames it into place only if the bytes copied are exactly
-// wantSize bytes of sha256 wantSHA - the hash and size Add computed from the
-// source a moment earlier and is about to write into the catalog. The first
-// version hashed the source and then copied it in a second pass, so a source that
-// changed in between (an editor saving, a download still writing) was stored as
-// bytes the catalog did not describe, and the object store then refused the file
-// forever (066 X-9, F-8).
-func (s *Storage) copyVerified(srcPath, destPath, wantSHA string, wantSize int64) error {
+// stageCopy copies srcPath into a temp file beside destPath and returns the temp's
+// name, only if the bytes copied are exactly wantSize bytes of sha256 wantSHA - the
+// hash and size Add computed from the source a moment earlier and is about to write
+// into the catalog. The first version hashed the source and then copied it in a
+// second pass, so a source that changed in between (an editor saving, a download
+// still writing) was stored as bytes the catalog did not describe, and the object
+// store then refused the file forever (066 X-9, F-8). Nothing is left behind on an
+// error. It takes no lock: it is the slow part of Add, and the caller renames the
+// result into place under one (Y-6).
+func (s *Storage) stageCopy(srcPath, destPath, wantSHA string, wantSize int64) (string, error) {
 	destDir := filepath.Dir(destPath)
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
-		return fmt.Errorf("storage: create directory: %w", err)
+		return "", fmt.Errorf("storage: create directory: %w", err)
 	}
 
-	tmp, err := os.CreateTemp(destDir, ".storage-tmp-*")
+	tmp, err := os.CreateTemp(destDir, tempPrefix+"*")
 	if err != nil {
 		s.pruneEmptyDirs(destPath)
-		return fmt.Errorf("storage: create temp file: %w", err)
+		return "", fmt.Errorf("storage: create temp file: %w", err)
 	}
 	tmpName := tmp.Name()
+	done := false
 	defer func() {
-		if tmpName != "" {
+		if !done {
+			_ = tmp.Close()
 			_ = os.Remove(tmpName)
 			s.pruneEmptyDirs(destPath)
 		}
 	}()
 
+	if addHook != nil {
+		addHook()
+	}
 	src, err := os.Open(srcPath)
 	if err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("storage: open source file: %w", err)
+		return "", fmt.Errorf("storage: open source file: %w", err)
 	}
 	defer src.Close()
 
 	h := sha256.New()
 	n, err := io.Copy(io.MultiWriter(tmp, h), src)
 	if err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("storage: copy file content: %w", err)
+		return "", fmt.Errorf("storage: copy file content: %w", err)
 	}
 	if got := hex.EncodeToString(h.Sum(nil)); n != wantSize || got != wantSHA {
-		_ = tmp.Close()
-		return fmt.Errorf("storage: %s changed while it was being stored (sha256 %s, %d bytes when read; %s, %d bytes as copied); nothing was stored", srcPath, wantSHA, wantSize, got, n)
+		return "", fmt.Errorf("storage: %s changed while it was being stored (sha256 %s, %d bytes when read; %s, %d bytes as copied); nothing was stored", srcPath, wantSHA, wantSize, got, n)
 	}
 	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("storage: sync temp file: %w", err)
+		return "", fmt.Errorf("storage: sync temp file: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("storage: close temp file: %w", err)
+		return "", fmt.Errorf("storage: close temp file: %w", err)
 	}
+	done = true
+	return tmpName, nil
+}
 
-	if err := os.Rename(tmpName, destPath); err != nil {
-		return fmt.Errorf("storage: rename file: %w", err)
+// expectsCopy is the guess that lets Add copy before it takes the lock: yes when
+// nothing is at the target (a new entry, or a pending one being healed) or the
+// caller said --force, unless the source already IS the target. The lock decides for
+// good; a wrong guess costs a discarded copy, or one made under the lock.
+func expectsCopy(src os.FileInfo, target string, force bool) bool {
+	tfi, err := os.Stat(target)
+	if err == nil && os.SameFile(src, tfi) {
+		return false
 	}
-	tmpName = ""
-	return nil
+	return force || err != nil
 }
 
 // Add copies srcPath to storage/<name> and records it in the manifest and in
 // this PC's ledger (066: the ledger says lw put these bytes here, which is what
 // lets a later removal on another PC delete them). Order matters for a crash:
 // the file first, then the catalog, then the ledger row. The copy is verified
-// against the hash the catalog will carry before anything moves (X-9), and the
-// whole read-modify-write is under the storage lock (X-5).
+// against the hash the catalog will carry before anything moves (X-9).
 //
-// Add --force and Remove are the user's own verbs: they replace or delete bytes
-// on request and are exempt from rule P, which is about what lw does on its own.
+// The copy is the slow part and is made outside the storage lock, to a temp file
+// in storage/; the lock (X-5) covers only the re-read of the catalog and the
+// ledger, the decision, the rename and the two writes (Y-6). A second verb is
+// therefore never kept waiting for a large file to be copied.
+//
+// A new catalog entry never replaces a file that is already at storage/<name>
+// and is not the catalog's: such a file is one Reconcile kept because it holds the
+// user's edit, or one a sync of an older lw left, and renaming over it destroyed
+// bytes that exist nowhere else. The same bytes are adopted without a copy; other
+// bytes are refused (Y-1, G-1). That is a statement about a NEW entry, whatever
+// --force says: --force is about an entry that exists.
+//
+// Add --force over a tracked entry and Remove are the user's own verbs: they
+// replace or delete bytes on request and are exempt from rule P, which is about
+// what lw does on its own.
 func (s *Storage) Add(srcPath string, customName string, note string, force bool) (Entry, error) {
 	fi, err := os.Stat(srcPath)
 	if err != nil {
@@ -246,6 +290,9 @@ func (s *Storage) Add(srcPath string, customName string, note string, force bool
 	if err != nil {
 		return Entry{}, fmt.Errorf("storage: invalid name %q: %w", name, err)
 	}
+	if reservedName(clean) {
+		return Entry{}, fmt.Errorf("storage: invalid name %q: names starting with %s are reserved for lw's own temp files", name, tempPrefix)
+	}
 
 	f, err := os.Open(srcPath)
 	if err != nil {
@@ -258,8 +305,36 @@ func (s *Storage) Add(srcPath string, customName string, note string, force bool
 		return Entry{}, fmt.Errorf("storage: hash source file: %w", err)
 	}
 	sum := hex.EncodeToString(h.Sum(nil))
-	if addHook != nil {
-		addHook()
+	targetPath := filepath.Join(s.storageDir(), filepath.FromSlash(clean))
+
+	// staged is the verified copy waiting to be renamed into place; whatever is left
+	// of it when Add returns is thrown away.
+	var staged string
+	defer func() {
+		if staged != "" {
+			_ = os.Remove(staged)
+			s.pruneEmptyDirs(targetPath)
+		}
+	}()
+	if expectsCopy(fi, targetPath, force) {
+		if staged, err = s.stageCopy(srcPath, targetPath, sum, size); err != nil {
+			return Entry{}, err
+		}
+	}
+	// place puts the verified copy at storage/<name>. It copies now if the guess
+	// above was wrong, which is the only time the lock is held across a copy.
+	place := func() error {
+		if staged == "" {
+			var err error
+			if staged, err = s.stageCopy(srcPath, targetPath, sum, size); err != nil {
+				return err
+			}
+		}
+		if err := os.Rename(staged, targetPath); err != nil {
+			return fmt.Errorf("storage: rename file: %w", err)
+		}
+		staged = ""
+		return nil
 	}
 
 	unlock, err := s.lock()
@@ -278,8 +353,6 @@ func (s *Storage) Add(srcPath string, customName string, note string, force bool
 	if err != nil {
 		return Entry{}, err
 	}
-
-	targetPath := filepath.Join(s.storageDir(), filepath.FromSlash(clean))
 
 	// Check if entry already exists in manifest
 	idx := -1
@@ -300,7 +373,7 @@ func (s *Storage) Add(srcPath string, customName string, note string, force bool
 			// damaged object on the remote. A file that is there is left alone, whatever
 			// it holds: healing an absent file is not licence to replace somebody's bytes.
 			if _, err := os.Lstat(targetPath); errors.Is(err, os.ErrNotExist) {
-				if err := s.copyVerified(srcPath, targetPath, sum, size); err != nil {
+				if err := place(); err != nil {
 					return Entry{}, err
 				}
 				if err := s.recordAdded(led, clean, sum); err != nil {
@@ -325,7 +398,7 @@ func (s *Storage) Add(srcPath string, customName string, note string, force bool
 		// Force overwrite
 		targetFi, err := os.Stat(targetPath)
 		if err != nil || !os.SameFile(fi, targetFi) {
-			if err := s.copyVerified(srcPath, targetPath, sum, size); err != nil {
+			if err := place(); err != nil {
 				return Entry{}, err
 			}
 		}
@@ -351,12 +424,14 @@ func (s *Storage) Add(srcPath string, customName string, note string, force bool
 		return entry, nil
 	}
 
-	// New entry
-	targetFi, err := os.Stat(targetPath)
-	if err != nil || !os.SameFile(fi, targetFi) {
-		if err := s.copyVerified(srcPath, targetPath, sum, size); err != nil {
-			return Entry{}, err
+	// New entry. Anything already at the target is not in the catalog (Y-1): the same
+	// bytes - the source itself among them - are taken as they are; others are refused.
+	if _, err := os.Lstat(targetPath); err == nil {
+		if d := s.inspect(clean); !d.regular || d.sha != sum || d.size != size {
+			return Entry{}, fmt.Errorf("storage: storage/%s exists and is not in the catalog (kept from an earlier sync?) — move it out of storage/, or add it under another --name", clean)
 		}
+	} else if err := place(); err != nil {
+		return Entry{}, err
 	}
 
 	entry := Entry{

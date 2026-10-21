@@ -28,13 +28,15 @@ import (
 // overwriting the only copy was the data loss of B7 and F-1. So the ledger also
 // remembers, per sha256:
 //
-//   - confirmed: the remote's object store holds the object. Set when an object
-//     was fetched from it, or seen or put there by an upload. Monotonic, because
-//     objects are never deleted from the remote: once true it stays true, and
-//     destroying the local bytes needs no network. It is a statement about ONE
-//     remote (scope), so it starts over when the remote changes - a vault moved
-//     to a new remote has not uploaded to it yet, and believing the old one
-//     would both skip the upload and delete the only copy.
+//   - confirmed: the remote's object store held the object when it was last asked.
+//     Set when an object was fetched from it, or seen or put there by an upload.
+//     Monotonic, because lw never deletes objects from the remote. It is what lets
+//     an upload skip asking again (F-3); it is NOT proof enough to destroy local
+//     bytes: a store can lose an object lw never touched (restored from a git-only
+//     backup, wiped at the same URL), so every destroy re-proves first (Y-3). It is
+//     a statement about ONE remote (scope), so it starts over when the remote
+//     changes - a vault moved to a new remote has not uploaded to it yet, and
+//     believing the old one would skip the upload.
 //   - told: a "kept, no copy yet" line was already shown for name@sha, so a retry
 //     on every verb does not repeat it.
 //   - damaged: a fetch of that object failed verification (remote object damaged).
@@ -170,9 +172,9 @@ func (s *Storage) record(l *ledger, name, sha string) error {
 
 // Confirm records that the remote's object store holds the objects with these
 // sha256 (rule P): they were seen there by HaveObjects or put there by an
-// upload. A confirmed object may be destroyed locally with no network. An object
-// that was marked damaged is no longer: the caller has just seen or replaced it.
-// Values that are not a sha256 are ignored.
+// upload, so the next upload need not ask about them. An object that was marked
+// damaged is no longer: the caller has just seen or replaced it. Values that are
+// not a sha256 are ignored.
 func (s *Storage) Confirm(shas ...string) error {
 	unlock, err := s.lock()
 	if err != nil {

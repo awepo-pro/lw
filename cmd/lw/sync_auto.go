@@ -424,9 +424,11 @@ func (a *autoSync) push(ctx context.Context) syncPushResult {
 	// well (FIX1 X-2, F-1): a pull that is refused (a divergence, a dirty tree) or
 	// that reshapes the vault must not leave this PC's only copies stranded. A
 	// failed upload is a warning for the report below, never a reason to skip the
-	// push (B5), and it is retried by the next push of anything. Each attempt gets
-	// half of what is left of the step's deadline so the push always has the rest,
-	// and a payload over storageAutoMaxObject is left for an explicit lw sync.
+	// push (B5), and it is retried by the next push of anything. It gets half of what
+	// is left of the step's deadline so the push always has the rest, and a payload
+	// over storageAutoMaxObject is left for an explicit lw sync. It is not repeated
+	// after the pull: nothing the pull brings in is a payload this PC holds and the
+	// remote lacks (Y-7).
 	storageErr := a.uploadStorage(ctx)
 	pulled, err := a.commitAndPull(ctx)
 	if err != nil {
@@ -442,12 +444,6 @@ func (a *autoSync) push(ctx context.Context) syncPushResult {
 		if _, ierr := rebuildIndexIfStale(a.root); ierr != nil {
 			slog.Warn("sync: rebuild index after push", "err", ierr)
 		}
-	}
-	if storageErr == nil {
-		// The pull can have changed what the catalog names. A first attempt that
-		// failed is not repeated: the remote would fail the same way after the same
-		// timeout, and the push needs the time.
-		storageErr = a.uploadStorage(ctx)
 	}
 	if storageErr != nil {
 		slog.Warn("sync: storage upload", "err", storageErr)
@@ -572,9 +568,8 @@ func (a *autoSync) warnUnsupportedRemote(say func(line string)) {
 // storageSay prints a storage line from a push step. A CLI verb writes it to
 // stderr at once. The TUI's pusher runs while the screen is up and must not
 // write to it, so it logs the line and holds it for report, which runs after
-// the terminal is restored (finish). A line already said is not said twice: the
-// upload runs before the pull and again before the push, and a pusher that runs
-// on every commit would otherwise repeat it for the whole session.
+// the terminal is restored (finish). A line already said is not said twice: a
+// pusher that runs on every commit would otherwise repeat it for the whole session.
 func (a *autoSync) storageSay(line string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

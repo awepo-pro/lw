@@ -83,18 +83,6 @@ var holdsAll storage.Ensure = func(_ context.Context, blobs []storage.Blob) map[
 	return out
 }
 
-// neverEnsure fails the test if it is called: the destroy was allowed offline.
-func neverEnsure(t *testing.T) storage.Ensure {
-	return func(_ context.Context, blobs []storage.Blob) map[string]storage.EnsureResult {
-		t.Errorf("ensure was called for %d blob(s); the destroy needed no network", len(blobs))
-		out := map[string]storage.EnsureResult{}
-		for _, b := range blobs {
-			out[b.SHA256] = storage.EnsureResult{Err: errors.New("must not be asked")}
-		}
-		return out
-	}
-}
-
 // rawLedger is the whole ledger file, including the sets readLedger leaves out.
 type rawLedger struct {
 	Version      int               `json:"version"`
@@ -207,21 +195,27 @@ func TestReconcileKeepsOnlyCopy(t *testing.T) {
 		}
 	})
 
-	t.Run("a confirmed copy needs no network", func(t *testing.T) {
+	// FIX2 Y-3 amendment (was "a confirmed copy needs no network", with neverEnsure):
+	// a confirmation is a note, not a proof, so the remote is asked all the same.
+	t.Run("a confirmed copy is proven again before the file goes", func(t *testing.T) {
 		vault, st, e := storedAndRemoved(t, "f.bin", body)
 		if err := st.Confirm(e.SHA256); err != nil {
 			t.Fatal(err)
 		}
-		res, err := st.Reconcile(t.Context(), neverEnsure(t))
-		if err != nil || !reflect.DeepEqual(res.Removed, []string{"f.bin"}) || len(res.Preserved) != 0 {
-			t.Errorf("Reconcile = %+v, %v; want f.bin removed offline", res, err)
+		remote := newFakeRemote()
+		remote.have[e.SHA256] = true
+		res, err := st.Reconcile(t.Context(), remote.Ensure)
+		if err != nil || !reflect.DeepEqual(res.Removed, []string{"f.bin"}) || len(res.Preserved) != 0 || remote.calls != 1 {
+			t.Errorf("Reconcile = %+v, %v, ensure calls %d; want f.bin removed after one question", res, err, remote.calls)
 		}
 		if exists(diskPath(vault, "f.bin")) {
 			t.Error("f.bin is still on disk")
 		}
 	})
 
-	t.Run("only the unconfirmed blobs are asked, in one call", func(t *testing.T) {
+	// FIX2 Y-3 amendment (was "only the unconfirmed blobs are asked", b.bin and c.bin):
+	// every file about to be deleted is asked about, confirmed or not.
+	t.Run("every blob about to be deleted is asked, in one call", func(t *testing.T) {
 		vault, st := newStore(t)
 		ea := addFile(t, st, "a.bin", "alpha payload")
 		addFile(t, st, "b.bin", "bravo payload")
@@ -237,8 +231,8 @@ func TestReconcileKeepsOnlyCopy(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if remote.calls != 1 || !reflect.DeepEqual(remote.asked[0], []string{"b.bin", "c.bin"}) {
-			t.Errorf("ensure calls %d, asked %v; want one call for b.bin and c.bin", remote.calls, remote.asked)
+		if remote.calls != 1 || !reflect.DeepEqual(remote.asked[0], []string{"a.bin", "b.bin", "c.bin"}) {
+			t.Errorf("ensure calls %d, asked %v; want one call for a.bin, b.bin and c.bin (d.bin was edited: kept, not asked)", remote.calls, remote.asked)
 		}
 		if want := []string{"a.bin", "b.bin", "c.bin"}; !reflect.DeepEqual(res.Removed, want) {
 			t.Errorf("Removed = %q, want %q", res.Removed, want)
@@ -374,13 +368,19 @@ func TestMaterializePreservesUnconfirmedStale(t *testing.T) {
 		}
 	})
 
-	t.Run("a confirmed old version needs no network", func(t *testing.T) {
+	// FIX2 Y-3 amendment (was "a confirmed old version needs no network", neverEnsure).
+	t.Run("a confirmed old version is proven again before it is replaced", func(t *testing.T) {
 		vault, st, old := setup(t)
 		if err := st.Confirm(old.SHA256); err != nil {
 			t.Fatal(err)
 		}
-		if err := st.Materialize(t.Context(), "f.bin", strings.NewReader(newBody), neverEnsure(t)); err != nil {
+		remote := newFakeRemote()
+		remote.have[old.SHA256] = true
+		if err := st.Materialize(t.Context(), "f.bin", strings.NewReader(newBody), remote.Ensure); err != nil {
 			t.Fatalf("Materialize: %v", err)
+		}
+		if remote.calls != 1 {
+			t.Errorf("ensure calls %d, want 1", remote.calls)
 		}
 		if b, _ := os.ReadFile(diskPath(vault, "f.bin")); string(b) != newBody {
 			t.Errorf("storage/f.bin = %q", b)
@@ -695,9 +695,11 @@ func TestReconcileSkippedWhenARebaseBeginsDuringTheCopy(t *testing.T) {
 	}
 	os.RemoveAll(filepath.Join(vault, ".git", "rebase-merge"))
 	callsBefore := remote.calls
-	res, err = st.Reconcile(t.Context(), neverEnsure(t))
-	if err != nil || !reflect.DeepEqual(res.Removed, []string{"f.bin"}) || remote.calls != callsBefore {
-		t.Errorf("Reconcile after the rebase = %+v, %v; want f.bin removed with no network (the copy was confirmed while the rebase stood)", res, err)
+	// FIX2 Y-3 amendment (was neverEnsure and "no network"): what the first call
+	// learned is a note, so the call after the rebase asks again - and finds the copy.
+	res, err = st.Reconcile(t.Context(), remote.Ensure)
+	if err != nil || !reflect.DeepEqual(res.Removed, []string{"f.bin"}) || remote.calls != callsBefore+1 {
+		t.Errorf("Reconcile after the rebase = %+v, %v, ensure calls %d (was %d); want f.bin removed after one more question", res, err, remote.calls, callsBefore)
 	}
 }
 

@@ -53,12 +53,12 @@ and nothing changes; --take-remote then keeps the remote and saves this PC's
 commits on a branch named lw-diverged-<time>.
 
 Files stored with lw storage travel beside git, never inside it: lw sync uploads the
-ones the catalog names to <remote>.storage/objects/ before it pulls and again before
-it pushes, removes the ones the catalog dropped, and fetches the ones this PC lacks.
-It never deletes or replaces a file it stored unless a copy is on the remote: it
-uploads the file first, or keeps it and says so. A storage problem never stops the
-wiki from syncing; it is printed after the push, lw sync exits 1, and the next lw
-sync tries again.
+ones the catalog names to <remote>.storage/objects/ before it pulls (so before it
+pushes), removes the ones the catalog dropped, and fetches the ones this PC lacks.
+It never deletes or replaces a file it stored unless it has just seen a copy on the
+remote: it uploads the file first, or keeps it and says so. A storage problem never
+stops the wiki from syncing; it is printed after the push, lw sync exits 1, and the
+next lw sync tries again.
 `)
 }
 
@@ -297,10 +297,10 @@ func syncPreflight(root string) error {
 // 066: files stored with `lw storage` ride beside git, and none of it may stand
 // between the wiki and the remote. The payloads go up FIRST - before the pull, so a
 // pull that is refused or reshaped (a divergence, --take-remote) cannot strand a
-// file whose only copy is here (FIX1 X-2, F-1) - and again before the push if the
-// first attempt worked; after the pull the PC reconciles storage/ with the catalog;
-// after the git phase it fetches the ones it lacks. A storage failure is printed
-// once, after the push, and exits 1.
+// file whose only copy is here (FIX1 X-2, F-1); that is also before the push, with
+// nothing in between that could add a payload to upload (Y-7). After the pull the PC
+// reconciles storage/ with the catalog; after the git phase it fetches the ones it
+// lacks. A storage failure is printed once, after the push, and exits 1.
 func syncRun(vaultPath string, takeRemote bool) error {
 	mode := syncModeWrite
 	if takeRemote {
@@ -320,14 +320,15 @@ func syncRun(vaultPath string, takeRemote bool) error {
 	if warn := storageUnsupportedWarning(root, o); warn != "" {
 		fmt.Fprintln(os.Stderr, warn)
 	}
-	say := onceSay(os.Stderr) // the upload runs twice; what it tells the user, once
 	// X-2: the payloads this PC holds go up before anything can refuse or reshape
-	// the vault. A catalog edit that is about to be taken away (--take-remote) or
-	// rebased still names bytes that must exist somewhere afterwards.
+	// the vault, and on EVERY run, not only when it pushes (C-066-1): a failed upload
+	// leaves git pushed and nothing ahead, so the "run lw sync again" it asks for would
+	// otherwise find no push to hang the upload on. A catalog edit that is about to be
+	// taken away (--take-remote) or rebased still names bytes that must exist
+	// somewhere afterwards. Content before pointer (B6).
 	endNotice := slowNotice(os.Stderr, "uploading storage files")
-	firstUpload := storageUploadTo(ctx, root, o, 0, say)
+	issues.add(storageUpload(ctx, root, o))
 	endNotice()
-	issues.add(firstUpload)
 
 	if takeRemote {
 		if err := syncPreflight(root); err != nil {
@@ -363,17 +364,6 @@ func syncRun(vaultPath string, takeRemote bool) error {
 		// A divergence that conflicted with nothing: the local commits now sit
 		// on the remote's, and the push below sends them.
 		fmt.Println(rebasedLine("", st.Rebased, remote))
-	}
-
-	// The payloads go up on EVERY run, before the push if there is one, not only
-	// when something is pushed (C-066-1): a failed upload leaves git pushed and
-	// nothing ahead, so the "run lw sync again" it asks for would otherwise find
-	// no push to hang the upload on. Content before pointer (B6). A first attempt
-	// that failed is not repeated: the remote would fail the same way again.
-	if firstUpload == nil {
-		endNotice = slowNotice(os.Stderr, "uploading storage files")
-		issues.add(storageUploadTo(ctx, root, o, 0, say))
-		endNotice()
 	}
 
 	// Only a commit this run made, or one that was already waiting (Ahead), has

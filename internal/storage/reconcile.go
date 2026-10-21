@@ -92,10 +92,15 @@ type ReconcileResult struct {
 	Swept int
 }
 
-// NoCopy is one file Reconcile did not delete because the remote has no copy.
+// NoCopy is one file Reconcile did not delete because a copy of its bytes could not
+// be shown on the remote.
 type NoCopy struct {
 	Name   string
 	Reason string
+	// Confirmed: this PC had seen the remote hold the object, so what failed is only
+	// today's proof (the remote could not be reached or written), not a known absence.
+	// Always a transient failure: the row stays and the next call asks again (Y-3).
+	Confirmed bool
 }
 
 // Blob is a stored payload that is about to be destroyed or published: its name
@@ -255,11 +260,11 @@ func (s *Storage) cleanCatalogName(name string) bool {
 }
 
 // usable reports whether the catalog's record of e can be acted on at all: a
-// name that stays inside storage/ and a sha256 that names an object. A record
-// that fails is corrupt, is skipped on its own, and is never allowed to stop the
-// rest (X-8).
+// name that stays inside storage/ and is not one lw keeps for its temp files, and a
+// sha256 that names an object. A record that fails is corrupt, is skipped on its
+// own, and is never allowed to stop the rest (X-8, Y-2).
 func (s *Storage) usable(e Entry) bool {
-	return s.cleanCatalogName(e.Name) && ValidSHA256(e.SHA256) && e.Size >= 0
+	return s.cleanCatalogName(e.Name) && !reservedName(e.Name) && ValidSHA256(e.SHA256) && e.Size >= 0
 }
 
 // sortedEntries is the catalog's entries by name, copied: another PC's commit
@@ -476,18 +481,32 @@ const staleTempAge = time.Hour
 // staleTempAge, and the directories that leaves empty. A fetch that was killed
 // (Ctrl-C, a power cut) leaves its temp file; it is dot-prefixed, so neither the
 // orphan scan nor doctor ever mentioned it, and it was never cleaned up (X-10,
-// F-9). Only lw's own prefix is touched.
+// F-9). Only lw's own prefix is touched, and never a name the catalog lists: a
+// payload an older lw (or another PC's catalog) put under such a name is a stored
+// file, not debris (Y-2). A catalog that cannot be read sweeps nothing.
 func (s *Storage) sweepTemps() int {
+	m, err := s.loadManifest()
+	if err != nil {
+		return 0
+	}
+	catalogued := make(map[string]bool, len(m.Entries))
+	for _, e := range m.Entries {
+		catalogued[e.Name] = true
+	}
+	root := s.storageDir()
 	cutoff := now().Add(-staleTempAge)
 	n := 0
-	filepath.WalkDir(s.storageDir(), func(p string, d fs.DirEntry, err error) error {
+	filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			if d != nil && d.IsDir() {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		if d.IsDir() || !strings.HasPrefix(d.Name(), ".storage-tmp-") || !d.Type().IsRegular() {
+		if d.IsDir() || !strings.HasPrefix(d.Name(), tempPrefix) || !d.Type().IsRegular() {
+			return nil
+		}
+		if rel, err := filepath.Rel(root, p); err == nil && catalogued[filepath.ToSlash(rel)] {
 			return nil
 		}
 		if fi, err := d.Info(); err == nil && fi.ModTime().Before(cutoff) {
@@ -515,15 +534,19 @@ func (s *Storage) removeStored(name string) error {
 // (a pull) (066 D1, plan M4):
 //
 //   - a ledger name the catalog no longer lists is deleted iff the file still
-//     holds the bytes lw put there (its sha equals the ledger row) AND a copy of
-//     those bytes is known to be on the remote (rule P, B7): either the sha is
-//     confirmed in the ledger - then it needs no network - or ensure uploads it
-//     now. This is what makes `lw storage rm` on one PC reach the others (B1)
-//     without ever deleting the only copy of anything. A file whose bytes changed
-//     is kept and reported - the user's edit is not lw's to destroy - and becomes
-//     an orphan. A file with no copy on the remote is kept too (NoCopy): on a
-//     transient failure with its ledger row, so the next call retries and the
-//     line is said once; on a permanent one without, so it is an orphan;
+//     holds the bytes lw put there (its sha equals the ledger row) AND ensure has
+//     just shown a copy of those bytes on the remote, uploading it if the remote
+//     lacks it (rule P, B7). The proof is asked for every file about to be deleted,
+//     confirmed or not: "confirmed" is a note from an earlier call about a remote
+//     that may since have lost the object, and believing it deleted the last copy
+//     when a store was restored from a git-only backup (Y-3, G-4). One question
+//     covers the whole batch, and none is asked when nothing is to be deleted. This
+//     is what makes `lw storage rm` on one PC reach the others (B1) without ever
+//     deleting the only copy of anything. A file whose bytes changed is kept and
+//     reported - the user's edit is not lw's to destroy - and becomes an orphan. A
+//     file with no copy on the remote is kept too (NoCopy): on a transient failure
+//     with its ledger row, so the next call retries and the line is said once; on a
+//     permanent one without, so it is an orphan;
 //   - a catalog entry whose file already holds exactly the catalog's bytes but
 //     has no (or an older) ledger row is adopted: files that v2.49.0 put there
 //     have no row, and without one a later rm elsewhere could never delete them;
@@ -583,7 +606,7 @@ func (s *Storage) reconcilePlan(res *ReconcileResult) (need []Blob, firstErr, er
 	}
 	defer unlock()
 
-	m, err := s.loadManifest()
+	m, hasCatalog, err := s.readManifest()
 	if err != nil {
 		return nil, nil, err
 	}
@@ -594,7 +617,7 @@ func (s *Storage) reconcilePlan(res *ReconcileResult) (need []Blob, firstErr, er
 	// Every write of the catalog leaves the file in place, even with no entries,
 	// so a missing file with rows in the ledger is not "everything was removed":
 	// it was deleted or lost. Acting on it would delete every stored file.
-	if _, err := os.Stat(s.manifestPath()); errors.Is(err, os.ErrNotExist) && len(l.Materialized) > 0 {
+	if !hasCatalog && len(l.Materialized) > 0 {
 		return nil, nil, fmt.Errorf("storage: %s is missing but %d file(s) were stored here; restore it from git before syncing, nothing was deleted", s.manifestPath(), len(l.Materialized))
 	}
 	inCatalog := make(map[string]bool, len(m.Entries))
@@ -619,19 +642,10 @@ func (s *Storage) reconcilePlan(res *ReconcileResult) (need []Blob, firstErr, er
 			case !d.present:
 				// already gone: nothing to delete, nothing to report
 			case d.regular && d.sha == sha:
-				if !l.Confirmed[sha] {
-					// lw wrote these bytes; nothing says a copy exists. They wait for the
-					// remote to be asked (and keep their row until it has answered).
-					need = append(need, Blob{Name: name, SHA256: sha, Size: d.size, Path: s.Path(name)})
-					continue
-				}
-				if err := s.removeStored(name); err != nil {
-					if firstErr == nil {
-						firstErr = err
-					}
-					continue // keep the row: the next pass retries
-				}
-				res.Removed = append(res.Removed, name)
+				// lw wrote these bytes, which proves nothing about a copy. They wait for
+				// the remote to be asked, and keep their row until it has answered.
+				need = append(need, Blob{Name: name, SHA256: sha, Size: d.size, Path: s.Path(name)})
+				continue
 			default:
 				res.Kept = append(res.Kept, name)
 			}
@@ -759,7 +773,7 @@ func (s *Storage) reconcileSettle(res *ReconcileResult, need []Blob, answers map
 			// The file and its row stay: a later call retries. Say so once.
 			if key := toldKey(b.Name, b.SHA256); !l.Told[key] {
 				l.Told[key] = true
-				res.NoCopy = append(res.NoCopy, NoCopy{Name: b.Name, Reason: reason})
+				res.NoCopy = append(res.NoCopy, NoCopy{Name: b.Name, Reason: reason, Confirmed: l.Confirmed[b.SHA256]})
 				changed = true
 			}
 			continue
@@ -788,10 +802,11 @@ func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
 // no file, no ledger row, no temp file, no directory it had to create (R9). At
 // most catalog-size+1 bytes are read, so a hostile remote cannot fill the disk.
 //
-// Rule P (F-1): replacing a stale file destroys the version lw put there. Unless
-// that version's sha256 is confirmed on the remote, ensure must first show a copy
-// (uploading it if need be); if it cannot, the file is left untouched, r is not
-// read and the error is a *NoCopyError. A nil ensure cannot, so it refuses.
+// Rule P (F-1): replacing a stale file destroys the version lw put there, so
+// ensure must first show a copy of that version on the remote (uploading it if need
+// be) - whether or not this PC once confirmed one (Y-3, G-4). If it cannot, the
+// file is left untouched, r is not read and the error is a *NoCopyError. A nil
+// ensure cannot, so it refuses.
 //
 // Nothing is held across the download: the state of the target is read before
 // it and again immediately before the rename (X-3), and a file that appeared or
@@ -832,7 +847,7 @@ func (s *Storage) Materialize(ctx context.Context, name string, r io.Reader, ens
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return fmt.Errorf("storage: create directory: %w", err)
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(target), ".storage-tmp-*")
+	tmp, err := os.CreateTemp(filepath.Dir(target), tempPrefix+"*")
 	if err != nil {
 		s.pruneEmptyDirs(target)
 		return fmt.Errorf("storage: create temp file: %w", err)
@@ -909,8 +924,8 @@ func (s *Storage) Materialize(ctx context.Context, name string, r io.Reader, ens
 }
 
 // materializePlan is Materialize's first step: the catalog entry, what is on disk
-// now, and - for a stale file whose version has no confirmed copy - the blob that
-// must be shown a copy before it is replaced.
+// now, and - for a stale file - the blob that must be shown a copy before it is
+// replaced.
 func (s *Storage) materializePlan(clean string) (entry Entry, before diskFile, preserve *Blob, err error) {
 	unlock, err := s.lock()
 	if err != nil {
@@ -950,7 +965,7 @@ func (s *Storage) materializePlan(clean string) (entry Entry, before diskFile, p
 		}
 		return Entry{}, diskFile{}, nil, fmt.Errorf("storage: %s is corrupt on disk (%s); not overwriting it — restore the file or lw storage rm it", clean, why)
 	}
-	if stale && !l.Confirmed[row] {
+	if stale {
 		preserve = &Blob{Name: clean, SHA256: row, Size: d.size, Path: s.Path(clean)}
 	}
 	return entry, d, preserve, nil
