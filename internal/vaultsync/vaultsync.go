@@ -47,6 +47,7 @@ const Ignore = "# managed by lw sync: per-PC state, never synced\n" +
 	"/.obsidian/workspace.json\n" +
 	"/.obsidian/workspace-mobile.json\n" +
 	"/.obsidian/cache\n" +
+	"/storage/\n" +
 	".DS_Store\n"
 
 // Branch is the one branch lw sync uses, locally and on the remote.

@@ -31,6 +31,7 @@ func TestIgnoreBytes(t *testing.T) {
 		"/.obsidian/workspace.json\n" +
 		"/.obsidian/workspace-mobile.json\n" +
 		"/.obsidian/cache\n" +
+		"/storage/\n" +
 		".DS_Store\n"
 	if Ignore != want {
 		t.Fatalf("Ignore = %q\nwant     %q", Ignore, want)

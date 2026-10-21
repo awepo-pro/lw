@@ -315,6 +315,9 @@ func syncRun(vaultPath string, takeRemote bool) error {
 		recordSyncAhead(root, "", err, st.Ahead)
 		return syncExplicitErr(err, st)
 	}
+	if err := vaultsync.SyncStorage(ctx, o); err != nil {
+		return err
+	}
 	pulled := st.Pulled
 	remote := st.Remote
 	if pulled > 0 {
@@ -339,6 +342,9 @@ func syncRun(vaultPath string, takeRemote bool) error {
 			return syncExplicitErr(err, pst)
 		}
 		pushed, remote = pst.Pushed, pst.Remote
+		if err := vaultsync.SyncStorage(ctx, o); err != nil {
+			return err
+		}
 	}
 	recordSync(root, remote, nil)
 
@@ -483,6 +489,9 @@ func syncInit(vaultPath, remote string) error {
 	if err := stage.EnsureJournalLock(filepath.Join(root, stateDirName)); err != nil {
 		return err
 	}
+	if err := vaultsync.SyncStorage(ctx, o); err != nil {
+		return err
+	}
 	fmt.Printf("pushed %d commit(s) to %s\n", st.Pushed, st.Remote)
 	return adoptSyncConfig(os.Stdout, root, remote)
 }
@@ -509,6 +518,9 @@ func syncClone(remote, dir string) error {
 	}
 	if _, err := rebuildIndex(abs, v); err != nil {
 		return fmt.Errorf("index the cloned vault: %w", err)
+	}
+	if err := vaultsync.SyncStorage(ctx, o); err != nil {
+		return err
 	}
 	recordSync(abs, remote, nil)
 	if err := stage.EnsureJournalLock(filepath.Join(abs, stateDirName)); err != nil {

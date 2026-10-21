@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -510,8 +512,8 @@ func TestDoctorJSON(t *testing.T) {
 		if !out.OK || out.Vault != root {
 			t.Errorf("report = %+v, want ok with vault %q", out, root)
 		}
-		if len(out.Checks) != 11 {
-			t.Errorf("%d checks, want 11 (the 008 llm budget, 007 pdf extractor, and 058 originals checks included): %+v", len(out.Checks), out.Checks)
+		if len(out.Checks) != 12 {
+			t.Errorf("%d checks, want 12 (the 008 llm budget, 007 pdf extractor, 058 originals, and 062 storage checks included): %+v", len(out.Checks), out.Checks)
 		}
 		for _, c := range out.Checks {
 			if !c.OK || c.Remedy != "" {
@@ -1210,6 +1212,98 @@ func TestDoctorOriginalsCount(t *testing.T) {
 		want := "0 raw source(s)"
 		if c.Detail != want {
 			t.Errorf("detail = %q, want %q", c.Detail, want)
+		}
+	})
+}
+
+// TestDoctorStorageCheck pins 062 S1 / A-062-2: lw doctor storage health check.
+func TestDoctorStorageCheck(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("fresh_vault_zero_files", func(t *testing.T) {
+		root := testutil.CopyFixture(t, "minimal")
+		rep := runDoctor(ctx, root, doctorOptions{})
+		c := checkByName(t, rep, "storage")
+		if !c.OK || c.Warn || c.Remedy != "" {
+			t.Fatalf("check = %+v, want OK: true with no warn/remedy", c)
+		}
+		if want := "0 stored file(s)"; c.Detail != want {
+			t.Errorf("detail = %q, want %q", c.Detail, want)
+		}
+	})
+
+	t.Run("verified_files", func(t *testing.T) {
+		root := testutil.CopyFixture(t, "minimal")
+		storageDir := filepath.Join(root, "storage")
+		if err := os.MkdirAll(storageDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		f1 := filepath.Join(storageDir, "data.csv")
+		content := "a,b,c\n1,2,3\n"
+		if err := os.WriteFile(f1, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		h := sha256.Sum256([]byte(content))
+		sha := hex.EncodeToString(h[:])
+
+		manifest := fmt.Sprintf(`{
+  "version": 1,
+  "entries": [
+    {
+      "name": "data.csv",
+      "sha256": "%s",
+      "size": %d,
+      "added": "2026-10-21T04:00:00Z"
+    }
+  ]
+}`, sha, len(content))
+		if err := os.MkdirAll(filepath.Join(root, stateDirName), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, stateDirName, "storage.json"), []byte(manifest), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		rep := runDoctor(ctx, root, doctorOptions{})
+		c := checkByName(t, rep, "storage")
+		if !c.OK || c.Warn || c.Remedy != "" {
+			t.Fatalf("check = %+v, want OK: true", c)
+		}
+		if want := "all 1 storage file(s) present and verified"; c.Detail != want {
+			t.Errorf("detail = %q, want %q", c.Detail, want)
+		}
+	})
+
+	t.Run("missing_or_corrupt_files", func(t *testing.T) {
+		root := testutil.CopyFixture(t, "minimal")
+		manifest := `{
+  "version": 1,
+  "entries": [
+    {
+      "name": "missing.csv",
+      "sha256": "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+      "size": 100,
+      "added": "2026-10-21T04:00:00Z"
+    }
+  ]
+}`
+		if err := os.MkdirAll(filepath.Join(root, stateDirName), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, stateDirName, "storage.json"), []byte(manifest), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		rep := runDoctor(ctx, root, doctorOptions{})
+		c := checkByName(t, rep, "storage")
+		if c.OK {
+			t.Fatalf("check = %+v, want OK: false", c)
+		}
+		if want := "1 of 1 storage file(s) missing or corrupt"; c.Detail != want {
+			t.Errorf("detail = %q, want %q", c.Detail, want)
+		}
+		if !strings.Contains(c.Remedy, "storage rm") {
+			t.Errorf("remedy = %q, want reference to storage rm", c.Remedy)
 		}
 	})
 }
