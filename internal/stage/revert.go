@@ -120,9 +120,15 @@ type revertedPayload struct {
 // every path revertHistoryPathPattern matches before classification even
 // starts (D-BV). Every returned slice is sorted — never range a map when
 // order affects output (00-conventions.md §3).
+//
+// Paths under the vault-root storage/ are excluded on BOTH sides (066 D5): the
+// walk no longer records them, but a snapshot written by v2.49.0 may, and a
+// manifest that lists a stored file on one side only would otherwise read as an
+// ADDED or REMOVED page — "skipped: storage/x.md" in a revert, or worse, a
+// create_page op that tries to restore a payload into the vault's history.
 func classifyRevertDelta(prev, cur Snapshot) (added, removed, changed []string) {
 	for p, sha := range cur {
-		if revertHistoryPathPattern.MatchString(p) {
+		if revertHistoryPathPattern.MatchString(p) || isStoragePath(p) {
 			continue
 		}
 		if prevSHA, ok := prev[p]; ok {
@@ -134,7 +140,7 @@ func classifyRevertDelta(prev, cur Snapshot) (added, removed, changed []string) 
 		}
 	}
 	for p := range prev {
-		if revertHistoryPathPattern.MatchString(p) {
+		if revertHistoryPathPattern.MatchString(p) || isStoragePath(p) {
 			continue
 		}
 		if _, ok := cur[p]; !ok {

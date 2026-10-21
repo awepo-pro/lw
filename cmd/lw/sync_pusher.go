@@ -37,6 +37,11 @@ type syncPushResult struct {
 	Pulled  int // remote commits a rebase put under the local ones (A-042-8)
 	Rebased int // local commits a rebase replayed on them
 	Err     error
+
+	// StorageErr is why the payload upload that ran before the push failed
+	// (066 D4). It never stops the push, so Err and StorageErr are independent;
+	// the report tells it only when the push itself worked.
+	StorageErr error
 }
 
 // pusherState is where the pusher is between triggers.
@@ -75,6 +80,8 @@ type syncPusher struct {
 	rebased int
 	remote  string
 	lastErr error
+
+	storageErr error // the latest attempt's StorageErr
 }
 
 // newSyncPusher returns an idle pusher that calls run for each push and waits
@@ -159,6 +166,7 @@ func (p *syncPusher) record(res syncPushResult) {
 		p.remote = res.Remote
 	}
 	p.lastErr = res.Err
+	p.storageErr = res.StorageErr
 }
 
 // Flush ends the pusher's session, for the TUI's exit. It stops taking
@@ -226,7 +234,7 @@ func (p *syncPusher) Flush(budget time.Duration, needs func() bool) syncPushResu
 	// The session is reported once: a second Flush has nothing left to say.
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	out := syncPushResult{Remote: p.remote, Pushed: p.total, Pulled: p.pulled, Rebased: p.rebased, Err: p.lastErr}
-	p.total, p.pulled, p.rebased, p.lastErr = 0, 0, 0, nil
+	out := syncPushResult{Remote: p.remote, Pushed: p.total, Pulled: p.pulled, Rebased: p.rebased, Err: p.lastErr, StorageErr: p.storageErr}
+	p.total, p.pulled, p.rebased, p.lastErr, p.storageErr = 0, 0, 0, nil, nil
 	return out
 }

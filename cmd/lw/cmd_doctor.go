@@ -1203,7 +1203,21 @@ func checkOriginals(v *vault.Vault) doctorCheck {
 	}
 }
 
-// checkStorage verifies the integrity of files cataloged in .llmwiki/storage.json (062 S1, A-062-2).
+// checkStorage tells the five things that can be true of the files cataloged in
+// .llmwiki/storage.json and of storage/ (062 S1, A-062-2; 066 R7, A-066-1).
+// 062 had one verdict, "N of M missing or corrupt", with one remedy ("restore
+// from a backup, or lw storage rm"), and it was wrong for every PC that had
+// simply not received a file yet (B6): that file is pending, not damaged. Now
+// the states are counted apart (internal/storage.Status):
+//
+//	verified  the bytes equal the catalog's
+//	pending   not here yet, or an older version lw put here; lw sync brings it
+//	corrupt   bytes lw did not put there and the catalog does not name: damage
+//	orphan    a file in storage/ the catalog has never heard of
+//
+// Only corrupt fails the check. Pending and orphan are warnings, and the remedy
+// is the first applicable one: a corrupt file needs a person, a pending one
+// needs a sync, an orphan needs a decision.
 func checkStorage(v *vault.Vault) doctorCheck {
 	const name = "storage"
 	if v == nil || v.Root() == "" {
@@ -1218,33 +1232,65 @@ func checkStorage(v *vault.Vault) doctorCheck {
 			Remedy: "check permissions on the vault directory and .llmwiki",
 		}
 	}
-	total, ok, issues, err := st.Validate()
+	rep, err := st.Status()
 	if err != nil {
 		return doctorCheck{
 			Name:   name,
 			OK:     false,
-			Detail: fmt.Sprintf("storage manifest unreadable: %v", err),
-			Remedy: "inspect or repair .llmwiki/storage.json",
+			Detail: fmt.Sprintf("storage could not be read: %v", err),
+			Remedy: "inspect or repair .llmwiki/storage.json; a ledger error names .llmwiki/tmp/storage-local.json, which is per PC and safe to delete",
 		}
 	}
-	if total == 0 {
-		return doctorCheck{
-			Name:   name,
-			OK:     true,
-			Detail: "0 stored file(s)",
+
+	var verified, pending, corrupt int
+	firstCorrupt := ""
+	for _, es := range rep.Entries {
+		switch es.State {
+		case storage.StateVerified:
+			verified++
+		case storage.StatePending:
+			pending++
+		case storage.StateCorrupt:
+			if corrupt == 0 {
+				firstCorrupt = es.Entry.Name
+			}
+			corrupt++
 		}
 	}
-	if ok {
-		return doctorCheck{
-			Name:   name,
-			OK:     true,
-			Detail: fmt.Sprintf("all %d storage file(s) present and verified", total),
-		}
+	total, orphans := len(rep.Entries), len(rep.Orphans)
+	if total == 0 && orphans == 0 {
+		return doctorCheck{Name: name, OK: true, Detail: "0 stored file(s)"}
 	}
-	return doctorCheck{
-		Name:   name,
-		OK:     false,
-		Detail: fmt.Sprintf("%d of %d storage file(s) missing or corrupt", len(issues), total),
-		Remedy: "restore missing or corrupt storage files from a backup or remove invalid entries with lw storage rm",
+
+	var parts []string
+	switch {
+	case total == 0:
+		// Nothing is catalogued: "all 0 verified" would read literally (C-066-3).
+	case verified == total:
+		parts = append(parts, fmt.Sprintf("all %d storage file(s) present and verified", total))
+	default:
+		parts = append(parts, fmt.Sprintf("%d of %d verified", verified, total))
 	}
+	if pending > 0 {
+		parts = append(parts, fmt.Sprintf("%d pending (not arrived yet)", pending))
+	}
+	if corrupt > 0 {
+		parts = append(parts, fmt.Sprintf("%d corrupt (changed on disk)", corrupt))
+	}
+	if orphans > 0 {
+		parts = append(parts, fmt.Sprintf("%d untracked file(s) in storage/", orphans))
+	}
+
+	c := doctorCheck{Name: name, OK: corrupt == 0, Detail: strings.Join(parts, "; ")}
+	c.Warn = c.OK && (pending > 0 || orphans > 0)
+	switch {
+	case corrupt > 0:
+		// The first corrupt entry by name, not a placeholder: the user can paste it (C-066-4).
+		c.Remedy = fmt.Sprintf("lw storage show %s names the expected sha256; restore the file or lw storage rm it", firstCorrupt)
+	case pending > 0:
+		c.Remedy = "run lw sync; if it stays pending, run lw sync on the PC that stored it"
+	case orphans > 0:
+		c.Remedy = "move untracked files out of storage/, or lw storage add them"
+	}
+	return c
 }

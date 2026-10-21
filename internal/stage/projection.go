@@ -24,10 +24,25 @@ import (
 // here too; TestNotesInvisibleToHistory pins that the two agree.
 const notesInboxDir = "notes"
 
+// storageDirName is the vault-root directory `lw storage` keeps payloads in
+// (062, 066). Like notesInboxDir it is spelled here rather than imported: the
+// walk must not depend on the verb's packages. TestWalkWholeTreeSkipsStorage and
+// TestStorageInvisibleToHistory pin it.
+const storageDirName = "storage"
+
+// isStoragePath reports whether the snapshot path p lies under the vault-root
+// storage/ directory. Snapshots written by v2.49.0 can list such paths (its walk
+// did not skip the directory, B3); every diff of two trees ignores them, so a
+// commit after the fix never sees them vanish and `lw revert` never reports or
+// restores one (066 D5).
+func isStoragePath(p string) bool {
+	return strings.HasPrefix(p, storageDirName+"/")
+}
+
 // walkWholeTree walks os.DirFS(root) and returns every *.md file's
 // vault-relative path mapped to its raw bytes, skipping any directory
 // (and everything under it) whose name begins with "." — which is what
-// excludes .llmwiki/ — and the vault-root notes/ directory.
+// excludes .llmwiki/ — and the vault-root notes/ and storage/ directories.
 //
 // notes/ is `lw note`'s inbox (047 S1): raw thoughts that sit outside the
 // wiki and outside review, so no tree built here may contain them. The walk
@@ -38,6 +53,12 @@ const notesInboxDir = "notes"
 // pages. The skip is this one explicit directory name at the root, never a
 // wider rule: a directory called notes deeper in the tree is ordinary vault
 // content.
+//
+// storage/ is `lw storage`'s payload area (062) and gets the same skip for the
+// same reason (066 B3/R3, the 047 mistake made again): a stored README.md or
+// notes.md was an ADDED path of the next commit, surfaced by `lw revert` as
+// "skipped: storage/…", and its name and sha went into a manifest git tracks
+// and syncs to every PC. The payloads' truth is the catalog, not a snapshot.
 //
 // Contract (backbone §5.4 "how the projection is seeded", MASTER §9
 // D-AX). Pages() and RawSources() cover only wiki/ and raw/, but
@@ -60,7 +81,7 @@ func walkWholeTree(root string) (map[string][]byte, error) {
 			if p != "." && strings.HasPrefix(d.Name(), ".") {
 				return fs.SkipDir
 			}
-			if p == notesInboxDir {
+			if p == notesInboxDir || p == storageDirName {
 				return fs.SkipDir
 			}
 			return nil

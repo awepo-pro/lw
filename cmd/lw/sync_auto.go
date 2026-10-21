@@ -66,6 +66,7 @@ type autoSync struct {
 
 	mu     sync.Mutex // one CLI push at a time
 	queued bool       // a CLI verb has asked for its push at the end (atVerbEnd)
+	notes  []string   // storage lines the TUI's pusher held back for the exit report (storageSay)
 }
 
 // notSyncingLine is what a writing verb says when [sync] remotes are
@@ -337,6 +338,8 @@ func (a *autoSync) pull() {
 	}
 	recordSyncAhead(a.root, st.Remote, nil, st.Ahead)
 	slog.Info("sync pull", "remote", st.Remote, "pulled", st.Pulled, "ahead", st.Ahead)
+	// Before the engine opens, so nothing owns the screen yet: say it at once.
+	a.reconcileStorage(func(line string) { fmt.Fprintln(os.Stderr, line) })
 	a.retryIfAhead(st)
 	if st.Pulled == 0 {
 		return
@@ -405,7 +408,7 @@ func (a *autoSync) warnStart(step string, err error, st vaultsync.State) {
 // its result to lw.log, never to a screen.
 func (a *autoSync) pushOnce(ctx context.Context) syncPushResult {
 	res := a.push(ctx)
-	slog.Info("sync push", "remote", res.Remote, "pushed", res.Pushed, "err", res.Err)
+	slog.Info("sync push", "remote", res.Remote, "pushed", res.Pushed, "err", res.Err, "storage_err", res.StorageErr)
 	return res
 }
 
@@ -422,6 +425,18 @@ func (a *autoSync) push(ctx context.Context) syncPushResult {
 			slog.Warn("sync: rebuild index after push", "err", ierr)
 		}
 	}
+	// The payloads the catalog names go up before git does (066 B6: the catalog
+	// is a tracked file, so every push publishes it, and a PC that read an entry
+	// whose bytes were nowhere else called it corrupt). A failed upload is a
+	// warning for the report below, never a reason to skip the push (B5), and it
+	// is retried by the next push of anything. It gets half of what is left of
+	// the step's deadline so the push always has the other half.
+	upCtx, upCancel := storageBudget(ctx)
+	storageErr := storageUpload(upCtx, a.root, a.options())
+	upCancel()
+	if storageErr != nil {
+		slog.Warn("sync: storage upload", "err", storageErr)
+	}
 	// No lock is held: the push touches no file of the vault (it sends HEAD),
 	// and holding one across a network round trip would make a foreground
 	// commit fail with "vault is locked" for as long as the server is slow
@@ -429,7 +444,7 @@ func (a *autoSync) push(ctx context.Context) syncPushResult {
 	// vault lock is taken inside the pull's quiesce and not around it
 	// (A-042-10).
 	st, err := syncPush(ctx, a.options())
-	res := syncPushResult{Remote: st.Remote, Pushed: st.Pushed, Pulled: pulled.Pulled, Rebased: pulled.Rebased}
+	res := syncPushResult{Remote: st.Remote, Pushed: st.Pushed, Pulled: pulled.Pulled, Rebased: pulled.Rebased, StorageErr: storageErr}
 	if err != nil {
 		recordSyncAhead(a.root, "", err, st.Ahead)
 		res.Err = err
@@ -470,7 +485,16 @@ func (a *autoSync) commitAndPull(ctx context.Context) (vaultsync.State, error) {
 	if err := commit(); err != nil {
 		return vaultsync.State{}, err
 	}
-	st, err := syncPull(ctx, a.options(), stage.FormatVersion)
+	// The pull may bring a catalog that dropped files this PC holds: reconcile
+	// after every pull that worked (066 B1), saying so where the step can.
+	pull := func() (vaultsync.State, error) {
+		st, err := syncPull(ctx, a.options(), stage.FormatVersion)
+		if err == nil {
+			a.reconcileStorage(a.storageSay)
+		}
+		return st, err
+	}
+	st, err := pull()
 	if errors.Is(err, vaultsync.ErrDirty) {
 		if err := commit(); err != nil {
 			return st, err
@@ -480,12 +504,36 @@ func (a *autoSync) commitAndPull(ctx context.Context) (vaultsync.State, error) {
 			// way of nothing: it is committed now and the push sends it.
 			return st, nil
 		}
-		st, err = syncPull(ctx, a.options(), stage.FormatVersion)
+		st, err = pull()
 		if errors.Is(err, vaultsync.ErrDirty) {
 			return st, nil
 		}
 	}
 	return st, err
+}
+
+// reconcileStorage is storageReconcile for an auto-sync step that has just
+// pulled: what it removed or kept goes to say, and a failure becomes one more
+// line. Nothing here fails the verb (auto-sync never does).
+func (a *autoSync) reconcileStorage(say func(line string)) {
+	if err := storageReconcileTo(a.root, say); err != nil {
+		say("storage: " + storageReason(err))
+	}
+}
+
+// storageSay prints a storage line from a push step. A CLI verb writes it to
+// stderr at once. The TUI's pusher runs while the screen is up and must not
+// write to it, so it logs the line and holds it for report, which runs after
+// the terminal is restored (finish).
+func (a *autoSync) storageSay(line string) {
+	if a.pusher == nil {
+		fmt.Fprintln(os.Stderr, line)
+		return
+	}
+	slog.Info("storage", "line", line)
+	a.mu.Lock()
+	a.notes = append(a.notes, line)
+	a.mu.Unlock()
 }
 
 // pushInline is the CLI's push after a change: run when the verb has finished
@@ -518,6 +566,13 @@ func rebasedLine(prefix string, n int, remote string) string {
 // vault; then the success line when it sent commits, the failure line when it
 // failed, nothing when there was nothing to send.
 func (a *autoSync) report(w io.Writer, res syncPushResult) {
+	a.mu.Lock()
+	notes := a.notes
+	a.notes = nil
+	a.mu.Unlock()
+	for _, line := range notes {
+		fmt.Fprintln(w, line)
+	}
 	if res.Pulled > 0 {
 		fmt.Fprintf(w, "sync: pulled %d commit(s) from %s\n", res.Pulled, res.Remote)
 	}
@@ -529,6 +584,11 @@ func (a *autoSync) report(w io.Writer, res syncPushResult) {
 		fmt.Fprintln(w, pushFailureLine(res))
 	case res.Pushed > 0:
 		fmt.Fprintf(w, "sync: pushed %d commit(s) to %s\n", res.Pushed, res.Remote)
+	}
+	// "wiki synced" must be true: a push that failed says so above, and the
+	// upload that failed with it is only in lw.log.
+	if res.Err == nil && res.StorageErr != nil {
+		fmt.Fprintln(w, storageWarning(res.StorageErr))
 	}
 }
 
