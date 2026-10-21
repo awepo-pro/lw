@@ -43,6 +43,9 @@ func (m *Model) sourceOf(n *treeNode) ([]byte, bool) {
 		if p, found := v.Page(n.Path); found {
 			return p.Serialize(), true
 		}
+		if b, err := v.Read(n.Path); err == nil {
+			return b, true
+		}
 	case nodeRawSource:
 		if r, found := v.RawSource(n.Path); found {
 			return r.Serialize(), true
