@@ -223,6 +223,12 @@ func askPromptFor(hasSearch bool) string {
 	return askPromptBase + web + askPromptTail
 }
 
+// AskSystemPrompt is the system prompt of an ask turn that is not offered web lookup — a `lw query` turn's —
+// exported for the 068 external ask paths. It is askPromptFor(false), byte for byte.
+func AskSystemPrompt() string {
+	return askPromptFor(false)
+}
+
 // turnMode is how a turn is run: which system prompt it sends and which tools
 // it advertises and may call.
 type turnMode int
