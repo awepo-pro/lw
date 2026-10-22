@@ -325,7 +325,9 @@ func briefOf(ctx context.Context, e *stage.Engine, cs *stage.Changeset, prepares
 			b.targets = append(b.targets, briefTarget{path: ent.path, chunks: tools.RawChunkCount(r.Body), title: r.Title, citedBy: citedByText(cites[ent.path])})
 		}
 	}
-	orient, err := orientBrief(ctx, tools.NewRegistry(externalToolDeps(e, nil, last.agent, nil)))
+	bdeps := externalToolDeps(e, nil, last.agent, nil)
+	bdeps.OrientCommittedOnly = true
+	orient, err := orientBrief(ctx, tools.NewRegistry(bdeps))
 	if err != nil {
 		return "", fmt.Errorf("vault.orient: %w", err)
 	}

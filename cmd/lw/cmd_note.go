@@ -177,6 +177,7 @@ func cmdNote(args []string) error {
 	if err != nil {
 		return err
 	}
+	tracker := newWaitingNoteTracker(root)
 	// 042: a note is a tracked file in a synced vault, so it is refused while a
 	// checkout collision is unresolved, taken after the newest vault has been
 	// pulled (before an editor opens, so the pull does not wait on one), and
@@ -249,6 +250,7 @@ func cmdNote(args []string) error {
 	}
 	fmt.Println("noted " + rel)
 	auto.afterNote()
+	tracker.maybePrintNote(nil)
 	return nil
 }
 

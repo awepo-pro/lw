@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/awepo-pro/lw/internal/stage"
 	"github.com/awepo-pro/lw/internal/vault"
 )
 
@@ -39,7 +40,23 @@ func vaultOrientTool(d Deps) Tool {
 	}
 }
 
+// testOrientCallHook is an unexported hook called whenever vault.orient handler
+// executes. Used by tests to count orient digest invocations.
+var testOrientCallHook func()
+
+// SetTestOrientCallHook registers a hook called whenever vault.orient handler
+// executes. It returns a cleanup function restoring the previous hook.
+func SetTestOrientCallHook(fn func()) func() {
+	prev := testOrientCallHook
+	testOrientCallHook = fn
+	return func() { testOrientCallHook = prev }
+}
+
 func orientHandler(ctx context.Context, d Deps, args json.RawMessage) (Result, error) {
+	if testOrientCallHook != nil {
+		testOrientCallHook()
+	}
+
 	schemaBytes, err := d.Vault.Read("SCHEMA.md")
 	if err != nil {
 		// SCHEMA.md is required for the vault to have opened at all
@@ -72,7 +89,89 @@ func orientHandler(ctx context.Context, d Deps, args json.RawMessage) (Result, e
 	fmt.Fprintf(&b, "\n## log.md (last %d lines)\n\n", orientLogMaxLines)
 	writeSectionBody(&b, logText)
 
+	if readOnlyVerb(ctx) && d.Engine != nil && !d.OrientCommittedOnly {
+		if cs, err := d.Engine.Current(); err == nil && cs != nil && len(cs.Live()) > 0 {
+			appendOrientOpenChangeset(&b, d, cs)
+		}
+	}
+
 	return Result{Content: strings.TrimRight(b.String(), "\n") + "\n"}, nil
+}
+
+func appendOrientOpenChangeset(b *strings.Builder, d Deps, cs *stage.Changeset) {
+	live := cs.Live()
+	opWord := "ops"
+	if len(live) == 1 {
+		opWord = "op"
+	}
+	dateStr := cs.OpenedAt.UTC().Format("2006-01-02")
+
+	b.WriteString("\n## Open changeset (unreviewed)\n\n")
+	fmt.Fprintf(b, "%s · %d %s · opened %s · not committed: readable, but nothing in it has been reviewed\n",
+		cs.ID, len(live), opWord, dateStr)
+
+	var distinctPaths []string
+	seen := make(map[string]bool)
+	for _, op := range live {
+		p := op.Path
+		if op.Kind == stage.OpRenamePage || op.Kind == stage.OpMergePages {
+			if op.To != "" {
+				p = op.To
+			}
+		}
+		if p != "" && !seen[p] {
+			seen[p] = true
+			distinctPaths = append(distinctPaths, p)
+		}
+	}
+
+	limit := len(distinctPaths)
+	more := 0
+	if limit > 30 {
+		limit = 30
+		more = len(distinctPaths) - 30
+	}
+
+	for i := 0; i < limit; i++ {
+		p := distinctPaths[i]
+		title := stagedTargetTitle(d, p)
+		if title != "" {
+			fmt.Fprintf(b, "%s — %s\n", p, title)
+		} else {
+			fmt.Fprintf(b, "%s\n", p)
+		}
+	}
+	if more > 0 {
+		fmt.Fprintf(b, "(+%d more)\n", more)
+	}
+}
+
+func stagedTargetTitle(d Deps, p string) string {
+	if strings.HasPrefix(p, "raw/") {
+		title, _ := stagedRawIdentity(d, p)
+		if title != "" {
+			return title
+		}
+		if d.Vault != nil {
+			if r, ok := d.Vault.RawSource(p); ok && r.Title != "" {
+				return r.Title
+			}
+		}
+		return ""
+	}
+	if d.Engine != nil {
+		if b, has, err := d.Engine.StagedFile(p); err == nil && has {
+			if sp, perr := vault.ParsePage(p, b); perr == nil && sp.FM.Title != "" {
+				return sp.FM.Title
+			}
+		}
+	}
+	if d.Vault != nil {
+		if pg, ok := d.Vault.Page(p); ok && pg.FM.Title != "" {
+			return pg.FM.Title
+		}
+	}
+	return ""
 }
 
 // writeSectionBody appends text to b, falling back to a visible "(empty)"

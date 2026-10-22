@@ -58,7 +58,25 @@ func wikiSearchHandler(ctx context.Context, d Deps, args json.RawMessage) (Resul
 		)}, nil
 	}
 
-	hits := d.Index.Search(q, index.Options{Type: a.Type, Tags: a.Tags, Limit: a.Limit})
+	var csKey string
+	if readOnlyVerb(ctx) {
+		csKey = openChangesetKey(d)
+	}
+	searchIndex, err := getSearchIndex(d, csKey)
+	if err != nil {
+		return Result{}, fmt.Errorf("tools: wiki.search: %w", err)
+	}
+
+	var cs *stage.Changeset
+	var stagedTargets map[string]bool
+	if csKey != "" && d.Engine != nil {
+		if c, err := d.Engine.Current(); err == nil && c != nil {
+			cs = c
+			stagedTargets = liveStagedTargets(c)
+		}
+	}
+
+	hits := searchIndex.Search(q, index.Options{Type: a.Type, Tags: a.Tags, Limit: a.Limit})
 	if len(hits) == 0 {
 		return Result{Content: fmt.Sprintf("no results for %q", q)}, nil
 	}
@@ -67,6 +85,9 @@ func wikiSearchHandler(ctx context.Context, d Deps, args json.RawMessage) (Resul
 	fmt.Fprintf(&b, "%d result(s) for %q:\n", len(hits), q)
 	for i, h := range hits {
 		fmt.Fprintf(&b, "%d. %s — %s\n   %s\n", i+1, h.Path, h.Title, h.Snippet)
+		if cs != nil && stagedTargets[h.Path] {
+			fmt.Fprintf(&b, "   (staged in %s, unreviewed)\n", cs.ID)
+		}
 	}
 	return Result{Content: strings.TrimRight(b.String(), "\n")}, nil
 }
@@ -146,7 +167,7 @@ func wikiGetHandler(ctx context.Context, d Deps, args json.RawMessage) (Result, 
 			content = firstRunes(content, wikiGetMaxRunes) + notice + "]"
 		}
 		if staged {
-			content = stagedSourceMarker + content
+			content = stagedMarker(ctx) + content
 		}
 		return Result{Content: resolvedNote + content}, nil
 	}
@@ -166,7 +187,7 @@ func wikiGetHandler(ctx context.Context, d Deps, args json.RawMessage) (Result, 
 		)
 	}
 	if staged {
-		body = stagedSourceMarker + body
+		body = stagedMarker(ctx) + body
 	}
 	return Result{Content: resolvedNote + body}, nil
 }

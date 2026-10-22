@@ -205,6 +205,7 @@ func (m *Model) beginTurnAs(verb, echo, msg string) tea.Cmd {
 	m.back = 0
 	m.echoUser(echo)
 	m.turnActive = true
+	m.turnSawStagedRead = false
 	// 022 T2: a new turn counts its thinking from zero — the previous
 	// turn's reasoning count and tail never bleed into this one's.
 	m.resetReasoningTurn()

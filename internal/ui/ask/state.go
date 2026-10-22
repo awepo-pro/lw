@@ -16,6 +16,8 @@ import (
 
 	"github.com/awepo-pro/lw/internal/agent"
 	"github.com/awepo-pro/lw/internal/llm"
+	"github.com/awepo-pro/lw/internal/stage"
+	"github.com/awepo-pro/lw/internal/tools"
 	"github.com/awepo-pro/lw/internal/ui"
 )
 
@@ -82,6 +84,9 @@ func (m *Model) applyEvent(ev agent.Event) tea.Cmd {
 			m.resetReasoningRound()
 			m.roundToolInFlight = false
 			m.resolveToolCall(e)
+			if !e.IsError && tools.StagedRead(e.Name, e.Content) {
+				m.turnSawStagedRead = true
+			}
 		case agent.RetryEv:
 			// 035: the round's stream ended early with no tool call
 			// dispatched, and the identical request is going out again —
@@ -117,7 +122,10 @@ func (m *Model) applyEvent(ev agent.Event) tea.Cmd {
 			// 009 §3.2: the file hint lands after the terminal line, and
 			// only when the answer is fileable.
 			m.appendFileHint()
+			m.appendStagedNotice()
+			m.turnSawStagedRead = false
 		case agent.ErrorEv:
+			m.turnSawStagedRead = false
 			msg := "unknown error"
 			if e.Err != nil {
 				msg = e.Err.Error()
@@ -222,6 +230,27 @@ func (m *Model) appendStatus(text string) {
 	m.mutateEntries(func() {
 		m.entries = append(m.entries, entry{kind: kindStatus, text: text})
 	})
+}
+
+// appendStagedNotice appends the D4 notice after a turn that read unreviewed
+// staged content: lands after the kept hint and after the file hint.
+func (m *Model) appendStagedNotice() {
+	if !m.turnSawStagedRead || m.deps.Engine == nil {
+		return
+	}
+	cs, err := m.deps.Engine.Current()
+	if err != nil || cs == nil {
+		return
+	}
+	age := m.now().Sub(cs.OpenedAt)
+	ops := len(cs.Live())
+	noun := "ops"
+	if ops == 1 {
+		noun = "op"
+	}
+	text := fmt.Sprintf("this answer read unreviewed content from %s (%d %s, open %s) — review it in the Review tab to keep it",
+		cs.ID, ops, noun, stage.AgeLabel(age))
+	m.appendStatus(text)
 }
 
 // endTurn appends a kindStatus line and closes the turn: the next

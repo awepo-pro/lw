@@ -12,6 +12,7 @@ import (
 	"github.com/awepo-pro/lw/internal/agent"
 	"github.com/awepo-pro/lw/internal/config"
 	"github.com/awepo-pro/lw/internal/stage"
+	"github.com/awepo-pro/lw/internal/tools"
 	"github.com/awepo-pro/lw/internal/trace"
 )
 
@@ -102,6 +103,7 @@ func cmdQuery(args []string) error {
 	if cs, err := e.Current(); err == nil {
 		priorID, priorOpen, priorOps = cs.ID, true, len(cs.Ops)
 	}
+	tracker := newWaitingNoteTracker(root)
 
 	// 038: the turn's verb rides the ctx (038 C-3) — query here, as ingest
 	// and lint --fix set theirs around their own Send. 039: the same verb is
@@ -111,7 +113,15 @@ func cmdQuery(args []string) error {
 	// cleanup below instead of killing the process before it runs.
 	turnCtx, stopInterrupt := notifyInterrupt(trace.WithVerb(context.Background(), trace.VerbQuery))
 	defer stopInterrupt()
-	sendErr := runAgentTurn(turnCtx, ag, sess.ID, queryPromptPrefix+question, os.Stdout)
+	var sawStagedRead bool
+	onEv := func(ev agent.Event) {
+		if tr, ok := ev.(agent.ToolResEv); ok && !tr.IsError {
+			if tools.StagedRead(tr.Name, tr.Content) {
+				sawStagedRead = true
+			}
+		}
+	}
+	sendErr := runAgentTurnWithObserver(turnCtx, ag, sess.ID, queryPromptPrefix+question, os.Stdout, os.Stderr, onEv)
 	fmt.Println()
 
 	// Enforce "no changes" structurally, whatever the model attempted:
@@ -166,6 +176,14 @@ func cmdQuery(args []string) error {
 		// U1: a truncated turn names the output budget and the fix; any
 		// other error keeps the pre-008 wording (agentErrorHint).
 		return agentErrorHint(sendErr, cfg.LLM.MaxTokens, false)
+	}
+
+	if sawStagedRead {
+		if cs, err := e.Current(); err == nil && cs != nil {
+			fmt.Fprint(os.Stderr, stagedReadNoteLine(cs, waitingNoteNow()))
+		}
+	} else {
+		tracker.maybePrintNote(e)
 	}
 	return nil
 }

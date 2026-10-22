@@ -74,6 +74,10 @@ type Deps struct {
 	OpenPDF func(pdf string, page int) error
 	Theme   Theme
 	Keys    KeyMap
+
+	// Now returns the current time for UI age labels (067 D3, C-067-4).
+	// When nil, time.Now is used.
+	Now func() time.Time
 }
 
 // OpenPDFUnsetHint is the message Browse shows when it cannot open a PDF
@@ -101,6 +105,10 @@ type Options struct {
 	// Zero (every test harness) falls back to NewApp's own clock, which
 	// keeps headless construction self-contained.
 	ProcessStart time.Time
+
+	// Now overrides the clock for testing (067 C-067-4). Nil falls back to
+	// Deps.Now, or time.Now when both are nil.
+	Now func() time.Time
 }
 
 // EngineUser is implemented by a pane that may use Deps.Engine from a

@@ -48,7 +48,15 @@ func (a *App) render() string {
 	lines := make([]string, 0, a.height)
 	lines = append(lines, headerLine(a.deps.Theme, a.width, a.vaultName, tabLabels(), screenTabName[s],
 		a.pages, a.raw, a.lintErrors,
-		headerStage{ID: a.stageID, Ops: a.stageOps, Checks: a.stageChecks, Has: a.hasStage, Partial: a.stagePartial}))
+		headerStage{
+			ID:       a.stageID,
+			Ops:      a.stageOps,
+			Checks:   a.stageChecks,
+			Has:      a.hasStage,
+			Partial:  a.stagePartial,
+			OpenedAt: a.stageOpenedAt,
+			Now:      a.deps.Now,
+		}))
 	lines = append(lines, fitPaneLines(content, a.width, bodyH)...)
 	lines = append(lines, footerContent(a.deps.Theme, a.deps.Keys, a.activePane(), a.width))
 

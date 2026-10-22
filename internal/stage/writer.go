@@ -55,7 +55,7 @@ var errChangesetGone = errors.New("stage: the open changeset was committed or re
 // from os.Stat carries no monotonic reading, so journalStamp's == compare
 // is sound.
 func openChangesetStamp(dir, id string) (stamp journalStamp, ok bool) {
-	info, err := os.Stat(filepath.Join(dir, id, "changeset.json"))
+	info, err := os.Stat(openChangesetFile(dir, id))
 	if err != nil {
 		return journalStamp{}, false
 	}
@@ -95,7 +95,7 @@ func (e *Engine) readOpenFromDisk() (*Changeset, journalStamp, error) {
 		return nil, journalStamp{}, ErrNoChangeset
 	}
 
-	path := filepath.Join(openDir, id, "changeset.json")
+	path := openChangesetFile(openDir, id)
 	stamp, _ := openChangesetStamp(openDir, id)
 	b, err := os.ReadFile(path)
 	if err != nil {

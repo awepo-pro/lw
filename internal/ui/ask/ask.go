@@ -6,6 +6,8 @@
 package ask
 
 import (
+	"time"
+
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 
@@ -31,10 +33,11 @@ type Model struct {
 	// transcript is empty (view.go's empty state).
 	prompts []string
 
-	entries    []entry
-	toolIndex  map[string]int // agent event ID -> index into entries
-	selected   int            // index into entries the next enter expands/collapses; -1 = none
-	turnActive bool
+	entries           []entry
+	toolIndex         map[string]int // agent event ID -> index into entries
+	selected          int            // index into entries the next enter expands/collapses; -1 = none
+	turnActive        bool
+	turnSawStagedRead bool
 
 	// turnErrored is the last finished turn's verdict (016 F.M4): endTurn
 	// clears it, endTurnError sets it, nothing else writes it, and the
@@ -165,6 +168,19 @@ type Model struct {
 	sendSecs      int
 	sendGen       int
 	waitPhaseLive bool
+
+	// 067 D3 / G3: cached summary of the vault's open changeset for the
+	// empty-state waiting notice, refreshed on New and StageChangedMsg
+	// so emptyTranscriptLines avoids per-frame engine reads during render.
+	openCS             openChangesetSummary
+	engineCurrentCalls int // test seam: counts calls to Engine.Current made by the ask pane
+}
+
+type openChangesetSummary struct {
+	present  bool
+	id       string
+	ops      int
+	openedAt time.Time
 }
 
 var _ ui.Pane = (*Model)(nil)
@@ -181,11 +197,44 @@ func New(d ui.Deps) ui.Pane {
 	m := &Model{deps: d, theme: d.Theme, selected: -1, md: markdown.NewRenderer()}
 	m.prompts = m.loadPrompts()
 	if d.Engine != nil {
-		if cs, err := d.Engine.Current(); err == nil {
+		m.engineCurrentCalls++
+		if cs, err := d.Engine.Current(); err == nil && cs != nil {
 			m.titleID = cs.ID
+			m.openCS = openChangesetSummary{
+				present:  true,
+				id:       cs.ID,
+				ops:      len(cs.Live()),
+				openedAt: cs.OpenedAt,
+			}
 		}
 	}
 	return m
+}
+
+func (m *Model) refreshOpenChangeset() {
+	if m.deps.Engine == nil {
+		m.openCS = openChangesetSummary{}
+		return
+	}
+	m.engineCurrentCalls++
+	cs, err := m.deps.Engine.Current()
+	if err != nil || cs == nil {
+		m.openCS = openChangesetSummary{}
+		return
+	}
+	m.openCS = openChangesetSummary{
+		present:  true,
+		id:       cs.ID,
+		ops:      len(cs.Live()),
+		openedAt: cs.OpenedAt,
+	}
+}
+
+func (m *Model) now() time.Time {
+	if m.deps.Now != nil {
+		return m.deps.Now()
+	}
+	return time.Now()
 }
 
 // Title returns the pane's name for the shell's tab bar (backbone §12).
@@ -390,6 +439,7 @@ func (m *Model) Update(msg tea.Msg) (ui.Pane, tea.Cmd) {
 		// changeset's, 057). The title's id rides the same message, and the
 		// empty form is also what keeps it (title.go noteStageChanged); the
 		// kept id's state lookup is the command Update returns.
+		m.refreshOpenChangeset()
 		fate := m.noteStageChanged(msg.ChangesetID)
 		m.changesetGone(msg.ChangesetID)
 		return m, fate

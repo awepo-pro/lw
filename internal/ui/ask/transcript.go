@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/awepo-pro/lw/internal/stage"
 	"github.com/awepo-pro/lw/internal/ui"
 	"github.com/awepo-pro/lw/internal/ui/markdown"
 )
@@ -130,6 +131,20 @@ func (m *Model) emptyTranscriptLines(cw, th int) []string {
 		lines = append(lines, "")
 		for _, l := range ui.Wrap(webHintUnavailable, W, 0) {
 			lines = append(lines, m.theme.Faint.Render(l))
+		}
+	}
+	if m.openCS.present {
+		age := m.now().Sub(m.openCS.openedAt)
+		ops := m.openCS.ops
+		noun := "ops"
+		if ops == 1 {
+			noun = "op"
+		}
+		msg := fmt.Sprintf("A changeset is waiting for review: %s · %d %s · open %s. Open the Review tab to keep it.",
+			m.openCS.id, ops, noun, stage.AgeLabel(age))
+		lines = append(lines, "")
+		for _, l := range ui.Wrap(msg, W, 0) {
+			lines = append(lines, m.theme.Warn.Render(l))
 		}
 	}
 	lines = append(lines, "", m.theme.Bold.Render("Try"))

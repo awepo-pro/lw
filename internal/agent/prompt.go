@@ -282,10 +282,17 @@ type turnPlan struct {
 	web        bool
 	readBudget bool
 	noWeb      bool
+	verb       string
 }
 
 // planFor resolves verb to its turnPlan. The zero turnPlan is the curator
 // turn, which is what ContextBuilder.Build — the pre-039 entry point — uses.
 func planFor(verb string) turnPlan {
-	return turnPlan{mode: modeFromVerb(verb), web: askOffersWeb(verb), readBudget: verb == trace.VerbIngest, noWeb: verb == trace.VerbIngest}
+	return turnPlan{
+		mode:       modeFromVerb(verb),
+		web:        askOffersWeb(verb),
+		readBudget: verb == trace.VerbIngest,
+		noWeb:      verb == trace.VerbIngest,
+		verb:       verb,
+	}
 }

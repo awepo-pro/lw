@@ -59,6 +59,10 @@ type Deps struct {
 	// live. Only the recompile turn sets it — every other registry (TUI, MCP,
 	// query, lint) leaves it nil and behaves exactly as before.
 	Recompile []string
+	// OrientCommittedOnly makes vault.orient leave out the open-changeset section (067 D2). Only the 063 curator
+	// brief sets it: the brief describes the work, not the progress, so it must not change as ops are staged
+	// (TestToolBriefMatchesPrepare). Every other registry leaves it false.
+	OrientCommittedOnly bool
 	// reads is the 040 read log shared by raw.get, stage.ingest_source and
 	// stage.close. It is not caller-supplied: NewRegistry makes a fresh one
 	// on its own copy of Deps, so a registry's reads belong to that registry
@@ -72,6 +76,9 @@ type Deps struct {
 	// Deps used without NewRegistry leaves it nil and stage.patch_page then
 	// keeps a private set of its own, as it did before 063.
 	arms *shrinkArms
+	// searchCache caches the index.Build over Engine.ProjectedVault() per
+	// registry (067 D1), rebuilt only when OpenChangesetKey() changes.
+	searchCache *searchCache
 }
 
 // ErrUnknownTool is returned by Registry.Call for a name with no
@@ -102,6 +109,7 @@ type Registry struct {
 func NewRegistry(d Deps) *Registry {
 	d.reads = newReadLog()
 	d.arms = newShrinkArms()
+	d.searchCache = newSearchCache()
 	// 055: the recompile turn's committed raws are read-log sources from the
 	// first round. The slice is copied so the guard answers to the paths the
 	// registry was built with, not to a caller's later edit of its own.
@@ -174,6 +182,16 @@ func (r *Registry) Call(ctx context.Context, name string, args json.RawMessage) 
 		return Result{}, fmt.Errorf("tools: unknown tool %q: %w", name, ErrUnknownTool)
 	}
 	return t.Handler(ctx, args)
+}
+
+// OpenChangesetKey returns the lowercase hex sha256 identifying the currently
+// open changeset and the committed vault state (067 D1), or "" when no changeset
+// is open (or no Engine is configured).
+func (r *Registry) OpenChangesetKey() string {
+	if r == nil {
+		return ""
+	}
+	return openChangesetKey(r.deps)
 }
 
 // Definitions converts every registered Tool (sorted by Name, via List) into

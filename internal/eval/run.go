@@ -35,6 +35,7 @@ type Cmd struct {
 type Output struct {
 	Stdout, Stderr []byte
 	ExitCode       int
+	SetupFailure   []string
 }
 
 // ExecFunc runs one command to completion. It exists so tests drive the
@@ -93,10 +94,11 @@ type RunMeta struct {
 	// TimedOut marks a last attempt that was cut off by Runner.JobTimeout
 	// (its ExitCode is then non-zero, -1 for a killed process). Absent for
 	// every other case, so a meta.json written before A-037-9 reads the same.
-	TimedOut bool      `json:"timed_out,omitempty"`
-	Started  time.Time `json:"started"`
-	WallMS   int64     `json:"wall_ms"` // of the last attempt
-	Traces   []string  `json:"traces"`  // turn ids copied, sorted
+	TimedOut     bool      `json:"timed_out,omitempty"`
+	SetupFailure []string  `json:"setup_failure,omitempty"`
+	Started      time.Time `json:"started"`
+	WallMS       int64     `json:"wall_ms"` // of the last attempt
+	Traces       []string  `json:"traces"`  // turn ids copied, sorted
 }
 
 // RunInfo is <Out>/run.json: what was run, with what, and when. Env values
@@ -196,6 +198,10 @@ type job struct {
 	// the same form as args: absolute paths, or vault paths when recompile.
 	// nil is the one call every job was before.
 	then []string
+
+	// prestage is ordered lw argument lists run on the scratch vault before
+	// the query call (067 D5).
+	prestage [][]string
 }
 
 // argv is the command line of one lw call of j over args, on the scratch
@@ -360,7 +366,25 @@ func (r *Runner) selectJobs() ([]job, error) {
 	}
 	var all []entry
 	for _, c := range r.Set.Ask {
-		all = append(all, entry{job{id: c.ID, verb: "query", kind: c.Kind, args: []string{c.Q}}, c.Holdout, true})
+		var prestage [][]string
+		for _, step := range c.Prestage {
+			var resolved []string
+			for _, arg := range step {
+				if strings.HasPrefix(arg, "inputs/") {
+					resolved = append(resolved, filepath.Join(r.Set.Dir, filepath.FromSlash(arg)))
+				} else {
+					resolved = append(resolved, arg)
+				}
+			}
+			prestage = append(prestage, resolved)
+		}
+		all = append(all, entry{job{
+			id:       c.ID,
+			verb:     "query",
+			kind:     c.Kind,
+			args:     []string{c.Q},
+			prestage: prestage,
+		}, c.Holdout, true})
 	}
 	for _, c := range r.Set.Ingest {
 		// resolve turns a case's paths into the arguments lw gets.
@@ -546,11 +570,16 @@ func (r *Runner) runJob(ctx context.Context, st *runState, j job) error {
 				return err
 			}
 		}
+	} else if len(j.prestage) > 0 && res.SetupFailure == nil {
+		if err := collectStaged(scratch, caseDir); err != nil {
+			return err
+		}
 	}
 	return writeJSON(filepath.Join(caseDir, "meta.json"), RunMeta{
 		Case: j.id, Verb: j.verb, Kind: j.kind, Index: j.index,
 		Attempts: attempts, ExitCode: res.ExitCode, Failed: res.ExitCode != 0, TimedOut: timedOut,
-		Started: started, WallMS: wall.Milliseconds(), Traces: traces,
+		SetupFailure: res.SetupFailure,
+		Started:      started, WallMS: wall.Milliseconds(), Traces: traces,
 	})
 }
 
@@ -567,12 +596,30 @@ func (r *Runner) runJob(ctx context.Context, st *runState, j job) error {
 // already spent when the first call returns leaves no second call to start and
 // the attempt ends with the context's error, which runJob reads as a timeout.
 //
+// An ask case with prestage (067 D5) runs each prestage argument list in order
+// before the query call. A non-zero exit in prestage is a setup failure: query
+// is not run, and the failing argv is returned in Output.SetupFailure.
+//
 // The result is the first call's when that failed — a joined call on a crashed
 // ingest's half-built changeset would measure the wreck, so it is skipped — and
 // otherwise the second's: its exit code, with the stdout and stderr of both calls,
 // the first's bytes then the second's with nothing between. A job without then
 // returns exactly what its one call returned.
 func (r *Runner) attempt(ctx context.Context, st *runState, scratch string, j job) (Output, error) {
+	for _, step := range j.prestage {
+		argv := append(append([]string(nil), step...), "--vault", scratch)
+		res, err := st.exec(ctx, Cmd{Path: r.LW, Args: argv, Env: st.env})
+		if err != nil || res.ExitCode != 0 {
+			if res.ExitCode == 0 {
+				res.ExitCode = 1
+			}
+			res.SetupFailure = argv
+			return res, err
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return Output{}, err
+	}
 	res, err := st.exec(ctx, Cmd{Path: r.LW, Args: j.argv(scratch, j.args), Env: st.env})
 	if len(j.then) == 0 || err != nil || res.ExitCode != 0 {
 		return res, err
@@ -724,37 +771,9 @@ func collectIngest(scratch, caseDir string) error {
 		return err
 	}
 
-	want := map[string]bool{}
-	collectStagedPaths(cs.Ops, want)
-	paths := make([]string, 0, len(want))
-	for p := range want {
-		paths = append(paths, p)
-	}
-	sort.Strings(paths)
-	stagedDir := filepath.Join(caseDir, "staged")
-	if err := os.MkdirAll(stagedDir, 0o755); err != nil {
+	written, err := writeStagedFiles(e, cs.Ops, caseDir)
+	if err != nil {
 		return err
-	}
-	written := map[string]bool{}
-	for _, p := range paths {
-		b, ok, err := e.StagedFile(p)
-		if err != nil {
-			return fmt.Errorf("read staged %s: %w", p, err)
-		}
-		if !ok {
-			continue // an op kind StagedFile does not serve (retract, split)
-		}
-		if !filepath.IsLocal(filepath.FromSlash(p)) {
-			return fmt.Errorf("staged path %q escapes the case directory", p)
-		}
-		target := filepath.Join(stagedDir, filepath.FromSlash(p))
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-			return err
-		}
-		if err := os.WriteFile(target, b, 0o644); err != nil {
-			return err
-		}
-		written[p] = true
 	}
 
 	report, err := e.ProjectedReport()
@@ -809,6 +828,63 @@ func keepRecompiledRaws(scratch, caseDir string, paths []string) error {
 		}
 	}
 	return nil
+}
+
+// collectStaged writes the open changeset's staged files into caseDir/staged
+// for an ask case with prestage (067 D5).
+func collectStaged(scratch, caseDir string) error {
+	e, err := stage.OpenEngine(scratch)
+	if err != nil {
+		return fmt.Errorf("open scratch vault: %w", err)
+	}
+	defer e.Close()
+	cs, err := e.Current()
+	if errors.Is(err, stage.ErrNoChangeset) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read the open changeset: %w", err)
+	}
+	_, err = writeStagedFiles(e, cs.Ops, caseDir)
+	return err
+}
+
+// writeStagedFiles extracts the staged post-images of live ops into
+// caseDir/staged and returns the set of paths written.
+func writeStagedFiles(e *stage.Engine, ops []stage.Op, caseDir string) (map[string]bool, error) {
+	want := map[string]bool{}
+	collectStagedPaths(ops, want)
+	paths := make([]string, 0, len(want))
+	for p := range want {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	stagedDir := filepath.Join(caseDir, "staged")
+	if err := os.MkdirAll(stagedDir, 0o755); err != nil {
+		return nil, err
+	}
+	written := map[string]bool{}
+	for _, p := range paths {
+		b, ok, err := e.StagedFile(p)
+		if err != nil {
+			return nil, fmt.Errorf("read staged %s: %w", p, err)
+		}
+		if !ok {
+			continue // an op kind StagedFile does not serve (retract, split)
+		}
+		if !filepath.IsLocal(filepath.FromSlash(p)) {
+			return nil, fmt.Errorf("staged path %q escapes the case directory", p)
+		}
+		target := filepath.Join(stagedDir, filepath.FromSlash(p))
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return nil, err
+		}
+		if err := os.WriteFile(target, b, 0o644); err != nil {
+			return nil, err
+		}
+		written[p] = true
+	}
+	return written, nil
 }
 
 // collectStagedPaths adds to into every path under wiki/ or raw/ that a
