@@ -206,6 +206,10 @@ func (b *ContextBuilder) orientInputHash() string {
 	h.Write([]byte("log.md"))
 	h.Write([]byte{0})
 	h.Write(lastLines(logData, orientLogTailLines))
+	if b.r != nil {
+		h.Write([]byte{0})
+		h.Write([]byte(b.r.OpenChangesetKey()))
+	}
 	return hex.EncodeToString(h.Sum(nil))
 }
 

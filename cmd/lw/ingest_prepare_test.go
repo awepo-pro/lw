@@ -143,7 +143,7 @@ func prepOrientation(t *testing.T, root string) string {
 		t.Fatalf("OpenEngine: %v", err)
 	}
 	defer e.Close()
-	res, err := tools.NewRegistry(tools.Deps{Vault: e.Vault(), Index: e.Index(), Engine: e}).Call(t.Context(), "vault.orient", nil)
+	res, err := tools.NewRegistry(tools.Deps{Vault: e.Vault(), Index: e.Index(), Engine: e, OrientCommittedOnly: true}).Call(t.Context(), "vault.orient", nil)
 	if err != nil || res.IsError {
 		t.Fatalf("vault.orient: %+v, %v", res, err)
 	}
