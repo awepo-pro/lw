@@ -187,6 +187,26 @@ func ingestToolDeps(e *stage.Engine, cfg *config.Config, ex extract.Extractor, r
 	return deps
 }
 
+// errAPIKeyResolution wraps an error from cfg.ResolveAPIKey so callers like
+// cmdQuery can distinguish missing/unresolvable keys from other errors while
+// keeping the error string byte-identical (068 D4.4).
+type errAPIKeyResolution struct {
+	err error
+}
+
+func (e *errAPIKeyResolution) Error() string {
+	return fmt.Sprintf("resolve api key: %v", e.err)
+}
+
+func (e *errAPIKeyResolution) Unwrap() error {
+	return e.err
+}
+
+func isAPIKeyResolutionError(err error) bool {
+	var target *errAPIKeyResolution
+	return errors.As(err, &target)
+}
+
 // newIngestAgent constructs the agent.Agent used by ingest, query and
 // lint --fix (cmd_ingest.go, cmd_query.go, cmd_lint.go): the single
 // package-level seam this subtask's brief asks for, since agent.Agent is
@@ -222,7 +242,7 @@ func ingestToolDeps(e *stage.Engine, cfg *config.Config, ex extract.Extractor, r
 var newIngestAgent = func(e *stage.Engine, cfg *config.Config, sessions agent.SessionStore, ex extract.Extractor, recompile []string) (agent.Agent, error) {
 	apiKey, err := cfg.ResolveAPIKey()
 	if err != nil {
-		return nil, fmt.Errorf("resolve api key: %w", err)
+		return nil, &errAPIKeyResolution{err: err}
 	}
 	client := llm.New(ingestLLMConfig(cfg, apiKey))
 	reg := tools.NewRegistry(ingestToolDeps(e, cfg, ex, recompile))

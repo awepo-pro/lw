@@ -156,6 +156,20 @@ stage.*`. You review with `lw tui` or `lw diff` and commit as always; to drop th
 work, `lw doctor --discard-changeset` (with no API key it exits 1 on its api_key
 check after discarding — expected). See [docs/tools.md](docs/tools.md).
 
+**Ask from your own agent.** When the provider is unavailable or unconfigured, an external agent can answer read-only from the vault:
+
+```bash
+lw query --prepare "how does attention work?"
+#   prints an ask brief: how to work, answer rules and vault orientation.
+#   No provider is called and no API key is read.
+lw tool --ask wiki.search '{"q":"attention"}'
+lw tool --ask wiki.get '{"page":"wiki/concepts/attention.md"}'
+lw tool --ask --list                              # every read-only ask tool schema
+lw mcp --ask                                      # MCP server serving only ask tools
+```
+
+External agent ask is strictly read-only: no changeset is opened, no `tool.lock` is taken, no session record is written, and only the 8 read-only ask tools (`wiki.*`, `raw.get`, `raw.list`, `vault.orient`) are offered.
+
 ## Command reference
 
 ```
@@ -170,6 +184,8 @@ commands:
   tool <name> [<json> | --from <file|->]
                                run one tool of that agent's ingest; tool --list prints every schema,
                                tool --brief prints the agent's brief again
+  tool --ask <name> [<json>]   run one read-only tool for an external agent's answer;
+                               tool --ask --list prints their schemas
   status                       show the open changeset, if any
   diff [--op <id>]             show the projected diff of the open changeset
   commit -m "..." [--force]    commit the open changeset
@@ -179,8 +195,11 @@ commands:
                                print one session's transcript
   revert <commit-id>           open a reverse changeset for review
   query "..."                  ask the curator agent a question
+  query --prepare "..."        print a brief for an external agent to answer the question
+                               (no LLM, no key); the agent calls lw tool --ask
   lint [--fix]                 run the lint checks
-  mcp                          run the MCP server over stdio
+  mcp [--ask]                  run the MCP server over stdio; --ask serves only the read-only
+                               ask tools and sees the open changeset as lw query does
   doctor [--unlock] [--rebuild-index] [--discard-changeset] [--json]
                                check vault and lock health
   tui                          launch the terminal UI (default with no command)

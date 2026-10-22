@@ -60,6 +60,8 @@ const toolUsage = `usage: lw tool [--vault <path>] <tool-name> [<json-args>]
        lw tool [--vault <path>] <tool-name> --from <file|->
        lw tool [--vault <path>] --list
        lw tool [--vault <path>] --brief
+       lw tool [--vault <path>] --ask <name> [<json-args> | --from <file|->]
+       lw tool [--vault <path>] --ask --list
 `
 
 // toolNow is the clock the records of `lw ingest --prepare` and `lw tool` are
@@ -92,6 +94,7 @@ func cmdTool(args []string) error {
 	from := fs.String("from", "", "read the JSON arguments from a file, or from standard input with -")
 	list := fs.Bool("list", false, "print every tool lw tool offers, with its JSON schema, and exit")
 	brief := fs.Bool("brief", false, "print the curator brief of the open changeset again, and exit")
+	ask := fs.Bool("ask", false, "run one read-only tool for an external agent's answer")
 	pos, err := parseIngestSources(fs, args)
 	if err != nil {
 		return &exitError{code: 2}
@@ -105,6 +108,33 @@ func cmdTool(args []string) error {
 	usage := func() error {
 		fmt.Fprint(os.Stderr, toolUsage)
 		return &exitError{code: 2}
+	}
+
+	if *ask {
+		if *brief || (*list && len(pos) > 0) || (*list && fromSet) {
+			return usage()
+		}
+		if *list {
+			return toolAskList(*vaultPath)
+		}
+		if len(pos) == 0 || len(pos) > 2 {
+			return usage()
+		}
+		name := pos[0]
+		canonical := name
+		if !strings.Contains(name, ".") {
+			canonical = tools.CanonicalName(name)
+		}
+		if !slices.Contains(tools.AskToolNames(), canonical) {
+			fmt.Fprintf(os.Stderr, "lw: tool: %s is not offered for ask (lw tool --ask --list shows the tools)\n", name)
+			return &exitError{code: 2}
+		}
+		callArgs, err := toolCallArgs(pos[1:], fromSet, *from)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "lw: tool: %v\n", err)
+			return &exitError{code: 2}
+		}
+		return toolAskCall(*vaultPath, canonical, callArgs)
 	}
 
 	if *list || *brief {
@@ -214,6 +244,12 @@ type toolListing struct {
 // nothing. The encoder does not escape HTML: descriptions say "<" and "&", and
 // an agent reads the text as it is.
 func toolList(vaultPath string) error {
+	return toolListOf(vaultPath, tools.IngestToolNames())
+}
+
+// toolListOf prints the listing of names — the ingest set for `lw tool --list`,
+// the ask set for `lw tool --ask --list` (068) — one encoder for both.
+func toolListOf(vaultPath string, names []string) error {
 	root, err := findVaultRoot(vaultPath)
 	if err != nil {
 		return err
@@ -221,7 +257,7 @@ func toolList(vaultPath string) error {
 	attachLoggingAt(root) // read-only: join the trail, never create it
 	reg := tools.NewRegistry(tools.Deps{})
 	var out []toolListing
-	for _, name := range tools.IngestToolNames() {
+	for _, name := range names {
 		t, ok := reg.Get(name)
 		if !ok {
 			return fmt.Errorf("tool %s is offered but not registered", name)

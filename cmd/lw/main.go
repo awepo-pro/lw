@@ -176,6 +176,8 @@ commands:
   tool <name> [<json> | --from <file|->]
                                run one tool of that agent's ingest; tool --list prints every schema,
                                tool --brief prints the agent's brief again
+  tool --ask <name> [<json>]   run one read-only tool for an external agent's answer;
+                               tool --ask --list prints their schemas
   note [-m "..." | -F <file>]  capture a quick raw note outside the wiki (no LLM, no review)
   note list [-n N]             list captured notes, newest first
   status                       show the open changeset, if any
@@ -188,8 +190,11 @@ commands:
   trace [-n N]                 list agent turn traces; trace show <ref> inspects one
   revert <commit-id>           open a reverse changeset for review
   query "..."                  ask the curator agent a question
+  query --prepare "..."        print a brief for an external agent to answer the question
+                               (no LLM, no key); the agent calls lw tool --ask
   lint [--fix]                 run the lint checks
-  mcp                          run the MCP server over stdio
+  mcp [--ask]                  run the MCP server over stdio; --ask serves only the read-only
+                               ask tools and sees the open changeset as lw query does
   doctor [--unlock] [--rebuild-index] [--discard-changeset] [--json]
                                check vault and lock health
   sync [--take-remote]         pull then push the vault through its [sync] remotes
