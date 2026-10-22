@@ -14,6 +14,7 @@ import (
 
 	"github.com/awepo-pro/lw/internal/llm"
 	"github.com/awepo-pro/lw/internal/tools"
+	"github.com/awepo-pro/lw/internal/trace"
 	"github.com/awepo-pro/lw/internal/vault"
 )
 
@@ -84,7 +85,7 @@ func (b *ContextBuilder) buildFor(s *Session, userMsg string, plan turnPlan) ([]
 		return nil, fmt.Errorf("agent: build context: read curator-memory.md: %w", err)
 	}
 
-	digest, err := b.orientDigest(s)
+	digest, err := b.orientDigest(s, plan.verb)
 	if err != nil {
 		return nil, fmt.Errorf("agent: build context: %w", err)
 	}
@@ -160,8 +161,8 @@ func (b *ContextBuilder) buildFor(s *Session, userMsg string, plan turnPlan) ([]
 // fresh one through the "vault.orient" tool the first time s is seen and
 // whenever anything the digest reads has changed since the last fetch
 // (orientInputHash).
-func (b *ContextBuilder) orientDigest(s *Session) (string, error) {
-	hash := b.orientInputHash()
+func (b *ContextBuilder) orientDigest(s *Session, verb string) (string, error) {
+	hash := b.orientInputHash(verb)
 
 	b.mu.Lock()
 	entry, ok := b.orient[s.ID]
@@ -170,7 +171,11 @@ func (b *ContextBuilder) orientDigest(s *Session) (string, error) {
 		return entry.digest, nil
 	}
 
-	res, err := b.r.Call(context.Background(), "vault.orient", json.RawMessage(`{}`))
+	ctx := context.Background()
+	if verb != "" {
+		ctx = trace.WithVerb(ctx, verb)
+	}
+	res, err := b.r.Call(ctx, "vault.orient", json.RawMessage(`{}`))
 	if err != nil {
 		return "", fmt.Errorf("orient: %w", err)
 	}
@@ -193,7 +198,9 @@ const orientLogTailLines = 30
 // and may edit curator-memory.md without touching index.md, so the conversation
 // kept the digest it was first given (057 FIX2 R5). A file that does not exist
 // hashes as empty, so a vault with no index.md yet still caches correctly.
-func (b *ContextBuilder) orientInputHash() string {
+// For read-only verbs (ask, query, file), it also hashes the open changeset key
+// (067 FIX-W3).
+func (b *ContextBuilder) orientInputHash(verb string) string {
 	h := sha256.New()
 	for _, name := range []string{"SCHEMA.md", "index.md", "curator-memory.md"} {
 		data, _ := b.v.Read(name) // absence is not an error here
@@ -206,11 +213,20 @@ func (b *ContextBuilder) orientInputHash() string {
 	h.Write([]byte("log.md"))
 	h.Write([]byte{0})
 	h.Write(lastLines(logData, orientLogTailLines))
-	if b.r != nil {
+	if b.r != nil && isReadOnlyVerb(verb) {
 		h.Write([]byte{0})
 		h.Write([]byte(b.r.OpenChangesetKey()))
 	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+func isReadOnlyVerb(verb string) bool {
+	switch verb {
+	case trace.VerbAsk, trace.VerbQuery, trace.VerbFile:
+		return true
+	default:
+		return false
+	}
 }
 
 // lastLines returns the final n lines of data (a trailing newline does not

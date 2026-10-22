@@ -1,13 +1,16 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/awepo-pro/lw/internal/extract"
 	"github.com/awepo-pro/lw/internal/stage"
 	"github.com/awepo-pro/lw/internal/testutil"
 	"github.com/awepo-pro/lw/internal/tools"
+	"github.com/awepo-pro/lw/internal/trace"
 )
 
 // TestOrientDigestRefreshesOnChangesetChange pins the agent-layer requirement
@@ -46,11 +49,13 @@ func TestOrientDigestRefreshesOnChangesetChange(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	askPlan := planFor(trace.VerbAsk)
+
 	// 1. Initial Build fetches digest through vault.orient
 	if orientCalls != 0 {
 		t.Fatalf("orientCalls before initial Build = %d, want 0", orientCalls)
 	}
-	msgs1, err := b.Build(s, "initial user msg")
+	msgs1, err := b.buildFor(s, "initial user msg", askPlan)
 	if err != nil {
 		t.Fatalf("Build 1: %v", err)
 	}
@@ -60,7 +65,7 @@ func TestOrientDigestRefreshesOnChangesetChange(t *testing.T) {
 	digest1 := msgs1[2].Content
 
 	// 2. Unchanged state returns cached digest without calling vault.orient
-	msgs2, err := b.Build(s, "second user msg")
+	msgs2, err := b.buildFor(s, "second user msg", askPlan)
 	if err != nil {
 		t.Fatalf("Build 2: %v", err)
 	}
@@ -90,7 +95,7 @@ func TestOrientDigestRefreshesOnChangesetChange(t *testing.T) {
 	}
 
 	// Digest must refresh after Append
-	msgs3, err := b.Build(s, "third user msg")
+	msgs3, err := b.buildFor(s, "third user msg", askPlan)
 	if err != nil {
 		t.Fatalf("Build 3: %v", err)
 	}
@@ -103,7 +108,7 @@ func TestOrientDigestRefreshesOnChangesetChange(t *testing.T) {
 	}
 
 	// Unchanged again -> cached
-	_, err = b.Build(s, "fourth user msg")
+	_, err = b.buildFor(s, "fourth user msg", askPlan)
 	if err != nil {
 		t.Fatalf("Build 4: %v", err)
 	}
@@ -130,7 +135,7 @@ func TestOrientDigestRefreshesOnChangesetChange(t *testing.T) {
 	}
 
 	// Build after Append op 2
-	msgs3b, err := b.Build(s, "user msg after append 2")
+	msgs3b, err := b.buildFor(s, "user msg after append 2", askPlan)
 	if err != nil {
 		t.Fatalf("Build 3b: %v", err)
 	}
@@ -153,7 +158,7 @@ func TestOrientDigestRefreshesOnChangesetChange(t *testing.T) {
 	}
 
 	// Digest must refresh after DropOp
-	msgs4, err := b.Build(s, "fifth user msg")
+	msgs4, err := b.buildFor(s, "fifth user msg", askPlan)
 	if err != nil {
 		t.Fatalf("Build 5: %v", err)
 	}
@@ -166,7 +171,7 @@ func TestOrientDigestRefreshesOnChangesetChange(t *testing.T) {
 	}
 
 	// Unchanged again -> cached
-	_, err = b.Build(s, "sixth user msg")
+	_, err = b.buildFor(s, "sixth user msg", askPlan)
 	if err != nil {
 		t.Fatalf("Build 6: %v", err)
 	}
@@ -180,7 +185,7 @@ func TestOrientDigestRefreshesOnChangesetChange(t *testing.T) {
 	}
 
 	// Digest must refresh after Commit
-	msgs5, err := b.Build(s, "seventh user msg")
+	msgs5, err := b.buildFor(s, "seventh user msg", askPlan)
 	if err != nil {
 		t.Fatalf("Build 7: %v", err)
 	}
@@ -193,11 +198,135 @@ func TestOrientDigestRefreshesOnChangesetChange(t *testing.T) {
 	}
 
 	// Unchanged again -> cached
-	_, err = b.Build(s, "eighth user msg")
+	_, err = b.buildFor(s, "eighth user msg", askPlan)
 	if err != nil {
 		t.Fatalf("Build 8: %v", err)
 	}
 	if orientCalls != 5 {
 		t.Fatalf("orientCalls after commit unchanged = %d, want 5", orientCalls)
+	}
+}
+
+// TestOrientSectionOnlyInReadOnlyVerbs pins 067 FIX-W3 (W3-1):
+// same split for vault.orient (ask, query, file show section; ingest, lint, "" do not);
+// and a ContextBuilder digest built for an ingest-plan turn has no section while an ask-plan turn's has it.
+func TestOrientSectionOnlyInReadOnlyVerbs(t *testing.T) {
+	dir := testutil.CopyFixture(t, "minimal")
+	e, err := stage.OpenEngine(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close()
+
+	author := stage.Author{Kind: "agent", Model: "test"}
+	reg := tools.NewRegistry(tools.Deps{
+		Vault:   e.Vault(),
+		Index:   e.Index(),
+		Engine:  e,
+		Author:  author,
+		Extract: extract.NewFile(),
+	})
+
+	cs, err := e.OpenChangeset("orient verbs test", author)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Stage a page
+	body := "# Staged Orient Page\n\nBody.\n\n## Related\n\n- [[kv-cache]]\n- [[flash-attention]]\n"
+	args := map[string]any{
+		"path":       "wiki/concepts/staged-orient.md",
+		"title":      "Staged Orient Page",
+		"type":       "concept",
+		"tags":       []string{"inference"},
+		"sources":    []string{"raw/articles/kv-cache-explained.md"},
+		"confidence": "high",
+		"contested":  false,
+		"body":       body,
+		"rationale":  "orient verb test page",
+	}
+	argBytes, _ := json.Marshal(args)
+	if res, err := reg.Call(context.Background(), "stage.create_page", argBytes); err != nil || res.IsError {
+		t.Fatalf("stage.create_page: %v, content=%s", err, res.Content)
+	}
+
+	const sectionHeader = "## Open changeset (unreviewed)"
+
+	// 1. vault.orient tool split:
+	// ask, query, file → section present
+	for _, verb := range []string{trace.VerbAsk, trace.VerbQuery, trace.VerbFile} {
+		t.Run("orient_tool_"+verb, func(t *testing.T) {
+			ctx := trace.WithVerb(context.Background(), verb)
+			res, err := reg.Call(ctx, "vault.orient", json.RawMessage(`{}`))
+			if err != nil {
+				t.Fatalf("vault.orient %s error: %v", verb, err)
+			}
+			if !strings.Contains(res.Content, sectionHeader) {
+				t.Fatalf("vault.orient %s missing section header:\n%s", verb, res.Content)
+			}
+			if !strings.Contains(res.Content, cs.ID) {
+				t.Fatalf("vault.orient %s missing changeset id %s:\n%s", verb, cs.ID, res.Content)
+			}
+			if !strings.Contains(res.Content, "wiki/concepts/staged-orient.md — Staged Orient Page") {
+				t.Fatalf("vault.orient %s missing staged line:\n%s", verb, res.Content)
+			}
+		})
+	}
+
+	// ingest, lint, "" → section NOT present (output == committed-only baseline)
+	resBaseline, err := reg.Call(context.Background(), "vault.orient", json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(resBaseline.Content, sectionHeader) {
+		t.Fatalf("vault.orient under \"\" unexpectedly contains open changeset section")
+	}
+
+	for _, verb := range []string{trace.VerbIngest, trace.VerbLint, ""} {
+		t.Run("orient_tool_"+verb, func(t *testing.T) {
+			ctx := context.Background()
+			if verb != "" {
+				ctx = trace.WithVerb(ctx, verb)
+			}
+			res, err := reg.Call(ctx, "vault.orient", json.RawMessage(`{}`))
+			if err != nil {
+				t.Fatalf("vault.orient %q error: %v", verb, err)
+			}
+			if strings.Contains(res.Content, sectionHeader) {
+				t.Fatalf("vault.orient %q unexpectedly contains open changeset section:\n%s", verb, res.Content)
+			}
+			if res.Content != resBaseline.Content {
+				t.Fatalf("vault.orient %q output differs from baseline:\nGot:\n%s\nWant:\n%s", verb, res.Content, resBaseline.Content)
+			}
+		})
+	}
+
+	// 2. ContextBuilder digest built for an ingest-plan turn vs ask-plan turn
+	b := NewContextBuilder(e.Vault(), reg, 100_000)
+	s := &Session{ID: "session-orient-verbs", ChangesetID: cs.ID}
+
+	// Ingest-plan turn: has no section
+	ingestPlan := planFor(trace.VerbIngest)
+	msgsIngest, err := b.buildFor(s, "ingest query", ingestPlan)
+	if err != nil {
+		t.Fatalf("buildFor ingest: %v", err)
+	}
+	digestIngest := msgsIngest[2].Content
+	if strings.Contains(digestIngest, sectionHeader) {
+		t.Fatalf("ContextBuilder digest for ingest plan unexpectedly contains open changeset section:\n%s", digestIngest)
+	}
+
+	// Ask-plan turn: has section
+	askPlan := planFor(trace.VerbAsk)
+	msgsAsk, err := b.buildFor(s, "ask query", askPlan)
+	if err != nil {
+		t.Fatalf("buildFor ask: %v", err)
+	}
+	digestAsk := msgsAsk[2].Content
+	if !strings.Contains(digestAsk, sectionHeader) {
+		t.Fatalf("ContextBuilder digest for ask plan missing open changeset section:\n%s", digestAsk)
+	}
+	if !strings.Contains(digestAsk, cs.ID) || !strings.Contains(digestAsk, "wiki/concepts/staged-orient.md") {
+		t.Fatalf("ContextBuilder digest for ask plan missing staged page details:\n%s", digestAsk)
 	}
 }

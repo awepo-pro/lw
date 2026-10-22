@@ -22,6 +22,20 @@ const rawChunkRunes = 16000
 // result can tell at a glance the bytes have not landed yet.
 const stagedSourceMarker = "(staged in the open changeset, not yet committed)\n\n"
 
+// stagedCitableMarker prefixes staged content read under read-only verbs
+// (ask, query, file) — 067 FIX-W3 (W3-2).
+const stagedCitableMarker = "(staged in the open changeset, not yet committed — unreviewed vault content: cite it with its ^[path] marker as usual)\n\n"
+
+// stagedMarker returns the staged prefix appropriate for ctx's verb:
+// the citable marker for read-only verbs (ask, query, file), or
+// stagedSourceMarker for every other verb or verb-less contexts (W3-2).
+func stagedMarker(ctx context.Context) string {
+	if readOnlyVerb(ctx) {
+		return stagedCitableMarker
+	}
+	return stagedSourceMarker
+}
+
 type rawGetArgs struct {
 	Source string `json:"source"`
 	Chunk  int    `json:"chunk,omitempty"`
@@ -55,7 +69,7 @@ func rawGetHandler(ctx context.Context, d Deps, args json.RawMessage) (Result, e
 		return Result{IsError: true, Content: `source is required: provide the exact vault-relative path under raw/, e.g. {"source": "raw/papers/leviathan-2023.md"}`}, nil
 	}
 
-	body, marker, ok, err := rawSourceBody(d, source)
+	body, marker, ok, err := rawSourceBody(ctx, d, source)
 	if err != nil {
 		return Result{}, fmt.Errorf("tools: raw.get: %w", err)
 	}
@@ -137,7 +151,7 @@ func chunkHeader(body string, chunks []string, chunk, n int) string {
 // engine/CAS failure or a staged file that fails to parse as a RawSource
 // (an internal invariant violation, since stage.ingest_source only ever
 // proposes bytes rawDocumentDefect already proved parse cleanly).
-func rawSourceBody(d Deps, source string) (body, marker string, ok bool, err error) {
+func rawSourceBody(ctx context.Context, d Deps, source string) (body, marker string, ok bool, err error) {
 	if r, found := d.Vault.RawSource(source); found {
 		return r.Body, "", true, nil
 	}
@@ -155,7 +169,7 @@ func rawSourceBody(d Deps, source string) (body, marker string, ok bool, err err
 	if err != nil {
 		return "", "", false, fmt.Errorf("parse staged raw source %s: %w", source, err)
 	}
-	return r.Body, stagedSourceMarker, true, nil
+	return r.Body, stagedMarker(ctx), true, nil
 }
 
 // rawNotFoundMessage builds the IsError message for a source that resolved

@@ -89,7 +89,7 @@ func orientHandler(ctx context.Context, d Deps, args json.RawMessage) (Result, e
 	fmt.Fprintf(&b, "\n## log.md (last %d lines)\n\n", orientLogMaxLines)
 	writeSectionBody(&b, logText)
 
-	if d.Engine != nil && !d.OrientCommittedOnly {
+	if readOnlyVerb(ctx) && d.Engine != nil && !d.OrientCommittedOnly {
 		if cs, err := d.Engine.Current(); err == nil && cs != nil && len(cs.Live()) > 0 {
 			appendOrientOpenChangeset(&b, d, cs)
 		}

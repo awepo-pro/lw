@@ -58,7 +58,10 @@ func wikiSearchHandler(ctx context.Context, d Deps, args json.RawMessage) (Resul
 		)}, nil
 	}
 
-	csKey := openChangesetKey(d)
+	var csKey string
+	if readOnlyVerb(ctx) {
+		csKey = openChangesetKey(d)
+	}
 	searchIndex, err := getSearchIndex(d, csKey)
 	if err != nil {
 		return Result{}, fmt.Errorf("tools: wiki.search: %w", err)
@@ -164,7 +167,7 @@ func wikiGetHandler(ctx context.Context, d Deps, args json.RawMessage) (Result, 
 			content = firstRunes(content, wikiGetMaxRunes) + notice + "]"
 		}
 		if staged {
-			content = stagedSourceMarker + content
+			content = stagedMarker(ctx) + content
 		}
 		return Result{Content: resolvedNote + content}, nil
 	}
@@ -184,7 +187,7 @@ func wikiGetHandler(ctx context.Context, d Deps, args json.RawMessage) (Result, 
 		)
 	}
 	if staged {
-		body = stagedSourceMarker + body
+		body = stagedMarker(ctx) + body
 	}
 	return Result{Content: resolvedNote + body}, nil
 }

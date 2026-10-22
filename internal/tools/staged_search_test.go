@@ -14,6 +14,7 @@ import (
 	"github.com/awepo-pro/lw/internal/index"
 	"github.com/awepo-pro/lw/internal/stage"
 	"github.com/awepo-pro/lw/internal/testutil"
+	"github.com/awepo-pro/lw/internal/trace"
 	"github.com/awepo-pro/lw/internal/vault"
 )
 
@@ -93,9 +94,10 @@ func TestWikiSearchFindsStagedOnlyPage(t *testing.T) {
 		t.Fatalf("stage.create_page: %v, content=%s", err, res.Content)
 	}
 
+	askCtx := trace.WithVerb(context.Background(), trace.VerbAsk)
 	wantTag := fmt.Sprintf("   (staged in %s, unreviewed)", cs.ID)
 	for _, q := range []string{"hack the box", "HTB", "penetration"} {
-		res, err := reg.Call(context.Background(), "wiki.search", json.RawMessage(fmt.Sprintf(`{"q":%q}`, q)))
+		res, err := reg.Call(askCtx, "wiki.search", json.RawMessage(fmt.Sprintf(`{"q":%q}`, q)))
 		if err != nil {
 			t.Fatalf("search %q: %v", q, err)
 		}
@@ -176,7 +178,8 @@ This committed page explains network RTT measurement in detail.
 		t.Fatalf("stage.patch_page: %v, content=%s", err, res.Content)
 	}
 
-	res, err := reg.Call(context.Background(), "wiki.search", json.RawMessage(`{"q":"RTT"}`))
+	askCtx := trace.WithVerb(context.Background(), trace.VerbAsk)
+	res, err := reg.Call(askCtx, "wiki.search", json.RawMessage(`{"q":"RTT"}`))
 	if err != nil {
 		t.Fatalf("search RTT: %v", err)
 	}
@@ -240,8 +243,10 @@ func TestWikiSearchDroppedOpInvisible(t *testing.T) {
 		t.Fatalf("stage.create_page: %v, content=%s", err, res.Content)
 	}
 
+	askCtx := trace.WithVerb(context.Background(), trace.VerbAsk)
+
 	// 1. Page is a hit before drop
-	res1, err := reg.Call(context.Background(), "wiki.search", json.RawMessage(`{"q":"UniqueKeywordForDropOp"}`))
+	res1, err := reg.Call(askCtx, "wiki.search", json.RawMessage(`{"q":"UniqueKeywordForDropOp"}`))
 	if err != nil || !strings.Contains(res1.Content, "wiki/concepts/dropped-page.md") {
 		t.Fatalf("search before drop did not find page: %v, content=%s", err, res1.Content)
 	}
@@ -257,7 +262,7 @@ func TestWikiSearchDroppedOpInvisible(t *testing.T) {
 	}
 
 	// 3. Page is not a hit after drop
-	res2, err := reg.Call(context.Background(), "wiki.search", json.RawMessage(`{"q":"UniqueKeywordForDropOp"}`))
+	res2, err := reg.Call(askCtx, "wiki.search", json.RawMessage(`{"q":"UniqueKeywordForDropOp"}`))
 	if err != nil {
 		t.Fatalf("search after drop: %v", err)
 	}
@@ -271,7 +276,7 @@ func TestWikiSearchDroppedOpInvisible(t *testing.T) {
 	}
 
 	// 5. Page is hit + tag again
-	res3, err := reg.Call(context.Background(), "wiki.search", json.RawMessage(`{"q":"UniqueKeywordForDropOp"}`))
+	res3, err := reg.Call(askCtx, "wiki.search", json.RawMessage(`{"q":"UniqueKeywordForDropOp"}`))
 	if err != nil || !strings.Contains(res3.Content, "wiki/concepts/dropped-page.md") {
 		t.Fatalf("search after restore did not find page: %v, content=%s", err, res3.Content)
 	}
@@ -324,9 +329,11 @@ func TestProjectedSearchCache(t *testing.T) {
 	}
 	defer func() { testProjectedBuildHook = nil }()
 
+	askCtx := trace.WithVerb(context.Background(), trace.VerbAsk)
+
 	// 5 searches at one key → 1 projection build
 	for i := 0; i < 5; i++ {
-		_, err := reg.Call(context.Background(), "wiki.search", json.RawMessage(`{"q":"SearchCacheKeyword"}`))
+		_, err := reg.Call(askCtx, "wiki.search", json.RawMessage(`{"q":"SearchCacheKeyword"}`))
 		if err != nil {
 			t.Fatalf("search %d: %v", i+1, err)
 		}
@@ -353,7 +360,7 @@ func TestProjectedSearchCache(t *testing.T) {
 		t.Fatalf("stage.create_page 2: %v, content=%s", err, res.Content)
 	}
 
-	_, err = reg.Call(context.Background(), "wiki.search", json.RawMessage(`{"q":"SecondCacheKeyword"}`))
+	_, err = reg.Call(askCtx, "wiki.search", json.RawMessage(`{"q":"SecondCacheKeyword"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -369,7 +376,7 @@ func TestProjectedSearchCache(t *testing.T) {
 		t.Fatalf("after commit OpenChangesetKey() = %q, want empty string", key)
 	}
 
-	resCommitted, err := reg.Call(context.Background(), "wiki.search", json.RawMessage(`{"q":"SearchCacheKeyword"}`))
+	resCommitted, err := reg.Call(askCtx, "wiki.search", json.RawMessage(`{"q":"SearchCacheKeyword"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -502,10 +509,13 @@ func TestOpenChangesetKey(t *testing.T) {
 	_ = cs
 }
 
-// TestSearchSeesOwnStagedPagesInIngestRegistry: an ingest-verb registry
-// (ingestToolDeps shape) over a changeset its own stage.create_page just staged
-// finds that page by search. Red on base.
-func TestSearchSeesOwnStagedPagesInIngestRegistry(t *testing.T) {
+// TestIngestSearchStaysCommittedOnly (A-067-6, inverts the S1 frozen
+// TestSearchSeesOwnStagedPagesInIngestRegistry after FIX-W3): an ingest-verb
+// registry (ingestToolDeps shape) over a changeset its own stage.create_page
+// just staged does NOT find that page by search in an ingest turn — the eval
+// showed projected search costs ingest REAL rounds and tokens — while the same
+// registry under an ask verb does, tagged.
+func TestIngestSearchStaysCommittedOnly(t *testing.T) {
 	dir := testutil.CopyFixture(t, "minimal")
 	e, err := stage.OpenEngine(dir)
 	if err != nil {
@@ -547,15 +557,22 @@ func TestSearchSeesOwnStagedPagesInIngestRegistry(t *testing.T) {
 		t.Fatalf("stage.create_page: %v, content=%s", err, res.Content)
 	}
 
-	res, err := reg.Call(context.Background(), "wiki.search", json.RawMessage(`{"q":"IngestSearchKeyword"}`))
+	ingestCtx := trace.WithVerb(context.Background(), trace.VerbIngest)
+	res, err := reg.Call(ingestCtx, "wiki.search", json.RawMessage(`{"q":"IngestSearchKeyword"}`))
 	if err != nil {
 		t.Fatalf("search error: %v", err)
 	}
-	if !strings.Contains(res.Content, "wiki/concepts/ingest-staged.md") {
-		t.Fatalf("wiki.search in ingest registry failed to find own staged page:\n%s", res.Content)
+	if res.Content != `no results for "IngestSearchKeyword"` {
+		t.Fatalf("wiki.search in an ingest turn must stay committed-only, got:\n%s", res.Content)
 	}
-	if !strings.Contains(res.Content, "   (staged in cs-") {
-		t.Fatalf("wiki.search in ingest registry missing staged tag line:\n%s", res.Content)
+
+	askCtx := trace.WithVerb(context.Background(), trace.VerbAsk)
+	res, err = reg.Call(askCtx, "wiki.search", json.RawMessage(`{"q":"IngestSearchKeyword"}`))
+	if err != nil {
+		t.Fatalf("search error: %v", err)
+	}
+	if !strings.Contains(res.Content, "wiki/concepts/ingest-staged.md") || !strings.Contains(res.Content, "   (staged in cs-") {
+		t.Fatalf("wiki.search under an ask verb must find the staged page, tagged:\n%s", res.Content)
 	}
 }
 
@@ -728,7 +745,8 @@ Content one.
 			t.Fatalf("append ingest R: %v", err)
 		}
 
-		res, err := reg.Call(context.Background(), "vault.orient", json.RawMessage(`{}`))
+		askCtx := trace.WithVerb(context.Background(), trace.VerbAsk)
+		res, err := reg.Call(askCtx, "vault.orient", json.RawMessage(`{}`))
 		if err != nil {
 			t.Fatalf("vault.orient: %v", err)
 		}
@@ -773,7 +791,8 @@ Content one.
 			t.Fatalf("create A: %v, %s", err, res.Content)
 		}
 
-		res, err := reg.Call(context.Background(), "vault.orient", json.RawMessage(`{}`))
+		askCtx := trace.WithVerb(context.Background(), trace.VerbAsk)
+		res, err := reg.Call(askCtx, "vault.orient", json.RawMessage(`{}`))
 		if err != nil {
 			t.Fatalf("vault.orient: %v", err)
 		}
@@ -821,7 +840,8 @@ Content one.
 			}
 		}
 
-		res, err := reg.Call(context.Background(), "vault.orient", json.RawMessage(`{}`))
+		askCtx := trace.WithVerb(context.Background(), trace.VerbAsk)
+		res, err := reg.Call(askCtx, "vault.orient", json.RawMessage(`{}`))
 		if err != nil {
 			t.Fatalf("vault.orient: %v", err)
 		}
@@ -1085,7 +1105,8 @@ Content one.
 		OrientCommittedOnly: false,
 	})
 
-	res, err := regNoExtract.Call(context.Background(), "vault.orient", json.RawMessage(`{}`))
+	askCtx := trace.WithVerb(context.Background(), trace.VerbAsk)
+	res, err := regNoExtract.Call(askCtx, "vault.orient", json.RawMessage(`{}`))
 	if err != nil {
 		t.Fatalf("vault.orient: %v", err)
 	}
@@ -1115,8 +1136,12 @@ func TestStagedReadPredicate(t *testing.T) {
 	}{
 		{"wiki.get with marker", "wiki.get", marker, true},
 		{"raw.get with marker", "raw.get", marker, true},
+		{"wiki.get with citable marker", "wiki.get", stagedCitableMarker + "# Title\nBody", true},
+		{"raw.get with citable marker", "raw.get", stagedCitableMarker + "chunk 1 of 1\n\nBody", true},
 		{"wiki_get wire name with marker", "wiki_get", marker, true},
 		{"raw_get wire name with marker", "raw_get", marker, true},
+		{"wiki_get wire name with citable marker", "wiki_get", stagedCitableMarker + "# Title\nBody", true},
+		{"raw_get wire name with citable marker", "raw_get", stagedCitableMarker + "chunk 1 of 1\n\nBody", true},
 		{"wiki.search with tag line", "wiki.search", tagLine, true},
 		{"wiki_search with tag line", "wiki_search", tagLine, true},
 		{"wiki.search without tag line", "wiki.search", searchNormal, false},
@@ -1176,5 +1201,232 @@ func TestNoChangesetWithEngineByteIdentical(t *testing.T) {
 		if got != want {
 			t.Errorf("%s %s:\nwith engine: %q\nbare:        %q", c.tool, c.args, got.Content, want.Content)
 		}
+	}
+}
+
+// TestProjectedSearchOnlyInReadOnlyVerbs pins 067 FIX-W3 (W3-1):
+// open changeset with a staged-only page; ctx verbs ask, query, file → hit + tag line;
+// verbs ingest, lint, "" → output == the committed index's ("no results for …").
+func TestProjectedSearchOnlyInReadOnlyVerbs(t *testing.T) {
+	dir := testutil.CopyFixture(t, "minimal")
+	e, err := stage.OpenEngine(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close()
+
+	author := stage.Author{Kind: "agent", Model: "test"}
+	reg := NewRegistry(Deps{
+		Vault:   e.Vault(),
+		Index:   e.Index(),
+		Engine:  e,
+		Author:  author,
+		Extract: extract.NewFile(),
+	})
+
+	cs, err := e.OpenChangeset("w3-1 search test", author)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body := "# Staged Only Concept\n\nStagedSearchOnlyTerm appears only in this staged-only page.\n\n## Related\n\n- [[kv-cache]]\n- [[flash-attention]]\n"
+	args := map[string]any{
+		"path":       "wiki/concepts/staged-only-page.md",
+		"title":      "Staged Only Concept",
+		"type":       "concept",
+		"tags":       []string{"inference"},
+		"sources":    []string{"raw/articles/kv-cache-explained.md"},
+		"confidence": "high",
+		"contested":  false,
+		"body":       body,
+		"rationale":  "create staged-only page",
+	}
+	argBytes, _ := json.Marshal(args)
+	if res, err := reg.Call(context.Background(), "stage.create_page", argBytes); err != nil || res.IsError {
+		t.Fatalf("stage.create_page: %v, content=%s", err, res.Content)
+	}
+
+	query := "StagedSearchOnlyTerm"
+	searchArg := json.RawMessage(fmt.Sprintf(`{"q":%q}`, query))
+	wantCommitted := fmt.Sprintf("no results for %q", query)
+	wantTag := fmt.Sprintf("   (staged in %s, unreviewed)", cs.ID)
+
+	// Read-only verbs: ask, query, file → hit + tag line
+	readOnlyVerbs := []string{trace.VerbAsk, trace.VerbQuery, trace.VerbFile}
+	for _, verb := range readOnlyVerbs {
+		t.Run("read_only_"+verb, func(t *testing.T) {
+			ctx := trace.WithVerb(context.Background(), verb)
+			res, err := reg.Call(ctx, "wiki.search", searchArg)
+			if err != nil {
+				t.Fatalf("search %s error: %v", verb, err)
+			}
+			if !strings.Contains(res.Content, "wiki/concepts/staged-only-page.md") {
+				t.Fatalf("verb %s did not find staged-only page:\n%s", verb, res.Content)
+			}
+			if !strings.Contains(res.Content, wantTag) {
+				t.Fatalf("verb %s missing tag %q:\n%s", verb, wantTag, res.Content)
+			}
+		})
+	}
+
+	// Non-read-only verbs: ingest, lint, "" → output == the committed index's (no results for ...)
+	nonReadOnlyVerbs := []string{trace.VerbIngest, trace.VerbLint, ""}
+	for _, verb := range nonReadOnlyVerbs {
+		t.Run("non_read_only_"+verb, func(t *testing.T) {
+			ctx := context.Background()
+			if verb != "" {
+				ctx = trace.WithVerb(ctx, verb)
+			}
+			res, err := reg.Call(ctx, "wiki.search", searchArg)
+			if err != nil {
+				t.Fatalf("search %q error: %v", verb, err)
+			}
+			if res.Content != wantCommitted {
+				t.Fatalf("verb %q output = %q, want committed index output %q", verb, res.Content, wantCommitted)
+			}
+		})
+	}
+}
+
+// TestStagedPrefixCitableInReadOnlyVerbs pins 067 FIX-W3 (W3-2):
+// wiki.get + raw.get of staged content under ask → the W3-2 prefix exactly;
+// under ingest and "" → stagedSourceMarker exactly; StagedRead true for both.
+func TestStagedPrefixCitableInReadOnlyVerbs(t *testing.T) {
+	dir := testutil.CopyFixture(t, "minimal")
+	e, err := stage.OpenEngine(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close()
+
+	author := stage.Author{Kind: "agent", Model: "test"}
+	reg := NewRegistry(Deps{
+		Vault:   e.Vault(),
+		Index:   e.Index(),
+		Engine:  e,
+		Author:  author,
+		Extract: extract.NewFile(),
+	})
+
+	_, err = e.OpenChangeset("w3-2 prefix test", author)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Stage a page via stage.create_page
+	pageBody := "# Staged Citable Page\n\nStaged page body content.\n\n## Related\n\n- [[kv-cache]]\n- [[flash-attention]]\n"
+	pageArgs := map[string]any{
+		"path":       "wiki/concepts/staged-citable.md",
+		"title":      "Staged Citable Page",
+		"type":       "concept",
+		"tags":       []string{"inference"},
+		"sources":    []string{"raw/articles/kv-cache-explained.md"},
+		"confidence": "high",
+		"contested":  false,
+		"body":       pageBody,
+		"rationale":  "create staged citable page",
+	}
+	pBytes, _ := json.Marshal(pageArgs)
+	if res, err := reg.Call(context.Background(), "stage.create_page", pBytes); err != nil || res.IsError {
+		t.Fatalf("stage.create_page: %v, content=%s", err, res.Content)
+	}
+
+	// 2. Stage a raw source via stage.ingest_source (or engine.Append)
+	rawContent := "---\nsource_url: file://staged-raw.md\ningested: 2026-10-19\nsha256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n---\n\n# Staged Raw\n\nStaged raw body content.\n"
+	if _, err := e.Append(stage.Op{
+		Kind:      stage.OpIngestSource,
+		Path:      "raw/articles/staged-raw.md",
+		Extractor: "test",
+		Content:   []byte(rawContent),
+	}); err != nil {
+		t.Fatalf("append ingest source: %v", err)
+	}
+
+	wikiGetArgs := json.RawMessage(`{"page":"wiki/concepts/staged-citable.md"}`)
+	rawGetArgs := json.RawMessage(`{"source":"raw/articles/staged-raw.md"}`)
+
+	// A. Under ask: exactly stagedCitableMarker
+	askCtx := trace.WithVerb(context.Background(), trace.VerbAsk)
+
+	resWikiAsk, err := reg.Call(askCtx, "wiki.get", wikiGetArgs)
+	if err != nil || resWikiAsk.IsError {
+		t.Fatalf("wiki.get under ask: %v, content=%s", err, resWikiAsk.Content)
+	}
+	if !strings.HasPrefix(resWikiAsk.Content, stagedCitableMarker) {
+		t.Fatalf("wiki.get under ask prefix mismatch.\nGot: %q\nWant prefix: %q", resWikiAsk.Content, stagedCitableMarker)
+	}
+	if !StagedRead("wiki.get", resWikiAsk.Content) {
+		t.Fatalf("StagedRead(wiki.get, citable content) = false, want true")
+	}
+
+	resRawAsk, err := reg.Call(askCtx, "raw.get", rawGetArgs)
+	if err != nil || resRawAsk.IsError {
+		t.Fatalf("raw.get under ask: %v, content=%s", err, resRawAsk.Content)
+	}
+	if !strings.HasPrefix(resRawAsk.Content, stagedCitableMarker) {
+		t.Fatalf("raw.get under ask prefix mismatch.\nGot: %q\nWant prefix: %q", resRawAsk.Content, stagedCitableMarker)
+	}
+	if !StagedRead("raw.get", resRawAsk.Content) {
+		t.Fatalf("StagedRead(raw.get, citable content) = false, want true")
+	}
+
+	// B. Under ingest: exactly stagedSourceMarker
+	ingestCtx := trace.WithVerb(context.Background(), trace.VerbIngest)
+
+	resWikiIngest, err := reg.Call(ingestCtx, "wiki.get", wikiGetArgs)
+	if err != nil || resWikiIngest.IsError {
+		t.Fatalf("wiki.get under ingest: %v, content=%s", err, resWikiIngest.Content)
+	}
+	if !strings.HasPrefix(resWikiIngest.Content, stagedSourceMarker) {
+		t.Fatalf("wiki.get under ingest prefix mismatch.\nGot: %q\nWant prefix: %q", resWikiIngest.Content, stagedSourceMarker)
+	}
+	if strings.HasPrefix(resWikiIngest.Content, stagedCitableMarker) {
+		t.Fatalf("wiki.get under ingest unexpectedly has citable prefix")
+	}
+	if !StagedRead("wiki.get", resWikiIngest.Content) {
+		t.Fatalf("StagedRead(wiki.get, ingest content) = false, want true")
+	}
+
+	resRawIngest, err := reg.Call(ingestCtx, "raw.get", rawGetArgs)
+	if err != nil || resRawIngest.IsError {
+		t.Fatalf("raw.get under ingest: %v, content=%s", err, resRawIngest.Content)
+	}
+	if !strings.HasPrefix(resRawIngest.Content, stagedSourceMarker) {
+		t.Fatalf("raw.get under ingest prefix mismatch.\nGot: %q\nWant prefix: %q", resRawIngest.Content, stagedSourceMarker)
+	}
+	if strings.HasPrefix(resRawIngest.Content, stagedCitableMarker) {
+		t.Fatalf("raw.get under ingest unexpectedly has citable prefix")
+	}
+	if !StagedRead("raw.get", resRawIngest.Content) {
+		t.Fatalf("StagedRead(raw.get, ingest content) = false, want true")
+	}
+
+	// C. Under "": exactly stagedSourceMarker
+	resWikiEmpty, err := reg.Call(context.Background(), "wiki.get", wikiGetArgs)
+	if err != nil || resWikiEmpty.IsError {
+		t.Fatalf("wiki.get under \"\": %v, content=%s", err, resWikiEmpty.Content)
+	}
+	if !strings.HasPrefix(resWikiEmpty.Content, stagedSourceMarker) {
+		t.Fatalf("wiki.get under \"\" prefix mismatch.\nGot: %q\nWant prefix: %q", resWikiEmpty.Content, stagedSourceMarker)
+	}
+	if strings.HasPrefix(resWikiEmpty.Content, stagedCitableMarker) {
+		t.Fatalf("wiki.get under \"\" unexpectedly has citable prefix")
+	}
+	if !StagedRead("wiki.get", resWikiEmpty.Content) {
+		t.Fatalf("StagedRead(wiki.get, \"\" content) = false, want true")
+	}
+
+	resRawEmpty, err := reg.Call(context.Background(), "raw.get", rawGetArgs)
+	if err != nil || resRawEmpty.IsError {
+		t.Fatalf("raw.get under \"\": %v, content=%s", err, resRawEmpty.Content)
+	}
+	if !strings.HasPrefix(resRawEmpty.Content, stagedSourceMarker) {
+		t.Fatalf("raw.get under \"\" prefix mismatch.\nGot: %q\nWant prefix: %q", resRawEmpty.Content, stagedSourceMarker)
+	}
+	if strings.HasPrefix(resRawEmpty.Content, stagedCitableMarker) {
+		t.Fatalf("raw.get under \"\" unexpectedly has citable prefix")
+	}
+	if !StagedRead("raw.get", resRawEmpty.Content) {
+		t.Fatalf("StagedRead(raw.get, \"\" content) = false, want true")
 	}
 }

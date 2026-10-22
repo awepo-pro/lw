@@ -79,7 +79,9 @@ var chunkHeaderLineRe = regexp.MustCompile(`^chunk [0-9]+ of [0-9]+(?: · pages?
 // not found or was not named, a chunk out of range, arguments that do not
 // parse): none of them opens with the header, and a refused call is not a read.
 func RawGetServed(result string) bool {
-	head, rest, ok := strings.Cut(strings.TrimPrefix(result, stagedSourceMarker), "\n")
+	res := strings.TrimPrefix(result, stagedCitableMarker)
+	res = strings.TrimPrefix(res, stagedSourceMarker)
+	head, rest, ok := strings.Cut(res, "\n")
 	return ok && chunkHeaderLineRe.MatchString(head) && strings.HasPrefix(rest, "\n")
 }
 
