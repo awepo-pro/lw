@@ -6,6 +6,7 @@ package uitest
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/awepo-pro/lw/internal/agent"
 	"github.com/awepo-pro/lw/internal/ui"
@@ -32,6 +33,14 @@ func Deps(v *Vault, dark bool, ag agent.Agent) ui.Deps {
 		panic(fmt.Sprintf("uitest: Deps: LoadKeys: %v", err))
 	}
 
+	var now func() time.Time
+	if v != nil && v.Engine != nil {
+		if cs, err := v.Engine.Current(); err == nil && cs != nil {
+			opened := cs.OpenedAt
+			now = func() time.Time { return opened }
+		}
+	}
+
 	return ui.Deps{
 		Engine: v.Engine,
 		Agent:  ag,
@@ -42,5 +51,6 @@ func Deps(v *Vault, dark bool, ag agent.Agent) ui.Deps {
 		WebSearch: true,
 		Theme:     theme.WithDark(dark),
 		Keys:      keys,
+		Now:       now,
 	}
 }

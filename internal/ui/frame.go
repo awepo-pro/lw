@@ -11,6 +11,7 @@ package ui
 import (
 	"fmt"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"charm.land/bubbles/v2/key"
@@ -177,6 +178,16 @@ type headerStage struct {
 	// the provider failed after it had staged work (stage.Engine.MarkPartial,
 	// 061). The header says so, next to the op count, at every width.
 	Partial bool
+
+	OpenedAt time.Time
+	Now      func() time.Time
+}
+
+func (s headerStage) now() time.Time {
+	if s.Now != nil {
+		return s.Now()
+	}
+	return time.Now()
 }
 
 // opWord is the header's op-count noun (contract §5 note 1, clarified
@@ -227,20 +238,35 @@ func headerLine(t Theme, w int, vault string, tabs []string, active string,
 			stg.Checks.Orphans == 0 && stg.Checks.BrokenLinks == 0 {
 			glyph, style = "✓", t.Good
 		}
-		right = []seg{
-			{cs9, t.Fg},
-			{fmt.Sprintf(" · %d %s · checks ", stg.Ops, opWord(stg.Ops)), t.Muted},
-			{glyph, style},
+		var showAge bool
+		var ageLabel string
+		if !stg.OpenedAt.IsZero() {
+			age := stg.now().Sub(stg.OpenedAt)
+			if age >= time.Hour {
+				showAge = true
+				ageLabel = stage.AgeLabel(age)
+			}
 		}
+
 		if stg.Partial {
 			ops := fmt.Sprintf(" · %d %s · ", stg.Ops, opWord(stg.Ops))
 			// Widest first; the first that fits wins, the narrowest is the
 			// fallback. fits is the stats group's own test (x is the column
 			// after the tab bar's trailing gap).
-			variants := [][]seg{
-				{{cs9, t.Fg}, {ops, t.Muted}, {"partial", t.Warn.Bold(true)}, {" · checks ", t.Muted}, {glyph, style}},
-				{{cs9, t.Fg}, {ops, t.Muted}, {"partial", t.Warn.Bold(true)}, {" · ", t.Muted}, {glyph, style}},
-				{{cs9, t.Fg}, {" · ", t.Muted}, {"partial", t.Warn.Bold(true)}, {" · ", t.Muted}, {glyph, style}},
+			var variants [][]seg
+			if showAge {
+				variants = [][]seg{
+					{{cs9, t.Fg}, {ops, t.Muted}, {fmt.Sprintf("%s · ", ageLabel), t.Muted}, {"partial", t.Warn.Bold(true)}, {" · checks ", t.Muted}, {glyph, style}},
+					{{cs9, t.Fg}, {ops, t.Muted}, {"partial", t.Warn.Bold(true)}, {" · checks ", t.Muted}, {glyph, style}},
+					{{cs9, t.Fg}, {ops, t.Muted}, {"partial", t.Warn.Bold(true)}, {" · ", t.Muted}, {glyph, style}},
+					{{cs9, t.Fg}, {" · ", t.Muted}, {"partial", t.Warn.Bold(true)}, {" · ", t.Muted}, {glyph, style}},
+				}
+			} else {
+				variants = [][]seg{
+					{{cs9, t.Fg}, {ops, t.Muted}, {"partial", t.Warn.Bold(true)}, {" · checks ", t.Muted}, {glyph, style}},
+					{{cs9, t.Fg}, {ops, t.Muted}, {"partial", t.Warn.Bold(true)}, {" · ", t.Muted}, {glyph, style}},
+					{{cs9, t.Fg}, {" · ", t.Muted}, {"partial", t.Warn.Bold(true)}, {" · ", t.Muted}, {glyph, style}},
+				}
 			}
 			right = variants[len(variants)-1]
 			for _, v := range variants {
@@ -252,6 +278,30 @@ func headerLine(t Theme, w int, vault string, tabs []string, active string,
 					right = v
 					break
 				}
+			}
+		} else {
+			rightWithoutAge := []seg{
+				{cs9, t.Fg},
+				{fmt.Sprintf(" · %d %s · checks ", stg.Ops, opWord(stg.Ops)), t.Muted},
+				{glyph, style},
+			}
+			if showAge {
+				rightWithAge := []seg{
+					{cs9, t.Fg},
+					{fmt.Sprintf(" · %d %s · %s · checks ", stg.Ops, opWord(stg.Ops), ageLabel), t.Muted},
+					{glyph, style},
+				}
+				n := 0
+				for _, s := range rightWithAge {
+					n += utf8.RuneCountInString(s.text)
+				}
+				if x+n+1 <= w {
+					right = rightWithAge
+				} else {
+					right = rightWithoutAge
+				}
+			} else {
+				right = rightWithoutAge
 			}
 		}
 	} else {

@@ -12,6 +12,17 @@ import (
 	"github.com/awepo-pro/lw/internal/vault"
 )
 
+// changesetOpenDir and openChangesetFile are the open changeset's path
+// helpers, shared by the Engine and PeekOpenChangeset (067 S2 G1) so the
+// on-disk layout has one spelling.
+func changesetOpenDir(root string) string {
+	return filepath.Join(root, ".llmwiki", "changesets", "open")
+}
+
+func openChangesetFile(openDir, id string) string {
+	return filepath.Join(openDir, id, "changeset.json")
+}
+
 // changesetOpenDir, changesetRejectedDir and changesetCommittedDir return
 // the three changeset destinations under e.llmwikiDir()/changesets.
 // changesetCommittedDir moved here from apply.go's own inline
@@ -19,7 +30,7 @@ import (
 // Commit's own pre-move existence guard share one path helper instead of
 // two spellings of the same join.
 func (e *Engine) changesetOpenDir() string {
-	return filepath.Join(e.llmwikiDir(), "changesets", "open")
+	return changesetOpenDir(e.root)
 }
 
 func (e *Engine) changesetRejectedDir() string {

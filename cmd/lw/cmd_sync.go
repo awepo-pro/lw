@@ -310,6 +310,7 @@ func syncRun(vaultPath string, takeRemote bool) error {
 	if err != nil {
 		return err
 	}
+	tracker := newWaitingNoteTracker(root)
 	ctx, stop := syncContext()
 	defer stop()
 
@@ -340,7 +341,11 @@ func syncRun(vaultPath string, takeRemote bool) error {
 		if err := syncTake(ctx, root, o); err != nil {
 			return syncExplicitErr(err, vaultsync.State{})
 		}
-		return issues.finish(os.Stderr)
+		if err := issues.finish(os.Stderr); err != nil {
+			return err
+		}
+		tracker.maybePrintNote(nil)
+		return nil
 	}
 
 	st, committed, err := syncPullAndCommit(ctx, root, o)
@@ -391,7 +396,11 @@ func syncRun(vaultPath string, takeRemote bool) error {
 	endNotice = slowNotice(os.Stderr, "fetching storage files")
 	issues.add(storageFetch(ctx, root, o))
 	endNotice()
-	return issues.finish(os.Stderr)
+	if err := issues.finish(os.Stderr); err != nil {
+		return err
+	}
+	tracker.maybePrintNote(nil)
+	return nil
 }
 
 // syncPullAndCommit is the local half of an explicit sync: with no commit

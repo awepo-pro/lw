@@ -77,6 +77,10 @@ func runAgentTurn(ctx context.Context, ag agent.Agent, sessionID, msg string, w 
 // to made explicit (os.Stderr is read when runAgentTurn is called, so a test
 // that swaps it still captures them).
 func runAgentTurnTo(ctx context.Context, ag agent.Agent, sessionID, msg string, w, notices io.Writer) error {
+	return runAgentTurnWithObserver(ctx, ag, sessionID, msg, w, notices, nil)
+}
+
+func runAgentTurnWithObserver(ctx context.Context, ag agent.Agent, sessionID, msg string, w, notices io.Writer, onEvent func(agent.Event)) error {
 	out := make(chan agent.Event)
 	done := make(chan struct{})
 	var sendErr error
@@ -90,6 +94,9 @@ func runAgentTurnTo(ctx context.Context, ag agent.Agent, sessionID, msg string, 
 	var roundText bool // text has been written since the round's last tool event (035)
 	var trailingNL int // trailing '\n' run at the end of w, capped at 2
 	for ev := range out {
+		if onEvent != nil {
+			onEvent(ev)
+		}
 		switch e := ev.(type) {
 		case agent.TextDelta:
 			if e.Text == "" {
@@ -332,6 +339,7 @@ func cmdIngest(args []string) error {
 		return err
 	}
 	initLoggingAt(root)
+	tracker := newWaitingNoteTracker(root)
 
 	// 007 correction #7: config.Load moves ahead of extraction — the PDF
 	// backend needs [extract] (which sidecar to run) and the extraction
@@ -662,6 +670,7 @@ func cmdIngest(args []string) error {
 	}
 	if len(keptSrcs) == 0 && len(targets) == 0 {
 		fmt.Println("nothing to ingest: every source is already in the vault")
+		tracker.maybePrintNote(e)
 		return nil
 	}
 
@@ -710,6 +719,7 @@ func cmdIngest(args []string) error {
 		}
 		fmt.Printf("within limits: %d files, %d KB (limit %d files, %d KB)\n",
 			fileCount, ingestKB(ingestBytes), ingestMaxFiles, ingestKB(capBytes))
+		tracker.maybePrintNote(e)
 		return nil
 	}
 
@@ -777,7 +787,7 @@ func cmdIngest(args []string) error {
 	// by prepareIngest — no agent is constructed, so no API key is resolved,
 	// and the curation is an external agent's, through lw tool.
 	if *prepare {
-		return prepareIngest(ctx, prepareInput{
+		err := prepareIngest(ctx, prepareInput{
 			e:       e,
 			agent:   *agentName,
 			intent:  ingestTurnIntent(sources, keptSrcs, targets),
@@ -785,6 +795,10 @@ func cmdIngest(args []string) error {
 			targets: targets,
 			extract: toolExtract,
 		})
+		if err == nil {
+			tracker.maybePrintNote(e)
+		}
+		return err
 	}
 
 	// Construct the agent (which resolves the configured API key) before
@@ -864,6 +878,7 @@ func cmdIngest(args []string) error {
 	}
 
 	printIngestTail(e, final, joined)
+	tracker.maybePrintNote(e)
 	return nil
 }
 
