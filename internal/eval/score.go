@@ -85,12 +85,13 @@ const resultsFile = "results.json"
 // CaseResult is one (case, index) run, scored. Failed runs are kept — as
 // failed, with no metrics — so a report can count them. (037 T3.)
 type CaseResult struct {
-	Case    string             `json:"case"`
-	Index   int                `json:"index"`
-	Verb    string             `json:"verb"`
-	Kind    string             `json:"kind"`
-	Failed  bool               `json:"failed"`
-	Metrics map[string]float64 `json:"metrics"`
+	Case         string             `json:"case"`
+	Index        int                `json:"index"`
+	Verb         string             `json:"verb"`
+	Kind         string             `json:"kind"`
+	Failed       bool               `json:"failed"`
+	SetupFailure []string           `json:"setup_failure,omitempty"`
+	Metrics      map[string]float64 `json:"metrics"`
 }
 
 // Results is <run>/results.json: the run's own record plus every run's
@@ -297,6 +298,7 @@ func (s *scorer) scoreOne(ref caseRef) (CaseResult, error) {
 	}
 	if meta.Failed {
 		res.Failed = true
+		res.SetupFailure = meta.SetupFailure
 		return res, nil
 	}
 
@@ -339,8 +341,12 @@ func (s *scorer) scoreAsk(m map[string]float64, c AskCase, dir string) error {
 		// the vault does not cover; a wiki ref or wikilink does not. (A-037-3.)
 		m[MetricAbstainOK] = boolMetric(score.Abstained(text) && !score.RawEvidence(refs))
 	}
+	stagedDir := ""
+	if len(c.Prestage) > 0 {
+		stagedDir = filepath.Join(dir, "staged")
+	}
 	if len(refs) > 0 {
-		m[MetricCiteValid] = validShare(score.CheckRefs(refs, s.resolver("")))
+		m[MetricCiteValid] = validShare(score.CheckRefs(refs, s.resolver(stagedDir)))
 	}
 	if len(c.CiteAny) > 0 {
 		m[MetricCiteExpected] = boolMetric(score.CitesAny(refs, c.CiteAny))

@@ -33,12 +33,13 @@ type Set struct {
 // any one alternative matches the answer (matching is the scorer's, 037 T2;
 // the loader only proves every alternative is well-formed).
 type AskCase struct {
-	ID      string     `toml:"id"`
-	Kind    string     `toml:"kind"`
-	Q       string     `toml:"q"`
-	Facts   [][]string `toml:"facts"`
-	CiteAny []string   `toml:"cite_any"`
-	Holdout bool       `toml:"holdout"`
+	ID       string     `toml:"id"`
+	Kind     string     `toml:"kind"`
+	Q        string     `toml:"q"`
+	Facts    [][]string `toml:"facts"`
+	CiteAny  []string   `toml:"cite_any"`
+	Holdout  bool       `toml:"holdout"`
+	Prestage [][]string `toml:"prestage"`
 }
 
 // IngestCase is one `lw ingest` call, or two when Then is set (060 review
@@ -68,6 +69,8 @@ type IngestCase struct {
 	// when Recompile is set, and --recompile goes to both calls). Empty means
 	// the one call every earlier case was.
 	Then []string `toml:"then"`
+	// Prestage is refused on an ingest case (067 D5: prestage is for ask cases only).
+	Prestage [][]string `toml:"prestage"`
 }
 
 // Paths returns the files of the case's FIRST ingest call, as written and in
@@ -247,6 +250,16 @@ func checkAsk(c AskCase) error {
 			return fmt.Errorf("cases.toml: %s: cite_any entry %d is empty", who, i+1)
 		}
 	}
+	for i, step := range c.Prestage {
+		if len(step) == 0 {
+			return fmt.Errorf("cases.toml: %s: prestage step %d is empty", who, i+1)
+		}
+		for _, arg := range step {
+			if arg == "--vault" || strings.HasPrefix(arg, "--vault=") || arg == "-vault" || strings.HasPrefix(arg, "-vault=") {
+				return fmt.Errorf("cases.toml: %s: prestage step %d must not specify --vault", who, i+1)
+			}
+		}
+	}
 	if c.Kind == "absent" {
 		if len(c.Facts) > 0 || len(c.CiteAny) > 0 {
 			return fmt.Errorf("cases.toml: %s: an absent case takes no facts or cite_any", who)
@@ -270,6 +283,9 @@ func checkAsk(c AskCase) error {
 // turns, which nobody writes on purpose.
 func checkIngest(setDir string, c IngestCase) error {
 	who := fmt.Sprintf("ingest %q", c.ID)
+	if c.Prestage != nil {
+		return fmt.Errorf("cases.toml: %s: prestage is not allowed on an ingest case", who)
+	}
 	switch {
 	case c.Input != "" && len(c.Inputs) > 0:
 		return fmt.Errorf("cases.toml: %s: set input or inputs, not both", who)
