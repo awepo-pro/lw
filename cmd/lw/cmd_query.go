@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/awepo-pro/lw/internal/agent"
 	"github.com/awepo-pro/lw/internal/config"
+	"github.com/awepo-pro/lw/internal/llm"
 	"github.com/awepo-pro/lw/internal/stage"
 	"github.com/awepo-pro/lw/internal/tools"
 	"github.com/awepo-pro/lw/internal/trace"
@@ -50,14 +52,19 @@ func cmdQuery(args []string) error {
 	fs := flag.NewFlagSet("query", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	vaultPath := fs.String("vault", "", "vault root (default: nearest ancestor directory containing SCHEMA.md)")
+	prepare := fs.Bool("prepare", false, "print a brief for an external agent to answer the question")
 	if err := fs.Parse(args); err != nil {
 		return &exitError{code: 2}
 	}
-	if fs.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, `usage: lw query "..."`)
+	if fs.NArg() != 1 || (*prepare && fs.Arg(0) == "") {
+		fmt.Fprintln(os.Stderr, `usage: lw query [--prepare] "..."`)
 		return &exitError{code: 2}
 	}
 	question := fs.Arg(0)
+
+	if *prepare {
+		return queryPrepare(*vaultPath, question)
+	}
 
 	root, err := findVaultRoot(*vaultPath)
 	if err != nil {
@@ -83,6 +90,9 @@ func cmdQuery(args []string) error {
 	sessions := newMemSessionStore()
 	ag, err := newAgent(e, cfg, sessions)
 	if err != nil {
+		if isAPIKeyResolutionError(err) {
+			fmt.Fprint(os.Stderr, "hint: no LLM API key is configured. An agent with its own model can still answer from this vault: lw query --prepare \"<your question>\"\n")
+		}
 		return fmt.Errorf("construct agent: %w", err)
 	}
 	sess, err := sessions.Create("query")
@@ -173,6 +183,13 @@ func cmdQuery(args []string) error {
 	}
 
 	if sendErr != nil {
+		var pe *llm.ProviderError
+		if errors.As(sendErr, &pe) && !pe.Transport {
+			switch pe.Status {
+			case 401, 402, 403, 429:
+				fmt.Fprintf(os.Stderr, "hint: the provider refused access (HTTP %d). An agent with its own model can still answer from this vault: lw query --prepare \"<your question>\"\n", pe.Status)
+			}
+		}
 		// U1: a truncated turn names the output budget and the fix; any
 		// other error keeps the pre-008 wording (agentErrorHint).
 		return agentErrorHint(sendErr, cfg.LLM.MaxTokens, false)

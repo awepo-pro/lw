@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/awepo-pro/lw/internal/agent"
 	"github.com/awepo-pro/lw/internal/config"
 	"github.com/awepo-pro/lw/internal/mcp"
 	"github.com/awepo-pro/lw/internal/stage"
 	"github.com/awepo-pro/lw/internal/tools"
+	"github.com/awepo-pro/lw/internal/trace"
 )
 
 // cmdMCP will run the MCP server over stdio, exposing the tool registry.
@@ -17,12 +19,34 @@ func cmdMCP(args []string) error {
 	fs := flag.NewFlagSet("mcp", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	vaultPath := fs.String("vault", "", "vault root (default: nearest ancestor directory containing SCHEMA.md)")
+	ask := fs.Bool("ask", false, "serve only the read-only ask tools and see open changeset as lw query does")
 	if err := fs.Parse(args); err != nil {
 		return &exitError{code: 2}
 	}
 	if fs.NArg() > 0 {
 		fmt.Fprintf(os.Stderr, "lw mcp: unexpected argument %q\n", fs.Arg(0))
 		return &exitError{code: 2}
+	}
+
+	if *ask {
+		root, err := findVaultRoot(*vaultPath)
+		if err != nil {
+			return err
+		}
+		initLoggingAt(root)
+		e, err := openVaultEngine(root, nil)
+		if err != nil {
+			return fmt.Errorf("open engine: %w", err)
+		}
+		defer e.Close()
+
+		reg := tools.NewRegistry(askToolDeps(e))
+		opts := mcp.ServeOptions{
+			Tools:        tools.AskToolNames(),
+			Verb:         trace.VerbQuery,
+			Instructions: agent.AskSystemPrompt(),
+		}
+		return mcp.ServeWith(context.Background(), reg, version, opts, os.Stdin, os.Stdout)
 	}
 
 	root, err := writableVaultRoot(*vaultPath)

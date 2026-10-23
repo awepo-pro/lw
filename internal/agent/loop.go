@@ -743,13 +743,11 @@ streamLoop:
 // askTools is the read-only tool set an ask-mode turn is offered (039), by
 // canonical name: discovery (raw.list, vault.orient), reading (raw.get,
 // wiki.get), search and graph (wiki.search, wiki.neighbors, wiki.backlinks)
-// and wiki.lint. Every one is Tool.ReadOnly, and raw.get is on the list
-// because the ask prompt tells the model to read the cited raw source when a
-// page is thin.
-var askTools = []string{
-	"raw.list", "raw.get", "vault.orient",
-	"wiki.search", "wiki.get", "wiki.neighbors", "wiki.backlinks", "wiki.lint",
-}
+// and wiki.lint. raw.get is on the list because the ask prompt tells the
+// model to read the cited raw source when a page is thin. Since 068 the list
+// is tools.AskToolNames(), the one every external ask path offers too, read
+// once here so a turn does not build a registry to learn it.
+var askTools = tools.AskToolNames()
 
 // askWebTools is what a TUI ask turn is additionally offered when the
 // registry has web.search (039): the search itself and the 010/017 flow that

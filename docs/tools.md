@@ -125,6 +125,21 @@ lw tool --brief                      # print the curator brief again, after a co
   changeset …` first; with no API key it then exits 1 on its api_key check, which
   is expected — the discard has happened.
 
+## External agent ask
+
+When the provider behind `lw query` is unfunded or rate-limited, or when no LLM API key is configured, an external agent with its own model can answer questions read-only from the vault.
+
+```
+lw query --prepare "<question>"      # prints the ask brief (rules, orientation, how to work)
+lw tool --ask <tool-name> '<json>'   # run one read-only tool for the answer
+lw tool --ask --list                 # list the 8 read-only ask tools with schemas
+lw mcp --ask                         # run stdio MCP server offering only the ask tools
+```
+
+- **Read-only by construction.** External ask opens no changeset, takes no `tool.lock`, records no session history, and modifies no vault files.
+- **The tools offered** are the 8 read-only ask tools (`tools.AskToolNames()`): `raw.get`, `raw.list`, `vault.orient`, `wiki.backlinks`, `wiki.get`, `wiki.lint`, `wiki.neighbors`, and `wiki.search`. Any other tool name exits 2.
+- **Open changeset visibility.** Under `trace.VerbQuery`, `vault.orient` and `wiki.search` see unreviewed staged content from an open changeset if one exists, tagging staged hits. When a `lw tool --ask` call reads staged content, it emits a `note:` line on stderr telling the curator how to review it in the TUI.
+
 ## Related
 
 - [architecture.md](architecture.md) — where this boundary sits in the pipeline

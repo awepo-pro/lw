@@ -12,24 +12,61 @@ import (
 	"time"
 
 	"github.com/awepo-pro/lw/internal/tools"
+	"github.com/awepo-pro/lw/internal/trace"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+// ServeOptions narrows what a server offers. The zero value is exactly the server NewServer / ServeVersion build.
+type ServeOptions struct {
+	Tools        []string // canonical names to offer, in registry order; nil = every registered tool. A name the registry lacks is skipped.
+	Verb         string   // non-empty: every tool call runs under trace.WithVerb(ctx, Verb)
+	Instructions string   // the initialize result's "instructions"; "" = the field is absent
+}
 
 // NewServer binds the current registry to an MCP server. The registry is the
 // sole source of tool definitions: MCP only translates names and transports
 // calls, so it cannot add an out-of-band filesystem capability.
 func NewServer(r *tools.Registry, version string) *sdk.Server {
+	return NewServerWith(r, version, ServeOptions{})
+}
+
+// NewServerWith binds the current registry to an MCP server, filtered and
+// configured according to opts (068 D2).
+func NewServerWith(r *tools.Registry, version string, opts ServeOptions) *sdk.Server {
 	if r == nil {
 		panic("mcp: nil registry")
+	}
+
+	serverOpts := &sdk.ServerOptions{
+		Logger: slog.New(slog.NewTextHandler(os.Stderr, nil)),
+	}
+	if opts.Instructions != "" {
+		serverOpts.Instructions = opts.Instructions
 	}
 
 	// Keep SDK diagnostics off the protocol stream. The CLI uses the same
 	// server constructor, so all diagnostics are sent to stderr.
 	server := sdk.NewServer(
 		&sdk.Implementation{Name: "lw", Version: version},
-		&sdk.ServerOptions{Logger: slog.New(slog.NewTextHandler(os.Stderr, nil))},
+		serverOpts,
 	)
-	for _, definition := range r.List() {
+
+	var offered []tools.Tool
+	if opts.Tools == nil {
+		offered = r.List()
+	} else {
+		want := make(map[string]bool, len(opts.Tools))
+		for _, name := range opts.Tools {
+			want[name] = true
+		}
+		for _, tool := range r.List() {
+			if want[tool.Name] {
+				offered = append(offered, tool)
+			}
+		}
+	}
+
+	for _, definition := range offered {
 		tool := definition
 		server.AddTool(&sdk.Tool{
 			Name:        MCPName(tool.Name),
@@ -39,7 +76,11 @@ func NewServer(r *tools.Registry, version string) *sdk.Server {
 			// Capture the canonical name per iteration. The callback is invoked
 			// asynchronously after registration, so it must not consult a later
 			// loop value.
-			result, err := r.Call(ctx, tool.Name, req.Params.Arguments)
+			callCtx := ctx
+			if opts.Verb != "" {
+				callCtx = trace.WithVerb(ctx, opts.Verb)
+			}
+			result, err := r.Call(callCtx, tool.Name, req.Params.Arguments)
 			if err != nil {
 				return nil, err
 			}
@@ -64,10 +105,16 @@ func Serve(ctx context.Context, r *tools.Registry, in io.Reader, out io.Writer) 
 // shape is frozen (backbone §7), so the stamped build version enters here:
 // cmd/lw passes the same -ldflags string `lw version` prints.
 func ServeVersion(ctx context.Context, r *tools.Registry, version string, in io.Reader, out io.Writer) error {
+	return ServeWith(ctx, r, version, ServeOptions{}, in, out)
+}
+
+// ServeWith runs an MCP server configured with opts over newline-delimited JSON
+// on in and out (068 D2).
+func ServeWith(ctx context.Context, r *tools.Registry, version string, opts ServeOptions, in io.Reader, out io.Writer) error {
 	if in == nil || out == nil {
 		return fmt.Errorf("mcp: nil stdio stream")
 	}
-	server := NewServer(r, version)
+	server := NewServerWith(r, version, opts)
 	state := &stdioState{response: make(chan struct{})}
 	transport := &sdk.IOTransport{
 		Reader: newInputReader(in, state),
