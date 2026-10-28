@@ -450,6 +450,8 @@ func (e *Engine) assignIDs(op *Op) {
 	e.nextOp++
 	if op.State == "" {
 		op.State = StateProposed
+		op.DroppedBy = ""
+		op.DropReason = ""
 	}
 	for i := range op.Cascade {
 		e.assignIDs(&op.Cascade[i])

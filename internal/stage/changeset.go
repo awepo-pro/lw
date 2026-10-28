@@ -34,6 +34,20 @@ const (
 	StateStale    OpState = "stale"    // working tree changed under it
 )
 
+type DropActor string
+
+const (
+	DropByHuman    DropActor = "human"    // Review d, the op the user pressed
+	DropByCascade  DropActor = "cascade"  // a dependent dropped with another op
+	DropByRollback DropActor = "rollback" // a failed joined verb removing its own ops
+	DropByGuard    DropActor = "guard"    // a read-only verb's guard
+)
+
+type Drop struct {
+	By     DropActor
+	Reason string
+}
+
 // Hunk is the unit of review. Reviewers accept or drop hunks, not ops.
 //
 // At and Lines (052, TD-15) make a hunk a unified-diff hunk that applies
@@ -97,6 +111,8 @@ type Op struct {
 	Rationale       string     `json:"rationale,omitempty"`
 	Provenance      []string   `json:"provenance,omitempty"`
 	State           OpState    `json:"state"`
+	DroppedBy       DropActor  `json:"dropped_by,omitempty"`
+	DropReason      string     `json:"drop_reason,omitempty"`
 	Content         []byte     `json:"-"` // post-image bytes in, sha out (MASTER §9 D-AY)
 }
 
