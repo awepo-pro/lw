@@ -285,7 +285,7 @@ footer { margin-top: 80px; color: var(--muted); font-size: 14px; border-top: 1px
       <li><strong>v2.42.0</strong>: provider errors decode in-stream, failed turns keep partial staged ops, and <code>llm.base_url</code> rejects trailing <code>/chat/completions</code> (<a href="#install">lesson 1</a>, <a href="#ingest">lesson 3</a>, <a href="#trouble">lesson 15</a>).</li>
       <li><strong>v2.41.0</strong>: every new ingest keeps a verbatim original copy beside its raw source in <code>raw/</code> (<a href="#ingest">lesson 3</a>, <a href="#files">lesson 14</a>).</li>
       <li><strong>v2.40.0</strong>: <code>lw note -F &lt;file|-&gt;</code> captures notes from files or stdin; unchanged editor exits refuse without losing drafts (<a href="#more">lesson 10</a>).</li>
-      <li><strong>v2.39.0</strong>: <code>lw sync</code> syncs vaults across PCs via git remotes over SSH with automated pull/push and format gates (<a href="#sync">lesson 13</a>, <a href="#cheat">cheat sheet</a>).</li>
+      <li><strong>v2.39.0</strong>: <code>lw sync</code> syncs vaults across PCs via git remotes over SSH with automated pull/push (<a href="#sync">lesson 13</a>, <a href="#cheat">cheat sheet</a>).</li>
       <li><strong>v2.38.0</strong>: <code>lw ingest --recompile &lt;path&gt;</code> compiles pages from already-committed raw sources without staging new raw files (<a href="#ingest">lesson 3</a>).</li>
       <li><strong>v2.37.0</strong>: <code>web.search</code> is removed from ingest turns so ingests only compile provided sources (<a href="#ingest">lesson 3</a>, <a href="#ask">lesson 6</a>).</li>
       <li><strong>v2.36.0</strong>: ingest search budget refuses an 11th <code>wiki.search</code> call between staged page changes (<a href="#ingest">lesson 3</a>).</li>
@@ -934,7 +934,7 @@ no results for "kv"</code></pre>
 <!-- 13 -->
 <section id="sync" data-lesson>
   <h2><span class="num">13</span>One vault on every PC</h2>
-  <p class="goal">Goal: synchronize your vault across machines through a bare git repo over SSH, with automated pull and push, format version gates, and conflict handling.</p>
+  <p class="goal">Goal: synchronize your vault across machines through a bare git repo over SSH, with automated pull and push, and conflict handling.</p>
 
   <p><code>lw sync</code> keeps the exact same wiki on your laptop, workstation, and remote servers. It synchronizes your vault through a bare Git repository over SSH, transferring wiki pages and changelog commits with standard Git while syncing content-addressed storage files beside it.</p>
 
@@ -973,8 +973,8 @@ cloned /tmp/lw-remote.git into /home/you/vault-clone</code></pre>
     <li><strong>Read-only verbs stay local</strong>: <code>lw query</code>, <code>lw diff</code>, and <code>lw status</code> never touch the network, keeping browsing fast and usable offline.</li>
   </ul>
 
-  <h3>Format version gate and conflicts</h3>
-  <p>Every vault carries a format version in <code>.llmwiki/format</code>. If a machine running a newer lw upgrades the vault format (e.g. format 2 for asset attachments), an older lw on another machine will refuse write commands with an <em>"upgrade lw"</em> message until updated.</p>
+  <h3>Keep every PC on the same lw, and conflicts</h3>
+  <p>lw reads an optional <code>.llmwiki/format</code> file and refuses a vault whose recorded version is newer than the lw you run, with an <em>"upgrade lw"</em> message. Current lw releases do not write that file themselves, so this guard does not protect you automatically: after you upgrade lw on one PC, upgrade it on your other PCs before you sync, or an older lw may ignore fields a newer one wrote.</p>
   <p>If two machines commit diverging changes, lw attempts a clean fast-forward rebase. If an irreconcilable conflict occurs, <code>lw sync --take-remote</code> accepts the remote version as authoritative and preserves your local branch for reference.</p>
 
   <details class="quiz"><summary>Check: you ran `lw commit` on your desktop. Do you need to run `lw sync` before shutting down?</summary>
