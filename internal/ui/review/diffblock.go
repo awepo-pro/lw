@@ -117,6 +117,13 @@ func (m *Model) opDiffLines(op stage.Op, cw int, current bool) []panelLine {
 		}
 	}
 
+	// 069 S2: a dropped op shows one fact-first muted line naming who
+	// dropped it and why, clipped to the content width. Display-only:
+	// not a cursor stop, Diff mode only, absent on a live or restored op.
+	if dropped {
+		out = append(out, panelLine{text: ui.Clip(m.theme.Muted.Render(droppedOpLine(op)), cw)})
+	}
+
 	for _, l := range wrapCut(op.Rationale, cw, 4) {
 		out = append(out, panelLine{text: m.theme.Muted.Render(l)})
 	}
@@ -336,4 +343,27 @@ func plural(n int) string {
 		return ""
 	}
 	return "s"
+}
+
+// droppedOpLine formats the fact-first description of why and by whom an op
+// was dropped (069 S2). Rendered muted directly under the header for any
+// dropped op. If DroppedBy is empty (e.g. an older changeset or an op
+// dropped without a mark), it reports "dropped · reason not recorded".
+func droppedOpLine(op stage.Op) string {
+	reason := op.DropReason
+	if reason == "" {
+		reason = "reason not recorded"
+	}
+	switch op.DroppedBy {
+	case stage.DropByHuman:
+		return "dropped by you · " + reason
+	case stage.DropByRollback:
+		return "dropped by rollback · " + reason
+	case stage.DropByGuard:
+		return "dropped by guard · " + reason
+	case stage.DropByCascade:
+		return "dropped with another op · " + reason
+	default:
+		return "dropped · reason not recorded"
+	}
 }
