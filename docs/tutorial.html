@@ -244,11 +244,14 @@ footer { margin-top: 80px; color: var(--muted); font-size: 14px; border-top: 1px
     <li><a href="#health"><span class="tick"></span>9 · Keeping it healthy</a></li>
     <li><a href="#more"><span class="tick"></span>10 · Notes, PDFs, MCP</a></li>
     <li><a href="#agent"><span class="tick"></span>11 · Curate with your own agent</a></li>
-    <li><a href="#trouble"><span class="tick"></span>12 · Troubleshooting</a></li>
+    <li><a href="#agent-ask"><span class="tick"></span>12 · Ask with your own agent</a></li>
+    <li><a href="#sync"><span class="tick"></span>13 · One vault on every PC</a></li>
+    <li><a href="#files"><span class="tick"></span>14 · Files and originals</a></li>
+    <li><a href="#trouble"><span class="tick"></span>15 · Troubleshooting</a></li>
     <li><a href="#cheat"><span class="tick"></span>Cheat sheet</a></li>
   </ol>
   <div class="progress">
-    <span id="progText">0 of 13 lessons done</span>
+    <span id="progText">0 of 16 lessons done</span>
     <div class="bar"><span id="progBar"></span></div>
   </div>
   <button class="theme-btn" id="themeBtn">Toggle theme</button>
@@ -268,21 +271,21 @@ footer { margin-top: 80px; color: var(--muted); font-size: 14px; border-top: 1px
     <p>This page was checked against <strong>lw v2.53.0</strong>. Run <code>lw version</code>. If yours is older, some behaviour below won't match. If it's newer, trust <code>lw --help</code> where they disagree.</p>
     <p>Changes since the last edition of this page (v2.35.0):</p>
     <ul>
-      <li><strong>v2.53.0</strong>: agent-driven ask: <code>lw query --prepare</code>, <code>lw tool --ask</code>, <code>lw mcp --ask</code>, the <code>lw-ask</code> skill, and provider fallback hints (<a href="#ask">lesson 6</a>, <a href="#more">lesson 10</a>, <a href="#agent">lesson 11</a>).</li>
+      <li><strong>v2.53.0</strong>: agent-driven ask: <code>lw query --prepare</code>, <code>lw tool --ask</code>, <code>lw mcp --ask</code>, the <code>lw-ask</code> skill, and provider fallback hints (<a href="#ask">lesson 6</a>, <a href="#agent-ask">lesson 12</a>).</li>
       <li><strong>v2.52.0</strong>: asks cite the open changeset (labelled unreviewed) and surface waiting changesets by age (<a href="#ask">lesson 6</a>, <a href="#tui">lesson 7</a>).</li>
-      <li><strong>v2.51.0</strong>: content-addressed <code>lw storage</code> syncs non-wiki files beside git via <code>lw sync</code> (<a href="#more">lesson 10</a>, <a href="#cheat">cheat sheet</a>).</li>
+      <li><strong>v2.51.0</strong>: content-addressed <code>lw storage</code> syncs non-wiki files beside git via <code>lw sync</code> (<a href="#sync">lesson 13</a>, <a href="#files">lesson 14</a>, <a href="#cheat">cheat sheet</a>).</li>
       <li><strong>v2.50.0</strong>: in Browse, <kbd>e</kbd> opens the page in <code>$EDITOR</code>, then reindexes and relints (<a href="#tui">lesson 7</a>).</li>
-      <li><strong>v2.49.0</strong>: <code>lw storage add|list|show|get|rm</code> manages non-wiki binary and data files in the vault (<a href="#more">lesson 10</a>, <a href="#cheat">cheat sheet</a>).</li>
-      <li><strong>v2.48.0</strong>: <code>lw ingest --attach &lt;file&gt;</code> backfills missing originals; <code>lw doctor</code> adds an originals check (<a href="#ingest">lesson 3</a>, <a href="#health">lesson 9</a>).</li>
+      <li><strong>v2.49.0</strong>: <code>lw storage add|list|show|get|rm</code> manages non-wiki binary and data files in the vault (<a href="#files">lesson 14</a>, <a href="#cheat">cheat sheet</a>).</li>
+      <li><strong>v2.48.0</strong>: <code>lw ingest --attach &lt;file&gt;</code> backfills missing originals; <code>lw doctor</code> adds an originals check (<a href="#ingest">lesson 3</a>, <a href="#health">lesson 9</a>, <a href="#files">lesson 14</a>).</li>
       <li><strong>v2.47.0</strong>: ingest prompt polish and stricter conventions for cleaner staged pages (<a href="#ingest">lesson 3</a>).</li>
-      <li><strong>v2.46.0</strong>: local markdown images are copied into <code>raw/assets/</code> and linked as <code>../../raw/assets/&lt;name&gt;</code> (vault format 2) (<a href="#ingest">lesson 3</a>).</li>
+      <li><strong>v2.46.0</strong>: local markdown images are copied into <code>raw/assets/</code> and linked as <code>../../raw/assets/&lt;name&gt;</code> (vault format 2) (<a href="#ingest">lesson 3</a>, <a href="#files">lesson 14</a>).</li>
       <li><strong>v2.45.0</strong>: agent-driven ingest: your own agent can curate an ingest with <code>lw ingest --prepare</code> and <code>lw tool</code> without an API key (<a href="#agent">lesson 11</a>).</li>
       <li><strong>v2.44.0</strong>: a read-only ask in the TUI opens no changeset until it actually stages something (<a href="#ask">lesson 6</a>, <a href="#tui">lesson 7</a>).</li>
       <li><strong>v2.43.0</strong>: <code>wiki.get</code> can read back staged-only pages before commit (<a href="#tui">lesson 7</a>, <a href="#agent">lesson 11</a>).</li>
-      <li><strong>v2.42.0</strong>: provider errors decode in-stream, failed turns keep partial staged ops, and <code>llm.base_url</code> rejects trailing <code>/chat/completions</code> (<a href="#install">lesson 1</a>, <a href="#ingest">lesson 3</a>, <a href="#trouble">lesson 12</a>).</li>
-      <li><strong>v2.41.0</strong>: every new ingest keeps a verbatim original copy beside its raw source in <code>raw/</code> (<a href="#ingest">lesson 3</a>).</li>
+      <li><strong>v2.42.0</strong>: provider errors decode in-stream, failed turns keep partial staged ops, and <code>llm.base_url</code> rejects trailing <code>/chat/completions</code> (<a href="#install">lesson 1</a>, <a href="#ingest">lesson 3</a>, <a href="#trouble">lesson 15</a>).</li>
+      <li><strong>v2.41.0</strong>: every new ingest keeps a verbatim original copy beside its raw source in <code>raw/</code> (<a href="#ingest">lesson 3</a>, <a href="#files">lesson 14</a>).</li>
       <li><strong>v2.40.0</strong>: <code>lw note -F &lt;file|-&gt;</code> captures notes from files or stdin; unchanged editor exits refuse without losing drafts (<a href="#more">lesson 10</a>).</li>
-      <li><strong>v2.39.0</strong>: <code>lw sync</code> syncs vaults across PCs via git remotes over SSH with automated pull/push and format gates (<a href="#more">lesson 10</a>, <a href="#cheat">cheat sheet</a>).</li>
+      <li><strong>v2.39.0</strong>: <code>lw sync</code> syncs vaults across PCs via git remotes over SSH with automated pull/push and format gates (<a href="#sync">lesson 13</a>, <a href="#cheat">cheat sheet</a>).</li>
       <li><strong>v2.38.0</strong>: <code>lw ingest --recompile &lt;path&gt;</code> compiles pages from already-committed raw sources without staging new raw files (<a href="#ingest">lesson 3</a>).</li>
       <li><strong>v2.37.0</strong>: <code>web.search</code> is removed from ingest turns so ingests only compile provided sources (<a href="#ingest">lesson 3</a>, <a href="#ask">lesson 6</a>).</li>
       <li><strong>v2.36.0</strong>: ingest search budget refuses an 11th <code>wiki.search</code> call between staged page changes (<a href="#ingest">lesson 3</a>).</li>
@@ -567,7 +570,7 @@ them for the whole prefix. ^[raw/articles/kv-cache-explained.md] …</code></pre
   <h3>Keyless ask with your own agent</h3>
   <p>If you don't have an API key configured (or hit provider rate limits), lw doesn't block you. It prints an agent fallback hint:</p>
 <pre><code>hint: no LLM API key is configured. An agent with its own model can still answer from this vault: lw query --prepare "&lt;your question&gt;"</code></pre>
-  <p>Run <code>lw query --prepare "&lt;question&gt;"</code>. It prints an ask brief with the question, vault orientation, and rules. Your external agent (or the <code>lw-ask</code> skill) then runs read-only tools via <code>lw tool --ask &lt;name&gt; '&lt;json&gt;'</code> (such as <code>wiki.search</code>, <code>wiki.get</code>, <code>raw.get</code>) and synthesizes the answer with its own model—calling no provider from lw and needing no API key (see <a href="#agent">lesson 11</a>).</p>
+  <p>Run <code>lw query --prepare "&lt;question&gt;"</code>. It prints an ask brief with the question, vault orientation, and rules. Your external agent (or the <code>lw-ask</code> skill) then runs read-only tools via <code>lw tool --ask &lt;name&gt; '&lt;json&gt;'</code> (such as <code>wiki.search</code>, <code>wiki.get</code>, <code>raw.get</code>) and synthesizes the answer with its own model—calling no provider from lw and needing no API key (see <a href="#agent-ask">lesson 12</a>).</p>
 
   <h3>Keep an answer</h3>
   <p>In the TUI's Ask screen, an answer that cites the vault (it contains a <code>^[raw/…]</code> or <code>^[wiki/…]</code> marker) can be saved with <kbd>ctrl+s</kbd>. That stages a <code>wiki/queries/</code> page, which you review like any other change. A read-only ask turn opens no changeset until you save or stage something. An answer with no vault citation can't be saved: <em>"this answer cites no vault source; nothing to save"</em>.</p>
@@ -739,7 +742,7 @@ lw config set open.pdf "papers -i {page} {file}"   <span class="c"># or: mupdf {
 <pre><code>lw storage add weights.bin -m "baseline model weights"
 lw storage list
 lw storage show weights.bin</code></pre>
-  <p>Stored files live in <code>storage/</code> and are cataloged in <code>.llmwiki/storage.json</code>. When you connect a remote with <code>lw sync</code> (via a bare git repo over SSH), files travel content-addressed in <code>&lt;remote&gt;.storage/objects/</code> beside git. Writing verbs automatically pull before starting and push after commit, keeping the vault identical across all your machines.</p>
+  <p>Stored files live in <code>storage/</code> and are cataloged in <code>.llmwiki/storage.json</code>. When you connect a remote with <code>lw sync</code> (via a bare git repo over SSH), files travel content-addressed in <code>&lt;remote&gt;.storage/objects/</code> beside git. Writing verbs automatically pull before starting and push after commit, keeping the vault identical across all your machines (see <a href="#sync">lesson 13</a> and <a href="#files">lesson 14</a>).</p>
 
   <h3>Use lw from another agent (MCP)</h3>
 <pre><code>{
@@ -865,9 +868,168 @@ lw doctor --discard-changeset    <span class="c"># or throw the whole thing away
   <button class="mark-done" data-for="agent">Mark lesson done</button>
 </section>
 
-<!-- 11 -->
+<!-- 12 -->
+<section id="agent-ask" data-lesson>
+  <h2><span class="num">12</span>Ask with your own agent</h2>
+  <p class="goal">Goal: answer questions from your vault using your own agent, with no API key in lw, no changeset opened, and full access to staged content.</p>
+
+  <p>Just as you can curate ingests with an external agent (<a href="#agent">lesson 11</a>), you can also answer questions using Claude Code, Codex, or Antigravity. This requires no API key configured in lw and uses no provider quota. If your configured model is unfunded or rate-limited, <code>lw query</code> prints a fallback hint pointing here (see <a href="#ask">lesson 6</a>).</p>
+
+  <h3>1 · Prepare the ask</h3>
+  <p>Run <code>lw query --prepare "&lt;question&gt;"</code>. It prints an ask brief on stdout and exits immediately:</p>
+<pre><code><span class="p">$ </span>lw query --prepare "What is the KV cache?"
+# lw query --prepare — ask brief
+question: What is the KV cache?
+
+## How to work
+
+Every call is `lw tool --ask &lt;name&gt; '&lt;json&gt;'`, or `lw tool --ask &lt;name&gt; --from -` with a heredoc. The key names matter. The shape of the tools you will reach for first:
+
+    lw tool --ask wiki.search '{"q":"kv cache","limit":5}'
+    lw tool --ask wiki.get '{"page":"wiki/concepts/kv-cache.md"}'
+    lw tool --ask raw.get '{"source":"raw/articles/x.md","chunk":1}'
+    lw tool --ask raw.list '{"query":"kv"}'
+
+`lw tool --ask --list` prints every tool you may call, with its JSON schema. If you lose this brief, run the same `lw query --prepare` again.
+
+1. Find the relevant pages with `wiki.search` and read them with `wiki.get`; read the cited raw source with `raw.get` when a page is thin. Several calls may run in parallel.
+2. Answer the question in your reply, following the answer rules below. End every claim drawn from the vault with its `^[raw/...]` marker.
+3. A result marked as staged comes from the open changeset, which no human has reviewed yet. Cite it as usual. When a call prints a line starting `note:` on stderr, end your answer with that line, verbatim.
+4. A refusal exits 1 and its text says how to fix the call; fix it and call again.
+5. This is read-only. No changeset is opened and `lw tool --ask` offers no staging tool. You have a shell, but never edit vault files and never run `lw commit`.
+…</code></pre>
+
+  <p>Unlike <code>lw ingest --prepare</code>, <strong>no changeset is opened</strong> and no file lock is held. Asking is purely read-only, so multiple questions can run in parallel without blocking each other or vault curation.</p>
+
+  <h3>2 · Read tools via <code>lw tool --ask</code></h3>
+  <p>The agent calls read-only tools via <code>lw tool --ask &lt;name&gt; '&lt;json&gt;'</code>. Run <code>lw tool --ask --list</code> to see the full list of 8 schemas:</p>
+  <ul>
+    <li><code>wiki.search</code> — search committed pages and unreviewed pages in the open changeset</li>
+    <li><code>wiki.get</code> — read page content, frontmatter, and citations</li>
+    <li><code>raw.get</code> — read chunks of raw source documents</li>
+    <li><code>raw.list</code> — list available raw sources matching a query</li>
+    <li><code>wiki.backlinks</code> — find pages that link to a given page</li>
+    <li><code>wiki.neighbors</code> — inspect immediate graph neighbors</li>
+    <li><code>vault.orient</code> — get vault schema, tags, and structure</li>
+    <li><code>wiki.lint</code> — check health and integrity</li>
+  </ul>
+
+<pre><code><span class="p">$ </span>lw tool --ask wiki.search '{"q":"kv"}'
+no results for "kv"</code></pre>
+
+  <h3>Staged content and reminder notes</h3>
+  <p>When an open changeset exists in the vault, <code>wiki.search</code> projects the staged pages and tags them <code>(staged in cs-..., unreviewed)</code>. If the agent reads unreviewed content, <code>lw tool --ask</code> prints a reminder note to stderr:</p>
+<pre><code>note: this answer read unreviewed content from cs-857cb0bbcd3427ae (19 ops, open 3d) — lw tui → Review to keep it</code></pre>
+  <p>The brief instructs the agent to include this line verbatim at the end of its answer, ensuring you always know when an answer draws from uncommitted work.</p>
+
+  <h3>MCP and the <code>lw-ask</code> skill</h3>
+  <p>If you connect your agent via MCP, configure <code>lw mcp --ask</code>. It serves the 8 ask tools over stdio and includes the ask instructions automatically.</p>
+  <p>With the <code>lw-ask</code> skill installed in your agent (e.g. <code>~/.claude/skills/lw-ask/SKILL.md</code> or <code>~/.gemini/config/skills/lw-ask/SKILL.md</code>), simply say <em>"ask my vault: What is the KV cache?"</em>. The agent will prepare the brief, call the tools, and return a cited answer.</p>
+
+  <details class="quiz"><summary>Check: does `lw query --prepare` open a changeset or lock the vault?</summary>
+    <p>No. Asking with an agent is completely read-only. No changeset is opened, no <code>.llmwiki/tmp/tool.lock</code> is held, and other processes can continue working in the vault concurrently.</p></details>
+  <button class="mark-done" data-for="agent-ask">Mark lesson done</button>
+</section>
+
+<!-- 13 -->
+<section id="sync" data-lesson>
+  <h2><span class="num">13</span>One vault on every PC</h2>
+  <p class="goal">Goal: synchronize your vault across machines through a bare git repo over SSH, with automated pull and push, format version gates, and conflict handling.</p>
+
+  <p><code>lw sync</code> keeps the exact same wiki on your laptop, workstation, and remote servers. It synchronizes your vault through a bare Git repository over SSH, transferring wiki pages and changelog commits with standard Git while syncing content-addressed storage files beside it.</p>
+
+  <h3>1 · Set up a remote</h3>
+  <p>Create a bare Git repository on your server (or locally to test) and initialize sync:</p>
+<pre><code><span class="p">$ </span>git init --bare /tmp/lw-remote.git
+Initialized empty Git repository in /tmp/lw-remote.git/
+<span class="p">$ </span>lw sync init /tmp/lw-remote.git
+To /tmp/lw-remote.git
+ * [new branch]      HEAD -> main
+pushed 1 commit(s) to /tmp/lw-remote.git
+config: [vault] path = /home/you/my-vault
+config: [sync] remotes = ["/tmp/lw-remote.git"]</code></pre>
+  <p>This pushes your vault history to the remote and saves the path in <code>~/.config/lw/config.toml</code> under <code>[sync] remotes</code>.</p>
+
+  <h3>2 · Check status and clone</h3>
+  <p>Check synchronization state with <code>lw sync status</code>, or pull changes explicitly with <code>lw sync</code>:</p>
+<pre><code><span class="p">$ </span>lw sync status
+remote   /tmp/lw-remote.git
+ahead    0
+behind   0
+format   1 (this lw: 2)
+last     2026-10-28T10:02:15Z
+<span class="p">$ </span>lw sync
+up to date with /tmp/lw-remote.git</code></pre>
+
+  <p>To clone your vault onto a second computer:</p>
+<pre><code><span class="p">$ </span>lw sync clone /tmp/lw-remote.git ~/vault-clone
+cloned /tmp/lw-remote.git into /home/you/vault-clone</code></pre>
+
+  <h3>Automatic pull and push</h3>
+  <p>You rarely need to run <code>lw sync</code> by hand:</p>
+  <ul>
+    <li><strong>Writing verbs auto-pull</strong>: before running <code>lw ingest</code>, <code>lw commit</code>, <code>lw reject</code>, or <code>lw note</code>, lw automatically pulls remote commits to ensure you build on the latest state.</li>
+    <li><strong>Writing verbs auto-push</strong>: after committing a changeset or saving a note, lw pushes the new commit (and any new storage objects) immediately to all configured remotes.</li>
+    <li><strong>Read-only verbs stay local</strong>: <code>lw query</code>, <code>lw diff</code>, and <code>lw status</code> never touch the network, keeping browsing fast and usable offline.</li>
+  </ul>
+
+  <h3>Format version gate and conflicts</h3>
+  <p>Every vault carries a format version in <code>.llmwiki/format</code>. If a machine running a newer lw upgrades the vault format (e.g. format 2 for asset attachments), an older lw on another machine will refuse write commands with an <em>"upgrade lw"</em> message until updated.</p>
+  <p>If two machines commit diverging changes, lw attempts a clean fast-forward rebase. If an irreconcilable conflict occurs, <code>lw sync --take-remote</code> accepts the remote version as authoritative and preserves your local branch for reference.</p>
+
+  <details class="quiz"><summary>Check: you ran `lw commit` on your desktop. Do you need to run `lw sync` before shutting down?</summary>
+    <p>No. Writing verbs like <code>lw commit</code>, <code>lw reject</code>, and <code>lw note</code> automatically push to configured sync remotes when they finish.</p></details>
+  <button class="mark-done" data-for="sync">Mark lesson done</button>
+</section>
+
+<!-- 14 -->
+<section id="files" data-lesson>
+  <h2><span class="num">14</span>Files and originals</h2>
+  <p class="goal">Goal: preserve raw source originals, bundle local markdown images, and manage non-wiki binaries with content-addressed storage.</p>
+
+  <p>A wiki often lives alongside non-text assets: original source files, figures and diagrams in markdown notes, and large binary artifacts like model weights or datasets. <code>lw</code> provides dedicated mechanisms to preserve originals, bundle images, and store non-wiki files without bloating Git.</p>
+
+  <h3>Verbatim originals beside raws</h3>
+  <p>Whenever you ingest a source, <code>lw ingest</code> saves a verbatim original copy right beside the compiled markdown in <code>raw/</code>:</p>
+  <ul>
+    <li>HTML sources: <code>raw/articles/x.html</code></li>
+    <li>Plain text: <code>raw/articles/x.txt</code></li>
+    <li>PDF documents: <code>raw/papers/x.pdf</code></li>
+    <li>Markdown notes: <code>raw/notes/x.md.orig</code> (suffixed with <code>.orig</code> so wiki linters and readers do not treat them as duplicates)</li>
+  </ul>
+  <p>For raws created before original preservation was introduced, <code>lw ingest --attach &lt;file&gt;</code> backfills the original by matching its SHA-256 body hash against committed raws without needing an LLM call. <code>lw doctor</code> tracks this in its <code>originals</code> check.</p>
+<pre><code><span class="p">$ </span>lw ingest --attach unmatched-notes.md
+lw: ingest: attach unmatched-notes.md: no committed raw source matches its extracted body (sha256 8c265a4f5bd3) — run lw ingest unmatched-notes.md to ingest it as a new source</code></pre>
+
+  <h3>Local markdown images in <code>raw/assets/</code></h3>
+  <p>When ingesting a local markdown file or folder that references images (e.g. <code>![diagram](fig1.png)</code> or <code>&lt;img src="assets/chart.png"&gt;</code>), <code>lw ingest</code> copies the image into <code>raw/assets/&lt;slug&gt;-&lt;name&gt;</code> and rewrites links to relative paths: <code>../../raw/assets/&lt;name&gt;</code>.</p>
+  <p>Because raw sources and wiki pages both sit two directories below vault root (<code>raw/&lt;kind&gt;/</code> and <code>wiki/&lt;type&gt;/</code>), the relative link <code>../../raw/assets/...</code> resolves identically in both places, previewing seamlessly in Obsidian, VS Code, and GitHub.</p>
+
+  <h3>Non-wiki storage (<code>lw storage</code>)</h3>
+  <p>To store binary files, benchmarks, or datasets in the vault without polluting Git history, use <code>lw storage</code>:</p>
+<pre><code><span class="p">$ </span>lw storage add weights.bin -m "baseline model weights"
+stored weights.bin (14 B, sha256: 3100795e...)
+<span class="p">$ </span>lw storage list
+NAME         SIZE  ADDED                NOTE
+weights.bin  14 B  2026-10-28 10:02:31  baseline model weights
+<span class="p">$ </span>lw storage show weights.bin
+Name:    weights.bin
+Path:    storage/weights.bin
+Size:    14 (14 B)
+SHA256:  3100795e42b2eb175e3a53bf0787528bf2c1fef29b867b771abbd580ca4f7341
+Status:  present
+Added:   2026-10-28T10:02:31Z
+Note:    baseline model weights</code></pre>
+  <p>Stored files are tracked in <code>.llmwiki/storage.json</code> and content-addressed under <code>.llmwiki/storage/</code>. When synchronized via <code>lw sync</code>, files travel in <code>&lt;remote&gt;.storage/objects/</code> alongside Git commits.</p>
+
+  <details class="quiz"><summary>Check: does `lw storage add` commit large binary files into your git history?</summary>
+    <p>No. `lw storage` uses content-addressed storage in <code>.llmwiki/storage/</code> and is excluded from Git commits. When syncing, objects transfer beside Git into <code>&lt;remote&gt;.storage/objects/</code>.</p></details>
+  <button class="mark-done" data-for="files">Mark lesson done</button>
+</section>
+
+<!-- 15 -->
 <section id="trouble" data-lesson>
-  <h2><span class="num">12</span>Troubleshooting</h2>
+  <h2><span class="num">15</span>Troubleshooting</h2>
   <p class="goal">Goal: recognise the common failures by their symptoms.</p>
   <div class="table-wrap"><table>
     <tr><th>Symptom</th><th>Cause → fix</th></tr>
@@ -878,7 +1040,7 @@ lw doctor --discard-changeset    <span class="c"># or throw the whole thing away
     <tr><td>Ingest interrupted by provider error</td><td>In-stream errors are decoded and retried with backoff. If it still fails, ops staged before the error are kept, marked <code>[partial: …]</code> in the changeset.</td></tr>
     <tr><td>Ingest stops: output limit reached</td><td>The default is 32768. If your config sets it lower, raise it with <code>lw config set llm.max_tokens 32768</code> (<code>lw doctor</code> warns below 16000). Thinking models use a lot of it.</td></tr>
     <tr><td>Agent refuses to write a page</td><td>It won't write a claim it can't cite. Ingest a source first. Pages also need at least two outbound <code>[[wikilinks]]</code>.</td></tr>
-    <tr><td><code>lw: tool: no open changeset — start with lw ingest --prepare &lt;source&gt;</code></td><td><code>lw tool</code> works only inside a prepared ingest. Run <code>lw ingest --prepare</code> first (lesson 11). For questions, use <code>lw tool --ask</code>.</td></tr>
+    <tr><td><code>lw: tool: no open changeset — start with lw ingest --prepare &lt;source&gt;</code></td><td><code>lw tool</code> works only inside a prepared ingest. Run <code>lw ingest --prepare</code> first (lesson 11). For questions, use <code>lw tool --ask</code> (lesson 12).</td></tr>
     <tr><td><code>lw tool</code> exits 1</td><td>Not a crash: the tool refused the call, and stdout says why (a wrong key such as <code>query</code> instead of <code>q</code>, unread chunks, a missing <code>## Abstract</code>). Fix the arguments and call again.</td></tr>
     <tr><td><code>warning: lint regresses</code> after ingest</td><td>The changeset is still open. Review it with <code>lw diff</code>, drop the bad hunks, or commit with <code>--force</code> (which is recorded in the journal).</td></tr>
   </table></div>
