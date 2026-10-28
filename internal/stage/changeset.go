@@ -46,6 +46,7 @@ const (
 type Drop struct {
 	By     DropActor
 	Reason string
+	Root   string
 }
 
 // Hunk is the unit of review. Reviewers accept or drop hunks, not ops.

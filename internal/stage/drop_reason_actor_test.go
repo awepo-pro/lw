@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/awepo-pro/lw/internal/testutil"
@@ -465,6 +466,173 @@ func TestRefreshOpStaleClearsMarks(t *testing.T) {
 	if op.State == StateProposed {
 		if op.DroppedBy != "" || op.DropReason != "" {
 			t.Errorf("refreshOp left marks on restored op: {%q, %q}", op.DroppedBy, op.DropReason)
+		}
+	}
+}
+
+// TestDropOpsWithRootCascade verifies F1:
+// When d.Root is set, the op whose ID == d.Root takes d.By and d.Reason;
+// every other listed op is marked DropByCascade with reason "dropped with " + d.Root.
+// Journal op_dropped events derive their Message from each op's own mark.
+func TestDropOpsWithRootCascade(t *testing.T) {
+	e, _ := newTestEngine(t)
+	if _, err := e.OpenChangeset("root cascade test", testAuthor); err != nil {
+		t.Fatalf("OpenChangeset: %v", err)
+	}
+	op1 := stageIngest(t, e, "raw/articles/source-a.md", "body a")
+	op2 := stageIngest(t, e, "raw/articles/source-b.md", "body b")
+	op3 := stageIngest(t, e, "raw/articles/source-c.md", "body c")
+
+	d := Drop{
+		By:     DropByHuman,
+		Reason: "dropped in review",
+		Root:   op1,
+	}
+	if err := e.DropOpsWith([]string{op1, op2, op3}, d); err != nil {
+		t.Fatalf("DropOpsWith: %v", err)
+	}
+
+	cur, err := e.Current()
+	if err != nil {
+		t.Fatalf("Current: %v", err)
+	}
+
+	o1, _ := cur.Op(op1)
+	if o1.State != StateDropped || o1.DroppedBy != DropByHuman || o1.DropReason != "dropped in review" {
+		t.Errorf("op1 mark = {%q, %q, %q}, want {dropped, %q, %q}", o1.State, o1.DroppedBy, o1.DropReason, DropByHuman, "dropped in review")
+	}
+
+	for _, id := range []string{op2, op3} {
+		o, _ := cur.Op(id)
+		if o.State != StateDropped || o.DroppedBy != DropByCascade || o.DropReason != "dropped with "+op1 {
+			t.Errorf("%s mark = {%q, %q, %q}, want {dropped, %q, %q}", id, o.State, o.DroppedBy, o.DropReason, DropByCascade, "dropped with "+op1)
+		}
+	}
+
+	events, err := e.Journal().Query(Filter{Kinds: []EventKind{EvOpDropped}})
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if len(events) != 3 {
+		t.Fatalf("expected 3 drop events, got %d", len(events))
+	}
+	wantMessages := map[string]string{
+		op1: "human: dropped in review",
+		op2: "cascade: dropped with " + op1,
+		op3: "cascade: dropped with " + op1,
+	}
+	for _, ev := range events {
+		want, ok := wantMessages[ev.Op]
+		if !ok {
+			t.Errorf("unexpected event op %s", ev.Op)
+			continue
+		}
+		if ev.Message != want {
+			t.Errorf("event %s Message = %q, want %q", ev.Op, ev.Message, want)
+		}
+	}
+}
+
+// TestDropOpsWithRootAtomicity verifies F1 atomicity:
+// Root plus an unknown dep ID fails the whole call with an error and NO op state or mark changed.
+func TestDropOpsWithRootAtomicity(t *testing.T) {
+	e, _ := newTestEngine(t)
+	if _, err := e.OpenChangeset("root atomicity test", testAuthor); err != nil {
+		t.Fatalf("OpenChangeset: %v", err)
+	}
+	op1 := stageIngest(t, e, "raw/articles/source-a.md", "body a")
+	op2 := stageIngest(t, e, "raw/articles/source-b.md", "body b")
+
+	d := Drop{
+		By:     DropByHuman,
+		Reason: "dropped in review",
+		Root:   op1,
+	}
+	err := e.DropOpsWith([]string{op1, op2, "op999nonexistent"}, d)
+	if err == nil {
+		t.Fatal("DropOpsWith with unknown id succeeded, want error")
+	}
+	if !strings.Contains(err.Error(), "no such op \"op999nonexistent\"") {
+		t.Errorf("err = %q, want 'no such op'", err)
+	}
+
+	cur, err := e.Current()
+	if err != nil {
+		t.Fatalf("Current: %v", err)
+	}
+	for _, id := range []string{op1, op2} {
+		o, ok := cur.Op(id)
+		if !ok {
+			t.Fatalf("missing %s", id)
+		}
+		if o.State != StateProposed {
+			t.Errorf("%s state = %q, want proposed", id, o.State)
+		}
+		if o.DroppedBy != "" || o.DropReason != "" {
+			t.Errorf("%s mark = {%q, %q}, want empty", id, o.DroppedBy, o.DropReason)
+		}
+	}
+
+	events, err := e.Journal().Query(Filter{Kinds: []EventKind{EvOpDropped}})
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if len(events) != 0 {
+		t.Errorf("expected 0 journal drop events on failed atomicity call, got %d", len(events))
+	}
+}
+
+// TestDropOpsWithRootNotInIds verifies F1:
+// When Root is non-empty but NOT in ids, every listed op is treated as a cascade op
+// and marked DropByCascade with reason "dropped with " + d.Root.
+// This documents the behavior that all listed ops cascade when root is external or not listed.
+func TestDropOpsWithRootNotInIds(t *testing.T) {
+	e, _ := newTestEngine(t)
+	if _, err := e.OpenChangeset("root not in ids test", testAuthor); err != nil {
+		t.Fatalf("OpenChangeset: %v", err)
+	}
+	op1 := stageIngest(t, e, "raw/articles/source-a.md", "body a")
+	op2 := stageIngest(t, e, "raw/articles/source-b.md", "body b")
+
+	const externalRoot = "op_external_root"
+	d := Drop{
+		By:     DropByHuman,
+		Reason: "dropped in review",
+		Root:   externalRoot,
+	}
+	// externalRoot is not in the ids slice
+	if err := e.DropOpsWith([]string{op1, op2}, d); err != nil {
+		t.Fatalf("DropOpsWith: %v", err)
+	}
+
+	cur, err := e.Current()
+	if err != nil {
+		t.Fatalf("Current: %v", err)
+	}
+	wantReason := "dropped with " + externalRoot
+	for _, id := range []string{op1, op2} {
+		o, _ := cur.Op(id)
+		if o.State != StateDropped {
+			t.Errorf("%s state = %q, want dropped", id, o.State)
+		}
+		if o.DroppedBy != DropByCascade {
+			t.Errorf("%s DroppedBy = %q, want %q", id, o.DroppedBy, DropByCascade)
+		}
+		if o.DropReason != wantReason {
+			t.Errorf("%s DropReason = %q, want %q", id, o.DropReason, wantReason)
+		}
+	}
+
+	events, err := e.Journal().Query(Filter{Kinds: []EventKind{EvOpDropped}})
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("expected 2 drop events, got %d", len(events))
+	}
+	for _, ev := range events {
+		if ev.Message != "cascade: "+wantReason {
+			t.Errorf("event %s Message = %q, want %q", ev.Op, ev.Message, "cascade: "+wantReason)
 		}
 	}
 }

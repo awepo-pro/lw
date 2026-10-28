@@ -82,25 +82,18 @@ func (m *Model) dropOpKey() (ui.Pane, tea.Cmd) {
 }
 
 // dropArmedDrop is the second d: Engine.DropOpsWith over the root op and
-// its dependents (069), then the S3 confirmation at StatusGood. The arm is
-// consumed with its changeset either way — a failed drop must not leave a
-// live confirmation behind.
+// its dependents in one atomic call (069, FIX1), then the S3 confirmation
+// at StatusGood. The arm is consumed with its changeset either way — a failed
+// drop must not leave a live confirmation behind.
 func (m *Model) dropArmedDrop(e *stage.Engine, csID string) (ui.Pane, tea.Cmd) {
 	opID := m.dropArm.opID
 	deps := m.dropArm.deps
 	n := len(deps)
 	ids := append([]string{opID}, deps...)
-	if err := e.DropOpsWith([]string{opID}, stage.Drop{By: stage.DropByHuman, Reason: "dropped in review"}); err != nil {
+	if err := e.DropOpsWith(ids, stage.Drop{By: stage.DropByHuman, Reason: "dropped in review", Root: opID}); err != nil {
 		m.dropArm = dropArm{}
 		m.setStatus(ui.StatusWarn, fmt.Sprintf("drop op failed: %v", err))
 		return m, nil
-	}
-	if len(deps) > 0 {
-		if err := e.DropOpsWith(deps, stage.Drop{By: stage.DropByCascade, Reason: "dropped with " + opID}); err != nil {
-			m.dropArm = dropArm{}
-			m.setStatus(ui.StatusWarn, fmt.Sprintf("drop op failed: %v", err))
-			return m, nil
-		}
 	}
 	m.dropArm = dropArm{} // the confirmation was consumed with its changeset
 	slog.Info("review drop op", "changeset", csID, "op", opID, "dropped", len(ids))

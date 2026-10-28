@@ -15,6 +15,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/awepo-pro/lw/internal/agent"
 	"github.com/awepo-pro/lw/internal/config"
@@ -993,7 +994,11 @@ func joinRollback(e *stage.Engine, csID string, n0 int, origErr error, appendCla
 	if origErr != nil {
 		reason = firstLine(origErr.Error())
 		if len(reason) > 200 {
-			reason = reason[:200]
+			end := 200
+			for end > 0 && !utf8.RuneStart(reason[end]) {
+				end--
+			}
+			reason = reason[:end]
 		}
 	}
 	if err := e.DropOpsWith(ids, stage.Drop{By: stage.DropByRollback, Reason: reason}); err != nil {

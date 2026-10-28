@@ -117,11 +117,16 @@ func (m *Model) opDiffLines(op stage.Op, cw int, current bool) []panelLine {
 		}
 	}
 
-	// 069 S2: a dropped op shows one fact-first muted line naming who
-	// dropped it and why, clipped to the content width. Display-only:
-	// not a cursor stop, Diff mode only, absent on a live or restored op.
-	if dropped {
+	// 069 S2 / FIX1: a dropped op shows one fact-first muted line naming who
+	// dropped it and why, clipped to the content width. When op.State == StateDropped,
+	// it shows the drop mark (or "dropped · reason not recorded"). When the op
+	// presents as dropped only because every hunk was dropped (opIsDropped true,
+	// State != StateDropped), it shows "all hunks dropped in review".
+	// Display-only: not a cursor stop, Diff mode only, absent on a live or restored op.
+	if op.State == stage.StateDropped {
 		out = append(out, panelLine{text: ui.Clip(m.theme.Muted.Render(droppedOpLine(op)), cw)})
+	} else if dropped {
+		out = append(out, panelLine{text: ui.Clip(m.theme.Muted.Render("all hunks dropped in review"), cw)})
 	}
 
 	for _, l := range wrapCut(op.Rationale, cw, 4) {

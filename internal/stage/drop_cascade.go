@@ -443,6 +443,10 @@ func (e *Engine) DropOps(ids []string) error {
 
 // DropOpsWith marks every listed op StateDropped in one writeMu-held mutation
 // and one persist, setting DroppedBy and DropReason on every op it transitions.
+// When d.Root is "", every transitioned op takes d.By and d.Reason.
+// When d.Root is non-empty, the op whose ID matches d.Root (if listed) takes
+// d.By and d.Reason; every other listed op is marked DropByCascade with reason
+// "dropped with " + d.Root.
 // Already-dropped ids stay untouched, marks included; an unknown id fails the
 // whole call with nothing changed — every id is resolved before the first state
 // moves, because a half-applied batch is exactly the half-dropped chain this
@@ -453,8 +457,9 @@ func (e *Engine) DropOps(ids []string) error {
 // persistAfterMutation's persist, after refreshOpStates has re-derived the
 // survivors' staleness against the now-smaller live set. Only the ops that
 // actually transition journal: a re-drop of an already-dropped id is a
-// no-op that persists and journals nothing. When d is non-zero, journal
-// op_dropped Event.Message is "<by>: <reason>", else unchanged (069).
+// no-op that persists and journals nothing. Journal op_dropped Event.Message
+// is derived from each op's own mark ("<by>: <reason>") when non-empty, else
+// unchanged (069).
 func (e *Engine) DropOpsWith(ids []string, d Drop) error {
 	e.writeMu.Lock()
 	defer e.writeMu.Unlock()
@@ -484,8 +489,13 @@ func (e *Engine) DropOpsWith(ids []string, d Drop) error {
 			continue
 		}
 		op.State = StateDropped
-		op.DroppedBy = d.By
-		op.DropReason = d.Reason
+		if d.Root != "" && op.ID != d.Root {
+			op.DroppedBy = DropByCascade
+			op.DropReason = "dropped with " + d.Root
+		} else {
+			op.DroppedBy = d.By
+			op.DropReason = d.Reason
+		}
 		dropped = append(dropped, op)
 	}
 	if len(dropped) == 0 {
@@ -504,8 +514,8 @@ func (e *Engine) DropOpsWith(ids []string, d Drop) error {
 			Actor:     c.Author,
 			Paths:     opTouches(*op),
 		}
-		if d != (Drop{}) {
-			ev.Message = fmt.Sprintf("%s: %s", d.By, d.Reason)
+		if op.DroppedBy != "" || op.DropReason != "" {
+			ev.Message = fmt.Sprintf("%s: %s", op.DroppedBy, op.DropReason)
 		}
 		if err := e.appendJournal(ev); err != nil {
 			return fmt.Errorf("stage: drop ops: %w", err)

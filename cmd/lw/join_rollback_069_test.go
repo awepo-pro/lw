@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/awepo-pro/lw/internal/agent"
 	"github.com/awepo-pro/lw/internal/config"
@@ -155,6 +156,67 @@ func TestJoinRollback069(t *testing.T) {
 		}
 		if op.DropReason != longMsg[:200] {
 			t.Errorf("DropReason = %q, want %q", op.DropReason, longMsg[:200])
+		}
+	})
+
+	t.Run("truncates_multibyte_utf8_to_rune_boundary", func(t *testing.T) {
+		root := testutil.CopyFixture(t, "minimal")
+		e, err := stage.OpenEngine(root)
+		if err != nil {
+			t.Fatalf("OpenEngine: %v", err)
+		}
+		defer e.Close()
+
+		cs, err := e.OpenChangeset("multibyte rollback", stage.Author{Kind: "agent", Model: "test"})
+		if err != nil {
+			t.Fatalf("OpenChangeset: %v", err)
+		}
+
+		opID, err := e.Append(stage.Op{
+			Kind:      stage.OpIngestSource,
+			Path:      "raw/articles/source.md",
+			Extractor: "passthrough",
+			Rationale: "joined turn",
+			Content:   []byte("---\ntitle: s\n---\nbody\n"),
+		})
+		if err != nil {
+			t.Fatalf("Append op: %v", err)
+		}
+
+		// 100 3-byte runes = 300 bytes total.
+		// 66 * 3 = 198 bytes, 67 * 3 = 201 bytes.
+		// Slicing at 200 would cut the 67th rune into invalid UTF-8.
+		// Truncation at rune boundary <= 200 bytes must yield 198 bytes.
+		multiByteMsg := strings.Repeat("世", 100)
+		if len(multiByteMsg) != 300 {
+			t.Fatalf("len(multiByteMsg) = %d, want 300", len(multiByteMsg))
+		}
+		origErr := errors.New(multiByteMsg)
+
+		if err := joinRollback(e, cs.ID, 0, origErr, false); err != nil && !errors.Is(err, origErr) {
+			t.Fatalf("joinRollback: %v", err)
+		}
+
+		cur, err := e.Current()
+		if err != nil {
+			t.Fatalf("Current: %v", err)
+		}
+		op, ok := cur.Op(opID)
+		if !ok {
+			t.Fatalf("missing %s", opID)
+		}
+		if op.DroppedBy != stage.DropByRollback {
+			t.Errorf("DroppedBy = %q, want %q", op.DroppedBy, stage.DropByRollback)
+		}
+		if !utf8.ValidString(op.DropReason) {
+			t.Errorf("DropReason is not valid UTF-8: %x", op.DropReason)
+		}
+		if len(op.DropReason) > 200 {
+			t.Errorf("len(DropReason) = %d, want <= 200", len(op.DropReason))
+		}
+		wantReason := strings.Repeat("世", 66)
+		if op.DropReason != wantReason {
+			t.Errorf("DropReason = %q (len %d), want %q (len %d)", op.DropReason, len(op.DropReason), wantReason, len(wantReason))
 		}
 	})
 }
