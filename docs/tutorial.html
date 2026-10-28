@@ -4,8 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Learn lw</title>
-<meta name="description" content="A hands-on tutorial for lw v2.35.0: from an empty directory to a reviewed, cited markdown wiki.">
-<meta name="lw-version" content="v2.35.0">
+<meta name="description" content="A hands-on tutorial for lw v2.53.0: from an empty directory to a reviewed, cited markdown wiki.">
+<meta name="lw-version" content="v2.53.0">
 <style>
 :root {
   --bg: #fbfaf7;
@@ -230,7 +230,7 @@ footer { margin-top: 80px; color: var(--muted); font-size: 14px; border-top: 1px
 <nav class="toc" id="toc">
   <div class="brand">Learn <code>lw</code><button class="toggle-toc" id="toggleToc" aria-expanded="false">Lessons</button></div>
   <div class="sub">From an empty directory to a reviewed wiki</div>
-  <div class="ver" title="The lw release this page was checked against">lw v2.35.0</div>
+  <div class="ver" title="The lw release this page was checked against">lw v2.53.0</div>
   <ol id="tocList">
     <li><a href="#model"><span class="tick"></span>0 · The mental model</a></li>
     <li><a href="#install"><span class="tick"></span>1 · Install &amp; connect</a></li>
@@ -256,7 +256,7 @@ footer { margin-top: 80px; color: var(--muted); font-size: 14px; border-top: 1px
 
 <main>
 <header class="hero">
-  <div class="ver">Covers lw v2.35.0 · 2026-10-06 · lesson 11: v2.45.0</div>
+  <div class="ver">Covers lw v2.53.0 · 2026-10-28</div>
   <h1>Learn <code>lw</code> by doing</h1>
   <p class="lede">You start with sources — an article, a paper, a saved chat — and end with a small, cross-linked markdown wiki where every claim cites where it came from. <code>lw</code> is the compiler in the middle. An agent proposes the pages, and you decide what lands.</p>
   <div class="callout">
@@ -264,16 +264,28 @@ footer { margin-top: 80px; color: var(--muted); font-size: 14px; border-top: 1px
     Each lesson has a goal, the commands, what you should see, and a short check at the end. Open a terminal next to it and type along. Mark a lesson done when you've run it. Your progress is saved in this browser only. The terminal output shown here comes from real runs (see <a href="tutorial.md">tutorial.md</a>). Long output is trimmed, and trims are marked with <code>…</code>.
   </div>
   <details class="quiz">
-    <summary>Which lw is this page for? (v2.35.0, and what changed since v2.30.0)</summary>
-    <p>This page was checked against <strong>lw v2.35.0</strong>. Run <code>lw version</code>. If yours is older, some behaviour below won't match. If it's newer, trust <code>lw --help</code> where they disagree.</p>
-    <p>Changes since the last edition of this page (v2.30.0):</p>
+    <summary>Which lw is this page for? (v2.53.0, and what changed since v2.35.0)</summary>
+    <p>This page was checked against <strong>lw v2.53.0</strong>. Run <code>lw version</code>. If yours is older, some behaviour below won't match. If it's newer, trust <code>lw --help</code> where they disagree.</p>
+    <p>Changes since the last edition of this page (v2.35.0):</p>
     <ul>
-      <li><strong>v2.45.0</strong>: new lesson 11. Your own agent (Claude Code, Codex, Antigravity) can curate an ingest with <code>lw ingest --prepare</code> and <code>lw tool</code>, with no API key. Only lesson 11 was checked against v2.45.0. The rest of the page still describes v2.35.0.</li>
-      <li><strong>v2.35.0</strong>: an ingest that adds to an already-open changeset now says <code>joined changeset …</code> instead of <code>opened</code> (lesson 3).</li>
-      <li><strong>v2.34.0</strong>: dropping or restoring a hunk in Review puts the text back exactly where it was, byte for byte. A frontmatter change is always its own hunk (lesson 4).</li>
-      <li><strong>v2.33.0</strong>: the agent can't repeat a read whose answer it already has (lesson 3).</li>
-      <li><strong>v2.32.0</strong>: cleaner staged pages. An echoed section heading is stripped, and a cited raw source is added to <code>sources:</code> (lesson 3).</li>
-      <li><strong>v2.31.0</strong>: evaluation tooling only. Nothing you type changes.</li>
+      <li><strong>v2.53.0</strong>: agent-driven ask: <code>lw query --prepare</code>, <code>lw tool --ask</code>, <code>lw mcp --ask</code>, the <code>lw-ask</code> skill, and provider fallback hints (<a href="#ask">lesson 6</a>, <a href="#more">lesson 10</a>, <a href="#agent">lesson 11</a>).</li>
+      <li><strong>v2.52.0</strong>: asks cite the open changeset (labelled unreviewed) and surface waiting changesets by age (<a href="#ask">lesson 6</a>, <a href="#tui">lesson 7</a>).</li>
+      <li><strong>v2.51.0</strong>: content-addressed <code>lw storage</code> syncs non-wiki files beside git via <code>lw sync</code> (<a href="#more">lesson 10</a>, <a href="#cheat">cheat sheet</a>).</li>
+      <li><strong>v2.50.0</strong>: in Browse, <kbd>e</kbd> opens the page in <code>$EDITOR</code>, then reindexes and relints (<a href="#tui">lesson 7</a>).</li>
+      <li><strong>v2.49.0</strong>: <code>lw storage add|list|show|get|rm</code> manages non-wiki binary and data files in the vault (<a href="#more">lesson 10</a>, <a href="#cheat">cheat sheet</a>).</li>
+      <li><strong>v2.48.0</strong>: <code>lw ingest --attach &lt;file&gt;</code> backfills missing originals; <code>lw doctor</code> adds an originals check (<a href="#ingest">lesson 3</a>, <a href="#health">lesson 9</a>).</li>
+      <li><strong>v2.47.0</strong>: ingest prompt polish and stricter conventions for cleaner staged pages (<a href="#ingest">lesson 3</a>).</li>
+      <li><strong>v2.46.0</strong>: local markdown images are copied into <code>raw/assets/</code> and linked as <code>../../raw/assets/&lt;name&gt;</code> (vault format 2) (<a href="#ingest">lesson 3</a>).</li>
+      <li><strong>v2.45.0</strong>: agent-driven ingest: your own agent can curate an ingest with <code>lw ingest --prepare</code> and <code>lw tool</code> without an API key (<a href="#agent">lesson 11</a>).</li>
+      <li><strong>v2.44.0</strong>: a read-only ask in the TUI opens no changeset until it actually stages something (<a href="#ask">lesson 6</a>, <a href="#tui">lesson 7</a>).</li>
+      <li><strong>v2.43.0</strong>: <code>wiki.get</code> can read back staged-only pages before commit (<a href="#tui">lesson 7</a>, <a href="#agent">lesson 11</a>).</li>
+      <li><strong>v2.42.0</strong>: provider errors decode in-stream, failed turns keep partial staged ops, and <code>llm.base_url</code> rejects trailing <code>/chat/completions</code> (<a href="#install">lesson 1</a>, <a href="#ingest">lesson 3</a>, <a href="#trouble">lesson 12</a>).</li>
+      <li><strong>v2.41.0</strong>: every new ingest keeps a verbatim original copy beside its raw source in <code>raw/</code> (<a href="#ingest">lesson 3</a>).</li>
+      <li><strong>v2.40.0</strong>: <code>lw note -F &lt;file|-&gt;</code> captures notes from files or stdin; unchanged editor exits refuse without losing drafts (<a href="#more">lesson 10</a>).</li>
+      <li><strong>v2.39.0</strong>: <code>lw sync</code> syncs vaults across PCs via git remotes over SSH with automated pull/push and format gates (<a href="#more">lesson 10</a>, <a href="#cheat">cheat sheet</a>).</li>
+      <li><strong>v2.38.0</strong>: <code>lw ingest --recompile &lt;path&gt;</code> compiles pages from already-committed raw sources without staging new raw files (<a href="#ingest">lesson 3</a>).</li>
+      <li><strong>v2.37.0</strong>: <code>web.search</code> is removed from ingest turns so ingests only compile provided sources (<a href="#ingest">lesson 3</a>, <a href="#ask">lesson 6</a>).</li>
+      <li><strong>v2.36.0</strong>: ingest search budget refuses an 11th <code>wiki.search</code> call between staged page changes (<a href="#ingest">lesson 3</a>).</li>
     </ul>
   </details>
 </header>
@@ -364,7 +376,7 @@ go install github.com/awepo-pro/lw/cmd/lw@latest
 brew install awepo-pro/tap/lw
 nix profile install github:awepo-pro/lw</code></pre>
 <pre><code><span class="p">$ </span>lw version
-lw v2.35.0</code></pre>
+lw v2.53.0</code></pre>
   <p>The version comes from the release tag the binary was built from, so a bug report can name the exact build.</p>
 
   <h3>Point it at a model</h3>
@@ -396,7 +408,7 @@ lw config --probe</code></pre>
 
   <div class="callout warn">
     <strong>The #1 setup mistake</strong>
-    <code>llm.base_url</code> must be an OpenAI-compatible <code>/v1</code> endpoint. <code>https://api.deepseek.com/anthropic</code> looks fine, but every request to it returns a 404.
+    <code>llm.base_url</code> must be an OpenAI-compatible <code>/v1</code> endpoint. <code>https://api.deepseek.com/anthropic</code> looks fine, but every request to it returns a 404. Also, do not end the URL in <code>/chat/completions</code>: lw adds that path itself and rejects any base URL that includes it.
   </div>
 
   <p>A healthy setup, as shown by <code>lw doctor</code>:</p>
@@ -451,7 +463,8 @@ no open changeset
 <pre><code>lw ingest ~/Downloads/kv-cache-explained.md   <span class="c"># a local file</span>
 lw ingest https://example.com/some-post        <span class="c"># or a URL</span>
 lw ingest ~/notes/                             <span class="c"># or a folder (.md .txt .html .pdf)</span></code></pre>
-  <p>lw first converts each source to fixed markdown. If a path or URL is bad, the whole command fails before any changeset is opened. Then the agent reads the source, <code>SCHEMA.md</code>, <code>index.md</code>, and recent <code>log.md</code>, and proposes pages. To keep it writing instead of browsing, an ingest may read at most 6 existing wiki pages between two staged changes; a 7th read is refused until it stages something. It also can't repeat a read whose answer is still in its context, so it doesn't spend rounds looking at the same page twice. A real run that took about three minutes ends like this:</p>
+  <p>lw first converts each source to fixed markdown. If a path or URL is bad, the whole command fails before any changeset is opened. Every new ingest also saves a verbatim original file beside the raw markdown (e.g. <code>.md.orig</code>, <code>.html</code>, <code>.txt</code>, <code>.pdf</code>), and local markdown images are copied into <code>raw/assets/</code> and linked as <code>../../raw/assets/&lt;name&gt;</code>.</p>
+  <p>Then the agent reads the source, <code>SCHEMA.md</code>, <code>index.md</code>, and recent <code>log.md</code>, and proposes pages. Ingest turns compile only the sources you gave them: <code>web.search</code> is not offered. To keep the agent writing instead of wandering, an ingest may read at most 6 existing wiki pages between two staged changes, and may make at most 10 <code>wiki.search</code> calls before staging a page (an 11th search is refused). It also can't repeat a read whose answer is still in its context, so it doesn't spend rounds looking at the same page twice. If a network or provider error interrupts the turn, lw retries with backoff and keeps whatever ops were already staged, marked <code>[partial: …]</code>. A real run that took about three minutes ends like this:</p>
 <pre><code>opened changeset cs-92c7d850b461792a: ingest ~/Downloads/kv-cache-explained.md (4 op(s))
   op1 ingest_source raw/articles/kv-cache-explained.md
   op2 create_page wiki/concepts/kv-cache.md
@@ -465,6 +478,12 @@ lw ingest ~/notes/                             <span class="c"># or a folder (.m
 
   <p>If a changeset is already open (say, from an Ask turn), the ingest adds to it instead of opening a second one, and the first line says so: <code>joined changeset cs-…</code> rather than <code>opened changeset cs-…</code>.</p>
   <p>Two small repairs happen as pages are staged, and the agent is told about each one. If a section edit repeats the section's own heading (<code>## Trade-offs</code> inside the Trade-offs section), the duplicate heading is removed. If a page's body cites a <code>raw/</code> source that its <code>sources:</code> frontmatter doesn't list, the source is added. Both used to show up as lint warnings after an ingest.</p>
+
+  <h3>Recompiling and attaching originals</h3>
+  <p>If you want to re-run compilation on a raw source you already committed (perhaps with a new schema or after updating curator memory), use <code>--recompile</code>. It reads from the committed raw source and stages new or updated wiki pages without staging a duplicate raw file:</p>
+<pre><code>lw ingest --recompile raw/articles/kv-cache-explained.md</code></pre>
+  <p>For sources ingested before lw saved originals, backfill the verbatim original without calling a model or staging pages:</p>
+<pre><code>lw ingest --attach ~/Downloads/kv-cache-explained.md</code></pre>
 
   <h3>Limits and dry runs</h3>
   <p>A single ingest is capped at <strong>10 files</strong> and <strong>75% of the context budget in bytes</strong> (282 KB at the default <code>context_tokens = 96000</code>). The agent still needs room to read back what it wrote. If you go over the cap, nothing is opened, and the error names the largest file so you know which one to split out. Sources the vault already holds are skipped before anything else happens.</p>
@@ -543,12 +562,18 @@ The **KV cache** stores the key and value projections a transformer computes dur
 each new token only computes attention *against* the cached keys and values instead of recomputing
 them for the whole prefix. ^[raw/articles/kv-cache-explained.md] …</code></pre>
   <p><code>lw query</code> is <strong>read-only</strong>. It never opens or leaves behind a changeset. Each claim ends with a marker that points at the raw evidence, <code>^[raw/…]</code>, with <code>p.N</code> added when the source is a paper with page anchors. If you ask about something you haven't ingested, the curator says so under <code>Not from your vault:</code> instead of making up a citation.</p>
+  <p>Asks are <strong>changeset-aware</strong>: an ask reads both committed pages and any pages currently staged in the open changeset, labelling staged content unreviewed. If an open changeset has been waiting for review for more than 24 hours, <code>lw query</code> surfaces a note reminding you to review or discard it.</p>
+
+  <h3>Keyless ask with your own agent</h3>
+  <p>If you don't have an API key configured (or hit provider rate limits), lw doesn't block you. It prints an agent fallback hint:</p>
+<pre><code>hint: no LLM API key is configured. An agent with its own model can still answer from this vault: lw query --prepare "&lt;your question&gt;"</code></pre>
+  <p>Run <code>lw query --prepare "&lt;question&gt;"</code>. It prints an ask brief with the question, vault orientation, and rules. Your external agent (or the <code>lw-ask</code> skill) then runs read-only tools via <code>lw tool --ask &lt;name&gt; '&lt;json&gt;'</code> (such as <code>wiki.search</code>, <code>wiki.get</code>, <code>raw.get</code>) and synthesizes the answer with its own model—calling no provider from lw and needing no API key (see <a href="#agent">lesson 11</a>).</p>
 
   <h3>Keep an answer</h3>
-  <p>In the TUI's Ask screen, an answer that cites the vault (it contains a <code>^[raw/…]</code> or <code>^[wiki/…]</code> marker) can be saved with <kbd>ctrl+s</kbd>. That stages a <code>wiki/queries/</code> page, which you review like any other change. An answer with no vault citation can't be saved: <em>"this answer cites no vault source; nothing to save"</em>.</p>
+  <p>In the TUI's Ask screen, an answer that cites the vault (it contains a <code>^[raw/…]</code> or <code>^[wiki/…]</code> marker) can be saved with <kbd>ctrl+s</kbd>. That stages a <code>wiki/queries/</code> page, which you review like any other change. A read-only ask turn opens no changeset until you save or stage something. An answer with no vault citation can't be saved: <em>"this answer cites no vault source; nothing to save"</em>.</p>
 
   <h3>Web lookup (optional)</h3>
-  <p>Configure Tavily and the curator gets a 19th tool, <code>web.search</code>. When you don't configure it, the tool isn't offered at all. A search result only becomes a source after it's ingested with <code>stage.ingest_source</code>, and it goes through review like everything else.</p>
+  <p>Configure Tavily and the curator gets <code>web.search</code> for Ask turns. (Ingest turns never get <code>web.search</code>.) When you don't configure it, the tool isn't offered at all. A search result only becomes a source after it's ingested with <code>stage.ingest_source</code>, and it goes through review like everything else.</p>
 <pre><code><span class="c"># config.toml</span>
 [web]
 api_key = "env:TAVILY_API_KEY"
@@ -564,10 +589,10 @@ export TAVILY_API_KEY=tvly-...</code></pre>
   <p class="goal">Goal: do the whole ask → review → commit loop without leaving the terminal UI.</p>
   <p>Run <code>lw</code> with no command (or <code>lw tui</code>). It needs a terminal of at least <strong>80×24</strong>. <kbd>tab</kbd> cycles through five screens:</p>
 <pre><code>Review → Ask → Lint → Log → Browse   (wrapping back to Review)</code></pre>
-  <p>The header shows the vault counts and the open changeset (<code>cs-1c86cb · 1 op · checks ✓</code>). The footer always lists what the current screen's keys do. Press <kbd>?</kbd> for every key.</p>
+  <p>The header shows the vault counts and the open changeset, including how long it has been waiting for review (e.g. <code>cs-1c86cb (15m) · 1 op · checks ✓</code>). The footer always lists what the current screen's keys do. Press <kbd>?</kbd> for every key.</p>
 
   <h3>Ask, then Review</h3>
-  <p>Type a request and press <kbd>enter</kbd>. If no changeset is open, the turn opens one (<code>ask: &lt;your question&gt;</code>). If the turn stages nothing, lw discards that changeset for you. While you're on Ask, <kbd>q</kbd> and <kbd>?</kbd> type into the message box, so quit with <kbd>ctrl+c</kbd>.</p>
+  <p>Type a request and press <kbd>enter</kbd>. An ask runs read-only and opens no changeset until it actually stages something. It can read back staged-only pages via <code>wiki.get</code>, labelling staged content unreviewed. While you're on Ask, <kbd>q</kbd> and <kbd>?</kbd> type into the message box, so quit with <kbd>ctrl+c</kbd>.</p>
 <pre><code> ml-wiki   Review  Ask  Lint  Log  Browse    3 pages · 1 raw · 0 lint   cs-fd447f · 1 op · checks <span class="ok">✓</span>
 ╭ Transcript — cs-fd447f ─────────────────────────────────────────── ↑ 28 earlier ╮
 │ ▸ stage.close {}  → changeset cs-fd447f752de3e221                               │
@@ -603,13 +628,14 @@ export TAVILY_API_KEY=tvly-...</code></pre>
     <div><kbd>?</kbd>help overlay</div>
     <div><kbd>ctrl+r</kbd>Ask → Review</div>
     <div><kbd>ctrl+s</kbd>Ask: save answer as page</div>
+    <div><kbd>e</kbd>Browse: open in $EDITOR</div>
   </div>
 
   <h3>Lint, Log, Browse</h3>
   <ul>
     <li><strong>Lint</strong>: findings listed by severity. <kbd>enter</kbd> opens the page in Browse.</li>
     <li><strong>Log</strong>: journal events. <kbd>f</kbd> cycles the filter (all → accepted → rejected → agent → human). <kbd>r</kbd> reverts the selected commit into a new changeset.</li>
-    <li><strong>Browse</strong>: the page tree. <kbd>/</kbd> finds a page, <kbd>h</kbd>/<kbd>l</kbd> collapse or expand a folder, <kbd>o</kbd> opens a cited PDF at the cited page.</li>
+    <li><strong>Browse</strong>: the page tree. <kbd>/</kbd> finds a page, <kbd>h</kbd>/<kbd>l</kbd> collapse or expand a folder, <kbd>e</kbd> opens the page in <code>$EDITOR</code> (reindexing and relinting on exit), <kbd>o</kbd> opens a cited PDF at the cited page.</li>
   </ul>
   <p>Most keys can be rebound in <code>~/.config/lw/hotkeys.toml</code>. See <a href="hotkeys.md">hotkeys.md</a>.</p>
 
@@ -665,10 +691,15 @@ lw doctor — /home/you/ml-wiki
 <span class="ok">✓</span> recovery no interrupted apply
 <span class="ok">✓</span> lock     no lock held
 - git      skipped: not a git repository
+<span class="ok">✓</span> originals 0 raw source(s)
+<span class="ok">✓</span> storage  0 stored file(s)
 <span class="bad">✗</span> config   api_key env:DEEPSEEK_API_KEY (missing) · model deepseek-v4-flash @ https://api.deepseek.com/v1
   fix: export DEEPSEEK_API_KEY, or point llm.api_key at another variable with lw config set llm.api_key env:NAME
+! pdf extractor not installed — PDF ingest is off; other sources are unaffected
+  fix: uv tool install docling==2.130.0, or lw config set extract.command "docling"
+<span class="ok">✓</span> llm budget llm.max_tokens = 32768
 - provider skipped: api_key did not resolve: config: environment variable DEEPSEEK_API_KEY is not set
-1 of 8 check(s) failed</code></pre>
+1 of 12 check(s) failed</code></pre>
   <div class="table-wrap"><table>
     <tr><th>Flag</th><th>Use when</th></tr>
     <tr><td><code>--unlock</code></td><td>A stale writer lock remains after a crash</td></tr>
@@ -684,14 +715,14 @@ lw doctor — /home/you/ml-wiki
 <!-- 10 -->
 <section id="more" data-lesson>
   <h2><span class="num">10</span>Notes, PDFs, MCP</h2>
-  <p class="goal">Goal: know the side doors: quick capture, papers, and other agents.</p>
+  <p class="goal">Goal: know the side doors: quick capture, papers, storage, sync, and other agents.</p>
 
   <h3>Quick notes (no LLM, no review)</h3>
 <pre><code>lw note -m "check whether paged attention changes the KV-cache trade-off"
 lw note -F draft.md     <span class="c"># from a file; -F - reads stdin</span>
 lw note                 <span class="c"># compose in $VISUAL / $EDITOR</span>
 lw note list -n 10</code></pre>
-  <p>Notes go into <code>notes/</code>, outside the wiki. They're never indexed or snapshotted. Think of it as an inbox for thoughts you'll turn into sources later. An editor that returns at once (<code>subl</code> or <code>code</code> without <code>-w</code>) is refused, and whatever you save in it is kept as a draft that the next <code>lw note</code> reopens.</p>
+  <p>Notes go into <code>notes/</code>, outside the wiki. They're never indexed or snapshotted. Think of it as an inbox for thoughts you'll turn into sources later. An editor that returns at once without waiting (like <code>subl</code> or <code>code</code> without <code>-w</code>) is refused naming <code>export EDITOR="... -w"</code>; whatever you save is preserved in <code>.llmwiki/tmp/NOTE_EDITMSG</code> and the next <code>lw note</code> reopens it.</p>
 
   <h3>PDFs</h3>
 <pre><code>uv tool install docling==2.130.0     <span class="c"># one-time; ~6 GB, runs CPU-only</span>
@@ -703,21 +734,29 @@ lw config set open.pdf "papers -i {page} {file}"   <span class="c"># or: mupdf {
     <li>Converted PDFs are cached in <code>.llmwiki/cache/extract/</code>. The cache is safe to delete.</li>
   </ul>
 
+  <h3>Non-wiki storage and sync</h3>
+  <p>To keep data files, binary assets, or weights beside the wiki without bloating git history, use <code>lw storage</code>:</p>
+<pre><code>lw storage add weights.bin -m "baseline model weights"
+lw storage list
+lw storage show weights.bin</code></pre>
+  <p>Stored files live in <code>storage/</code> and are cataloged in <code>.llmwiki/storage.json</code>. When you connect a remote with <code>lw sync</code> (via a bare git repo over SSH), files travel content-addressed in <code>&lt;remote&gt;.storage/objects/</code> beside git. Writing verbs automatically pull before starting and push after commit, keeping the vault identical across all your machines.</p>
+
   <h3>Use lw from another agent (MCP)</h3>
 <pre><code>{
   "mcpServers": {
-    "lw": { "command": "lw", "args": ["mcp"] }
+    "lw": { "command": "lw", "args": ["mcp"] },
+    "lw-ask": { "command": "lw", "args": ["mcp", "--ask"] }
   }
 }</code></pre>
-  <p>This exposes the same 18 vault tools, plus <code>web.search</code> when it's configured. <code>lw mcp</code> itself needs no API key, because the client brings its own model. On the wire, dots become underscores (<code>wiki.search</code> → <code>wiki_search</code>). See <a href="tools.md">tools.md</a>.</p>
-  <p>Over MCP, the client gets the tools but none of <code>lw ingest</code>'s preparation: no folder walk, no dedupe, no size limits. If the agent's job is to ingest, use lesson 11 instead.</p>
+  <p><code>lw mcp</code> exposes the vault tools over stdio; with <code>--ask</code>, it serves only the read-only ask tools and sees unreviewed changes in the open changeset. <code>lw mcp</code> itself needs no API key, because the client brings its own model. On the wire, dots become underscores (<code>wiki.search</code> → <code>wiki_search</code>). See <a href="tools.md">tools.md</a>.</p>
+  <p>Over MCP, the client gets the tools but none of <code>lw ingest</code>'s preparation: no folder walk, no dedupe, no size limits. If the agent's job is to curate an ingest, use lesson 11 instead.</p>
   <button class="mark-done" data-for="more">Mark lesson done</button>
 </section>
 
 <!-- 11 -->
 <section id="agent" data-lesson>
   <h2><span class="num">11</span>Curate with your own agent</h2>
-  <p class="goal">Goal: let Claude Code, Codex or Antigravity write the pages for an ingest, with no API key in lw and the same review at the end. Needs v2.45.0+.</p>
+  <p class="goal">Goal: let Claude Code, Codex or Antigravity curate an ingest or answer questions, with no API key in lw and the same review at the end.</p>
 
   <p>A normal <code>lw ingest</code> does two jobs. First it extracts the sources and stages them, which needs no model. Then it runs a curator agent on your configured provider. If the provider is unfunded or rate-limited, or you'd rather use the agent you already have open, split the two jobs:</p>
   <div class="table-wrap"><table>
@@ -811,8 +850,13 @@ opened changeset cs-276a28a44de5dfc3: ingest ~/Downloads/kv-cache-explained.md (
 lw session show --plain          <span class="c"># what the agent read and staged, call by call</span>
 lw doctor --discard-changeset    <span class="c"># or throw the whole thing away</span></code></pre>
 
-  <h3>Telling Claude Code to do it</h3>
-  <p>You don't have to dictate the steps. Say <em>"ingest ~/Downloads/paper.pdf into my lw vault"</em>. With the <code>lw-ingest</code> skill installed (<code>~/.claude/skills/lw-ingest/SKILL.md</code>), Claude Code runs prepare, reads every chunk, stages pages, closes, and then tells you the changeset id to review. Without the skill, point the agent at <code>lw ingest --prepare</code>; the brief it prints is self-contained. If the agent's context gets compacted mid-ingest, <code>lw tool --brief</code> prints the brief again.</p>
+  <h3>Telling your agent to do it</h3>
+  <p>You don't have to dictate the steps. Say <em>"ingest ~/Downloads/paper.pdf into my lw vault"</em>. With the <code>lw-ingest</code> skill installed (e.g. <code>~/.claude/skills/lw-ingest/SKILL.md</code>), Claude Code, Codex, or Antigravity runs prepare, reads every chunk, stages pages, closes, and tells you the changeset id to review. Without the skill, point the agent at <code>lw ingest --prepare</code>; the brief it prints is self-contained. If the agent's context gets compacted mid-ingest, <code>lw tool --brief</code> prints the brief again.</p>
+
+  <h3>Answering questions with your agent</h3>
+  <p>The same pattern works for asking questions without a provider key or when rate-limited:</p>
+<pre><code><span class="p">$ </span>lw query --prepare "What is the KV cache?"</code></pre>
+  <p>This prints an ask brief with vault orientation and grounding rules, but opens no changeset. Your agent calls read-only tools via <code>lw tool --ask &lt;name&gt; '&lt;json&gt;'</code> (schemas: <code>lw tool --ask --list</code>: <code>wiki.search</code>, <code>wiki.get</code>, <code>raw.get</code>, <code>raw.list</code>, <code>wiki.backlinks</code>, <code>wiki.neighbors</code>, <code>vault.orient</code>, <code>wiki.lint</code>) and returns a cited answer. With the <code>lw-ask</code> skill installed, say <em>"ask my vault: What is the KV cache?"</em> to run this automatically.</p>
 
   <details class="quiz"><summary>Check: the agent runs <code>lw tool web.search '{}'</code>. What happens?</summary>
     <p>Exit 2: <code>lw: tool: web.search is not offered for ingest (lw tool --list shows the tools)</code>. An ingest compiles the sources you gave it, nothing fetched from the web.</p></details>
@@ -827,12 +871,14 @@ lw doctor --discard-changeset    <span class="c"># or throw the whole thing away
   <p class="goal">Goal: recognise the common failures by their symptoms.</p>
   <div class="table-wrap"><table>
     <tr><th>Symptom</th><th>Cause → fix</th></tr>
-    <tr><td>Provider returns 400 / 404 / "not found"</td><td><code>llm.base_url</code> isn't an OpenAI-compatible <code>/v1</code> endpoint. Run <code>lw config set llm.base_url …/v1</code>, then <code>lw config --probe</code>.</td></tr>
-    <tr><td><code>env:DEEPSEEK_API_KEY (missing)</code></td><td>Export the variable in <em>this</em> shell, or point the reference at another one with <code>lw config set llm.api_key env:NAME</code>.</td></tr>
+    <tr><td>Provider returns 400 / 404 / "not found"</td><td><code>llm.base_url</code> isn't an OpenAI-compatible <code>/v1</code> endpoint, or ends in <code>/chat/completions</code> (which lw appends itself). Set it to the API root: <code>lw config set llm.base_url https://…/v1</code>, then <code>lw config --probe</code>.</td></tr>
+    <tr><td><code>env:DEEPSEEK_API_KEY (missing)</code> or 401/402/429 on query</td><td>Export the variable, or switch to the keyless agent path: run <code>lw query --prepare "&lt;question&gt;"</code> and have an external agent answer with <code>lw tool --ask</code>.</td></tr>
+    <tr><td><code>lw note</code> refuses editor exit</td><td>The editor returned at once without waiting. Make it wait (e.g. <code>export EDITOR="subl -w"</code> or <code>code -w</code>). Your draft is safe in <code>.llmwiki/tmp/NOTE_EDITMSG</code> and reopens next time.</td></tr>
     <tr><td><code>lw revert</code>: "a changeset is already open"</td><td>Revert needs a clean slate. Run <code>lw status</code> → <code>lw diff</code>, then commit, press <kbd>X</kbd>, or run <code>lw doctor --discard-changeset</code>. (Ingest, Ask and <code>lint --fix</code> join the open changeset instead.)</td></tr>
+    <tr><td>Ingest interrupted by provider error</td><td>In-stream errors are decoded and retried with backoff. If it still fails, ops staged before the error are kept, marked <code>[partial: …]</code> in the changeset.</td></tr>
     <tr><td>Ingest stops: output limit reached</td><td>The default is 32768. If your config sets it lower, raise it with <code>lw config set llm.max_tokens 32768</code> (<code>lw doctor</code> warns below 16000). Thinking models use a lot of it.</td></tr>
     <tr><td>Agent refuses to write a page</td><td>It won't write a claim it can't cite. Ingest a source first. Pages also need at least two outbound <code>[[wikilinks]]</code>.</td></tr>
-    <tr><td><code>lw: tool: no open changeset — start with lw ingest --prepare &lt;source&gt;</code></td><td><code>lw tool</code> works only inside a prepared ingest. Run <code>lw ingest --prepare</code> first (lesson 11).</td></tr>
+    <tr><td><code>lw: tool: no open changeset — start with lw ingest --prepare &lt;source&gt;</code></td><td><code>lw tool</code> works only inside a prepared ingest. Run <code>lw ingest --prepare</code> first (lesson 11). For questions, use <code>lw tool --ask</code>.</td></tr>
     <tr><td><code>lw tool</code> exits 1</td><td>Not a crash: the tool refused the call, and stdout says why (a wrong key such as <code>query</code> instead of <code>q</code>, unread chunks, a missing <code>## Abstract</code>). Fix the arguments and call again.</td></tr>
     <tr><td><code>warning: lint regresses</code> after ingest</td><td>The changeset is still open. Review it with <code>lw diff</code>, drop the bad hunks, or commit with <code>--force</code> (which is recorded in the journal).</td></tr>
   </table></div>
@@ -846,27 +892,33 @@ lw doctor --discard-changeset    <span class="c"># or throw the whole thing away
     <tr><th>Command</th><th>Does</th><th>Needs model?</th></tr>
     <tr><td><code>lw init [--schema d]</code></td><td>Scaffold a vault</td><td>no</td></tr>
     <tr><td><code>lw config [set k v] [--probe]</code></td><td>Show, edit, or test config</td><td>probe only</td></tr>
-    <tr><td><code>lw ingest &lt;path|url|dir&gt;… [--dry-run]</code></td><td>Propose pages from sources</td><td>yes</td></tr>
-    <tr><td><code>lw ingest --prepare [--agent name] &lt;…&gt;</code></td><td>Stage sources + print a brief for your own agent</td><td>no</td></tr>
-    <tr><td><code>lw tool &lt;name&gt; ['&lt;json&gt;' | --from -]</code></td><td>One tool call in a prepared ingest; <code>--list</code> schemas, <code>--brief</code> reprint</td><td>no</td></tr>
+    <tr><td><code>lw ingest &lt;path|url|dir&gt;… [--dry-run]</code></td><td>Propose pages from sources</td><td>yes (dry-run: no)</td></tr>
+    <tr><td><code>lw ingest --recompile &lt;path|file|dir&gt;</code></td><td>Compile pages from committed raw</td><td>yes</td></tr>
+    <tr><td><code>lw ingest --attach &lt;file&gt;</code></td><td>Backfill original file for committed raw</td><td>no</td></tr>
+    <tr><td><code>lw ingest --prepare [--agent name] &lt;…&gt;</code></td><td>Stage sources + print brief for own agent</td><td>no</td></tr>
+    <tr><td><code>lw tool &lt;name&gt; ['&lt;json&gt;' | --from -]</code></td><td>One tool call in prepared ingest; <code>--list</code> schemas, <code>--brief</code></td><td>no</td></tr>
+    <tr><td><code>lw tool --ask &lt;name&gt; ['&lt;json&gt;']</code></td><td>One read-only tool call for agent ask; <code>--list</code> schemas</td><td>no</td></tr>
     <tr><td><code>lw note [-m "…" | -F &lt;file|-&gt;] | note list</code></td><td>Quick capture outside the wiki</td><td>no</td></tr>
     <tr><td><code>lw status</code></td><td>Committed counts + open changeset</td><td>no</td></tr>
     <tr><td><code>lw diff [--stat] [--op id]</code></td><td>Projected diff</td><td>no</td></tr>
     <tr><td><code>lw commit -m "…" [--force]</code></td><td>Land the changeset</td><td>no</td></tr>
     <tr><td><code>lw query "…"</code></td><td>Cited, read-only answer</td><td>yes</td></tr>
+    <tr><td><code>lw query --prepare "…"</code></td><td>Print brief for external agent ask (keyless)</td><td>no</td></tr>
     <tr><td><code>lw lint [--fix] [--json]</code></td><td>18 checks; <code>--fix</code> stages repairs</td><td>fix only</td></tr>
     <tr><td><code>lw log [--rejected] [--agent] [--page p]</code></td><td>Journal</td><td>no</td></tr>
     <tr><td><code>lw revert &lt;commit&gt;</code></td><td>Open an inverse changeset</td><td>no</td></tr>
     <tr><td><code>lw session list | show [id]</code></td><td>Agent transcripts</td><td>no</td></tr>
     <tr><td><code>lw trace [-n N] | trace show &lt;ref&gt;</code></td><td>Per-turn traces</td><td>no</td></tr>
     <tr><td><code>lw doctor [--unlock] [--rebuild-index] [--discard-changeset]</code></td><td>Health + repairs</td><td>provider check</td></tr>
-    <tr><td><code>lw mcp</code></td><td>MCP stdio server</td><td>no</td></tr>
+    <tr><td><code>lw sync [--take-remote] | status | init | clone</code></td><td>Sync vault across PCs via git over SSH</td><td>no</td></tr>
+    <tr><td><code>lw storage [add|list|show|get|rm]</code></td><td>Manage non-wiki content-addressed files</td><td>no</td></tr>
+    <tr><td><code>lw mcp [--ask]</code></td><td>MCP stdio server; <code>--ask</code> serves ask tools</td><td>no</td></tr>
     <tr><td><code>lw</code> / <code>lw tui</code></td><td>Terminal UI</td><td>Ask only</td></tr>
   </table></div>
   <p><strong>Where to go next:</strong> <a href="tutorial.md">tutorial.md</a> (the long-form version of this page) · <a href="vault-schema.md">vault-schema.md</a> · <a href="changesets.md">changesets.md</a> · <a href="tools.md">tools.md</a> · <a href="hotkeys.md">hotkeys.md</a> · <a href="design.md">design.md</a></p>
 </section>
 
-<footer>Covers <strong>lw v2.35.0</strong> (tagged 2026-10-06) and matches its <code>lw --help</code>. If a command here doesn't match your build, trust <code>lw --help</code>.</footer>
+<footer>Covers <strong>lw v2.53.0</strong> (tagged 2026-10-28) and matches its <code>lw --help</code>. If a command here doesn't match your build, trust <code>lw --help</code>.</footer>
 </main>
 </div>
 
