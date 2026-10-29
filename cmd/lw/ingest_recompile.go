@@ -15,13 +15,11 @@ package main
 
 import (
 	"fmt"
-	"maps"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 
-	"github.com/awepo-pro/lw/internal/cite"
+	"github.com/awepo-pro/lw/internal/tools"
 	"github.com/awepo-pro/lw/internal/vault"
 )
 
@@ -150,35 +148,10 @@ func walkedRawPath(root, walked string) (string, bool) {
 }
 
 // rawCitations maps each raw path some committed wiki page cites to the paths
-// of the pages that do, sorted. A page cites a raw when its sources: list has
-// the path or its body has a provenance marker (cite.Scan: code spans and
-// fences excluded) whose Source is the path, whatever page suffix the marker
-// carries. One scan serves D3's "cited by" lines and D4's skip hint, so the
-// two can never disagree about whether a raw is cited.
+// of the pages that do, sorted. One scan serves D3's "cited by" lines and
+// D4's skip hint, delegating to tools.RawCitations (070 A-070-3).
 func rawCitations(v *vault.Vault) map[string][]string {
-	sets := make(map[string]map[string]bool)
-	note := func(raw, page string) {
-		if !strings.HasPrefix(raw, "raw/") {
-			return
-		}
-		if sets[raw] == nil {
-			sets[raw] = make(map[string]bool)
-		}
-		sets[raw][page] = true
-	}
-	for _, p := range v.Pages() {
-		for _, s := range p.FM.Sources {
-			note(s, p.Path)
-		}
-		for _, c := range cite.Scan(p.Body) {
-			note(c.Source, p.Path)
-		}
-	}
-	out := make(map[string][]string, len(sets))
-	for raw, set := range sets {
-		out[raw] = slices.Sorted(maps.Keys(set))
-	}
-	return out
+	return tools.RawCitations(v)
 }
 
 // citedByText renders the "cited by" value of an item block: "no page", or the
