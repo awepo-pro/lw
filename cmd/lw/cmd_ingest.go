@@ -15,6 +15,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/awepo-pro/lw/internal/agent"
 	"github.com/awepo-pro/lw/internal/config"
@@ -970,7 +971,7 @@ func keepPartial(e *stage.Engine, final *stage.Changeset, joined bool, k int, se
 }
 
 // joinRollback rolls a joined verb's failed turn back without touching the
-// work the open changeset already held (019): Engine.DropOps over exactly
+// work the open changeset already held (019): Engine.DropOpsWith over exactly
 // the ops at index >= n0 that are not already dropped — never Reject — so
 // the changeset stays open with its earlier ops live for review.
 // appendClause adds the "; its own ops were dropped ..." sentence the
@@ -989,7 +990,18 @@ func joinRollback(e *stage.Engine, csID string, n0 int, origErr error, appendCla
 			ids = append(ids, cur.Ops[i].ID)
 		}
 	}
-	if err := e.DropOps(ids); err != nil {
+	reason := ""
+	if origErr != nil {
+		reason = firstLine(origErr.Error())
+		if len(reason) > 200 {
+			end := 200
+			for end > 0 && !utf8.RuneStart(reason[end]) {
+				end--
+			}
+			reason = reason[:end]
+		}
+	}
+	if err := e.DropOpsWith(ids, stage.Drop{By: stage.DropByRollback, Reason: reason}); err != nil {
 		return fmt.Errorf("%w (and dropping this ingest's own ops failed: %v)", origErr, err)
 	}
 	if appendClause {

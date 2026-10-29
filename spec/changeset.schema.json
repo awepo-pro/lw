@@ -66,6 +66,12 @@
       "description": "stage.OpState (backbone §5.3)."
     },
 
+    "dropActor": {
+      "type": "string",
+      "enum": ["human", "cascade", "rollback", "guard"],
+      "description": "stage.DropActor (069)."
+    },
+
     "author": {
       "type": "object",
       "additionalProperties": false,
@@ -134,7 +140,9 @@
               "type": "array",
               "items": { "$ref": "#/$defs/assetRef" }
             },
-            "state": { "$ref": "#/$defs/opState" }
+            "state": { "$ref": "#/$defs/opState" },
+            "dropped_by": { "$ref": "#/$defs/dropActor" },
+            "drop_reason": { "type": "string" }
           }
         },
         {
@@ -151,7 +159,9 @@
               "type": "array",
               "items": { "$ref": "#/$defs/vaultPath" }
             },
-            "state": { "$ref": "#/$defs/opState" }
+            "state": { "$ref": "#/$defs/opState" },
+            "dropped_by": { "$ref": "#/$defs/dropActor" },
+            "drop_reason": { "type": "string" }
           }
         },
         {
@@ -170,7 +180,9 @@
               "items": { "$ref": "#/$defs/hunk" },
               "minItems": 1
             },
-            "state": { "$ref": "#/$defs/opState" }
+            "state": { "$ref": "#/$defs/opState" },
+            "dropped_by": { "$ref": "#/$defs/dropActor" },
+            "drop_reason": { "type": "string" }
           }
         },
         {
@@ -192,7 +204,9 @@
               "items": { "type": "string" },
               "description": "Staleness anchor captured at Append time (backbone §5.3, MASTER §9 D-BC)."
             },
-            "state": { "$ref": "#/$defs/opState" }
+            "state": { "$ref": "#/$defs/opState" },
+            "dropped_by": { "$ref": "#/$defs/dropActor" },
+            "drop_reason": { "type": "string" }
           }
         },
         {
@@ -218,7 +232,9 @@
               "items": { "type": "string" },
               "description": "Staleness anchor captured at Append time (backbone §5.3, MASTER §9 D-BC)."
             },
-            "state": { "$ref": "#/$defs/opState" }
+            "state": { "$ref": "#/$defs/opState" },
+            "dropped_by": { "$ref": "#/$defs/dropActor" },
+            "drop_reason": { "type": "string" }
           }
         },
         {
@@ -239,7 +255,9 @@
               "items": { "type": "string" },
               "description": "Staleness anchor captured at Append time (backbone §5.3, MASTER §9 D-BC)."
             },
-            "state": { "$ref": "#/$defs/opState" }
+            "state": { "$ref": "#/$defs/opState" },
+            "dropped_by": { "$ref": "#/$defs/dropActor" },
+            "drop_reason": { "type": "string" }
           }
         },
         {
@@ -251,7 +269,9 @@
             "op": { "const": "add_link" },
             "from": { "$ref": "#/$defs/vaultPath" },
             "to": { "$ref": "#/$defs/vaultPath" },
-            "state": { "$ref": "#/$defs/opState" }
+            "state": { "$ref": "#/$defs/opState" },
+            "dropped_by": { "$ref": "#/$defs/dropActor" },
+            "drop_reason": { "type": "string" }
           }
         },
         {
@@ -263,7 +283,9 @@
             "op": { "const": "retract" },
             "path": { "$ref": "#/$defs/vaultPath" },
             "rationale": { "type": "string", "minLength": 1 },
-            "state": { "$ref": "#/$defs/opState" }
+            "state": { "$ref": "#/$defs/opState" },
+            "dropped_by": { "$ref": "#/$defs/dropActor" },
+            "drop_reason": { "type": "string" }
           }
         }
       ]

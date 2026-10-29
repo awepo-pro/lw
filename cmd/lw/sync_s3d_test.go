@@ -565,10 +565,10 @@ func TestSyncInitRefusesAnExistingRepository(t *testing.T) {
 // written by a newer lw refuses before it writes a byte.
 func TestInitChecksTheFormatFirst(t *testing.T) {
 	syncHermetic(t)
-	const text = "vault format 3 is newer than this lw supports (2): upgrade lw"
+	const text = "vault format 4 is newer than this lw supports (3): upgrade lw"
 	// Both vaults are copied before the first chdir: the fixture is found from
 	// the working directory.
-	roots := []string{formatTooNewVault(t, "3"), formatTooNewVault(t, "3")}
+	roots := []string{formatTooNewVault(t, "4"), formatTooNewVault(t, "4")}
 	for i, args := range [][]string{{"init", "--schema", "x", "--force"}, {"init", "--schema", "x"}} {
 		root := roots[i]
 		before := treeDigest(t, root)

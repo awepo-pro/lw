@@ -435,19 +435,32 @@ func linkTargetResolvesTo(target, p string) bool {
 }
 
 // DropOps marks every listed op StateDropped in one writeMu-held mutation
-// and one persist, journaling op_dropped per op (030). Already-dropped ids
-// are a no-op; an unknown id fails the whole call with nothing changed —
-// every id is resolved before the first state moves, because a half-applied
-// batch is exactly the half-dropped chain this verb exists to stop
-// offering.
+// and one persist, journaling op_dropped per op (030). It delegates to
+// DropOpsWith(ids, Drop{}).
+func (e *Engine) DropOps(ids []string) error {
+	return e.DropOpsWith(ids, Drop{})
+}
+
+// DropOpsWith marks every listed op StateDropped in one writeMu-held mutation
+// and one persist, setting DroppedBy and DropReason on every op it transitions.
+// When d.Root is "", every transitioned op takes d.By and d.Reason.
+// When d.Root is non-empty, the op whose ID matches d.Root (if listed) takes
+// d.By and d.Reason; every other listed op is marked DropByCascade with reason
+// "dropped with " + d.Root.
+// Already-dropped ids stay untouched, marks included; an unknown id fails the
+// whole call with nothing changed — every id is resolved before the first state
+// moves, because a half-applied batch is exactly the half-dropped chain this
+// verb exists to stop offering.
 //
 // The pattern is DropOp's (A-803): the whole body holds writeMu and
 // mutates writerOpen's private copy; the copy is published only by
 // persistAfterMutation's persist, after refreshOpStates has re-derived the
 // survivors' staleness against the now-smaller live set. Only the ops that
 // actually transition journal: a re-drop of an already-dropped id is a
-// no-op that persists and journals nothing.
-func (e *Engine) DropOps(ids []string) error {
+// no-op that persists and journals nothing. Journal op_dropped Event.Message
+// is derived from each op's own mark ("<by>: <reason>") when non-empty, else
+// unchanged (069).
+func (e *Engine) DropOpsWith(ids []string, d Drop) error {
 	e.writeMu.Lock()
 	defer e.writeMu.Unlock()
 
@@ -476,6 +489,13 @@ func (e *Engine) DropOps(ids []string) error {
 			continue
 		}
 		op.State = StateDropped
+		if d.Root != "" && op.ID != d.Root {
+			op.DroppedBy = DropByCascade
+			op.DropReason = "dropped with " + d.Root
+		} else {
+			op.DroppedBy = d.By
+			op.DropReason = d.Reason
+		}
 		dropped = append(dropped, op)
 	}
 	if len(dropped) == 0 {
@@ -486,14 +506,18 @@ func (e *Engine) DropOps(ids []string) error {
 		return err
 	}
 	for _, op := range dropped {
-		if err := e.appendJournal(Event{
+		ev := Event{
 			TS:        e.now().UTC(),
 			Kind:      EvOpDropped,
 			Changeset: c.ID,
 			Op:        op.ID,
 			Actor:     c.Author,
 			Paths:     opTouches(*op),
-		}); err != nil {
+		}
+		if op.DroppedBy != "" || op.DropReason != "" {
+			ev.Message = fmt.Sprintf("%s: %s", op.DroppedBy, op.DropReason)
+		}
+		if err := e.appendJournal(ev); err != nil {
 			return fmt.Errorf("stage: drop ops: %w", err)
 		}
 	}
@@ -538,6 +562,8 @@ func (e *Engine) RestoreOps(ids []string) error {
 			continue
 		}
 		op.State = StateProposed
+		op.DroppedBy = ""
+		op.DropReason = ""
 		restored = append(restored, op)
 	}
 	if len(restored) == 0 {
