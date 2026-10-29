@@ -69,3 +69,42 @@ func ReadFormat(llmwikiDir string) (int, error) {
 	}
 	return f.Version, nil
 }
+
+// stampFormat records FormatVersion in .llmwiki/format before a writer changes a byte. Caller holds writeMu.
+func (e *Engine) stampFormat() error {
+	if e.formatStamped {
+		return nil
+	}
+	if _, err := os.Stat(e.llmwikiDir()); err != nil {
+		return fmt.Errorf("stage: stamp format: %w", err)
+	}
+	have, err := ReadFormat(e.llmwikiDir())
+	if err != nil {
+		return err
+	}
+	if have > FormatVersion {
+		return &FormatError{Have: have, Max: FormatVersion}
+	}
+	if have == FormatVersion {
+		e.formatStamped = true
+		return nil
+	}
+	formatPath := filepath.Join(e.llmwikiDir(), formatFileName)
+	content := []byte(fmt.Sprintf("{\"version\":%d}\n", FormatVersion))
+	if err := writeFileAtomic(formatPath, content); err != nil {
+		return fmt.Errorf("stage: stamp format: %w", err)
+	}
+	e.formatStamped = true
+	return nil
+}
+
+// lockWriter takes writeMu, runs stampFormat, and on error releases writeMu and returns it.
+// Callers: if err := e.lockWriter(); err != nil { return err }; defer e.writeMu.Unlock()
+func (e *Engine) lockWriter() error {
+	e.writeMu.Lock()
+	if err := e.stampFormat(); err != nil {
+		e.writeMu.Unlock()
+		return err
+	}
+	return nil
+}

@@ -727,6 +727,12 @@ func renderLayout(t *testing.T) string {
 			return err
 		}
 		rel = filepath.ToSlash(rel)
+		// 072 (A-072-1): .llmwiki/format is the version marker itself, not a
+		// shape the version describes. Counting it would demand a bump for
+		// the stamp that records the bump.
+		if rel == "format" {
+			return nil
+		}
 		rel = changesetDirPattern.ReplaceAllString(rel, "changesets/$1/<changeset>/")
 		if objectPathPattern.MatchString(rel) {
 			rel = "objects/<sha[0:2]>/<sha[2:]>"

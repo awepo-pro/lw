@@ -69,7 +69,9 @@ func (e *Engine) Commit(message string) (string, error) {
 // after the lock is gone. The deferred unlock is the point of the split: it
 // runs when this function returns, before Commit calls the hook.
 func (e *Engine) commitLocked(message string) (commitID, changesetID string, err error) {
-	e.writeMu.Lock()
+	if err := e.lockWriter(); err != nil {
+		return "", "", err
+	}
 	defer e.writeMu.Unlock()
 	commitID, err = e.commitWriteLocked(message, &changesetID)
 	return commitID, changesetID, err

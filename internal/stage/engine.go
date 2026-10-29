@@ -76,7 +76,8 @@ type Engine struct {
 	// lock-free as refreshWriteLocked / commitWriteLocked because Commit
 	// calls Refresh (sync.Mutex is not reentrant); no other verb calls
 	// another, so they lock in their own body directly.
-	writeMu sync.Mutex
+	writeMu       sync.Mutex
+	formatStamped bool // guarded by writeMu
 	// openMu guards open, nextOp and csStamp (008 A-802, A-803): the reload
 	// tick's ReloadIfChanged, an agent turn's Current/Append and a review
 	// load all touch those fields from different goroutines, so every read

@@ -461,7 +461,9 @@ func (e *Engine) DropOps(ids []string) error {
 // is derived from each op's own mark ("<by>: <reason>") when non-empty, else
 // unchanged (069).
 func (e *Engine) DropOpsWith(ids []string, d Drop) error {
-	e.writeMu.Lock()
+	if err := e.lockWriter(); err != nil {
+		return err
+	}
 	defer e.writeMu.Unlock()
 
 	c, err := e.writerOpen()
@@ -534,7 +536,9 @@ func (e *Engine) DropOpsWith(ids []string, d Drop) error {
 // the ops it chains on comes back StateStale, not silently fresh, because
 // its Before still names a predecessor the live set no longer projects.
 func (e *Engine) RestoreOps(ids []string) error {
-	e.writeMu.Lock()
+	if err := e.lockWriter(); err != nil {
+		return err
+	}
 	defer e.writeMu.Unlock()
 
 	c, err := e.writerOpen()
