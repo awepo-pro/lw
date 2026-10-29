@@ -172,7 +172,9 @@ func writeChangesetJSON(dir string, c *Changeset) (journalStamp, error) {
 // the changeset.json just written, so the next mutating verb's check
 // matches until someone else writes the file.
 func (e *Engine) OpenChangeset(intent string, a Author) (*Changeset, error) {
-	e.writeMu.Lock()
+	if err := e.lockWriter(); err != nil {
+		return nil, err
+	}
 	defer e.writeMu.Unlock()
 	return e.openChangesetWriteLocked(intent, a)
 }
@@ -511,7 +513,9 @@ func liveContentOpFor(base []Op, path string) (Op, bool) {
 // corruption backbone §5.5's Contract exists to prevent (MASTER §9 D-AM,
 // D-Y). Any Cascade the caller supplied is replaced, not merged.
 func (e *Engine) Append(op Op) (string, error) {
-	e.writeMu.Lock()
+	if err := e.lockWriter(); err != nil {
+		return "", err
+	}
 	defer e.writeMu.Unlock()
 
 	c, err := e.writerOpen()
@@ -691,7 +695,9 @@ func (e *Engine) Append(op Op) (string, error) {
 // ahead of disk) cannot recur, because the field write lands on the copy
 // and the copy is published only by the persist itself.
 func (e *Engine) DropHunk(opID, hunkID string) error {
-	e.writeMu.Lock()
+	if err := e.lockWriter(); err != nil {
+		return err
+	}
 	defer e.writeMu.Unlock()
 
 	c, err := e.writerOpen()
@@ -758,7 +764,9 @@ func (e *Engine) DropHunk(opID, hunkID string) error {
 // exactly as DropHunk's. Like DropHunk it holds writeMu for its whole
 // body and mutates a private copy (A-803).
 func (e *Engine) UndropHunk(opID, hunkID string) error {
-	e.writeMu.Lock()
+	if err := e.lockWriter(); err != nil {
+		return err
+	}
 	defer e.writeMu.Unlock()
 
 	c, err := e.writerOpen()
@@ -818,7 +826,9 @@ func (e *Engine) UndropHunk(opID, hunkID string) error {
 // on a copy no reader can observe until the publish, so the DropOp-vs-
 // Current pair is race-free by construction rather than by discipline.
 func (e *Engine) DropOp(opID string) error {
-	e.writeMu.Lock()
+	if err := e.lockWriter(); err != nil {
+		return err
+	}
 	defer e.writeMu.Unlock()
 
 	c, err := e.writerOpen()
@@ -946,6 +956,11 @@ func (e *Engine) persistAfterMutation(c *Changeset) error {
 // their Dropped flags intact. A-803: the whole body holds writeMu and the
 // flips land on writerOpen's private copy, so a persist failure leaves the
 // published cache exactly what disk still holds.
+//
+// 072: Refresh takes the bare lock, not lockWriter. ReloadVault calls it on
+// every Browse edit, usually with no open changeset, and a vault that lw did
+// not write to must stay unstamped; refreshWriteLocked stamps just before it
+// persists.
 func (e *Engine) Refresh() error {
 	e.writeMu.Lock()
 	defer e.writeMu.Unlock()
@@ -965,6 +980,9 @@ func (e *Engine) refreshWriteLocked() error {
 		return fmt.Errorf("stage: refresh: %w", err)
 	}
 
+	if err := e.stampFormat(); err != nil {
+		return err
+	}
 	if err := e.persistAndPublish(c); err != nil {
 		return fmt.Errorf("stage: refresh: %w", err)
 	}
@@ -1001,7 +1019,9 @@ func (e *Engine) Reject(reason string) error {
 // changeset it moved so Reject can name it in the terminal event once the
 // lock is released.
 func (e *Engine) rejectLocked(reason string) (string, error) {
-	e.writeMu.Lock()
+	if err := e.lockWriter(); err != nil {
+		return "", err
+	}
 	defer e.writeMu.Unlock()
 
 	c, err := e.currentOpen()

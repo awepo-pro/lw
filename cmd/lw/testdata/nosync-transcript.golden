@@ -49,6 +49,7 @@ within limits: 1 files, 1 KB (limit 10 files, 282 KB)
 
 [files]
 .llmwiki/changesets/committed/<cs>/changeset.json
+.llmwiki/format
 .llmwiki/index.gob
 .llmwiki/journal.ndjson
 .llmwiki/logs/lw.log

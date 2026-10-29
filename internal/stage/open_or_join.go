@@ -39,7 +39,9 @@ const maxIntentRunes = 200
 // argument names the JOINER: it is the changeset_joined event's actor, and
 // the changeset's own Author is left exactly as the original opener set it.
 func (e *Engine) OpenOrJoin(intent string, a Author) (cs *Changeset, joined bool, err error) {
-	e.writeMu.Lock()
+	if err := e.lockWriter(); err != nil {
+		return nil, false, err
+	}
 	defer e.writeMu.Unlock()
 
 	openDir := e.changesetOpenDir()
@@ -118,7 +120,9 @@ func boundIntent(intent string) string {
 // uses). No open changeset is an error, never a changeset conjured from
 // nothing.
 func (e *Engine) MarkPartial(note string) error {
-	e.writeMu.Lock()
+	if err := e.lockWriter(); err != nil {
+		return err
+	}
 	defer e.writeMu.Unlock()
 
 	c, err := e.writerOpen()
