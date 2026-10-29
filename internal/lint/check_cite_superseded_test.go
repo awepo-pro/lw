@@ -26,31 +26,18 @@ func TestCiteSuperseded_L1(t *testing.T) {
 	rawOld := rawWithSupersedes("https://example.org/x", "2026-01-01", "")
 	rawNew := rawWithSupersedes("https://example.org/x", "2026-02-01", "raw/articles/x.md")
 
-	t.Run("page listing superseded raw in sources earns warn", func(t *testing.T) {
+	// A-070-6: a sources: entry alone earns nothing. stage.patch_page only ever adds
+	// to sources:, so the agent could never clear it; src-provenance owns that case.
+	t.Run("page listing superseded raw only in sources earns no warn", func(t *testing.T) {
 		ctx := buildVault(t, map[string]string{
 			"raw/articles/x.md":   rawOld,
 			"raw/articles/x-2.md": rawNew,
 			"wiki/concepts/page.md": citePageBody([]string{"raw/articles/x.md"},
 				"# Page\n\nBody text without explicit body cite.\n"),
 		})
-
 		report := lint.Run(ctx, []string{"cite-superseded"})
-		if len(report.Findings) != 1 {
-			t.Fatalf("got %d findings, want 1: %+v", len(report.Findings), report.Findings)
-		}
-		f := report.Findings[0]
-		if f.Check != "cite-superseded" {
-			t.Errorf("Check = %q, want cite-superseded", f.Check)
-		}
-		if f.Path != "wiki/concepts/page.md" {
-			t.Errorf("Path = %q, want wiki/concepts/page.md", f.Path)
-		}
-		if f.Severity != lint.SevWarn {
-			t.Errorf("Severity = %v, want SevWarn", f.Severity)
-		}
-		wantMsg := "cites raw/articles/x.md in sources:, superseded by raw/articles/x-2.md; re-point it to the new raw"
-		if f.Message != wantMsg {
-			t.Errorf("Message = %q, want %q", f.Message, wantMsg)
+		if len(report.Findings) != 0 {
+			t.Fatalf("got %d findings, want 0: %+v", len(report.Findings), report.Findings)
 		}
 	})
 
@@ -98,7 +85,7 @@ func TestCiteSuperseded_L1(t *testing.T) {
 		if f.Path != "wiki/concepts/page.md" {
 			t.Errorf("Path = %q, want wiki/concepts/page.md", f.Path)
 		}
-		wantMsg := "cites raw/articles/x.md in sources:, superseded by raw/articles/x-2.md; re-point it to the new raw"
+		wantMsg := "cites raw/articles/x.md in the body, superseded by raw/articles/x-2.md; re-point it to the new raw"
 		if f.Message != wantMsg {
 			t.Errorf("Message = %q, want %q", f.Message, wantMsg)
 		}
@@ -298,4 +285,49 @@ func TestCiteSuperseded_L4_RegistryAndOrder(t *testing.T) {
 	if citeSupersededIdx != citeSourceIdx+1 {
 		t.Fatalf("cite-superseded index = %d, want cite-source index %d + 1", citeSupersededIdx, citeSourceIdx)
 	}
+}
+
+// A-070-6 review follow-ups: a chain names its tip, and a raw that supersedes
+// itself is a defect on the raw, not a circular warning on every citing page.
+func TestCiteSuperseded_ChainTipAndSelfReference(t *testing.T) {
+	r1 := rawWithSupersedes("https://example.org/x", "2026-01-01", "")
+	r2 := rawWithSupersedes("https://example.org/x", "2026-02-01", "raw/articles/x.md")
+	r3 := rawWithSupersedes("https://example.org/x", "2026-03-01", "raw/articles/x-2.md")
+
+	t.Run("chain names the tip", func(t *testing.T) {
+		ctx := buildVault(t, map[string]string{
+			"raw/articles/x.md": r1, "raw/articles/x-2.md": r2, "raw/articles/x-3.md": r3,
+			"wiki/concepts/page.md": citePageBody(nil, "# Page\n\nClaim.^[raw/articles/x.md]\n"),
+		})
+		report := lint.Run(ctx, []string{"cite-superseded"})
+		if len(report.Findings) != 1 {
+			t.Fatalf("got %d findings, want 1: %+v", len(report.Findings), report.Findings)
+		}
+		want := "cites raw/articles/x.md in the body, superseded by raw/articles/x-3.md; re-point it to the new raw"
+		if report.Findings[0].Message != want {
+			t.Errorf("Message = %q, want %q", report.Findings[0].Message, want)
+		}
+	})
+
+	t.Run("self reference is one defect on the raw, none on pages", func(t *testing.T) {
+		self := rawWithSupersedes("https://example.org/s", "2026-01-01", "raw/articles/s.md")
+		ctx := buildVault(t, map[string]string{
+			"raw/articles/s.md":     self,
+			"wiki/concepts/page.md": citePageBody(nil, "# Page\n\nClaim.^[raw/articles/s.md]\n"),
+		})
+		report := lint.Run(ctx, []string{"cite-superseded"})
+		if len(report.Findings) != 1 || report.Findings[0].Path != "raw/articles/s.md" || report.Findings[0].Message != "supersedes names itself" {
+			t.Fatalf("want one 'supersedes names itself' finding on the raw, got %+v", report.Findings)
+		}
+	})
+
+	t.Run("cycle terminates", func(t *testing.T) {
+		a := rawWithSupersedes("https://example.org/c", "2026-01-01", "raw/articles/c-b.md")
+		b := rawWithSupersedes("https://example.org/c", "2026-02-01", "raw/articles/c-a.md")
+		ctx := buildVault(t, map[string]string{
+			"raw/articles/c-a.md": a, "raw/articles/c-b.md": b,
+			"wiki/concepts/page.md": citePageBody(nil, "# Page\n\nClaim.^[raw/articles/c-a.md]\n"),
+		})
+		_ = lint.Run(ctx, []string{"cite-superseded"}) // must return
+	})
 }

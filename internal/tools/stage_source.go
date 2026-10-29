@@ -349,7 +349,11 @@ func stageIngestSourceTool(d Deps) Tool {
 		if supersedes != "" {
 			citeText := "no page cites it"
 			if len(citingPages) > 0 {
-				citeText = "pages citing it: " + strings.Join(citingPages, ", ")
+				// A-070-7: state what to do, not only the fact. The in-process model
+				// never sees the --prepare brief; without the instruction it left every
+				// citation on the superseded raw (0/3 live).
+				citeText = "pages citing it: " + strings.Join(citingPages, ", ") +
+					"; re-read each and stage.patch_page it so its ^[raw/...] citations point at the new raw (keep every claim)"
 			}
 			res.Content = strings.TrimSuffix(res.Content, ".")
 			res.Content += fmt.Sprintf("; revises %s; %s.", supersedes, citeText)

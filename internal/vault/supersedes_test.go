@@ -289,6 +289,8 @@ func TestV4_RevisionTip(t *testing.T) {
 		}{
 			{"first and second", []string{"raw/articles/x.md", "raw/articles/x-2.md"}, "raw/articles/x-2.md"},
 			{"ten beats nine", []string{"raw/articles/x-9.md", "raw/articles/x-10.md", "raw/articles/x.md"}, "raw/articles/x-10.md"},
+			{"slug ending in digits: rfc-822 vs rfc-822-2", []string{"raw/articles/rfc-822.md", "raw/articles/rfc-822-2.md"}, "raw/articles/rfc-822-2.md"},
+			{"slug ending in digits: three copies", []string{"raw/articles/gpt-4.md", "raw/articles/gpt-4-2.md", "raw/articles/gpt-4-3.md"}, "raw/articles/gpt-4-3.md"},
 			{"different stems fall back to path", []string{"raw/articles/a.md", "raw/articles/b.md"}, "raw/articles/b.md"},
 		}
 		for _, c := range cases {

@@ -206,7 +206,7 @@ func (v *Vault) SupersededBy(rawPath string) (string, bool) {
 		return "", false
 	}
 	for _, r := range v.RawSources() {
-		if r.Supersedes == rawPath {
+		if r.Supersedes == rawPath && r.Path != rawPath {
 			return r.Path, true
 		}
 	}
@@ -245,37 +245,43 @@ func (v *Vault) RevisionTip(sourceURL string) (*RawSource, bool) {
 	return best, true
 }
 
-// copyRank splits a raw path into its stem and ingest number: ingest names a
-// second copy of a source x-2.md, a third x-3.md, and the first plain x.md
-// (number 1). A path whose stem does not end in -<digits> is number 1.
-func copyRank(p string) (stem string, n int) {
-	stem = strings.TrimSuffix(p, ".md")
-	i := strings.LastIndexByte(stem, '-')
-	if i < 0 || i == len(stem)-1 {
-		return stem, 1
+// numberedCopyOf reports whether stem is base plus "-<N>" with N >= 2: the name
+// ingest gives a second, third, ... copy of a source whose first copy is base.
+func numberedCopyOf(stem, base string) (n int, ok bool) {
+	rest, found := strings.CutPrefix(stem, base+"-")
+	if !found || rest == "" {
+		return 0, false
 	}
-	n = 0
-	for _, c := range stem[i+1:] {
+	for _, c := range rest {
 		if c < '0' || c > '9' {
-			return stem, 1
+			return 0, false
 		}
 		n = n*10 + int(c-'0')
 	}
-	if n < 2 {
-		return stem, 1
-	}
-	return stem[:i], n
+	return n, n >= 2
 }
 
 // laterCopy reports whether raw path a was ingested after b when both carry
 // the same ingested date. Plain string order is wrong for ingest names: "." sorts
 // after "-", so x.md would beat x-2.md and the older raw would become the tip
-// (A-070-5, found on the real reduce-top pair).
+// (A-070-5, found on the real reduce-top pair). The numbered copy is recognised
+// against the OTHER path, not by guessing a "-<digits>" tail on its own: a slug can
+// end in digits itself (rfc-822.md, gpt-4.md; A-070-8, review finding 1).
 func laterCopy(a, b string) bool {
-	sa, na := copyRank(a)
-	sb, nb := copyRank(b)
-	if sa == sb && na != nb {
-		return na > nb
+	sa, sb := strings.TrimSuffix(a, ".md"), strings.TrimSuffix(b, ".md")
+	if _, ok := numberedCopyOf(sa, sb); ok {
+		return true
+	}
+	if _, ok := numberedCopyOf(sb, sa); ok {
+		return false
+	}
+	// Two numbered copies of one base: x-9 against x-10.
+	if i, j := strings.LastIndexByte(sa, '-'), strings.LastIndexByte(sb, '-'); i > 0 && j > 0 && sa[:i] == sb[:j] {
+		if na, ok := numberedCopyOf(sa, sa[:i]); ok {
+			if nb, ok := numberedCopyOf(sb, sb[:j]); ok && na != nb {
+				return na > nb
+			}
+		}
 	}
 	return a > b
 }
