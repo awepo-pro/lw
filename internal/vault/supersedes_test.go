@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"testing/fstest"
 
@@ -272,6 +273,37 @@ func TestV4_RevisionTip(t *testing.T) {
 		}
 		if tip.Path != "raw/articles/b.md" {
 			t.Errorf("tip.Path = %q, want raw/articles/b.md", tip.Path)
+		}
+	})
+
+	// A-070-5: ingest names later copies x-2.md, x-3.md; "." sorts after "-" so a
+	// plain path comparison picks the OLDER raw. The real reduce-top pair.
+	t.Run("same ingested numbered copies follow ingest order", func(t *testing.T) {
+		raw := func(sha string) []byte {
+			return []byte("---\nsource_url: /n/x.md\ningested: 2026-10-11\nsha256: " + sha + "\n---\n\n# X\n")
+		}
+		cases := []struct {
+			name  string
+			paths []string
+			want  string
+		}{
+			{"first and second", []string{"raw/articles/x.md", "raw/articles/x-2.md"}, "raw/articles/x-2.md"},
+			{"ten beats nine", []string{"raw/articles/x-9.md", "raw/articles/x-10.md", "raw/articles/x.md"}, "raw/articles/x-10.md"},
+			{"different stems fall back to path", []string{"raw/articles/a.md", "raw/articles/b.md"}, "raw/articles/b.md"},
+		}
+		for _, c := range cases {
+			fsys := fstest.MapFS{"SCHEMA.md": &fstest.MapFile{Data: []byte(schemaContent)}}
+			for i, p := range c.paths {
+				fsys[p] = &fstest.MapFile{Data: raw(strings.Repeat(string(rune('1'+i)), 4))}
+			}
+			v, err := OpenFS(fsys)
+			if err != nil {
+				t.Fatalf("%s: OpenFS: %v", c.name, err)
+			}
+			tip, ok := v.RevisionTip("/n/x.md")
+			if !ok || tip.Path != c.want {
+				t.Errorf("%s: tip = %v (ok %v), want %s", c.name, tip, ok, c.want)
+			}
 		}
 	})
 

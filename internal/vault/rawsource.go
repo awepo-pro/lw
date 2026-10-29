@@ -214,7 +214,8 @@ func (v *Vault) SupersededBy(rawPath string) (string, bool) {
 }
 
 // RevisionTip returns the committed raw matching SameSource that is not superseded
-// by another raw. Ties are broken by latest Ingested date, then greatest Path.
+// by another raw. Ties are broken by latest Ingested date, then by ingest order
+// (laterCopy), then greatest Path.
 // Returns ok=false if no matching raw exists (070).
 func (v *Vault) RevisionTip(sourceURL string) (*RawSource, bool) {
 	if v == nil || sourceURL == "" {
@@ -234,14 +235,47 @@ func (v *Vault) RevisionTip(sourceURL string) (*RawSource, bool) {
 		}
 		if r.Ingested.After(best.Ingested.Time) {
 			best = r
-		} else if r.Ingested.Time.Equal(best.Ingested.Time) {
-			if r.Path > best.Path {
-				best = r
-			}
+		} else if r.Ingested.Time.Equal(best.Ingested.Time) && laterCopy(r.Path, best.Path) {
+			best = r
 		}
 	}
 	if best == nil {
 		return nil, false
 	}
 	return best, true
+}
+
+// copyRank splits a raw path into its stem and ingest number: ingest names a
+// second copy of a source x-2.md, a third x-3.md, and the first plain x.md
+// (number 1). A path whose stem does not end in -<digits> is number 1.
+func copyRank(p string) (stem string, n int) {
+	stem = strings.TrimSuffix(p, ".md")
+	i := strings.LastIndexByte(stem, '-')
+	if i < 0 || i == len(stem)-1 {
+		return stem, 1
+	}
+	n = 0
+	for _, c := range stem[i+1:] {
+		if c < '0' || c > '9' {
+			return stem, 1
+		}
+		n = n*10 + int(c-'0')
+	}
+	if n < 2 {
+		return stem, 1
+	}
+	return stem[:i], n
+}
+
+// laterCopy reports whether raw path a was ingested after b when both carry
+// the same ingested date. Plain string order is wrong for ingest names: "." sorts
+// after "-", so x.md would beat x-2.md and the older raw would become the tip
+// (A-070-5, found on the real reduce-top pair).
+func laterCopy(a, b string) bool {
+	sa, na := copyRank(a)
+	sb, nb := copyRank(b)
+	if sa == sb && na != nb {
+		return na > nb
+	}
+	return a > b
 }
