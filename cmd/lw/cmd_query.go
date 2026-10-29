@@ -172,7 +172,7 @@ func cmdQuery(args []string) error {
 				}
 			}
 			if len(ids) > 0 {
-				if err := e.DropOps(ids); err != nil {
+				if err := e.DropOpsWith(ids, stage.Drop{By: stage.DropByGuard, Reason: "ask turn tried to stage during a read-only query"}); err != nil {
 					return fmt.Errorf("agent attempted to stage %d op(s) into changeset %s during a read-only query; dropping them failed: %w", len(ids), cs.ID, err)
 				}
 				if sendErr == nil {

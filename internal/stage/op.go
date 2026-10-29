@@ -215,6 +215,8 @@ func refreshOp(op *Op, v, chainV *vault.Vault) {
 		op.State = StateStale
 	} else if op.State == StateStale {
 		op.State = StateProposed
+		op.DroppedBy = ""
+		op.DropReason = ""
 	}
 
 	for i := range op.Cascade {
