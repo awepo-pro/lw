@@ -4,8 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Learn lw</title>
-<meta name="description" content="A hands-on tutorial for lw v2.53.0: from an empty directory to a reviewed, cited markdown wiki.">
-<meta name="lw-version" content="v2.53.0">
+<meta name="description" content="A hands-on tutorial for lw v2.54.0: from an empty directory to a reviewed, cited markdown wiki.">
+<meta name="lw-version" content="v2.54.0">
 <style>
 :root {
   --bg: #fbfaf7;
@@ -230,7 +230,7 @@ footer { margin-top: 80px; color: var(--muted); font-size: 14px; border-top: 1px
 <nav class="toc" id="toc">
   <div class="brand">Learn <code>lw</code><button class="toggle-toc" id="toggleToc" aria-expanded="false">Lessons</button></div>
   <div class="sub">From an empty directory to a reviewed wiki</div>
-  <div class="ver" title="The lw release this page was checked against">lw v2.53.0</div>
+  <div class="ver" title="The lw release this page was checked against">lw v2.54.0</div>
   <ol id="tocList">
     <li><a href="#model"><span class="tick"></span>0 · The mental model</a></li>
     <li><a href="#install"><span class="tick"></span>1 · Install &amp; connect</a></li>
@@ -259,7 +259,7 @@ footer { margin-top: 80px; color: var(--muted); font-size: 14px; border-top: 1px
 
 <main>
 <header class="hero">
-  <div class="ver">Covers lw v2.53.0 · 2026-10-28</div>
+  <div class="ver">Covers lw v2.54.0 · 2026-10-29</div>
   <h1>Learn <code>lw</code> by doing</h1>
   <p class="lede">You start with sources — an article, a paper, a saved chat — and end with a small, cross-linked markdown wiki where every claim cites where it came from. <code>lw</code> is the compiler in the middle. An agent proposes the pages, and you decide what lands.</p>
   <div class="callout">
@@ -267,10 +267,11 @@ footer { margin-top: 80px; color: var(--muted); font-size: 14px; border-top: 1px
     Each lesson has a goal, the commands, what you should see, and a short check at the end. Open a terminal next to it and type along. Mark a lesson done when you've run it. Your progress is saved in this browser only. The terminal output shown here comes from real runs (see <a href="tutorial.md">tutorial.md</a>). Long output is trimmed, and trims are marked with <code>…</code>.
   </div>
   <details class="quiz">
-    <summary>Which lw is this page for? (v2.53.0, and what changed since v2.35.0)</summary>
-    <p>This page was checked against <strong>lw v2.53.0</strong>. Run <code>lw version</code>. If yours is older, some behaviour below won't match. If it's newer, trust <code>lw --help</code> where they disagree.</p>
+    <summary>Which lw is this page for? (v2.54.0, and what changed since v2.35.0)</summary>
+    <p>This page was checked against <strong>lw v2.54.0</strong>. Run <code>lw version</code>. If yours is older, some behaviour below won't match. If it's newer, trust <code>lw --help</code> where they disagree.</p>
     <p>Changes since the last edition of this page (v2.35.0):</p>
     <ul>
+      <li><strong>v2.54.0</strong>: a dropped op records who dropped it and why; Review shows it in the Detail panel (<a href="#tui">lesson 7</a>).</li>
       <li><strong>v2.53.0</strong>: agent-driven ask: <code>lw query --prepare</code>, <code>lw tool --ask</code>, <code>lw mcp --ask</code>, the <code>lw-ask</code> skill, and provider fallback hints (<a href="#ask">lesson 6</a>, <a href="#agent-ask">lesson 12</a>).</li>
       <li><strong>v2.52.0</strong>: asks cite the open changeset (labelled unreviewed) and surface waiting changesets by age (<a href="#ask">lesson 6</a>, <a href="#tui">lesson 7</a>).</li>
       <li><strong>v2.51.0</strong>: content-addressed <code>lw storage</code> syncs non-wiki files beside git via <code>lw sync</code> (<a href="#sync">lesson 13</a>, <a href="#files">lesson 14</a>, <a href="#cheat">cheat sheet</a>).</li>
@@ -379,7 +380,7 @@ go install github.com/awepo-pro/lw/cmd/lw@latest
 brew install awepo-pro/tap/lw
 nix profile install github:awepo-pro/lw</code></pre>
 <pre><code><span class="p">$ </span>lw version
-lw v2.53.0</code></pre>
+lw v2.54.0</code></pre>
   <p>The version comes from the release tag the binary was built from, so a bug report can name the exact build.</p>
 
   <h3>Point it at a model</h3>
@@ -956,7 +957,7 @@ config: [sync] remotes = ["/tmp/lw-remote.git"]</code></pre>
 remote   /tmp/lw-remote.git
 ahead    0
 behind   0
-format   1 (this lw: 2)
+format   1 (this lw: 3)
 last     2026-10-28T10:02:15Z
 <span class="p">$ </span>lw sync
 up to date with /tmp/lw-remote.git</code></pre>
@@ -1080,7 +1081,7 @@ Note:    baseline model weights</code></pre>
   <p><strong>Where to go next:</strong> <a href="tutorial.md">tutorial.md</a> (the long-form version of this page) · <a href="vault-schema.md">vault-schema.md</a> · <a href="changesets.md">changesets.md</a> · <a href="tools.md">tools.md</a> · <a href="hotkeys.md">hotkeys.md</a> · <a href="design.md">design.md</a></p>
 </section>
 
-<footer>Covers <strong>lw v2.53.0</strong> (tagged 2026-10-28) and matches its <code>lw --help</code>. If a command here doesn't match your build, trust <code>lw --help</code>.</footer>
+<footer>Covers <strong>lw v2.54.0</strong> (tagged 2026-10-29) and matches its <code>lw --help</code>. If a command here doesn't match your build, trust <code>lw --help</code>.</footer>
 </main>
 </div>
 
