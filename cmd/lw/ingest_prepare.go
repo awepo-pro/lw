@@ -178,11 +178,14 @@ const prepareHowToWork = "Every call is `lw tool <name> '<json>'`, or `lw tool <
 // preparedSource is one raw the changeset stages, with what the brief says of
 // it: its path, the chunk count raw.get serves, and the title (the staged
 // file's first level-1 heading) and original source (its source_url) it carries.
+// When the source is a revision of an earlier raw, supersedes names it (070).
 type preparedSource struct {
-	path     string
-	chunks   int
-	title    string
-	original string
+	path       string
+	chunks     int
+	title      string
+	original   string
+	supersedes string
+	citing     []string
 }
 
 // briefTarget is one recompile target (055) as the brief lists it: the committed
@@ -218,6 +221,13 @@ func (b prepareBrief) render() string {
 	w.WriteString("## Sources to compile\n\n")
 	for _, s := range b.sources {
 		fmt.Fprintf(&w, "- raw: %s\n  chunks: %d\n  title: %s\n  original source: %s\n", s.path, s.chunks, s.title, s.original)
+		if s.supersedes != "" {
+			pages := "none"
+			if len(s.citing) > 0 {
+				pages = strings.Join(s.citing, ", ")
+			}
+			fmt.Fprintf(&w, "  This source revises %s. Pages citing the old raw: %s. Re-read each and stage.patch_page it to cite the new raw (keep every claim; fix sources:).\n", s.supersedes, pages)
+		}
 	}
 	for _, t := range b.targets {
 		fmt.Fprintf(&w, "- recompile: %s\n  chunks: %d\n  title: %s\n  cited by: %s\n", t.path, t.chunks, t.title, t.citedBy)
@@ -277,7 +287,13 @@ func stagedSourceInfo(e *stage.Engine, path string) (preparedSource, error) {
 	if err != nil {
 		return preparedSource{}, fmt.Errorf("parse staged %s: %w", path, err)
 	}
-	return preparedSource{path: path, chunks: tools.RawChunkCount(r.Body), title: r.Title, original: r.SourceURL}, nil
+	return preparedSource{
+		path:       path,
+		chunks:     tools.RawChunkCount(r.Body),
+		title:      r.Title,
+		original:   r.SourceURL,
+		supersedes: r.Supersedes,
+	}, nil
 }
 
 // orientBrief fetches the vault orientation the brief carries: the vault.orient
@@ -297,6 +313,7 @@ func briefOf(ctx context.Context, e *stage.Engine, cs *stage.Changeset, prepares
 	last := prepares[len(prepares)-1]
 	b := prepareBrief{changeset: cs.ID, joined: last.joined, agent: last.agent}
 	seen := make(map[string]bool)
+	var cites map[string][]string
 	for _, op := range cs.Live() {
 		if op.Kind != stage.OpIngestSource || op.Before != "" || seen[op.Path] {
 			continue
@@ -306,9 +323,14 @@ func briefOf(ctx context.Context, e *stage.Engine, cs *stage.Changeset, prepares
 		if err != nil {
 			return "", err
 		}
+		if src.supersedes != "" {
+			if cites == nil {
+				cites = rawCitations(e.Vault())
+			}
+			src.citing = cites[src.supersedes]
+		}
 		b.sources = append(b.sources, src)
 	}
-	var cites map[string][]string
 	for _, p := range prepares {
 		for _, ent := range p.entries {
 			if ent.kind != "recompile" || seen[ent.path] {

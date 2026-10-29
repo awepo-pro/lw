@@ -836,6 +836,21 @@ func cmdIngest(args []string) error {
 		return ingestRollback(e, joined, cs.ID, n0, fmt.Errorf("create session: %w", err))
 	}
 
+	if !*recompile {
+		for _, src := range keptSrcs {
+			sourceURL := src
+			if !isURLSource(src) {
+				if abs, absErr := filepath.Abs(src); absErr == nil {
+					sourceURL = abs
+				}
+			}
+			if tip, ok := e.Vault().RevisionTip(sourceURL); ok {
+				fmt.Printf("revision of %s: %d page(s) cite it; the new raw will record supersedes\n",
+					tip.Path, len(citations()[tip.Path]))
+			}
+		}
+	}
+
 	for _, t := range targets {
 		fmt.Println(t.announce())
 	}

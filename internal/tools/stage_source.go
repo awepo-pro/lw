@@ -5,13 +5,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/url"
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
+	"github.com/awepo-pro/lw/internal/cite"
 	"github.com/awepo-pro/lw/internal/extract"
 	"github.com/awepo-pro/lw/internal/stage"
 	"github.com/awepo-pro/lw/internal/vault"
@@ -233,10 +236,6 @@ func stageIngestSourceTool(d Deps) Tool {
 		}
 		bodySHA = vault.BodySHA256(body)
 
-		content := rawSourceDocumentWithOriginal(sourceURL, ingestDate(), body, originalPath, originalSHA)
-		if defect := rawDocumentDefect(sourceURL, body, originalPath, originalSHA, content); defect != "" {
-			return Result{IsError: true, Content: defect}, nil
-		}
 		// The engine's own dedupe (stage.validateIngestSource) compares
 		// sha256(op.Content) against the body sha each committed raw file
 		// records in its frontmatter. op.Content is now the whole file —
@@ -259,7 +258,6 @@ func stageIngestSourceTool(d Deps) Tool {
 		// taken candidate holding a DIFFERENT source falls through to the
 		// -n suffix below instead of cornering the agent.
 		if d.Engine != nil {
-			fileSHA := vault.BodySHA256(string(content))
 			if cs, currentErr := d.Engine.Current(); currentErr == nil {
 				for _, op := range cs.Live() {
 					if op.Kind != stage.OpIngestSource {
@@ -271,13 +269,41 @@ func stageIngestSourceTool(d Deps) Tool {
 					} else {
 						// The staged bytes could not be read back (a CAS
 						// failure); keep the pre-008 whole-file comparison.
-						dup = op.SHA256 == fileSHA
+						dup = op.SHA256 == vault.BodySHA256(string(rawSourceDocumentWithOriginal(sourceURL, ingestDate(), body, originalPath, originalSHA)))
 					}
 					if dup {
 						return Result{IsError: true, Content: fmt.Sprintf("source %q is already ingested or proposed in this changeset (duplicate path or sha256)", candidate)}, nil
 					}
 				}
 			}
+		}
+
+		// 070: in stage.ingest_source, AFTER the existing dedupe checks pass
+		// and before the content is built, call RevisionTip with the doc's
+		// source URL (make a relative local source URL absolute with
+		// filepath.Abs for the comparison only; the stored source_url stays
+		// what it is today).
+		var supersedes string
+		var citingPages []string
+		if d.Vault != nil {
+			compareURL := sourceURL
+			if u, perr := url.Parse(sourceURL); perr != nil || (u.Scheme != "http" && u.Scheme != "https") {
+				if !filepath.IsAbs(sourceURL) {
+					if abs, err := filepath.Abs(sourceURL); err == nil {
+						compareURL = abs
+					}
+				}
+			}
+			if tip, ok := d.Vault.RevisionTip(compareURL); ok {
+				supersedes = tip.Path
+				citations := RawCitations(d.Vault)
+				citingPages = citations[tip.Path]
+			}
+		}
+
+		content := rawSourceDocumentFull(sourceURL, ingestDate(), body, originalPath, originalSHA, supersedes)
+		if defect := rawDocumentDefect(sourceURL, body, originalPath, originalSHA, supersedes, content); defect != "" {
+			return Result{IsError: true, Content: defect}, nil
 		}
 		extractor := doc.Extractor
 		if extractor == "" {
@@ -319,6 +345,18 @@ func stageIngestSourceTool(d Deps) Tool {
 		// the agent cannot tell why the source did not land at its title.
 		if suffixed {
 			res.Content += fmt.Sprintf(" named %s because %s already holds a different source.", sourcePath, candidate)
+		}
+		if supersedes != "" {
+			citeText := "no page cites it"
+			if len(citingPages) > 0 {
+				// A-070-7: state what to do, not only the fact. The in-process model
+				// never sees the --prepare brief; without the instruction it left every
+				// citation on the superseded raw (0/3 live).
+				citeText = "pages citing it: " + strings.Join(citingPages, ", ") +
+					"; re-read each and stage.patch_page it so its ^[raw/...] citations point at the new raw (keep every claim)"
+			}
+			res.Content = strings.TrimSuffix(res.Content, ".")
+			res.Content += fmt.Sprintf("; revises %s; %s.", supersedes, citeText)
 		}
 		return res, nil
 	}}
@@ -429,7 +467,7 @@ func stagedBodySHA(d Deps, path string) string {
 // proposed bytes are exactly what the same RawSource re-serializes to and
 // the frontmatter sha256 is BodySHA256 of the body src-integrity compares.
 func rawSourceDocument(sourceURL string, ingested vault.Date, body string) []byte {
-	return rawSourceDocumentWithOriginal(sourceURL, ingested, body, "", "")
+	return rawSourceDocumentFull(sourceURL, ingested, body, "", "", "")
 }
 
 // rawSourceDocumentWithOriginal is rawSourceDocument with the 033 original
@@ -437,10 +475,17 @@ func rawSourceDocument(sourceURL string, ingested vault.Date, body string) []byt
 // so the bytes name the PDF sitting beside the md and pin its content the
 // way sha256 pins the body's.
 func rawSourceDocumentWithOriginal(sourceURL string, ingested vault.Date, body, originalPath, originalSHA string) []byte {
+	return rawSourceDocumentFull(sourceURL, ingested, body, originalPath, originalSHA, "")
+}
+
+// rawSourceDocumentFull renders the canonical bytes of a raw/ file with optional
+// 033 original pair and 070 supersedes field.
+func rawSourceDocumentFull(sourceURL string, ingested vault.Date, body, originalPath, originalSHA, supersedes string) []byte {
 	return (&vault.RawSource{
 		SourceURL:      sourceURL,
 		Ingested:       ingested,
 		SHA256:         vault.BodySHA256(body),
+		Supersedes:     supersedes,
 		Original:       originalPath,
 		OriginalSHA256: originalSHA,
 		Body:           body,
@@ -462,11 +507,11 @@ func ingestDate() vault.Date {
 // back to exactly the source it was built from, returning "" when it does.
 // raw/ is write-once (00-conventions §5.3): a malformed proposal is not
 // reviewable junk the agent can re-edit but a permanent vault resident, so
-// the things that can break it — a source_url, or the 033 original pair,
-// that is not representable as a plain YAML scalar (a newline, or a " #"
+// the things that can break it -- a source_url, supersedes (070), or the 033 original
+// pair, that is not representable as a plain YAML scalar (a newline, or a " #"
 // the parser reads as a comment) — are caught here, before staging, and
 // named for the model to fix.
-func rawDocumentDefect(sourceURL, body, originalPath, originalSHA string, b []byte) string {
+func rawDocumentDefect(sourceURL, body, originalPath, originalSHA, supersedes string, b []byte) string {
 	// The path argument only feeds ParseRawSource's error text, which this
 	// check discards in favour of its own message; the placeholder is never
 	// a real file.
@@ -475,14 +520,58 @@ func rawDocumentDefect(sourceURL, body, originalPath, originalSHA string, b []by
 		parsed.SourceURL == sourceURL &&
 		parsed.SHA256 == vault.BodySHA256(body) &&
 		parsed.Body == body &&
+		parsed.Supersedes == supersedes &&
 		parsed.Original == originalPath &&
 		parsed.OriginalSHA256 == originalSHA {
 		return ""
 	}
-	if originalPath != "" {
+	if originalPath != "" || supersedes != "" {
 		return fmt.Sprintf(
-			"source url %q or original %q cannot be recorded in raw frontmatter as a plain YAML scalar; ingest from a path or URL without newlines or \" #\" sequences", sourceURL, originalPath)
+			"source url %q, supersedes %q or original %q cannot be recorded in raw frontmatter as a plain YAML scalar; ingest from a path or URL without newlines or \" #\" sequences", sourceURL, supersedes, originalPath)
 	}
 	return fmt.Sprintf(
 		"source url %q cannot be recorded in raw frontmatter as a plain YAML scalar; ingest from a path or URL without newlines or \" #\" sequences", sourceURL)
+}
+
+// RawCitations maps each raw path some committed wiki page cites to the paths
+// of the pages that do, sorted. A page cites a raw when its sources: list has
+// the path or its body has a provenance marker (cite.Scan: code spans and
+// fences excluded) whose Source is the path, whatever page suffix the marker
+// carries (070).
+func RawCitations(v *vault.Vault) map[string][]string {
+	if v == nil {
+		return nil
+	}
+	sets := make(map[string]map[string]bool)
+	note := func(raw, page string) {
+		if !strings.HasPrefix(raw, "raw/") {
+			return
+		}
+		if sets[raw] == nil {
+			sets[raw] = make(map[string]bool)
+		}
+		sets[raw][page] = true
+	}
+	for _, p := range v.Pages() {
+		for _, s := range p.FM.Sources {
+			note(s, p.Path)
+		}
+		for _, c := range cite.Scan(p.Body) {
+			note(c.Source, p.Path)
+		}
+	}
+	out := make(map[string][]string, len(sets))
+	for raw, set := range sets {
+		out[raw] = slices.Sorted(maps.Keys(set))
+	}
+	return out
+}
+
+// RawCitingPages returns the sorted paths of wiki pages citing rawPath (070).
+func RawCitingPages(v *vault.Vault, rawPath string) []string {
+	if v == nil || rawPath == "" {
+		return nil
+	}
+	citations := RawCitations(v)
+	return citations[rawPath]
 }

@@ -5,6 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"net/url"
+	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -17,6 +20,12 @@ type RawSource struct {
 	SHA256    string // hex sha256 of Body — drives dedupe and drift detection
 	Title     string
 	Body      string
+
+	// Supersedes is the vault-relative path of the earlier raw source this
+	// source replaces — "raw/articles/x.md" — or "" when this source is not
+	// a revision of another raw. Written by Serialize after sha256 and before
+	// original only when non-empty (070).
+	Supersedes string
 
 	// Original is the vault-relative path of the binary file this source
 	// was extracted from — "raw/papers/leviathan-2023.pdf", beside the md —
@@ -31,12 +40,13 @@ type RawSource struct {
 
 // rawFrontmatter is the YAML shape of a raw source's frontmatter block
 // (backbone §2.7, S1 correction C-3): source_url, ingested, sha256 — no
-// title key — plus the optional 033 original pair, present only when the
-// source carries its original binary.
+// title key - plus the optional 070 supersedes and 033 original pair,
+// present only when set.
 type rawFrontmatter struct {
 	SourceURL      string `yaml:"source_url"`
 	Ingested       Date   `yaml:"ingested"`
 	SHA256         string `yaml:"sha256"`
+	Supersedes     string `yaml:"supersedes"`
 	Original       string `yaml:"original"`
 	OriginalSHA256 string `yaml:"original_sha256"`
 }
@@ -77,6 +87,7 @@ func ParseRawSource(path string, b []byte) (*RawSource, error) {
 		SHA256:         raw.SHA256,
 		Title:          firstH1Title(body),
 		Body:           body,
+		Supersedes:     raw.Supersedes,
 		Original:       raw.Original,
 		OriginalSHA256: raw.OriginalSHA256,
 	}, nil
@@ -101,8 +112,9 @@ func firstH1Title(body string) string {
 }
 
 // Serialize renders r as canonical bytes: the frontmatter keys in
-// source_url, ingested, sha256 order — then original and original_sha256,
-// each only when set (033) — then "---\n", a blank line, then Body.
+// source_url, ingested, sha256 order — then supersedes (only when non-empty,
+// 070) — then original and original_sha256, each only when set (033) — then
+// "---\n", a blank line, then Body.
 //
 // Contract (backbone §2.7): no title key is ever emitted. Unlike
 // Frontmatter.Encode (§2.2), these scalars are never quoted — a source_url
@@ -116,6 +128,9 @@ func (r *RawSource) Serialize() []byte {
 	fmt.Fprintf(&buf, "source_url: %s\n", r.SourceURL)
 	fmt.Fprintf(&buf, "ingested: %s\n", r.Ingested.String())
 	fmt.Fprintf(&buf, "sha256: %s\n", r.SHA256)
+	if r.Supersedes != "" {
+		fmt.Fprintf(&buf, "supersedes: %s\n", r.Supersedes)
+	}
 	if r.Original != "" {
 		fmt.Fprintf(&buf, "original: %s\n", r.Original)
 	}
@@ -137,4 +152,136 @@ func (r *RawSource) Serialize() []byte {
 func BodySHA256(body string) string {
 	sum := sha256.Sum256([]byte(body))
 	return hex.EncodeToString(sum[:])
+}
+
+func normalizeURL(raw string) (string, bool) {
+	if raw == "" {
+		return "", false
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return "", false
+	}
+	u.Scheme = strings.ToLower(u.Scheme)
+	u.Host = strings.ToLower(u.Host)
+	u.Fragment = ""
+	u.RawFragment = ""
+	if strings.HasSuffix(u.Path, "/") {
+		u.Path = strings.TrimSuffix(u.Path, "/")
+	}
+	if strings.HasSuffix(u.RawPath, "/") {
+		u.RawPath = strings.TrimSuffix(u.RawPath, "/")
+	}
+	return u.String(), true
+}
+
+// SameSource reports whether a and b identify the same source (070).
+//
+// Semantics:
+// URLs: lower-case scheme+host, drop fragment and one trailing slash, keep the query.
+// Local paths: compare only when BOTH are absolute, via filepath.Clean. Relative
+// paths on either side never match.
+func SameSource(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	uA, okA := normalizeURL(a)
+	uB, okB := normalizeURL(b)
+	if okA || okB {
+		return okA && okB && uA == uB
+	}
+	if filepath.IsAbs(a) && filepath.IsAbs(b) {
+		return filepath.Clean(a) == filepath.Clean(b)
+	}
+	return false
+}
+
+// SupersededBy returns the raw source path that supersedes rawPath (first by path order),
+// or ok=false if rawPath is not superseded.
+//
+// A supersedes: naming a path that is not a committed raw does not panic and links nothing;
+// SupersededBy of that path still returns the claimant (070).
+func (v *Vault) SupersededBy(rawPath string) (string, bool) {
+	if v == nil || rawPath == "" {
+		return "", false
+	}
+	for _, r := range v.RawSources() {
+		if r.Supersedes == rawPath && r.Path != rawPath {
+			return r.Path, true
+		}
+	}
+	return "", false
+}
+
+// RevisionTip returns the committed raw matching SameSource that is not superseded
+// by another raw. Ties are broken by latest Ingested date, then by ingest order
+// (laterCopy), then greatest Path.
+// Returns ok=false if no matching raw exists (070).
+func (v *Vault) RevisionTip(sourceURL string) (*RawSource, bool) {
+	if v == nil || sourceURL == "" {
+		return nil, false
+	}
+	var best *RawSource
+	for _, r := range v.RawSources() {
+		if !SameSource(r.SourceURL, sourceURL) {
+			continue
+		}
+		if _, ok := v.SupersededBy(r.Path); ok {
+			continue
+		}
+		if best == nil {
+			best = r
+			continue
+		}
+		if r.Ingested.After(best.Ingested.Time) {
+			best = r
+		} else if r.Ingested.Time.Equal(best.Ingested.Time) && laterCopy(r.Path, best.Path) {
+			best = r
+		}
+	}
+	if best == nil {
+		return nil, false
+	}
+	return best, true
+}
+
+// numberedCopyOf reports whether stem is base plus "-<N>" with N >= 2: the name
+// ingest gives a second, third, ... copy of a source whose first copy is base.
+func numberedCopyOf(stem, base string) (n int, ok bool) {
+	rest, found := strings.CutPrefix(stem, base+"-")
+	if !found || rest == "" {
+		return 0, false
+	}
+	for _, c := range rest {
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n, n >= 2
+}
+
+// laterCopy reports whether raw path a was ingested after b when both carry
+// the same ingested date. Plain string order is wrong for ingest names: "." sorts
+// after "-", so x.md would beat x-2.md and the older raw would become the tip
+// (A-070-5, found on the real reduce-top pair). The numbered copy is recognised
+// against the OTHER path, not by guessing a "-<digits>" tail on its own: a slug can
+// end in digits itself (rfc-822.md, gpt-4.md; A-070-8, review finding 1).
+func laterCopy(a, b string) bool {
+	sa, sb := strings.TrimSuffix(a, ".md"), strings.TrimSuffix(b, ".md")
+	if _, ok := numberedCopyOf(sa, sb); ok {
+		return true
+	}
+	if _, ok := numberedCopyOf(sb, sa); ok {
+		return false
+	}
+	// Two numbered copies of one base: x-9 against x-10.
+	if i, j := strings.LastIndexByte(sa, '-'), strings.LastIndexByte(sb, '-'); i > 0 && j > 0 && sa[:i] == sb[:j] {
+		if na, ok := numberedCopyOf(sa, sa[:i]); ok {
+			if nb, ok := numberedCopyOf(sb, sb[:j]); ok && na != nb {
+				return na > nb
+			}
+		}
+	}
+	return a > b
 }

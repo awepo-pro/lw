@@ -32,8 +32,12 @@ const srcStaleThreshold = 90 * 24 * time.Hour
 // reported.
 func (srcStaleCheck) Run(ctx *Context) []Finding {
 	var findings []Finding
+	superseded := supersededTips(ctx)
 	for _, p := range ctx.Vault.Pages() {
 		for _, src := range p.FM.Sources {
+			if _, isSuperseded := superseded[src]; isSuperseded {
+				continue // 070 L3: a superseded raw is not stale; cite-superseded flags it
+			}
 			r, ok := ctx.Vault.RawSource(src)
 			if !ok {
 				continue
