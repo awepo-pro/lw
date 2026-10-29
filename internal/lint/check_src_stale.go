@@ -34,6 +34,9 @@ func (srcStaleCheck) Run(ctx *Context) []Finding {
 	var findings []Finding
 	for _, p := range ctx.Vault.Pages() {
 		for _, src := range p.FM.Sources {
+			if _, superseded := ctx.Vault.SupersededBy(src); superseded {
+				continue // 070 L3: a superseded raw is not stale; cite-superseded flags it
+			}
 			r, ok := ctx.Vault.RawSource(src)
 			if !ok {
 				continue
