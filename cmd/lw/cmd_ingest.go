@@ -292,6 +292,8 @@ func cmdIngest(args []string) error {
 	attach := fs.Bool("attach", false, "backfill the original file for a committed raw source whose body matches; stages no wiki pages and calls no model")
 	prepare := fs.Bool("prepare", false, "do the deterministic half of the ingest — extract, dedupe, limits, stage the raw sources — and print a brief for an external agent that curates the pages through lw tool; constructs no agent and resolves no API key")
 	agentName := fs.String("agent", "agy", "with --prepare: the name of the external agent, recorded as the changeset author's model")
+	var notes noteList
+	fs.Var(&notes, "note", "ingest a note by id or prefix from notes/")
 	sources, err := parseIngestSources(fs, args)
 	if err != nil {
 		return &exitError{code: 2}
@@ -323,8 +325,14 @@ func cmdIngest(args []string) error {
 	case *attach && *kindFlag != "":
 		fmt.Fprintln(os.Stderr, "lw: ingest: cannot use --attach with --kind")
 		return &exitError{code: 2}
+	case len(notes) > 0 && *recompile:
+		fmt.Fprintln(os.Stderr, "lw: ingest: cannot use --note with --recompile")
+		return &exitError{code: 2}
+	case len(notes) > 0 && *attach:
+		fmt.Fprintln(os.Stderr, "lw: ingest: cannot use --note with --attach")
+		return &exitError{code: 2}
 	}
-	if len(sources) == 0 {
+	if len(sources) == 0 && len(notes) == 0 {
 		fmt.Fprintln(os.Stderr, "usage: lw ingest <url|path|dir>... [--kind K] [--dry-run]")
 		return &exitError{code: 2}
 	}
@@ -338,6 +346,13 @@ func cmdIngest(args []string) error {
 	root, err := rootOf(*vaultPath)
 	if err != nil {
 		return err
+	}
+	for _, n := range notes {
+		p, err := resolveNoteID(root, n)
+		if err != nil {
+			return err
+		}
+		sources = append(sources, p)
 	}
 	initLoggingAt(root)
 	tracker := newWaitingNoteTracker(root)
@@ -565,7 +580,7 @@ func cmdIngest(args []string) error {
 					continue
 				}
 			}
-			return fmt.Errorf("extract %s: %w", src, err)
+			return noteHint(root, src, err)
 		}
 		if *kindFlag != "" {
 			doc.Kind = *kindFlag
