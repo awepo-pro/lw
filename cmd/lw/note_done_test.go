@@ -299,7 +299,7 @@ func TestNoteDone_F6_FailureIsSilent(t *testing.T) {
 		if err := writeNoteList(&buf, root, now, 20); err != nil {
 			t.Fatalf("writeNoteList: %v, want nil", err)
 		}
-		want := "20261013-121933-max-combination  2h ago  max combination body\n"
+		want := "20261013-121933-max-combination  2h ago  max combination body  \u2713 max-combination\n"
 		if buf.String() != want {
 			t.Errorf("stdout =\n%q\nwant undecorated %q", buf.String(), want)
 		}
