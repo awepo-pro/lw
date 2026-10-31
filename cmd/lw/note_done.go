@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 
@@ -45,20 +46,30 @@ func noteMatchesSource(root, stem, sourceURL string) bool {
 // noteDoneTags derives the distilled raw stem for each note stem among stems.
 // Returns an empty map on any error or missing vault (D-3, F6).
 func noteDoneTags(root string, stems []string) map[string]string {
+	tags, err := noteDoneTagsErr(root, stems)
+	if err != nil {
+		return make(map[string]string)
+	}
+	return tags
+}
+
+// noteDoneTagsErr derives the distilled raw stem for each note stem among stems.
+// If opening the vault fails, it returns a non-nil error.
+func noteDoneTagsErr(root string, stems []string) (map[string]string, error) {
 	tags := make(map[string]string)
 	if len(stems) == 0 {
-		return tags
+		return tags, nil
 	}
 	v, err := noteOpenVault(root)
-	if err != nil || v == nil {
-		return tags
+	if err != nil {
+		return nil, err
 	}
-	if len(v.ParseErrors()) > 0 {
-		return tags
+	if v == nil {
+		return nil, fmt.Errorf("open vault %s: nil vault", root)
 	}
 	allRaws := v.RawSources()
 	if len(allRaws) == 0 {
-		return tags
+		return tags, nil
 	}
 	for _, stem := range stems {
 		if stem == "" {
@@ -100,5 +111,5 @@ func noteDoneTags(root string, stems []string) map[string]string {
 			tags[stem] = strings.TrimSuffix(filepath.Base(bestTip.Path), ".md")
 		}
 	}
-	return tags
+	return tags, nil
 }

@@ -126,7 +126,7 @@ func cmdNote(args []string) error {
 		fmt.Fprint(fs.Output(), `usage: lw note -m "<text>" [--vault P]   save a note
        lw note -F <file|-> [--vault P]   save a note read from a file (- is stdin)
        lw note [--vault P]              compose one in $VISUAL, else $EDITOR, else vi
-       lw note list [-n N] [--vault P]  list notes, newest first
+       lw note list [-n N] [--pending] [--vault P]  list notes, newest first
 `)
 	}
 	vaultPath := fs.String("vault", "", "vault root (default: nearest ancestor directory containing SCHEMA.md)")
@@ -581,13 +581,14 @@ func noteSlug(text string) string {
 	return s
 }
 
-// cmdNoteList implements `lw note list [-n N]`. vaultDefault is the --vault
+// cmdNoteList implements `lw note list [-n N] [--pending]`. vaultDefault is the --vault
 // value `lw note` parsed before the subcommand word, so both spellings work.
 func cmdNoteList(vaultDefault string, args []string) error {
 	fs := flag.NewFlagSet("note list", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	vaultPath := fs.String("vault", vaultDefault, "vault root (default: nearest ancestor directory containing SCHEMA.md)")
 	n := fs.Int("n", 20, "how many notes to list")
+	pending := fs.Bool("pending", false, "list only notes that have not been distilled into raw sources yet")
 	if err := fs.Parse(args); err != nil {
 		return &exitError{code: 2}
 	}
@@ -600,7 +601,7 @@ func cmdNoteList(vaultDefault string, args []string) error {
 		return err
 	}
 	attachLoggingAt(root) // read-only: join the trail, never create it
-	return writeNoteList(os.Stdout, root, noteNow(), *n)
+	return writeNoteListOpts(os.Stdout, root, noteNow(), *n, *pending)
 }
 
 // noteRow is one note as the list shows it.
@@ -638,6 +639,13 @@ func noteDraftLine(root string, now time.Time) string {
 // and neither is a row. -n is a count of rows, so a negative is clamped to 0,
 // the way `lw trace -n` reads it.
 func writeNoteList(w io.Writer, root string, now time.Time, n int) error {
+	return writeNoteListOpts(w, root, now, n, false)
+}
+
+// writeNoteListOpts prints notes according to the specified options. When pending
+// is true, it only prints notes that have not been distilled into raw sources yet,
+// without done checkmarks, and fails if the vault opener fails.
+func writeNoteListOpts(w io.Writer, root string, now time.Time, n int, pending bool) error {
 	ents, err := os.ReadDir(filepath.Join(root, noteDirName))
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("read %s: %w", noteDirName, err)
@@ -664,13 +672,14 @@ func writeNoteList(w io.Writer, root string, now time.Time, n int) error {
 		rows = append(rows, noteRow{stem: strings.TrimSuffix(e.Name(), ".md"), created: created, text: text})
 	}
 
-	if draft := noteDraftLine(root, now); draft != "" {
-		fmt.Fprintln(w, draft)
-	}
 	if len(rows) == 0 {
-		fmt.Fprintln(w, `no notes yet — lw note -m "…"`)
+		if draft := noteDraftLine(root, now); draft != "" {
+			fmt.Fprintln(w, draft)
+		}
+		fmt.Fprintln(w, "no notes yet \u2014 lw note -m \"\u2026\"")
 		return nil
 	}
+
 	// Newest first; the stem breaks a tie so same-second notes (-2 after the
 	// bare name) come out in one stable order.
 	sort.Slice(rows, func(i, j int) bool {
@@ -679,6 +688,48 @@ func writeNoteList(w io.Writer, root string, now time.Time, n int) error {
 		}
 		return rows[i].stem > rows[j].stem
 	})
+
+	if pending {
+		stems := make([]string, len(rows))
+		for i, r := range rows {
+			stems[i] = r.stem
+		}
+		tags, err := noteDoneTagsErr(root, stems)
+		if err != nil {
+			return fmt.Errorf("cannot tell which notes are pending: %w", err)
+		}
+		var pendingRows []noteRow
+		for _, r := range rows {
+			if tags[r.stem] == "" {
+				pendingRows = append(pendingRows, r)
+			}
+		}
+
+		if draft := noteDraftLine(root, now); draft != "" {
+			fmt.Fprintln(w, draft)
+		}
+
+		if len(pendingRows) == 0 {
+			fmt.Fprintln(w, "no pending notes")
+			return nil
+		}
+
+		if n < 0 {
+			n = 0
+		}
+		if len(pendingRows) > n {
+			pendingRows = pendingRows[:n]
+		}
+		for _, r := range pendingRows {
+			line := strings.TrimRight(r.stem+"  "+noteAge(now.Sub(r.created))+"  "+r.text, " ")
+			fmt.Fprintln(w, line)
+		}
+		return nil
+	}
+
+	if draft := noteDraftLine(root, now); draft != "" {
+		fmt.Fprintln(w, draft)
+	}
 	if n < 0 {
 		n = 0
 	}
