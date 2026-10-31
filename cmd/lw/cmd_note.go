@@ -47,11 +47,12 @@ import (
 	"unicode/utf8"
 
 	"github.com/awepo-pro/lw/internal/slug"
+	"github.com/awepo-pro/lw/internal/vault"
 )
 
 const (
 	// noteDirName is the inbox, directly under the vault root.
-	noteDirName = "notes"
+	noteDirName = vault.NotesDir
 
 	// noteEditBufferName is the editor's scratch file, under .llmwiki/tmp.
 	// The name is fixed (git's COMMIT_EDITMSG idiom), so two concurrent `lw

@@ -17,7 +17,7 @@ import (
 )
 
 // TestFormatStamp_MutatingVerbsLeavesStamp verifies that each mutating verb
-// on a vault with NO format file leaves {"version":3}\n behind (072 S1 item 1).
+// on a vault with NO format file leaves {"version":4}\n behind (072 S1 item 1, 074 S1).
 func TestFormatStamp_MutatingVerbsLeavesStamp(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -377,22 +377,23 @@ func TestFormatStamp_MutatingVerbsLeavesStamp(t *testing.T) {
 			if err != nil {
 				t.Fatalf("format file was not created: %v", err)
 			}
-			if got, want := string(b), "{\"version\":3}\n"; got != want {
+			if got, want := string(b), fmt.Sprintf("{\"version\":%d}\n", FormatVersion); got != want {
 				t.Fatalf("format file content = %q, want %q", got, want)
 			}
 		})
 	}
 }
 
-// TestFormatStamp_NoRewriteAndUpgrade pins 072 S1 item 2:
-// - a vault already at 3 is not rewritten (mtime/bytes unchanged);
-// - at 2 is raised to 3;
-// - never lowered (stamp can only be called when have <= 3, so a 3 file stays).
+// TestFormatStamp_NoRewriteAndUpgrade pins 072 S1 item 2 (and 074 F5):
+// - a vault already at FormatVersion is not rewritten (mtime/bytes unchanged);
+// - at 2 or 3 is raised to FormatVersion (4);
+// - never lowered (stamp can only be called when have <= FormatVersion, so a FormatVersion file stays).
 func TestFormatStamp_NoRewriteAndUpgrade(t *testing.T) {
-	t.Run("version 3 not rewritten", func(t *testing.T) {
+	t.Run("version 4 not rewritten", func(t *testing.T) {
 		dir := testutil.CopyFixture(t, "minimal")
 		formatPath := filepath.Join(dir, ".llmwiki", formatFileName)
-		writeFormatFile(t, dir, "{\"version\":3}\n")
+		content := fmt.Sprintf("{\"version\":%d}\n", FormatVersion)
+		writeFormatFile(t, dir, content)
 
 		past := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
 		if err := os.Chtimes(formatPath, past, past); err != nil {
@@ -420,12 +421,12 @@ func TestFormatStamp_NoRewriteAndUpgrade(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read format file: %v", err)
 		}
-		if got, want := string(b), "{\"version\":3}\n"; got != want {
+		if got, want := string(b), content; got != want {
 			t.Fatalf("format file content = %q, want %q", got, want)
 		}
 	})
 
-	t.Run("version 2 raised to 3", func(t *testing.T) {
+	t.Run("version 2 raised to 4", func(t *testing.T) {
 		dir := testutil.CopyFixture(t, "minimal")
 		formatPath := filepath.Join(dir, ".llmwiki", formatFileName)
 		writeFormatFile(t, dir, "{\"version\": 2}\n")
@@ -444,14 +445,41 @@ func TestFormatStamp_NoRewriteAndUpgrade(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read format: %v", err)
 		}
-		if got, want := string(b), "{\"version\":3}\n"; got != want {
+		want := fmt.Sprintf("{\"version\":%d}\n", FormatVersion)
+		if got := string(b); got != want {
+			t.Fatalf("format file = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("version 3 raised to 4", func(t *testing.T) {
+		dir := testutil.CopyFixture(t, "minimal")
+		formatPath := filepath.Join(dir, ".llmwiki", formatFileName)
+		writeFormatFile(t, dir, "{\"version\": 3}\n")
+
+		e, err := OpenEngine(dir)
+		if err != nil {
+			t.Fatalf("OpenEngine: %v", err)
+		}
+		defer e.Close()
+
+		if _, err := e.OpenChangeset("test intent", testAuthor); err != nil {
+			t.Fatalf("OpenChangeset: %v", err)
+		}
+
+		b, err := os.ReadFile(formatPath)
+		if err != nil {
+			t.Fatalf("read format: %v", err)
+		}
+		want := fmt.Sprintf("{\"version\":%d}\n", FormatVersion)
+		if got := string(b); got != want {
 			t.Fatalf("format file = %q, want %q", got, want)
 		}
 	})
 
 	t.Run("never lowered", func(t *testing.T) {
 		dir := testutil.CopyFixture(t, "minimal")
-		writeFormatFile(t, dir, "{\"version\":3}\n")
+		content := fmt.Sprintf("{\"version\":%d}\n", FormatVersion)
+		writeFormatFile(t, dir, content)
 
 		e, err := OpenEngine(dir)
 		if err != nil {
@@ -467,14 +495,14 @@ func TestFormatStamp_NoRewriteAndUpgrade(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ReadFormat: %v", err)
 		}
-		if have != 3 {
-			t.Fatalf("format version lowered to %d, want 3", have)
+		if have != FormatVersion {
+			t.Fatalf("format version lowered to %d, want %d", have, FormatVersion)
 		}
 	})
 }
 
 // TestFormatStamp_RefusesNewerFormat pins 072 S1 item 3:
-// a vault whose file says 4 after OpenEngine (written behind its back)
+// a vault whose file says FormatVersion+1 after OpenEngine (written behind its back)
 // makes the writer return *FormatError and write nothing (asserting
 // the changeset dir and file bytes).
 func TestFormatStamp_RefusesNewerFormat(t *testing.T) {
@@ -485,11 +513,12 @@ func TestFormatStamp_RefusesNewerFormat(t *testing.T) {
 	}
 	defer e.Close()
 
-	// Write version 4 behind OpenEngine's back
+	// Write version newer than FormatVersion behind OpenEngine's back
 	formatPath := filepath.Join(dir, ".llmwiki", formatFileName)
-	const v4Content = "{\"version\":4}\n"
-	if err := os.WriteFile(formatPath, []byte(v4Content), 0o644); err != nil {
-		t.Fatalf("write format 4: %v", err)
+	newerVersion := FormatVersion + 1
+	newerContent := fmt.Sprintf("{\"version\":%d}\n", newerVersion)
+	if err := os.WriteFile(formatPath, []byte(newerContent), 0o644); err != nil {
+		t.Fatalf("write format %d: %v", newerVersion, err)
 	}
 
 	openDir := filepath.Join(dir, ".llmwiki", "changesets", "open")
@@ -507,8 +536,8 @@ func TestFormatStamp_RefusesNewerFormat(t *testing.T) {
 	if !errors.As(err, &fe) {
 		t.Fatalf("OpenChangeset err = %T (%v), want *FormatError", err, err)
 	}
-	if fe.Have != 4 || fe.Max != FormatVersion {
-		t.Fatalf("FormatError = %+v, want Have 4, Max %d", fe, FormatVersion)
+	if fe.Have != newerVersion || fe.Max != FormatVersion {
+		t.Fatalf("FormatError = %+v, want Have %d, Max %d", fe, newerVersion, FormatVersion)
 	}
 
 	// Assert nothing was written:
@@ -526,8 +555,8 @@ func TestFormatStamp_RefusesNewerFormat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read format file: %v", err)
 	}
-	if string(b) != v4Content {
-		t.Fatalf("format file was modified: got %q, want %q", string(b), v4Content)
+	if string(b) != newerContent {
+		t.Fatalf("format file was modified: got %q, want %q", string(b), newerContent)
 	}
 }
 

@@ -395,29 +395,29 @@ func TestJournalOpDroppedMessage(t *testing.T) {
 	})
 }
 
-// TestFormatVersion069 verifies FormatVersion is 3, that OpenEngine refuses
-// a vault whose .llmwiki/format is 4, and opens vaults with format 2 and 3.
+// TestFormatVersion069 verifies FormatVersion is at least 3, that OpenEngine refuses
+// a vault whose .llmwiki/format is newer, and opens vaults with format 2 and 3.
 func TestFormatVersion069(t *testing.T) {
-	if FormatVersion != 3 {
-		t.Fatalf("FormatVersion = %d, want 3", FormatVersion)
+	if FormatVersion != 4 {
+		t.Fatalf("FormatVersion = %d, want 4", FormatVersion)
 	}
 
-	t.Run("refuses format 4", func(t *testing.T) {
+	t.Run("refuses newer format", func(t *testing.T) {
 		dir := testutil.CopyFixture(t, "minimal")
-		writeFormatFile(t, dir, `{"version": 4}`)
+		writeFormatFile(t, dir, fmt.Sprintf(`{"version": %d}`, FormatVersion+1))
 		e, err := OpenEngine(dir)
 		if e != nil {
 			e.Close()
-			t.Fatal("OpenEngine succeeded for format 4 vault, want refusal")
+			t.Fatal("OpenEngine succeeded for newer format vault, want refusal")
 		}
 		var fe *FormatError
 		if !errors.As(err, &fe) {
 			t.Fatalf("err = %T %v, want *FormatError", err, err)
 		}
-		if fe.Have != 4 || fe.Max != 3 {
-			t.Errorf("FormatError = %+v, want Have 4 Max 3", fe)
+		if fe.Have != FormatVersion+1 || fe.Max != FormatVersion {
+			t.Errorf("FormatError = %+v, want Have %d Max %d", fe, FormatVersion+1, FormatVersion)
 		}
-		const wantText = "vault format 4 is newer than this lw supports (3): upgrade lw"
+		wantText := fmt.Sprintf("vault format %d is newer than this lw supports (%d): upgrade lw", FormatVersion+1, FormatVersion)
 		if err.Error() != wantText {
 			t.Errorf("err.Error() = %q, want %q", err.Error(), wantText)
 		}

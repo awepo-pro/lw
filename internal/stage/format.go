@@ -19,11 +19,12 @@ import (
 	"syscall"
 )
 
-// FormatVersion is the on-disk shape this lw reads and writes. It is 3 (069:
-// Op carries DroppedBy DropActor and DropReason string). A change to anything the
+// FormatVersion is the on-disk shape this lw reads and writes. It is 4 (074: the
+// managed .gitignore gained /ledger/receipts/; no on-disk shape moved, the bump
+// makes an older lw refuse a vault it would un-ignore). A change to anything the
 // fingerprint test records means bumping this, adding a migration, and
 // regenerating testdata/format-fingerprint.txt — in that order.
-const FormatVersion = 3
+const FormatVersion = 4
 
 // formatFileName is the file inside .llmwiki/ that records a vault's format.
 // While FormatVersion is 1 lw writes none: a missing file means format 1, so

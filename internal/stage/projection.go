@@ -19,30 +19,20 @@ import (
 	"github.com/awepo-pro/lw/internal/vault"
 )
 
-// notesInboxDir is the vault-root directory `lw note` writes to (047 S1).
-// cmd/lw owns the verb and stage cannot import it, so the name is spelled
-// here too; TestNotesInvisibleToHistory pins that the two agree.
-const notesInboxDir = "notes"
-
-// storageDirName is the vault-root directory `lw storage` keeps payloads in
-// (062, 066). Like notesInboxDir it is spelled here rather than imported: the
-// walk must not depend on the verb's packages. TestWalkWholeTreeSkipsStorage and
-// TestStorageInvisibleToHistory pin it.
-const storageDirName = "storage"
-
 // isStoragePath reports whether the snapshot path p lies under the vault-root
 // storage/ directory. Snapshots written by v2.49.0 can list such paths (its walk
 // did not skip the directory, B3); every diff of two trees ignores them, so a
 // commit after the fix never sees them vanish and `lw revert` never reports or
 // restores one (066 D5).
 func isStoragePath(p string) bool {
-	return strings.HasPrefix(p, storageDirName+"/")
+	return strings.HasPrefix(p, vault.StorageDir+"/")
 }
 
 // walkWholeTree walks os.DirFS(root) and returns every *.md file's
 // vault-relative path mapped to its raw bytes, skipping any directory
 // (and everything under it) whose name begins with "." — which is what
-// excludes .llmwiki/ — and the vault-root notes/ and storage/ directories.
+// excludes .llmwiki/ — and the vault-root non-wiki directories (vault.NonWikiRoots:
+// notes/, storage/, ledger/).
 //
 // notes/ is `lw note`'s inbox (047 S1): raw thoughts that sit outside the
 // wiki and outside review, so no tree built here may contain them. The walk
@@ -59,6 +49,12 @@ func isStoragePath(p string) bool {
 // notes.md was an ADDED path of the next commit, surfaced by `lw revert` as
 // "skipped: storage/…", and its name and sha went into a manifest git tracks
 // and syncs to every PC. The payloads' truth is the catalog, not a snapshot.
+//
+// ledger/ is the mobile bookkeeping directory (074): daily transaction logs
+// that are ordinary text committed to git, but outside wiki content, snapshots,
+// and revert history. Like notes/ and storage/, the skip is at the root only,
+// never a wider rule: a directory called ledger deeper in the tree is ordinary
+// vault content.
 //
 // Contract (backbone §5.4 "how the projection is seeded", MASTER §9
 // D-AX). Pages() and RawSources() cover only wiki/ and raw/, but
@@ -81,7 +77,7 @@ func walkWholeTree(root string) (map[string][]byte, error) {
 			if p != "." && strings.HasPrefix(d.Name(), ".") {
 				return fs.SkipDir
 			}
-			if p == notesInboxDir || p == storageDirName {
+			if vault.IsNonWikiRoot(p) {
 				return fs.SkipDir
 			}
 			return nil

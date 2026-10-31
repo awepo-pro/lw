@@ -2,7 +2,7 @@
 # Changing anything below means a vault written by one lw may be misread by another:
 # bump stage.FormatVersion, add a migration, then
 #   go test ./internal/stage -run TestFormatFingerprint -update
-format-version: 3
+format-version: 4
 
 [types]
 agent.Record: Args(args,string) Carried(carried,bool) Content(content,string) Finish(finish,string) Reasoning(reasoning,string) Result(result,string) Role(role,string) Staged(staged,bool) Tool(tool,string) TS(ts,time) Turn(turn,string)
