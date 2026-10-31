@@ -167,13 +167,13 @@ func ptr(s string) *string { return &s }
 // TestFormatErrorText pins the sentence lw prints for a vault from the
 // future, because cmd/lw shows it verbatim.
 func TestFormatErrorText(t *testing.T) {
-	err := error(&FormatError{Have: 4, Max: 3})
-	const want = "vault format 4 is newer than this lw supports (3): upgrade lw"
+	err := error(&FormatError{Have: FormatVersion + 1, Max: FormatVersion})
+	want := fmt.Sprintf("vault format %d is newer than this lw supports (%d): upgrade lw", FormatVersion+1, FormatVersion)
 	if err.Error() != want {
 		t.Errorf("FormatError text = %q, want %q", err.Error(), want)
 	}
-	if FormatVersion != 3 {
-		t.Errorf("FormatVersion = %d; 069 ships format 3", FormatVersion)
+	if FormatVersion != 4 {
+		t.Errorf("FormatVersion = %d; 074 ships format 4", FormatVersion)
 	}
 }
 
@@ -186,7 +186,7 @@ func TestFormatErrorText(t *testing.T) {
 func TestOpenEngineRefusesNewerFormat(t *testing.T) {
 	t.Run("virgin vault", func(t *testing.T) {
 		dir := testutil.CopyFixture(t, "minimal")
-		writeFormatFile(t, dir, `{"version": 4}`)
+		writeFormatFile(t, dir, fmt.Sprintf(`{"version": %d}`, FormatVersion+1))
 		before := treeDigest(t, dir)
 
 		e, err := OpenEngine(dir)
@@ -198,10 +198,10 @@ func TestOpenEngineRefusesNewerFormat(t *testing.T) {
 		if !errors.As(err, &fe) {
 			t.Fatalf("OpenEngine error = %T %v, want *FormatError", err, err)
 		}
-		if fe.Have != 4 || fe.Max != FormatVersion {
-			t.Errorf("FormatError = %+v, want Have 4 Max %d", fe, FormatVersion)
+		if fe.Have != FormatVersion+1 || fe.Max != FormatVersion {
+			t.Errorf("FormatError = %+v, want Have %d Max %d", fe, FormatVersion+1, FormatVersion)
 		}
-		if got, want := err.Error(), "vault format 4 is newer than this lw supports (3): upgrade lw"; got != want {
+		if got, want := err.Error(), fmt.Sprintf("vault format %d is newer than this lw supports (%d): upgrade lw", FormatVersion+1, FormatVersion); got != want {
 			t.Errorf("error text = %q, want %q", got, want)
 		}
 		if _, isBare := err.(*FormatError); !isBare {
@@ -341,6 +341,21 @@ func TestOpenEngineNoFormatFileUnchanged(t *testing.T) {
 		e, err := OpenEngine(dir)
 		if err != nil {
 			t.Fatalf("OpenEngine with format 3: %v", err)
+		}
+		e.Close()
+		got, err := os.ReadFile(filepath.Join(dir, ".llmwiki", "format"))
+		if err != nil || string(got) != body {
+			t.Errorf("format file after open = %q, %v; want it untouched (%q)", got, err, body)
+		}
+	})
+
+	t.Run("explicit version 4", func(t *testing.T) {
+		dir := testutil.CopyFixture(t, "minimal")
+		const body = "{\"version\": 4}\n"
+		writeFormatFile(t, dir, body)
+		e, err := OpenEngine(dir)
+		if err != nil {
+			t.Fatalf("OpenEngine with format 4: %v", err)
 		}
 		e.Close()
 		got, err := os.ReadFile(filepath.Join(dir, ".llmwiki", "format"))

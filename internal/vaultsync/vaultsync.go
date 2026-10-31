@@ -32,7 +32,8 @@ import (
 // package's bookkeeping (042 D2). Obsidian rewrites its workspace files
 // whenever the vault is open, and macOS drops .DS_Store in every folder it
 // shows; synced, either would leave each such PC "ahead" and diverged on
-// every sync (A-042-3). Obsidian's settings and plugins still sync.
+// every sync (A-042-3). Receipts under /ledger/receipts/ are per-PC bytes
+// until lw storage carries them (074 S2). Obsidian's settings and plugins still sync.
 // CommitWork rewrites the file whenever its bytes differ, so every PC agrees
 // on what is excluded.
 const Ignore = "# managed by lw sync: per-PC state, never synced\n" +
@@ -48,6 +49,7 @@ const Ignore = "# managed by lw sync: per-PC state, never synced\n" +
 	"/.obsidian/workspace-mobile.json\n" +
 	"/.obsidian/cache\n" +
 	"/storage/\n" +
+	"/ledger/receipts/\n" +
 	".DS_Store\n"
 
 // Branch is the one branch lw sync uses, locally and on the remote.

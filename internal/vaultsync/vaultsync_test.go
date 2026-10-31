@@ -32,12 +32,58 @@ func TestIgnoreBytes(t *testing.T) {
 		"/.obsidian/workspace-mobile.json\n" +
 		"/.obsidian/cache\n" +
 		"/storage/\n" +
+		"/ledger/receipts/\n" +
 		".DS_Store\n"
 	if Ignore != want {
 		t.Fatalf("Ignore = %q\nwant     %q", Ignore, want)
 	}
 	if Branch != "main" {
 		t.Fatalf("Branch = %q, want main", Branch)
+	}
+}
+
+// TestIgnoreKeepsReceiptsOutOfGit pins 074 F4 / I4 / I5:
+// ledger/receipts/ holds per-PC receipts that must not be tracked by git, while
+// the text ledger files under ledger/ are ordinary content that git tracks and syncs.
+func TestIgnoreKeepsReceiptsOutOfGit(t *testing.T) {
+	hermetic(t)
+	vault := makeVault(t)
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	if err := os.Mkdir(remote, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Init(t.Context(), opts(vault, remote)); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	put(t, vault, "ledger/2026/10/2026-10-31.md", "- (id:: 20261031-1230-a) (amt:: -45.00) (cur:: HKD) lunch\n")
+	put(t, vault, "ledger/receipts/2026/10/r1.jpg", "\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01random-bytes")
+
+	committed, err := CommitWork(opts(vault, remote), "lw 000002: ledger + receipt")
+	if err != nil {
+		t.Fatalf("CommitWork: %v", err)
+	}
+	if !committed {
+		t.Fatalf("CommitWork = false, want true")
+	}
+
+	ls := git(t, vault, "ls-files")
+	files := strings.Split(strings.TrimSpace(ls), "\n")
+	hasMD := false
+	hasJPG := false
+	for _, f := range files {
+		if f == "ledger/2026/10/2026-10-31.md" {
+			hasMD = true
+		}
+		if strings.Contains(f, "r1.jpg") {
+			hasJPG = true
+		}
+	}
+	if !hasMD {
+		t.Errorf("git ls-files missing ledger/2026/10/2026-10-31.md; output:\n%s", ls)
+	}
+	if hasJPG {
+		t.Errorf("git ls-files includes receipt r1.jpg; output:\n%s", ls)
 	}
 }
 
