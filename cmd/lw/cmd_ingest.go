@@ -292,6 +292,8 @@ func cmdIngest(args []string) error {
 	attach := fs.Bool("attach", false, "backfill the original file for a committed raw source whose body matches; stages no wiki pages and calls no model")
 	prepare := fs.Bool("prepare", false, "do the deterministic half of the ingest — extract, dedupe, limits, stage the raw sources — and print a brief for an external agent that curates the pages through lw tool; constructs no agent and resolves no API key")
 	agentName := fs.String("agent", "agy", "with --prepare: the name of the external agent, recorded as the changeset author's model")
+	instructionFlag := fs.String("instruction", "", "user instruction steering what to cover and how (needs --prepare)")
+	instructionFileFlag := fs.String("instruction-file", "", "read user instruction from file or - for stdin (needs --prepare)")
 	var notes noteList
 	fs.Var(&notes, "note", "ingest a note by id or prefix from notes/")
 	sources, err := parseIngestSources(fs, args)
@@ -301,14 +303,30 @@ func cmdIngest(args []string) error {
 	// 063: the --prepare flags are checked before anything else, so a misuse
 	// opens nothing and reads no vault.
 	agentGiven := false
+	instructionGiven := false
+	instructionFileGiven := false
 	fs.Visit(func(f *flag.Flag) {
-		if f.Name == "agent" {
+		switch f.Name {
+		case "agent":
 			agentGiven = true
+		case "instruction":
+			instructionGiven = true
+		case "instruction-file":
+			instructionFileGiven = true
 		}
 	})
 	switch {
+	case instructionGiven && instructionFileGiven:
+		fmt.Fprintln(os.Stderr, "lw: ingest: cannot use --instruction with --instruction-file")
+		return &exitError{code: 2}
 	case agentGiven && !*prepare:
 		fmt.Fprintln(os.Stderr, "lw: ingest: --agent needs --prepare")
+		return &exitError{code: 2}
+	case instructionGiven && !*prepare:
+		fmt.Fprintln(os.Stderr, "lw: ingest: --instruction needs --prepare")
+		return &exitError{code: 2}
+	case instructionFileGiven && !*prepare:
+		fmt.Fprintln(os.Stderr, "lw: ingest: --instruction-file needs --prepare")
 		return &exitError{code: 2}
 	case *prepare && *dryRun:
 		fmt.Fprintln(os.Stderr, "lw: ingest: cannot use --prepare with --dry-run")
@@ -335,6 +353,27 @@ func cmdIngest(args []string) error {
 	if len(sources) == 0 && len(notes) == 0 {
 		fmt.Fprintln(os.Stderr, "usage: lw ingest <url|path|dir>... [--kind K] [--dry-run]")
 		return &exitError{code: 2}
+	}
+
+	var userInstruction string
+	if instructionGiven {
+		norm, err := normalizeInstruction(*instructionFlag)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "lw: ingest: %s\n", err)
+			return &exitError{code: 2}
+		}
+		userInstruction = norm
+	} else if instructionFileGiven {
+		raw, err := readInstructionFile(*instructionFileFlag)
+		if err != nil {
+			return err
+		}
+		norm, err := normalizeInstruction(raw)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "lw: ingest: %s\n", err)
+			return &exitError{code: 2}
+		}
+		userInstruction = norm
 	}
 
 	// 042: a dry run changes nothing, so it is neither refused while a
@@ -804,12 +843,13 @@ func cmdIngest(args []string) error {
 	// and the curation is an external agent's, through lw tool.
 	if *prepare {
 		err := prepareIngest(ctx, prepareInput{
-			e:       e,
-			agent:   *agentName,
-			intent:  ingestTurnIntent(sources, keptSrcs, targets),
-			items:   items,
-			targets: targets,
-			extract: toolExtract,
+			e:           e,
+			agent:       *agentName,
+			intent:      ingestTurnIntent(sources, keptSrcs, targets) + instructionIntentTag(userInstruction),
+			instruction: userInstruction,
+			items:       items,
+			targets:     targets,
+			extract:     toolExtract,
 		})
 		if err == nil {
 			tracker.maybePrintNote(e)

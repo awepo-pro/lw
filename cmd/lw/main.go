@@ -172,7 +172,7 @@ commands:
   config                       view or edit configuration
   ingest <url|path|dir>...     ingest one or more sources
   ingest --note <id>...        ingest a note from notes/ by id or unique prefix (lw note list)
-  ingest --prepare [--agent <name>] <url|path|dir>...
+  ingest --prepare [--agent <name>] [--instruction <text>|--instruction-file <path|->] <url|path|dir>...
                                open a changeset for the sources and print a brief for an external agent
   tool <name> [<json> | --from <file|->]
                                run one tool of that agent's ingest; tool --list prints every schema,

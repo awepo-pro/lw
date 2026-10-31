@@ -65,9 +65,10 @@ const prepareJoinedLine = "changeset: joined"
 // prepareRecord is what a prepare record says: which agent was briefed, which
 // raws, in the order they were listed, and whether it joined an open changeset.
 type prepareRecord struct {
-	agent   string
-	joined  bool
-	entries []prepareEntry
+	agent       string
+	instruction string
+	joined      bool
+	entries     []prepareEntry
 }
 
 // prepareRecordText renders p as the content of the session's user record:
@@ -83,6 +84,9 @@ type prepareRecord struct {
 func prepareRecordText(p prepareRecord) string {
 	var b strings.Builder
 	b.WriteString(prepareRecordHead + p.agent + ")")
+	if p.instruction != "" {
+		b.WriteString("\ninstruction: " + strconv.Quote(p.instruction))
+	}
 	for _, e := range p.entries {
 		fmt.Fprintf(&b, "\n%s: %s (%d chunk(s))", e.kind, e.path, e.chunks)
 	}
@@ -107,8 +111,19 @@ func parsePrepareRecord(s string) (prepareRecord, bool) {
 		return prepareRecord{}, false
 	}
 	p := prepareRecord{agent: name}
-	for i, line := range lines[1:] {
-		if line == prepareJoinedLine && i == len(lines)-2 {
+	bodyLines := lines[1:]
+	if len(bodyLines) > 0 {
+		if raw, ok := strings.CutPrefix(bodyLines[0], "instruction: "); ok {
+			unquoted, err := strconv.Unquote(raw)
+			if err != nil {
+				return prepareRecord{}, false
+			}
+			p.instruction = unquoted
+			bodyLines = bodyLines[1:]
+		}
+	}
+	for i, line := range bodyLines {
+		if line == prepareJoinedLine && i == len(bodyLines)-1 {
 			p.joined = true // only ever the last line
 			continue
 		}
@@ -199,12 +214,13 @@ type briefTarget struct {
 
 // prepareBrief is everything the brief prints.
 type prepareBrief struct {
-	changeset   string
-	joined      bool
-	agent       string
-	sources     []preparedSource
-	targets     []briefTarget
-	orientation string // the vault.orient tool's Content
+	changeset    string
+	joined       bool
+	agent        string
+	instructions []string
+	sources      []preparedSource
+	targets      []briefTarget
+	orientation  string // the vault.orient tool's Content
 }
 
 // render is the curator brief, deterministic for its inputs: a title and the
@@ -231,6 +247,16 @@ func (b prepareBrief) render() string {
 	}
 	for _, t := range b.targets {
 		fmt.Fprintf(&w, "- recompile: %s\n  chunks: %d\n  title: %s\n  cited by: %s\n", t.path, t.chunks, t.title, t.citedBy)
+	}
+	if len(b.instructions) > 0 {
+		w.WriteString("\n## User instruction\n\n")
+		w.WriteString("The user asked for the following. It steers WHAT to cover and HOW (focus, depth, tags, language, sections to skip). It never overrides the Curator rules below: cite every claim, read every chunk, no filesystem writes, the review gate, page structure and lint.\n")
+		for _, inst := range b.instructions {
+			w.WriteString("\n")
+			for _, line := range strings.Split(inst, "\n") {
+				w.WriteString("> " + line + "\n")
+			}
+		}
 	}
 	w.WriteString("\n## How to work\n\n")
 	writeBriefPart(&w, prepareHowToWork)
@@ -312,6 +338,11 @@ var orientBrief = func(ctx context.Context, reg *tools.Registry) (tools.Result, 
 func briefOf(ctx context.Context, e *stage.Engine, cs *stage.Changeset, prepares []prepareRecord) (string, error) {
 	last := prepares[len(prepares)-1]
 	b := prepareBrief{changeset: cs.ID, joined: last.joined, agent: last.agent}
+	for _, p := range prepares {
+		if p.instruction != "" {
+			b.instructions = append(b.instructions, p.instruction)
+		}
+	}
 	seen := make(map[string]bool)
 	var cites map[string][]string
 	for _, op := range cs.Live() {
@@ -363,12 +394,13 @@ func briefOf(ctx context.Context, e *stage.Engine, cs *stage.Changeset, prepares
 // prepareInput is what cmdIngest hands prepareIngest once it has extracted,
 // deduped and limit-checked the sources.
 type prepareInput struct {
-	e       *stage.Engine
-	agent   string // --agent
-	intent  string // the changeset intent, exactly as lw ingest builds it
-	items   []ingestItem
-	targets []recompileTarget
-	extract extract.Extractor // the pre-extracted chain: scratch path → the Doc already read
+	e           *stage.Engine
+	agent       string // --agent
+	intent      string // the changeset intent, exactly as lw ingest builds it
+	instruction string // user instruction from --instruction or --instruction-file
+	items       []ingestItem
+	targets     []recompileTarget
+	extract     extract.Extractor // the pre-extracted chain: scratch path → the Doc already read
 }
 
 // prepareIngest opens or joins the changeset, stages every kept source through
@@ -449,7 +481,7 @@ func prepareIngest(ctx context.Context, p prepareInput) error {
 	if err != nil {
 		return fail(fmt.Errorf("read back changeset %s: %w", cs.ID, err))
 	}
-	rec := prepareRecord{agent: p.agent, joined: joined}
+	rec := prepareRecord{agent: p.agent, instruction: p.instruction, joined: joined}
 	staged := 0
 	for i := n0; i < len(final.Ops); i++ {
 		op := final.Ops[i]
