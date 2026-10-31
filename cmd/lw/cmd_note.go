@@ -685,8 +685,20 @@ func writeNoteList(w io.Writer, root string, now time.Time, n int) error {
 	if len(rows) > n {
 		rows = rows[:n]
 	}
+	var tags map[string]string
+	if len(rows) > 0 {
+		stems := make([]string, len(rows))
+		for i, r := range rows {
+			stems[i] = r.stem
+		}
+		tags = noteDoneTags(root, stems)
+	}
 	for _, r := range rows {
-		fmt.Fprintln(w, strings.TrimRight(r.stem+"  "+noteAge(now.Sub(r.created))+"  "+r.text, " "))
+		line := strings.TrimRight(r.stem+"  "+noteAge(now.Sub(r.created))+"  "+r.text, " ")
+		if tag := tags[r.stem]; tag != "" {
+			line += "  \u2713 " + tag
+		}
+		fmt.Fprintln(w, line)
 	}
 	return nil
 }
