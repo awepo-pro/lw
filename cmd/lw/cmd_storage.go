@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/awepo-pro/lw/internal/storage"
+	"github.com/awepo-pro/lw/internal/vault"
 )
 
 // cmdStorage dispatches lw storage subcommands (062 S1).
@@ -349,7 +350,7 @@ func cmdStorageShow(args []string) error {
 	if err != nil {
 		return err
 	}
-	relPath := filepath.ToSlash(filepath.Join("storage", filepath.FromSlash(entry.Name)))
+	relPath := filepath.ToSlash(filepath.Join(vault.StorageDir, filepath.FromSlash(entry.Name)))
 
 	fmt.Printf("Name:    %s\n", entry.Name)
 	fmt.Printf("Path:    %s\n", relPath)

@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/awepo-pro/lw/internal/vault"
 )
 
 // EntryState is where one catalog entry stands on this PC (066 D1).
@@ -172,7 +174,7 @@ func (s *Storage) Path(name string) string {
 	if abs, err := filepath.Abs(dir); err == nil {
 		dir = abs
 	}
-	return filepath.Join(dir, "storage", filepath.FromSlash(name))
+	return filepath.Join(dir, vault.StorageDir, filepath.FromSlash(name))
 }
 
 // ValidSHA256 reports whether sha is a sha256 as the catalog writes it: 64
