@@ -28,6 +28,9 @@ type Frontmatter struct {
 // openDelim is the required opening line of every frontmatter block.
 const openDelim = "---\n"
 
+// maxDepth bounds the maximum composite recursion depth when parsing unknown YAML blocks.
+const maxDepth = 100
+
 // ParseFrontmatter parses the YAML frontmatter block that opens b.
 //
 // Contract: b must open with "---\n"; the block ends at the first line that
@@ -128,13 +131,17 @@ func decodeFrontmatter(yamlBytes []byte) (Frontmatter, error) {
 		case "contested":
 			fm.Contested, err = decodeBool(&n)
 		default:
-			target := resolveAlias(&n)
-			if target.Kind == yaml.SequenceNode || target.Kind == yaml.MappingNode {
-				extraYAML[key] = emitNodeYAML(target)
-			} else {
-				extra[key] = target.Value
+			var target *yaml.Node
+			target, err = resolveAlias(&n)
+			if err == nil {
+				if target.Kind == yaml.SequenceNode || target.Kind == yaml.MappingNode {
+					extraYAML[key], err = emitNodeYAML(target)
+				} else {
+					extra[key] = target.Value
+				}
 			}
 		}
+
 		if err != nil {
 			return Frontmatter{}, fmt.Errorf("vault: frontmatter field %q: %w", key, err)
 		}
@@ -149,12 +156,17 @@ func decodeFrontmatter(yamlBytes []byte) (Frontmatter, error) {
 	return fm, nil
 }
 
-// resolveAlias walks any chain of AliasNodes to their target.
-func resolveAlias(n *yaml.Node) *yaml.Node {
+// resolveAlias walks any chain of AliasNodes to their target, detecting alias cycles.
+func resolveAlias(n *yaml.Node) (*yaml.Node, error) {
+	steps := 0
 	for n != nil && n.Kind == yaml.AliasNode && n.Alias != nil {
+		if steps > maxDepth {
+			return nil, fmt.Errorf("alias cycle")
+		}
+		steps++
 		n = n.Alias
 	}
-	return n
+	return n, nil
 }
 
 var plainStrPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_ ./-]*$`)
@@ -185,10 +197,11 @@ func isPlainStr(s string) bool {
 // (with empty !!null emitted as "null");
 // otherwise quote with strconv.Quote.
 func emitScalarYAML(n *yaml.Node) string {
-	n = resolveAlias(n)
+	n, _ = resolveAlias(n)
 	if n == nil {
 		return "null"
 	}
+
 	switch n.Tag {
 	case "!!str":
 		if isPlainStr(n.Value) {
@@ -209,10 +222,11 @@ func emitScalarYAML(n *yaml.Node) string {
 
 // isFlow reports whether n should be emitted on a single flow line.
 func isFlow(n *yaml.Node) bool {
-	n = resolveAlias(n)
+	n, _ = resolveAlias(n)
 	if n == nil {
 		return true
 	}
+
 	if n.Kind == yaml.ScalarNode {
 		return true
 	}
@@ -225,107 +239,188 @@ func isFlow(n *yaml.Node) bool {
 	return false
 }
 
+// nodeEmitter walks a yaml.Node and emits canonical YAML text without calling
+// any YAML marshal library function (Correction C-3 constraint), tracking alias
+// targets on the current recursion path to detect alias cycles and bounding
+// recursion depth at 100 levels.
+type nodeEmitter struct {
+	visited map[*yaml.Node]bool
+	depth   int
+}
+
+func (e *nodeEmitter) enterNode(n *yaml.Node) (*yaml.Node, func(), error) {
+	if e.depth > maxDepth {
+		return nil, nil, fmt.Errorf("too deeply nested")
+	}
+	var err error
+	n, err = resolveAlias(n)
+	if err != nil {
+		return nil, nil, err
+	}
+	if n == nil {
+		return nil, func() {}, nil
+	}
+	if n.Kind == yaml.SequenceNode || n.Kind == yaml.MappingNode {
+		if e.visited[n] {
+			return nil, nil, fmt.Errorf("alias cycle")
+		}
+		e.visited[n] = true
+		e.depth++
+		return n, func() {
+			delete(e.visited, n)
+			e.depth--
+		}, nil
+	}
+	return n, func() {}, nil
+}
+
+func (e *nodeEmitter) emitNode(n *yaml.Node) (string, error) {
+	n, leave, err := e.enterNode(n)
+	if err != nil {
+		return "", err
+	}
+	defer leave()
+
+	if n == nil {
+		return "null", nil
+	}
+	if isFlow(n) {
+		return e.emitFlow(n)
+	}
+	switch n.Kind {
+	case yaml.SequenceNode:
+		return e.emitBlockSequence(n)
+	case yaml.MappingNode:
+		return e.emitBlockMapping(n)
+	default:
+		return emitScalarYAML(n), nil
+	}
+}
+
+func (e *nodeEmitter) emitFlowNode(n *yaml.Node) (string, error) {
+	n, leave, err := e.enterNode(n)
+	if err != nil {
+		return "", err
+	}
+	defer leave()
+
+	if n == nil {
+		return "null", nil
+	}
+	return e.emitFlow(n)
+}
+
+func (e *nodeEmitter) emitFlow(n *yaml.Node) (string, error) {
+	switch n.Kind {
+	case yaml.SequenceNode:
+		return e.emitFlowSequence(n)
+	case yaml.MappingNode:
+		return e.emitFlowMapping(n)
+	default:
+		return emitScalarYAML(n), nil
+	}
+}
+
 // emitFlowSequence emits a sequence in flow style: "[a, b]" or "[]".
-func emitFlowSequence(n *yaml.Node) string {
+func (e *nodeEmitter) emitFlowSequence(n *yaml.Node) (string, error) {
 	if len(n.Content) == 0 {
-		return "[]"
+		return "[]", nil
 	}
 	items := make([]string, len(n.Content))
 	for i, it := range n.Content {
-		items[i] = emitFlowYAML(it)
+		s, err := e.emitFlowNode(it)
+		if err != nil {
+			return "", err
+		}
+		items[i] = s
 	}
-	return "[" + strings.Join(items, ", ") + "]"
+	return "[" + strings.Join(items, ", ") + "]", nil
 }
 
 // emitFlowMapping emits a mapping in flow style: "{k: v, k2: v2}" or "{}".
-func emitFlowMapping(n *yaml.Node) string {
+func (e *nodeEmitter) emitFlowMapping(n *yaml.Node) (string, error) {
 	if len(n.Content) == 0 {
-		return "{}"
+		return "{}", nil
 	}
 	entries := make([]string, 0, len(n.Content)/2)
 	for i := 0; i < len(n.Content); i += 2 {
 		k := emitScalarYAML(n.Content[i])
-		v := emitFlowYAML(n.Content[i+1])
+		v, err := e.emitFlowNode(n.Content[i+1])
+		if err != nil {
+			return "", err
+		}
 		entries = append(entries, k+": "+v)
 	}
-	return "{" + strings.Join(entries, ", ") + "}"
-}
-
-// emitFlowYAML emits n strictly in flow style.
-func emitFlowYAML(n *yaml.Node) string {
-	n = resolveAlias(n)
-	if n == nil {
-		return "null"
-	}
-	switch n.Kind {
-	case yaml.SequenceNode:
-		return emitFlowSequence(n)
-	case yaml.MappingNode:
-		return emitFlowMapping(n)
-	case yaml.ScalarNode:
-		return emitScalarYAML(n)
-	default:
-		return emitScalarYAML(n)
-	}
+	return "{" + strings.Join(entries, ", ") + "}", nil
 }
 
 // emitBlockSequence emits a sequence in block style with "- item" lines.
 // Nested block composites appear on following lines indented by 2 spaces.
-func emitBlockSequence(n *yaml.Node) string {
+func (e *nodeEmitter) emitBlockSequence(n *yaml.Node) (string, error) {
 	var lines []string
 	for _, it := range n.Content {
-		it = resolveAlias(it)
-		if isFlow(it) {
-			lines = append(lines, "- "+emitFlowYAML(it))
+		target, err := resolveAlias(it)
+		if err != nil {
+			return "", err
+		}
+		if isFlow(target) {
+			s, err := e.emitFlowNode(target)
+			if err != nil {
+				return "", err
+			}
+			lines = append(lines, "- "+s)
 		} else {
+			nestedText, err := e.emitNode(target)
+			if err != nil {
+				return "", err
+			}
 			lines = append(lines, "-")
-			nestedText := emitNodeYAML(it)
 			for _, line := range strings.Split(nestedText, "\n") {
 				lines = append(lines, "  "+line)
 			}
 		}
 	}
-	return strings.Join(lines, "\n")
+	return strings.Join(lines, "\n"), nil
 }
 
 // emitBlockMapping emits a mapping in block style with "key: value" lines.
 // Nested block composites appear on following lines indented by 2 spaces.
-func emitBlockMapping(n *yaml.Node) string {
+func (e *nodeEmitter) emitBlockMapping(n *yaml.Node) (string, error) {
 	var lines []string
 	for i := 0; i < len(n.Content); i += 2 {
 		k := emitScalarYAML(n.Content[i])
-		v := resolveAlias(n.Content[i+1])
-		if isFlow(v) {
-			lines = append(lines, k+": "+emitFlowYAML(v))
+		target, err := resolveAlias(n.Content[i+1])
+		if err != nil {
+			return "", err
+		}
+		if isFlow(target) {
+			s, err := e.emitFlowNode(target)
+			if err != nil {
+				return "", err
+			}
+			lines = append(lines, k+": "+s)
 		} else {
+			nestedText, err := e.emitNode(target)
+			if err != nil {
+				return "", err
+			}
 			lines = append(lines, k+":")
-			nestedText := emitNodeYAML(v)
 			for _, line := range strings.Split(nestedText, "\n") {
 				lines = append(lines, "  "+line)
 			}
 		}
 	}
-	return strings.Join(lines, "\n")
+	return strings.Join(lines, "\n"), nil
 }
 
 // emitNodeYAML walks a yaml.Node and emits canonical YAML text without calling
 // any YAML marshal library function (Correction C-3 constraint).
-func emitNodeYAML(n *yaml.Node) string {
-	n = resolveAlias(n)
-	if n == nil {
-		return "null"
+func emitNodeYAML(n *yaml.Node) (string, error) {
+	e := &nodeEmitter{
+		visited: make(map[*yaml.Node]bool),
+		depth:   1,
 	}
-	if isFlow(n) {
-		return emitFlowYAML(n)
-	}
-	switch n.Kind {
-	case yaml.SequenceNode:
-		return emitBlockSequence(n)
-	case yaml.MappingNode:
-		return emitBlockMapping(n)
-	default:
-		return emitScalarYAML(n)
-	}
+	return e.emitNode(n)
 }
 
 // decodeDate decodes n into *d, treating an explicit YAML null the same as
