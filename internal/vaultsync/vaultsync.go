@@ -23,6 +23,8 @@ import (
 	"io"
 	"strings"
 	"time"
+
+	"github.com/awepo-pro/lw/internal/vault"
 )
 
 // Ignore is the managed .gitignore: the per-PC state that never syncs. The
@@ -48,7 +50,7 @@ const Ignore = "# managed by lw sync: per-PC state, never synced\n" +
 	"/.obsidian/workspace.json\n" +
 	"/.obsidian/workspace-mobile.json\n" +
 	"/.obsidian/cache\n" +
-	"/storage/\n" +
+	"/" + vault.StorageDir + "/\n" +
 	"/ledger/receipts/\n" +
 	".DS_Store\n"
 

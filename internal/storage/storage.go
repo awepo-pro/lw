@@ -13,6 +13,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/awepo-pro/lw/internal/vault"
 )
 
 // Manifest represents the catalog of stored files in .llmwiki/storage.json.
@@ -69,7 +71,7 @@ func (s *Storage) CleanName(name string) (string, error) {
 		return "", errors.New("invalid storage path")
 	}
 
-	storageBase := filepath.Clean(filepath.Join(s.vaultDir, "storage"))
+	storageBase := filepath.Clean(filepath.Join(s.vaultDir, vault.StorageDir))
 	targetPath := filepath.Clean(filepath.Join(storageBase, filepath.FromSlash(cleaned)))
 	rel, err := filepath.Rel(storageBase, targetPath)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
@@ -84,7 +86,7 @@ func (s *Storage) manifestPath() string {
 }
 
 func (s *Storage) storageDir() string {
-	return filepath.Join(s.vaultDir, "storage")
+	return filepath.Join(s.vaultDir, vault.StorageDir)
 }
 
 func (s *Storage) loadManifest() (*Manifest, error) {

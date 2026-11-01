@@ -128,12 +128,15 @@ func stageIngestSourceTool(d Deps) Tool {
 		// "untitled" — never empty, so the old "could not derive a stable
 		// source filename" refusal is gone.
 		name := sourceNameForDoc(doc.Title, a.Name, uri)
-		kindDir := rawKindDir(kind)
-		candidate := "raw/" + kindDir + "/" + name + ".md"
 		sourceURL := strings.TrimSpace(doc.SourceURL)
 		if sourceURL == "" {
 			sourceURL = uri
 		}
+		kindDir := rawKindDir(kind)
+		if isVaultNoteSource(d.Vault, sourceURL) {
+			kindDir = vault.NotesDir
+		}
+		candidate := "raw/" + kindDir + "/" + name + ".md"
 		// 033: the original travels with the ingest. Every bit of it comes
 		// from the extractor chain — Doc.Original was set by the PDF
 		// sidecar, and THIS handler is what touches the file — so backbone
@@ -416,6 +419,37 @@ func inVaultRaw(v *vault.Vault, uri string) bool {
 	}
 	rel, err := filepath.Rel(root, local)
 	return err == nil && filepath.IsLocal(rel) && strings.HasPrefix(filepath.ToSlash(rel), "raw/")
+}
+
+// isVaultNoteSource reports whether sourceURL is a local file that lies inside
+// <vault root>/notes/ (vault.NotesDir from internal/vault/roots.go; root level only).
+// A note source always stages under raw/notes/ whatever kind says (074 S3, D-5).
+// Paths are cleaned and made absolute without resolving symlinks.
+func isVaultNoteSource(v *vault.Vault, sourceURL string) bool {
+	if v == nil || v.Root() == "" || strings.TrimSpace(sourceURL) == "" {
+		return false
+	}
+	if u, err := url.Parse(sourceURL); err == nil && (u.Scheme == "http" || u.Scheme == "https") {
+		return false
+	}
+	root, err := filepath.Abs(v.Root())
+	if err != nil {
+		return false
+	}
+	notesDir := filepath.Join(filepath.Clean(root), vault.NotesDir)
+
+	src := sourceURL
+	if !filepath.IsAbs(src) {
+		abs, err := filepath.Abs(src)
+		if err != nil {
+			return false
+		}
+		src = abs
+	}
+	src = filepath.Clean(src)
+
+	rel, err := filepath.Rel(notesDir, src)
+	return err == nil && filepath.IsLocal(rel) && rel != "."
 }
 
 // canonicalPath is p made absolute and, when it exists, with every symlink

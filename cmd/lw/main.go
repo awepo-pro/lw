@@ -46,6 +46,7 @@ var verbs = []verb{
 	{"tui", cmdTUI},
 	{"stage", cmdStage},
 	{"storage", cmdStorage},
+	{"ledger", cmdLedger},
 	{"version", cmdVersion},
 }
 
@@ -206,6 +207,9 @@ commands:
   tui                          launch the terminal UI (default with no command)
   storage [add|list|show|get|rm]
                                manage non-wiki storage files in the vault
+  ledger check                 verify ledger syntax, dates, and duplicate IDs
+  ledger sum [YYYY-MM]         total ledger amounts by currency and category
+  ledger import [--dry-run]    copy Syncthing receipts into storage
   version                      print the build version and exit
 
 flags:
