@@ -48,6 +48,7 @@ var verbs = []verb{
 	{"export", cmdExport},
 	{"related", cmdRelated},
 	{"dupes", cmdDupes},
+	{"cards", cmdCards},
 	{"mcp", cmdMCP},
 	{"doctor", cmdDoctor},
 	{"sync", cmdSync},
@@ -218,6 +219,8 @@ commands:
   related [-n N] [--json] <page>
                                pages most related to <page> (shared links, sources, tags, words)
   dupes [--threshold F] [-n N] list near-duplicate page pairs that may need merging
+  cards [--format anki|md|json] [-o FILE]
+                               export spaced-repetition flashcards from page sections (stable ids)
   mcp [--ask]                  run the MCP server over stdio; --ask serves only the read-only
                                ask tools and sees the open changeset as lw query does
   doctor [--unlock] [--rebuild-index] [--discard-changeset] [--json]
