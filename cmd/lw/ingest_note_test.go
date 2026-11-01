@@ -478,10 +478,12 @@ func TestNote_F4_RevisionLink(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw1, ok := e1.Vault().RawSource("raw/articles/revision-note.md")
+	// A-074-3 (074 S3, D-5): a note from <vault>/notes/ now stages under raw/notes/;
+	// 073 F4's subject, the supersedes link below, is unchanged.
+	raw1, ok := e1.Vault().RawSource("raw/notes/revision-note.md")
 	e1.Close()
 	if !ok {
-		t.Fatal("expected raw/articles/revision-note.md to be committed in vault")
+		t.Fatal("expected raw/notes/revision-note.md to be committed in vault")
 	}
 
 	// Edit note
