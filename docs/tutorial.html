@@ -148,7 +148,7 @@ nav.toc .done .tick { background: var(--ok); border-color: var(--ok); }
   border: 1px solid var(--border); border-radius: 6px; padding: 5px 10px; cursor: pointer;
 }
 
-main { padding: 40px 48px 120px; max-width: 860px; }
+main { padding: 40px 48px 120px; max-width: 860px; min-width: 0; }
 header.hero h1 { font-size: 34px; line-height: 1.2; margin: 0 0 10px; letter-spacing: -0.01em; }
 header.hero p.lede { font-size: 18px; color: var(--muted); margin: 0 0 22px; }
 h2 {
@@ -211,7 +211,7 @@ kbd {
 footer { margin-top: 80px; color: var(--muted); font-size: 14px; border-top: 1px solid var(--border); padding-top: 18px; }
 
 @media (max-width: 860px) {
-  .layout { grid-template-columns: 1fr; }
+  .layout { grid-template-columns: minmax(0, 1fr); }
   nav.toc { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--border); padding: 18px 16px; }
   nav.toc ol { display: none; }
   nav.toc.open ol { display: block; }
@@ -264,7 +264,7 @@ footer { margin-top: 80px; color: var(--muted); font-size: 14px; border-top: 1px
   <p class="lede">You start with sources — an article, a paper, a saved chat — and end with a small, cross-linked markdown wiki where every claim cites where it came from. <code>lw</code> is the compiler in the middle. An agent proposes the pages, and you decide what lands.</p>
   <div class="callout">
     <strong>How to use this page</strong>
-    Each lesson has a goal, the commands, what you should see, and a short check at the end. Open a terminal next to it and type along. Mark a lesson done when you've run it. Your progress is saved in this browser only. The terminal output shown here comes from real runs (see <a href="tutorial.md">tutorial.md</a>). Long output is trimmed, and trims are marked with <code>…</code>.
+    Each lesson has a goal, the commands, what you should see, and a short check at the end. Open a terminal next to it and type along. Mark a lesson done when you've run it. Your progress is saved in this browser only. The terminal output shown here comes from real runs. Long output is trimmed, and trims are marked with <code>…</code>.
   </div>
   <details class="quiz">
     <summary>Which lw is this page for? (v2.62.0, and what changed since v2.35.0)</summary>
