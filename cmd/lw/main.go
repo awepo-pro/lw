@@ -40,6 +40,8 @@ var verbs = []verb{
 	{"revert", cmdRevert},
 	{"query", cmdQuery},
 	{"lint", cmdLint},
+	{"related", cmdRelated},
+	{"dupes", cmdDupes},
 	{"mcp", cmdMCP},
 	{"doctor", cmdDoctor},
 	{"sync", cmdSync},
@@ -195,6 +197,9 @@ commands:
   query --prepare "..."        print a brief for an external agent to answer the question
                                (no LLM, no key); the agent calls lw tool --ask
   lint [--fix]                 run the lint checks
+  related [-n N] [--json] <page>
+                               pages most related to <page> (shared links, sources, tags, words)
+  dupes [--threshold F] [-n N] list near-duplicate page pairs that may need merging
   mcp [--ask]                  run the MCP server over stdio; --ask serves only the read-only
                                ask tools and sees the open changeset as lw query does
   doctor [--unlock] [--rebuild-index] [--discard-changeset] [--json]
