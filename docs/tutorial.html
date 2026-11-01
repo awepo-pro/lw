@@ -4,8 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Learn lw</title>
-<meta name="description" content="A hands-on tutorial for lw v2.54.0: from an empty directory to a reviewed, cited markdown wiki.">
-<meta name="lw-version" content="v2.54.0">
+<meta name="description" content="A hands-on tutorial for lw v2.62.0: from an empty directory to a reviewed, cited markdown wiki.">
+<meta name="lw-version" content="v2.62.0">
 <style>
 :root {
   --bg: #fbfaf7;
@@ -230,7 +230,7 @@ footer { margin-top: 80px; color: var(--muted); font-size: 14px; border-top: 1px
 <nav class="toc" id="toc">
   <div class="brand">Learn <code>lw</code><button class="toggle-toc" id="toggleToc" aria-expanded="false">Lessons</button></div>
   <div class="sub">From an empty directory to a reviewed wiki</div>
-  <div class="ver" title="The lw release this page was checked against">lw v2.54.0</div>
+  <div class="ver" title="The lw release this page was checked against">lw v2.62.0</div>
   <ol id="tocList">
     <li><a href="#model"><span class="tick"></span>0 · The mental model</a></li>
     <li><a href="#install"><span class="tick"></span>1 · Install &amp; connect</a></li>
@@ -259,7 +259,7 @@ footer { margin-top: 80px; color: var(--muted); font-size: 14px; border-top: 1px
 
 <main>
 <header class="hero">
-  <div class="ver">Covers lw v2.54.0 · 2026-10-29</div>
+  <div class="ver">Covers lw v2.62.0 · 2026-11-01</div>
   <h1>Learn <code>lw</code> by doing</h1>
   <p class="lede">You start with sources — an article, a paper, a saved chat — and end with a small, cross-linked markdown wiki where every claim cites where it came from. <code>lw</code> is the compiler in the middle. An agent proposes the pages, and you decide what lands.</p>
   <div class="callout">
@@ -267,10 +267,18 @@ footer { margin-top: 80px; color: var(--muted); font-size: 14px; border-top: 1px
     Each lesson has a goal, the commands, what you should see, and a short check at the end. Open a terminal next to it and type along. Mark a lesson done when you've run it. Your progress is saved in this browser only. The terminal output shown here comes from real runs (see <a href="tutorial.md">tutorial.md</a>). Long output is trimmed, and trims are marked with <code>…</code>.
   </div>
   <details class="quiz">
-    <summary>Which lw is this page for? (v2.54.0, and what changed since v2.35.0)</summary>
-    <p>This page was checked against <strong>lw v2.54.0</strong>. Run <code>lw version</code>. If yours is older, some behaviour below won't match. If it's newer, trust <code>lw --help</code> where they disagree.</p>
+    <summary>Which lw is this page for? (v2.62.0, and what changed since v2.35.0)</summary>
+    <p>This page was checked against <strong>lw v2.62.0</strong>. Run <code>lw version</code>. If yours is older, some behaviour below won't match. If it's newer, trust <code>lw --help</code> where they disagree.</p>
     <p>Changes since the last edition of this page (v2.35.0):</p>
     <ul>
+      <li><strong>v2.62.0</strong>: list and map frontmatter keys that lw does not know (<code>aliases:</code>, <code>cssclasses:</code>, nested maps) now survive a page rewrite. Before, a patch or rename emptied them (<a href="#health">lesson 9</a>).</li>
+      <li><strong>v2.61.0</strong>: <code>lw note list --pending</code> lists only the notes nobody has distilled yet; the ✓ mark no longer vanishes when an unrelated page has a parse error (<a href="#more">lesson 10</a>).</li>
+      <li><strong>v2.60.0</strong>: <code>lw ingest --prepare --instruction "…"</code> (or <code>--instruction-file</code>) hands your own wording to the agent in the brief (<a href="#agent">lesson 11</a>).</li>
+      <li><strong>v2.59.0</strong>: <code>lw note list</code> marks a note that has already been ingested with <code>✓</code> and the raw's name (<a href="#more">lesson 10</a>).</li>
+      <li><strong>v2.58.0</strong>: <code>lw ingest --note &lt;id&gt;</code> ingests a note from <code>notes/</code> by id or unique prefix (<a href="#more">lesson 10</a>, <a href="#agent">lesson 11</a>).</li>
+      <li><strong>v2.57.0</strong>: <code>notes/</code>, <code>storage/</code> and <code>ledger/</code> are non-wiki roots lw never compiles; <code>ledger/receipts/</code> stays out of git; vault format 4; a guide for phone notes (<a href="#more">lesson 10</a>, <a href="#sync">lesson 13</a>).</li>
+      <li><strong>v2.56.0</strong>: re-ingesting an edited source records <code>supersedes:</code> in the new raw, the agent is told which pages to re-point, and the new lint check <code>cite-superseded</code> warns about the rest (<a href="#ingest">lesson 3</a>).</li>
+      <li><strong>v2.55.0</strong>: the first commit stamps <code>.llmwiki/format</code>, so an older lw now refuses a vault written by a newer one (<a href="#sync">lesson 13</a>).</li>
       <li><strong>v2.54.0</strong>: a dropped op records who dropped it and why; Review shows it in the Detail panel (<a href="#tui">lesson 7</a>).</li>
       <li><strong>v2.53.0</strong>: agent-driven ask: <code>lw query --prepare</code>, <code>lw tool --ask</code>, <code>lw mcp --ask</code>, the <code>lw-ask</code> skill, and provider fallback hints (<a href="#ask">lesson 6</a>, <a href="#agent-ask">lesson 12</a>).</li>
       <li><strong>v2.52.0</strong>: asks cite the open changeset (labelled unreviewed) and surface waiting changesets by age (<a href="#ask">lesson 6</a>, <a href="#tui">lesson 7</a>).</li>
@@ -380,7 +388,7 @@ go install github.com/awepo-pro/lw/cmd/lw@latest
 brew install awepo-pro/tap/lw
 nix profile install github:awepo-pro/lw</code></pre>
 <pre><code><span class="p">$ </span>lw version
-lw v2.54.0</code></pre>
+lw v2.62.0</code></pre>
   <p>The version comes from the release tag the binary was built from, so a bug report can name the exact build.</p>
 
   <h3>Point it at a model</h3>
@@ -488,6 +496,25 @@ lw ingest ~/notes/                             <span class="c"># or a folder (.m
 <pre><code>lw ingest --recompile raw/articles/kv-cache-explained.md</code></pre>
   <p>For sources ingested before lw saved originals, backfill the verbatim original without calling a model or staging pages:</p>
 <pre><code>lw ingest --attach ~/Downloads/kv-cache-explained.md</code></pre>
+
+  <h3>Re-ingesting an edited source</h3>
+  <p>Edit an article you already ingested and ingest the same path or URL again. lw saves the new text as a <em>new</em> raw (<code>paged-attention-2.md</code>), never over the old one, and records the link in its frontmatter:</p>
+<pre><code><span class="p">$ </span>head -6 raw/articles/paged-attention-2.md
+---
+source_url: /home/you/Downloads/paged.md
+ingested: 2026-11-01
+sha256: 64b72f9a456b9e39e843de36a118e3a311298abf849bcd14e59464b52d30ffe2
+supersedes: raw/articles/paged-attention.md
+original: raw/articles/paged-attention-2.md.orig</code></pre>
+  <p>The curator is told about it: the brief (lesson 11) or the <code>ingest_source</code> result carries a line like this, naming the pages that cite the old raw:</p>
+<pre><code>- raw: raw/articles/paged-attention-2.md
+  chunks: 1
+  title: Paged attention
+  original source: /home/you/Downloads/paged.md
+  This source revises raw/articles/paged-attention.md. Pages citing the old raw: wiki/concepts/paged-attention.md. Re-read each and stage.patch_page it to cite the new raw (keep every claim; fix sources:).</code></pre>
+  <p>If a page is left pointing at the old raw, <code>lw lint</code> says so (this is the <code>cite-superseded</code> check, a warning, not an error):</p>
+<pre><code>wiki/concepts/paged-attention.md:0: warn: cites raw/articles/paged-attention.md in the body, superseded by raw/articles/paged-attention-2.md; re-point it to the new raw (cite-superseded)</code></pre>
+  <p>The old raw stays committed, so nothing is lost and old citations still resolve. Re-pointing is an ordinary reviewed patch.</p>
 
   <h3>Limits and dry runs</h3>
   <p>A single ingest is capped at <strong>10 files</strong> and <strong>75% of the context budget in bytes</strong> (282 KB at the default <code>context_tokens = 96000</code>). The agent still needs room to read back what it wrote. If you go over the cap, nothing is opened, and the error names the largest file so you know which one to split out. Sources the vault already holds are skipped before anything else happens.</p>
@@ -713,6 +740,7 @@ lw doctor — /home/you/ml-wiki
   </table></div>
   <p><strong>Recovery, honestly:</strong> each file is written atomically, but a commit across many files isn't. If a commit is interrupted, <code>lw doctor</code> shows which files were applied and which are pending, and finishes the commit <em>forward</em> from the object store. You never have to repair it by hand.</p>
   <p><strong>Let the agent fix lint:</strong> <code>lw lint --fix</code> sends findings to the agent one page at a time. The fixes are staged as a changeset for you to review.</p>
+  <p><strong>Your own frontmatter keys survive.</strong> If you add Obsidian properties such as <code>aliases: [kv, kv cache]</code>, a <code>cssclasses:</code> block list or a nested map to a page, lw keeps them byte-for-byte whenever it rewrites that page (a patch, a rename, a merge, a retraction). Comments inside such a value are dropped. Before v2.62.0 these keys were silently emptied (<code>aliases: </code>), so a vault written by an older lw on another PC can still lose them: upgrade every PC.</p>
   <button class="mark-done" data-for="health">Mark lesson done</button>
 </section>
 
@@ -725,8 +753,29 @@ lw doctor — /home/you/ml-wiki
 <pre><code>lw note -m "check whether paged attention changes the KV-cache trade-off"
 lw note -F draft.md     <span class="c"># from a file; -F - reads stdin</span>
 lw note                 <span class="c"># compose in $VISUAL / $EDITOR</span>
-lw note list -n 10</code></pre>
+lw note list -n 10
+lw note list --pending   <span class="c"># only notes not yet distilled into a raw source</span></code></pre>
   <p>Notes go into <code>notes/</code>, outside the wiki. They're never indexed or snapshotted. Think of it as an inbox for thoughts you'll turn into sources later. An editor that returns at once without waiting (like <code>subl</code> or <code>code</code> without <code>-w</code>) is refused naming <code>export EDITOR="... -w"</code>; whatever you save is preserved in <code>.llmwiki/tmp/NOTE_EDITMSG</code> and the next <code>lw note</code> reopens it.</p>
+
+  <p>When you want a note to become wiki pages, ingest it by its id. A unique prefix is enough, and <code>--note</code> can be repeated:</p>
+<pre><code><span class="p">$ </span>lw ingest --prepare --agent claude-code --note 20261101-162911-compare
+<span class="p">$ </span>lw ingest --note 20261101-162911-compare      <span class="c"># or with lw's own curator and a provider key</span></code></pre>
+  <p>The note is extracted like any other source: it becomes a raw under <code>raw/articles/</code> with the note's path as <code>source_url</code>. After you commit, <code>lw note list</code> shows a <code>✓</code> and the raw's name beside it, and <code>--pending</code> leaves it out:</p>
+<pre><code><span class="p">$ </span>lw note list -n 4
+20261101-162911-compare-vllm-and-tgi-scheduling  just now  compare vLLM and TGI scheduling  <span class="ok">✓</span> 20261101-162911-compare-vllm-and-tgi-scheduling
+20261101-162911-check-whether-paged-attention-changes-the  just now  check whether paged attention changes the KV-cache trade-off
+20261013-121933-max-combination  19d ago  # max combination
+20261009-024656-friction-html-original-not-kept  23d ago  friction: html original not kept
+<span class="p">$ </span>lw note list --pending -n 4
+20261101-162911-check-whether-paged-attention-changes-the  just now  check whether paged attention changes the KV-cache trade-off
+20261013-121933-max-combination  19d ago  # max combination
+20261009-024656-friction-html-original-not-kept  23d ago  friction: html original not kept
+20261007-223301-check-whether-paged-attention-changes-the  24d ago  check whether paged attention changes the KV-cache trade-off</code></pre>
+  <p>The mark is <em>derived</em>, never written into the note: lw looks for a committed raw whose <code>source_url</code> points at <code>notes/&lt;id&gt;.md</code>, so it also holds on another PC with a different vault path. Two honest limits: a note you edit after ingesting it still shows <code>✓</code>, and a note whose changeset is staged but not yet committed still counts as pending. Mistakes are named, not guessed:</p>
+<pre><code><span class="p">$ </span>lw ingest --prepare --note 20261101-162911
+lw: ingest: ambiguous note prefix "20261101-162911": 20261101-162911-check-whether-paged-attention-changes-the, 20261101-162911-compare-vllm-and-tgi-scheduling
+<span class="p">$ </span>lw ingest --prepare --note nope
+lw: ingest: no note matching "nope" in notes/ (see lw note list)</code></pre>
 
   <h3>PDFs</h3>
 <pre><code>uv tool install docling==2.130.0     <span class="c"># one-time; ~6 GB, runs CPU-only</span>
@@ -744,6 +793,9 @@ lw config set open.pdf "papers -i {page} {file}"   <span class="c"># or: mupdf {
 lw storage list
 lw storage show weights.bin</code></pre>
   <p>Stored files live in <code>storage/</code> and are cataloged in <code>.llmwiki/storage.json</code>. When you connect a remote with <code>lw sync</code> (via a bare git repo over SSH), files travel content-addressed in <code>&lt;remote&gt;.storage/objects/</code> beside git. Writing verbs automatically pull before starting and push after commit, keeping the vault identical across all your machines (see <a href="#sync">lesson 13</a> and <a href="#files">lesson 14</a>).</p>
+
+  <h3>Phone notes and a ledger</h3>
+  <p><code>notes/</code>, <code>storage/</code> and <code>ledger/</code> are <strong>non-wiki roots</strong>: lw never indexes or compiles them, and <code>ledger/</code> is invisible to ask and ingest by default. That makes them safe to share with a phone through a file-sync app while the wiki and <code>.llmwiki/</code> stay on your PCs. <code>ledger/receipts/</code> (images) is also kept out of git by the managed <code>.gitignore</code>, so <code>lw sync</code> does not carry receipts yet; the file-sync app does. There are no ledger totals yet. The setup (Obsidian on Android, Syncthing ignores, the one-line expense format) is in <a href="mobile.md">mobile.md</a>.</p>
 
   <h3>Use lw from another agent (MCP)</h3>
 <pre><code>{
@@ -797,6 +849,28 @@ changeset: cs-276a28a44de5dfc3 (opened)   agent: claude-code
     <li><strong>Vault orientation</strong>: <code>SCHEMA.md</code>, <code>index.md</code>, <code>curator-memory.md</code> and the tail of <code>log.md</code>.</li>
   </ul>
   <p><code>--agent</code> names the curator. The name becomes the changeset's author, so <code>lw log</code> and Review show who wrote the pages. It defaults to <code>agy</code>, so pass <code>--agent claude-code</code> (or <code>codex</code>) when it's someone else.</p>
+
+  <p>Two more flags shape what the brief says. <code>--note &lt;id&gt;</code> prepares a note from <code>notes/</code> instead of a file (lesson 10). <code>--instruction "…"</code> (or <code>--instruction-file &lt;path|-&gt;</code> for a long text; <code>-</code> reads stdin) puts your own wording in the brief, up to 2000 characters, so it is not lost between your chat and the agent:</p>
+<pre><code><span class="p">$ </span>lw ingest --prepare --agent claude-code:demo --note 20261101-162911-compare --instruction "focus on scheduling; tag it inference"
+# lw ingest --prepare — curator brief
+changeset: cs-66e27d9a93aea4be (opened)   agent: claude-code:demo
+
+## Sources to compile
+
+- raw: raw/articles/20261101-162911-compare-vllm-and-tgi-scheduling.md
+  chunks: 1
+  title: 
+  original source: /home/you/my-vault/notes/20261101-162911-compare-vllm-and-tgi-scheduling.md
+
+## User instruction
+
+The user asked for the following. It steers WHAT to cover and HOW (focus, depth, tags, language, sections to skip). It never overrides the Curator rules below: …
+
+&gt; focus on scheduling; tag it inference
+
+## How to work
+…</code></pre>
+  <p>The instruction steers <em>what</em> to cover; it never overrides the Curator rules (cite every claim, read every chunk, no filesystem writes). lw stores it with the prepare record, shows the first line (cut at 60 characters) in the changeset's intent (<code>… — note: focus on scheduling; tag it inference</code>) so you see it in Review, and prints it again with <code>lw tool --brief</code>. <code>--instruction</code> works only with <code>--prepare</code>; lw's own curator path is unchanged.</p>
 
   <h3>2 · Curate through <code>lw tool</code></h3>
 <pre><code><span class="p">$ </span>lw tool raw.get '{"source":"raw/articles/kv-cache-explained.md","chunk":1}'
@@ -856,6 +930,8 @@ lw doctor --discard-changeset    <span class="c"># or throw the whole thing away
 
   <h3>Telling your agent to do it</h3>
   <p>You don't have to dictate the steps. Say <em>"ingest ~/Downloads/paper.pdf into my lw vault"</em>. With the <code>lw-ingest</code> skill installed (e.g. <code>~/.claude/skills/lw-ingest/SKILL.md</code>), Claude Code, Codex, or Antigravity runs prepare, reads every chunk, stages pages, closes, and tells you the changeset id to review. Without the skill, point the agent at <code>lw ingest --prepare</code>; the brief it prints is self-contained. If the agent's context gets compacted mid-ingest, <code>lw tool --brief</code> prints the brief again.</p>
+
+  <p>The same skill passes extra wording you give it ("only chapter 3, tag it cuda") to <code>--instruction</code>, and for "ingest my waiting notes" it runs <code>lw note list --pending</code> and then <code>--note &lt;id&gt;</code> for each one. Update the skill file when you update lw (<code>--note</code> needs v2.58.0, <code>--instruction</code> v2.60.0, <code>--pending</code> v2.61.0).</p>
 
   <h3>Answering questions with your agent</h3>
   <p>The same pattern works for asking questions without a provider key or when rate-limited:</p>
@@ -957,7 +1033,7 @@ config: [sync] remotes = ["/tmp/lw-remote.git"]</code></pre>
 remote   /tmp/lw-remote.git
 ahead    0
 behind   0
-format   1 (this lw: 3)
+format   4 (this lw: 4)
 last     2026-10-28T10:02:15Z
 <span class="p">$ </span>lw sync
 up to date with /tmp/lw-remote.git</code></pre>
@@ -975,7 +1051,10 @@ cloned /tmp/lw-remote.git into /home/you/vault-clone</code></pre>
   </ul>
 
   <h3>Keep every PC on the same lw, and conflicts</h3>
-  <p>lw reads an optional <code>.llmwiki/format</code> file and refuses a vault whose recorded version is newer than the lw you run, with an <em>"upgrade lw"</em> message. Current lw releases do not write that file themselves, so this guard does not protect you automatically: after you upgrade lw on one PC, upgrade it on your other PCs before you sync, or an older lw may ignore fields a newer one wrote.</p>
+  <p>Since v2.55.0 the first <code>lw commit</code> in a vault stamps <code>.llmwiki/format</code>, and every lw checks it. A vault written by a newer lw is refused by an older one with an <em>upgrade lw</em> message, before anything is read or written:</p>
+<pre><code><span class="p">$ </span>lw lint
+lw: lint: vault format 99 is newer than this lw supports (4): upgrade lw   <span class="c"># exit 1</span></code></pre>
+  <p>So after you upgrade lw on one PC, upgrade it on your other PCs before you sync. The current format is 4 (since v2.57.0). An lw older than v2.57.0 does not know format 4, so it refuses such a vault; upgrade it before you sync from it. A vault that was never committed to since v2.55.0 has no stamp yet, so the gate cannot protect it; commit once.</p>
   <p>If two machines commit diverging changes, lw attempts a clean fast-forward rebase. If an irreconcilable conflict occurs, <code>lw sync --take-remote</code> accepts the remote version as authoritative and preserves your local branch for reference.</p>
 
   <details class="quiz"><summary>Check: you ran `lw commit` on your desktop. Do you need to run `lw sync` before shutting down?</summary>
@@ -1043,6 +1122,10 @@ Note:    baseline model weights</code></pre>
     <tr><td>Agent refuses to write a page</td><td>It won't write a claim it can't cite. Ingest a source first. Pages also need at least two outbound <code>[[wikilinks]]</code>.</td></tr>
     <tr><td><code>lw: tool: no open changeset — start with lw ingest --prepare &lt;source&gt;</code></td><td><code>lw tool</code> works only inside a prepared ingest. Run <code>lw ingest --prepare</code> first (lesson 11). For questions, use <code>lw tool --ask</code> (lesson 12).</td></tr>
     <tr><td><code>lw tool</code> exits 1</td><td>Not a crash: the tool refused the call, and stdout says why (a wrong key such as <code>query</code> instead of <code>q</code>, unread chunks, a missing <code>## Abstract</code>). Fix the arguments and call again.</td></tr>
+    <tr><td><code>vault format N is newer than this lw supports (M): upgrade lw</code></td><td>Another PC with a newer lw wrote this vault. Upgrade lw here (reinstall as in lesson 1, then check <code>lw version</code> and which <code>lw</code> your shell finds first). lw refuses rather than guess.</td></tr>
+    <tr><td><code>ambiguous note prefix …</code> / <code>no note matching …</code></td><td><code>--note</code> needs an id or a prefix that matches exactly one file in <code>notes/</code>. Run <code>lw note list</code>, copy more of the id.</td></tr>
+    <tr><td><code>cite-superseded</code> warning</td><td>A page still cites an older raw after you re-ingested an edited source. Re-point it with a reviewed patch (lesson 3), or ignore it if the old wording is what the page should keep.</td></tr>
+    <tr><td><code>aliases:</code> or another list key came back empty on a page</td><td>A rewrite by lw v2.61.0 or older flattened it. Upgrade lw on every PC, retype the key (or, if the vault is under <code>lw sync</code>, take it from the vault's git history) and commit.</td></tr>
     <tr><td><code>warning: lint regresses</code> after ingest</td><td>The changeset is still open. Review it with <code>lw diff</code>, drop the bad hunks, or commit with <code>--force</code> (which is recorded in the journal).</td></tr>
   </table></div>
   <button class="mark-done" data-for="trouble">Mark lesson done</button>
@@ -1058,16 +1141,17 @@ Note:    baseline model weights</code></pre>
     <tr><td><code>lw ingest &lt;path|url|dir&gt;… [--dry-run]</code></td><td>Propose pages from sources</td><td>yes (dry-run: no)</td></tr>
     <tr><td><code>lw ingest --recompile &lt;path|file|dir&gt;</code></td><td>Compile pages from committed raw</td><td>yes</td></tr>
     <tr><td><code>lw ingest --attach &lt;file&gt;</code></td><td>Backfill original file for committed raw</td><td>no</td></tr>
-    <tr><td><code>lw ingest --prepare [--agent name] &lt;…&gt;</code></td><td>Stage sources + print brief for own agent</td><td>no</td></tr>
+    <tr><td><code>lw ingest --note &lt;id&gt;…</code></td><td>Ingest notes from <code>notes/</code> by id or unique prefix</td><td>yes (with <code>--prepare</code>: no)</td></tr>
+    <tr><td><code>lw ingest --prepare [--agent name] [--instruction "…" | --instruction-file f] &lt;…&gt;</code></td><td>Stage sources + print brief for own agent; your wording goes in the brief</td><td>no</td></tr>
     <tr><td><code>lw tool &lt;name&gt; ['&lt;json&gt;' | --from -]</code></td><td>One tool call in prepared ingest; <code>--list</code> schemas, <code>--brief</code></td><td>no</td></tr>
     <tr><td><code>lw tool --ask &lt;name&gt; ['&lt;json&gt;']</code></td><td>One read-only tool call for agent ask; <code>--list</code> schemas</td><td>no</td></tr>
-    <tr><td><code>lw note [-m "…" | -F &lt;file|-&gt;] | note list</code></td><td>Quick capture outside the wiki</td><td>no</td></tr>
+    <tr><td><code>lw note [-m "…" | -F &lt;file|-&gt;] | note list [-n N] [--pending]</code></td><td>Quick capture outside the wiki; <code>✓</code> marks ingested notes</td><td>no</td></tr>
     <tr><td><code>lw status</code></td><td>Committed counts + open changeset</td><td>no</td></tr>
     <tr><td><code>lw diff [--stat] [--op id]</code></td><td>Projected diff</td><td>no</td></tr>
     <tr><td><code>lw commit -m "…" [--force]</code></td><td>Land the changeset</td><td>no</td></tr>
     <tr><td><code>lw query "…"</code></td><td>Cited, read-only answer</td><td>yes</td></tr>
     <tr><td><code>lw query --prepare "…"</code></td><td>Print brief for external agent ask (keyless)</td><td>no</td></tr>
-    <tr><td><code>lw lint [--fix] [--json]</code></td><td>18 checks; <code>--fix</code> stages repairs</td><td>fix only</td></tr>
+    <tr><td><code>lw lint [--fix] [--json]</code></td><td>19 checks; <code>--fix</code> stages repairs</td><td>fix only</td></tr>
     <tr><td><code>lw log [--rejected] [--agent] [--page p]</code></td><td>Journal</td><td>no</td></tr>
     <tr><td><code>lw revert &lt;commit&gt;</code></td><td>Open an inverse changeset</td><td>no</td></tr>
     <tr><td><code>lw session list | show [id]</code></td><td>Agent transcripts</td><td>no</td></tr>
@@ -1081,7 +1165,7 @@ Note:    baseline model weights</code></pre>
   <p><strong>Where to go next:</strong> <a href="tutorial.md">tutorial.md</a> (the long-form version of this page) · <a href="vault-schema.md">vault-schema.md</a> · <a href="changesets.md">changesets.md</a> · <a href="tools.md">tools.md</a> · <a href="hotkeys.md">hotkeys.md</a> · <a href="design.md">design.md</a></p>
 </section>
 
-<footer>Covers <strong>lw v2.54.0</strong> (tagged 2026-10-29) and matches its <code>lw --help</code>. If a command here doesn't match your build, trust <code>lw --help</code>.</footer>
+<footer>Covers <strong>lw v2.62.0</strong> (tagged 2026-11-01). It matches <code>lw --help</code> and each command's own <code>-h</code> (for example <code>lw note list -h</code>). If a command here doesn't match your build, trust <code>lw --help</code>.</footer>
 </main>
 </div>
 
