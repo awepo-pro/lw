@@ -19,19 +19,20 @@ func cmdRelated(args []string) error {
 	vaultPath := fs.String("vault", "", "vault root (default: nearest ancestor directory containing SCHEMA.md)")
 	nFlag := fs.Int("n", 10, "maximum number of results")
 	jsonFlag := fs.Bool("json", false, "emit results as JSON")
-	if err := fs.Parse(args); err != nil {
+	positionals, err := parseInterspersed(fs, args)
+	if err != nil {
 		return &exitError{code: 2}
 	}
 	if *nFlag < 1 {
 		fmt.Fprintf(os.Stderr, "lw related: -n must be >= 1\n")
 		return &exitError{code: 2}
 	}
-	if fs.NArg() == 0 {
+	if len(positionals) == 0 {
 		fmt.Fprintf(os.Stderr, "lw related: missing page argument\n")
 		return &exitError{code: 2}
 	}
-	if fs.NArg() > 1 {
-		fmt.Fprintf(os.Stderr, "lw related: unexpected argument %q\n", fs.Arg(1))
+	if len(positionals) > 1 {
+		fmt.Fprintf(os.Stderr, "lw related: unexpected argument %q\n", positionals[1])
 		return &exitError{code: 2}
 	}
 
@@ -46,27 +47,24 @@ func cmdRelated(args []string) error {
 		return fmt.Errorf("open vault %s: %w", root, err)
 	}
 
-	target := fs.Arg(0)
-	targetPath, ok := vault.Resolve(v, target)
-	var targetPage *vault.Page
-	if ok {
-		targetPage, ok = v.Page(targetPath)
-	}
-	if !ok {
-		for _, p := range v.Pages() {
-			if strings.EqualFold(p.FM.Title, target) {
-				targetPage = p
-				targetPath = p.Path
-				ok = true
-				break
-			}
+	target := positionals[0]
+	targetPage, ambiguous := resolvePageArg(v, target)
+	if len(ambiguous) > 1 {
+		fmt.Fprintf(os.Stderr, "lw related: %q is ambiguous\n", target)
+		limit := len(ambiguous)
+		if limit > 5 {
+			limit = 5
 		}
+		for i := 0; i < limit; i++ {
+			fmt.Fprintf(os.Stderr, "  %s  (%s)\n", ambiguous[i].Path, ambiguous[i].FM.Title)
+		}
+		return &exitError{code: 1}
 	}
-
-	if !ok || targetPage == nil {
+	if targetPage == nil {
 		fmt.Fprintf(os.Stderr, "lw related: no page %q\n", target)
 		return &exitError{code: 1}
 	}
+	targetPath := targetPage.Path
 
 	corp := similar.NewCorpus(v)
 	matches := corp.Related(targetPath, *nFlag)
@@ -122,8 +120,10 @@ func cmdDupes(args []string) error {
 	vaultPath := fs.String("vault", "", "vault root (default: nearest ancestor directory containing SCHEMA.md)")
 	thresholdFlag := fs.Float64("threshold", 0.45, "similarity threshold in (0, 1]")
 	nFlag := fs.Int("n", 20, "maximum number of results")
+	includeLinked := fs.Bool("include-linked", false, "include pairs that already link each other")
 	jsonFlag := fs.Bool("json", false, "emit results as JSON")
-	if err := fs.Parse(args); err != nil {
+	positionals, err := parseInterspersed(fs, args)
+	if err != nil {
 		return &exitError{code: 2}
 	}
 	if *thresholdFlag <= 0 || *thresholdFlag > 1 {
@@ -134,8 +134,8 @@ func cmdDupes(args []string) error {
 		fmt.Fprintf(os.Stderr, "lw dupes: -n must be >= 1\n")
 		return &exitError{code: 2}
 	}
-	if fs.NArg() > 0 {
-		fmt.Fprintf(os.Stderr, "lw dupes: unexpected argument %q\n", fs.Arg(0))
+	if len(positionals) > 0 {
+		fmt.Fprintf(os.Stderr, "lw dupes: unexpected argument %q\n", positionals[0])
 		return &exitError{code: 2}
 	}
 
@@ -151,7 +151,7 @@ func cmdDupes(args []string) error {
 	}
 
 	corp := similar.NewCorpus(v)
-	pairs := corp.Dupes(*thresholdFlag, *nFlag)
+	pairs := corp.Dupes(*thresholdFlag, *nFlag, similar.DupeOptions{IncludeLinked: *includeLinked})
 
 	if *jsonFlag {
 		b, err := json.MarshalIndent(pairs, "", "  ")

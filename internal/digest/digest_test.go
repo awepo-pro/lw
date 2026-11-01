@@ -484,3 +484,155 @@ func TestDigest_D8_DeterministicOutput(t *testing.T) {
 		}
 	}
 }
+
+func TestDigest_LocalTimeHKT(t *testing.T) {
+	dir := t.TempDir()
+	schema := `---
+version: 1
+---
+# Schema
+## Types
+- concept
+## Tags
+- test
+`
+	if err := os.WriteFile(filepath.Join(dir, "SCHEMA.md"), []byte(schema), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "wiki", "concepts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, ".llmwiki"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	page := `---
+title: Midnight Concept
+created: 2026-11-02
+updated: 2026-11-02
+type: concept
+tags: [test]
+sources: []
+confidence: high
+---
+
+# Midnight Concept
+
+Concept content committed at local 01:00.
+`
+	if err := os.WriteFile(filepath.Join(dir, "wiki", "concepts", "midnight.md"), []byte(page), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Commit made at 17:00:00 UTC on 2026-11-01 (which is 01:00:00 HKT on 2026-11-02)
+	journalLines := []string{
+		`{"ts":"2026-11-01T17:00:00Z","kind":"commit_begin","changeset":"cs-hkt","commit":"c001","paths":["wiki/concepts/midnight.md"],"actor":{"kind":"human"},"message":"late night commit"}`,
+		`{"ts":"2026-11-01T17:00:00Z","kind":"commit_end","changeset":"cs-hkt","commit":"c001"}`,
+	}
+	jpath := filepath.Join(dir, ".llmwiki", "journal.ndjson")
+	if err := os.WriteFile(jpath, []byte(strings.Join(journalLines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	v, err := vault.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	loc := time.FixedZone("HKT", 8*3600)
+	now := time.Date(2026, 11, 2, 2, 0, 0, 0, loc) // 02:00 HKT on 2026-11-02
+
+	// Digest run with --since 1d in HKT:
+	sinceHKT, untilHKT, err := ParseWindow(now, "1d", "", loc)
+	if err != nil {
+		t.Fatalf("ParseWindow HKT failed: %v", err)
+	}
+
+	dHKT, err := Build(v, jpath, Options{Since: sinceHKT, Until: untilHKT, Loc: loc})
+	if err != nil {
+		t.Fatalf("Build HKT failed: %v", err)
+	}
+
+	if len(dHKT.Commits) != 1 {
+		t.Fatalf("got %d commits in HKT, want 1", len(dHKT.Commits))
+	}
+	if dHKT.Commits[0].ID != "c001" {
+		t.Errorf("commit ID = %q, want c001", dHKT.Commits[0].ID)
+	}
+
+	var buf bytes.Buffer
+	if err := WriteMarkdown(&buf, dHKT); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	// Header must end in 2026-11-02 (today in HKT)
+	if !strings.Contains(out, "# Wiki digest 2026-11-01 .. 2026-11-02") {
+		t.Errorf("header date mismatch in HKT: %s", out)
+	}
+	// Commit date in HKT is 2026-11-02
+	if !strings.Contains(out, "- 2026-11-02 c001") {
+		t.Errorf("expected commit date 2026-11-02 in HKT, got: %s", out)
+	}
+
+	// Verify that in UTC, at the same absolute instant (now.UTC() is 2026-11-01 18:00:00 UTC),
+	// running --since 1d produces a window where today is 2026-11-01 and the commit falls on 2026-11-01 (the previous day, not 2026-11-02).
+	sinceUTC, untilUTC, err := ParseWindow(now.UTC(), "1d", "", time.UTC)
+	if err != nil {
+		t.Fatalf("ParseWindow UTC failed: %v", err)
+	}
+	dUTC, err := Build(v, jpath, Options{Since: sinceUTC, Until: untilUTC, Loc: time.UTC})
+	if err != nil {
+		t.Fatalf("Build UTC failed: %v", err)
+	}
+	var bufUTC bytes.Buffer
+	if err := WriteMarkdown(&bufUTC, dUTC); err != nil {
+		t.Fatal(err)
+	}
+	outUTC := bufUTC.String()
+	if !strings.Contains(outUTC, "# Wiki digest 2026-10-31 .. 2026-11-01") {
+		t.Errorf("header date in UTC expected ending in 2026-11-01, got: %s", outUTC)
+	}
+	if !strings.Contains(outUTC, "- 2026-11-01 c001") {
+		t.Errorf("expected commit date in UTC to be 2026-11-01, got: %s", outUTC)
+	}
+}
+
+func TestDigest_RawEmptyTitle(t *testing.T) {
+	d := &Digest{
+		Since: time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC),
+		Until: time.Date(2026, 11, 3, 0, 0, 0, 0, time.UTC),
+		Loc:   time.UTC,
+		Commits: []Commit{
+			{ID: "c1", TS: time.Date(2026, 11, 2, 10, 0, 0, 0, time.UTC), Actor: "human", Message: "add raw"},
+		},
+		Raws: []RawInfo{
+			{Path: "raw/papers/empty-title.md", Title: ""},
+			{Path: "raw/articles/same-title.md", Title: "raw/articles/same-title.md"},
+			{Path: "raw/articles/has-title.md", Title: "Valid Title"},
+		},
+	}
+
+	var buf bytes.Buffer
+	if err := WriteMarkdown(&buf, d); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+
+	// Empty title must print "- `raw/papers/empty-title.md`" without duplicate path in parentheses
+	if !strings.Contains(out, "- `raw/papers/empty-title.md`\n") {
+		t.Errorf("expected clean empty title output, got:\n%s", out)
+	}
+	if strings.Contains(out, "(`raw/papers/empty-title.md`)") {
+		t.Errorf("found duplicate path for empty title in:\n%s", out)
+	}
+
+	// Title equal to path must also print only "- `raw/articles/same-title.md`"
+	if !strings.Contains(out, "- `raw/articles/same-title.md`\n") {
+		t.Errorf("expected clean same title output, got:\n%s", out)
+	}
+
+	// Valid title must retain title and path
+	if !strings.Contains(out, "- Valid Title (`raw/articles/has-title.md`)") {
+		t.Errorf("expected valid title with path in parentheses, got:\n%s", out)
+	}
+}

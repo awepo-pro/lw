@@ -24,11 +24,12 @@ func cmdStats(args []string) error {
 	vaultPath := fs.String("vault", "", "vault root (default: nearest ancestor directory containing SCHEMA.md)")
 	jsonOut := fs.Bool("json", false, "emit the report as indented JSON")
 	staleDays := fs.Int("stale-days", 90, "threshold in days for considering a page stale")
-	if err := fs.Parse(args); err != nil {
+	positionals, err := parseInterspersed(fs, args)
+	if err != nil {
 		return &exitError{code: 2}
 	}
-	if fs.NArg() > 0 {
-		fmt.Fprintf(os.Stderr, "lw stats: unexpected argument %q\n", fs.Arg(0))
+	if len(positionals) > 0 {
+		fmt.Fprintf(os.Stderr, "lw stats: unexpected argument %q\n", positionals[0])
 		return &exitError{code: 2}
 	}
 	if *staleDays < 1 {

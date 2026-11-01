@@ -1,77 +1,11 @@
 package main
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/awepo-pro/lw/internal/testutil"
 )
-
-type fileMeta struct {
-	size    int64
-	modTime time.Time
-}
-
-func snapshotVault(t *testing.T, root string) map[string]fileMeta {
-	t.Helper()
-	out := make(map[string]fileMeta)
-	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
-		relSlash := filepath.ToSlash(rel)
-		if relSlash == ".llmwiki/logs" || strings.HasPrefix(relSlash, ".llmwiki/logs/") {
-			if info.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if info.IsDir() {
-			return nil
-		}
-		out[relSlash] = fileMeta{
-			size:    info.Size(),
-			modTime: info.ModTime(),
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("snapshotVault: %v", err)
-	}
-	return out
-}
-
-func assertVaultUnchanged(t *testing.T, before, after map[string]fileMeta) {
-	t.Helper()
-	if len(before) != len(after) {
-		t.Errorf("vault file count changed: before %d, after %d", len(before), len(after))
-	}
-	for p, metaBefore := range before {
-		metaAfter, ok := after[p]
-		if !ok {
-			t.Errorf("file deleted: %s", p)
-			continue
-		}
-		if metaBefore.size != metaAfter.size {
-			t.Errorf("file %s size changed: %d -> %d", p, metaBefore.size, metaAfter.size)
-		}
-		if !metaBefore.modTime.Equal(metaAfter.modTime) {
-			t.Errorf("file %s mtime changed: %v -> %v", p, metaBefore.modTime, metaAfter.modTime)
-		}
-	}
-	for p := range after {
-		if _, ok := before[p]; !ok {
-			t.Errorf("file added: %s", p)
-		}
-	}
-}
 
 // TestGraphExitCodes verifies exit 2 on bad format and depth, and exit 1 on unknown focus.
 func TestGraphExitCodes(t *testing.T) {
@@ -151,6 +85,5 @@ func TestGraphVaultUnchanged(t *testing.T) {
 		}
 	}
 
-	after := snapshotVault(t, root)
-	assertVaultUnchanged(t, before, after)
+	assertVaultUnchanged(t, root, before)
 }

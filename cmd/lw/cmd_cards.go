@@ -40,11 +40,12 @@ func cmdCards(args []string) error {
 	fs.Var(&tagFlags, "tag", "filter pages by tag (repeatable, AND filter)")
 	outFile := fs.String("o", "", "output file path (default: stdout)")
 
-	if err := fs.Parse(args); err != nil {
+	positionals, err := parseInterspersed(fs, args)
+	if err != nil {
 		return &exitError{code: 2}
 	}
-	if fs.NArg() > 0 {
-		fmt.Fprintf(os.Stderr, "lw cards: unexpected argument %q\n", fs.Arg(0))
+	if len(positionals) > 0 {
+		fmt.Fprintf(os.Stderr, "lw cards: unexpected argument %q\n", positionals[0])
 		return &exitError{code: 2}
 	}
 

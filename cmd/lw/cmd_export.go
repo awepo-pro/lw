@@ -13,33 +13,33 @@ import (
 //
 // Usage: lw export html [--vault V] [--force] [--title T] <outdir>
 func cmdExport(args []string) error {
-	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: lw export html [--vault V] [--force] [--title T] <outdir>")
-		return &exitError{code: 2}
-	}
-	if args[0] != "html" {
-		fmt.Fprintf(os.Stderr, "lw: export: unknown format %q (supported: html)\n", args[0])
-		return &exitError{code: 2}
-	}
-
-	fs := flag.NewFlagSet("export html", flag.ContinueOnError)
+	fs := flag.NewFlagSet("export", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	vaultPath := fs.String("vault", "", "vault root (default: nearest ancestor directory containing SCHEMA.md)")
 	force := fs.Bool("force", false, "overwrite existing non-empty output directory")
 	title := fs.String("title", "", "site title (default \"lw wiki\")")
 
-	if err := fs.Parse(args[1:]); err != nil {
+	positionals, err := parseInterspersed(fs, args)
+	if err != nil {
 		return &exitError{code: 2}
 	}
-	if fs.NArg() == 0 {
+	if len(positionals) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: lw export html [--vault V] [--force] [--title T] <outdir>")
+		return &exitError{code: 2}
+	}
+	if positionals[0] != "html" {
+		fmt.Fprintf(os.Stderr, "lw: export: unknown format %q (supported: html)\n", positionals[0])
+		return &exitError{code: 2}
+	}
+	if len(positionals) < 2 {
 		fmt.Fprintln(os.Stderr, "lw export html: missing output directory")
 		return &exitError{code: 2}
 	}
-	if fs.NArg() > 1 {
-		fmt.Fprintf(os.Stderr, "lw export html: unexpected argument %q\n", fs.Arg(1))
+	if len(positionals) > 2 {
+		fmt.Fprintf(os.Stderr, "lw export html: unexpected argument %q\n", positionals[2])
 		return &exitError{code: 2}
 	}
-	outDir := fs.Arg(0)
+	outDir := positionals[1]
 
 	root, err := findVaultRoot(*vaultPath)
 	if err != nil {

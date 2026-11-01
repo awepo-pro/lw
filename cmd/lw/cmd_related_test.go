@@ -2,12 +2,10 @@ package main
 
 import (
 	"encoding/json"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/awepo-pro/lw/internal/similar"
 )
@@ -73,44 +71,6 @@ The key value cache stores attention projections from earlier decoding steps.
 	}
 
 	return dir
-}
-
-type relatedFileSnap struct {
-	size  int64
-	mtime time.Time
-}
-
-func takeRelatedVaultSnapshot(t *testing.T, root string) map[string]relatedFileSnap {
-	t.Helper()
-	snap := make(map[string]relatedFileSnap)
-	err := filepath.Walk(root, func(p string, info fs.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(root, p)
-		if err != nil {
-			return err
-		}
-		// Ignore .llmwiki/logs directory
-		relSlash := filepath.ToSlash(rel)
-		if relSlash == ".llmwiki/logs" || strings.HasPrefix(relSlash, ".llmwiki/logs/") {
-			if info.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !info.IsDir() {
-			snap[relSlash] = relatedFileSnap{
-				size:  info.Size(),
-				mtime: info.ModTime(),
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("take snapshot: %v", err)
-	}
-	return snap
 }
 
 // TestRelatedUnknownPage tests that querying an unknown page exits 1 with a message on stderr.
@@ -238,10 +198,55 @@ func TestDupesTextAndJSON(t *testing.T) {
 	}
 }
 
+// TestDupesIncludeLinked tests that --include-linked reveals pairs that already link each other.
+func TestDupesIncludeLinked(t *testing.T) {
+	root := setupTestVault(t)
+
+	// Add a linked page that shares high similarity with kv-cache
+	linkedPath := filepath.Join(root, "wiki", "concepts", "paged-cache.md")
+	linkedContent := `---
+title: KV Cache System
+created: 2026-08-22
+updated: 2026-08-29
+type: concept
+---
+# KV Cache System
+The key value cache stores attention projections from earlier decoding steps for [[kv-cache]].
+`
+	if err := os.WriteFile(linkedPath, []byte(linkedContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Default: should not contain the linked pair (paged-cache <-> kv-cache)
+	stdoutDefault, _, code := captureRun(t, func() int {
+		return run([]string{"dupes", "--vault", root, "--threshold", "0.45"})
+	})
+	if code != 0 {
+		t.Fatalf("dupes default exit %d", code)
+	}
+	if strings.Contains(stdoutDefault, "kv-cache.md  <->  wiki/concepts/paged-cache.md") ||
+		strings.Contains(stdoutDefault, "paged-cache.md  <->  wiki/concepts/kv-cache.md") {
+		t.Errorf("default dupes should not show linked pair:\n%s", stdoutDefault)
+	}
+
+	// With --include-linked: should contain the linked pair with [already linked]
+	stdoutLinked, _, code := captureRun(t, func() int {
+		return run([]string{"dupes", "--vault", root, "--threshold", "0.45", "--include-linked"})
+	})
+	if code != 0 {
+		t.Fatalf("dupes --include-linked exit %d", code)
+	}
+	hasLinkedPair := strings.Contains(stdoutLinked, "kv-cache.md  <->  wiki/concepts/paged-cache.md") ||
+		strings.Contains(stdoutLinked, "paged-cache.md  <->  wiki/concepts/kv-cache.md")
+	if !hasLinkedPair || !strings.Contains(stdoutLinked, "[already linked]") {
+		t.Errorf("expected linked pair and '[already linked]' with --include-linked:\n%s", stdoutLinked)
+	}
+}
+
 // TestRelatedAndDupesVaultUnchanged tests that running related and dupes leaves the vault unchanged.
 func TestRelatedAndDupesVaultUnchanged(t *testing.T) {
 	root := setupTestVault(t)
-	before := takeRelatedVaultSnapshot(t, root)
+	before := snapshotVault(t, root)
 
 	captureRun(t, func() int {
 		return run([]string{"related", "--vault", root, "kv-cache"})
@@ -250,23 +255,5 @@ func TestRelatedAndDupesVaultUnchanged(t *testing.T) {
 		return run([]string{"dupes", "--vault", root, "--threshold", "0.45"})
 	})
 
-	after := takeRelatedVaultSnapshot(t, root)
-
-	if len(before) != len(after) {
-		t.Fatalf("vault file count changed: before %d, after %d", len(before), len(after))
-	}
-
-	for p, bSnap := range before {
-		aSnap, ok := after[p]
-		if !ok {
-			t.Errorf("file %s was removed", p)
-			continue
-		}
-		if bSnap.size != aSnap.size {
-			t.Errorf("file %s size changed: %d -> %d", p, bSnap.size, aSnap.size)
-		}
-		if !bSnap.mtime.Equal(aSnap.mtime) {
-			t.Errorf("file %s modtime changed: %v -> %v", p, bSnap.mtime, aSnap.mtime)
-		}
-	}
+	assertVaultUnchanged(t, root, before)
 }

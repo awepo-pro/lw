@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -45,12 +46,19 @@ func allVerbNames() []string {
 // Usage: lw completion bash|zsh|fish
 // Exit 0 on success, 2 on usage errors.
 func cmdCompletion(args []string) error {
-	if len(args) != 1 {
+	fs := flag.NewFlagSet("completion", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	positionals, err := parseInterspersed(fs, args)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "usage: lw completion bash|zsh|fish")
+		return &exitError{code: 2}
+	}
+	if len(positionals) != 1 {
 		fmt.Fprintln(os.Stderr, "usage: lw completion bash|zsh|fish")
 		return &exitError{code: 2}
 	}
 
-	shell := args[0]
+	shell := positionals[0]
 	vNames := allVerbNames()
 
 	switch shell {

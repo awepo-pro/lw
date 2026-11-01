@@ -479,4 +479,217 @@ func TestC8Filters(t *testing.T) {
 	if len(none) != 0 {
 		t.Errorf("got %d cards for conflicting tags, want 0", len(none))
 	}
+
+	if comparisonCards[0].Front != "Compare: MQA vs GQA" {
+		t.Errorf("comparison card Front = %q, want 'Compare: MQA vs GQA'", comparisonCards[0].Front)
+	}
+}
+
+func TestCards_TableFirstSection(t *testing.T) {
+	dir := t.TempDir()
+	schema := `---
+version: 1
+---
+# Schema
+## Types
+- concept
+## Tags
+- test
+`
+	if err := os.WriteFile(filepath.Join(dir, "SCHEMA.md"), []byte(schema), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "wiki", "concepts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	page := `---
+title: Table Feature
+created: 2026-08-20
+updated: 2026-08-29
+type: concept
+tags: [test]
+sources: []
+confidence: high
+---
+
+# Table Feature
+
+A feature concept with tables.
+
+## Comparison Table
+
+| Feature | Option A | Option B |
+|---|---|---|
+| Speed | 10ms | 50ms |
+| Memory | 2GB | 8GB |
+
+After the table note that should not displace the table.
+`
+	if err := os.WriteFile(filepath.Join(dir, "wiki", "concepts", "table-feature.md"), []byte(page), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	v, err := vault.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cards := Extract(v, Options{})
+	var secCard *Card
+	for i := range cards {
+		if cards[i].Section == "Comparison Table" {
+			secCard = &cards[i]
+			break
+		}
+	}
+	if secCard == nil {
+		t.Fatalf("no card generated for section 'Comparison Table'")
+	}
+	wantBack := "Feature | Option A | Option B\nSpeed | 10ms | 50ms\nMemory | 2GB | 8GB"
+	if secCard.Back != wantBack {
+		t.Errorf("table-first card Back =\n%q\nwant:\n%q", secCard.Back, wantBack)
+	}
+}
+
+func TestCards_ColonLeadParagraphWithTable(t *testing.T) {
+	dir := t.TempDir()
+	schema := `---
+version: 1
+---
+# Schema
+## Types
+- concept
+## Tags
+- test
+`
+	if err := os.WriteFile(filepath.Join(dir, "SCHEMA.md"), []byte(schema), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "wiki", "concepts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	page := `---
+title: Colon Feature
+created: 2026-08-20
+updated: 2026-08-29
+type: concept
+tags: [test]
+sources: []
+confidence: high
+---
+
+# Colon Feature
+
+Lead description here.
+
+## Options
+
+The available configuration options are as follows:
+
+| Setting | Default | Description |
+| --- | --- | --- |
+| timeout | 30s | Request timeout |
+| retries | 3 | Max retry count |
+`
+	if err := os.WriteFile(filepath.Join(dir, "wiki", "concepts", "colon-feature.md"), []byte(page), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	v, err := vault.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cards := Extract(v, Options{})
+	var secCard *Card
+	for i := range cards {
+		if cards[i].Section == "Options" {
+			secCard = &cards[i]
+			break
+		}
+	}
+	if secCard == nil {
+		t.Fatalf("no card generated for section 'Options'")
+	}
+	wantBack := "The available configuration options are as follows:\n\nSetting | Default | Description\ntimeout | 30s | Request timeout\nretries | 3 | Max retry count"
+	if secCard.Back != wantBack {
+		t.Errorf("colon-lead card Back =\n%q\nwant:\n%q", secCard.Back, wantBack)
+	}
+}
+
+func TestCards_QueryFrontQuestionMark(t *testing.T) {
+	dir := t.TempDir()
+	schema := `---
+version: 1
+---
+# Schema
+## Types
+- query
+## Tags
+- test
+`
+	if err := os.WriteFile(filepath.Join(dir, "SCHEMA.md"), []byte(schema), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "wiki", "queries"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	page1 := `---
+title: What is the optimal batch size?
+created: 2026-08-20
+updated: 2026-08-29
+type: query
+tags: [test]
+sources: []
+confidence: high
+---
+
+# What is the optimal batch size?
+
+Optimal batch size depends on hardware memory and gradient stability.
+`
+	page2 := `---
+title: How to tune learning rate
+created: 2026-08-20
+updated: 2026-08-29
+type: query
+tags: [test]
+sources: []
+confidence: high
+---
+
+# How to tune learning rate
+
+Learning rate can be tuned using grid search or cosine annealing schedule.
+`
+	if err := os.WriteFile(filepath.Join(dir, "wiki", "queries", "q1.md"), []byte(page1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "wiki", "queries", "q2.md"), []byte(page2), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	v, err := vault.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cards := Extract(v, Options{Type: "query"})
+	if len(cards) != 2 {
+		t.Fatalf("got %d query cards, want 2", len(cards))
+	}
+	for _, c := range cards {
+		if c.Title == "What is the optimal batch size?" {
+			if c.Front != "What is the optimal batch size?" {
+				t.Errorf("already ends with ?, got Front = %q, want no double ?", c.Front)
+			}
+		} else if c.Title == "How to tune learning rate" {
+			if c.Front != "How to tune learning rate?" {
+				t.Errorf("does not end with ?, got Front = %q, want single ?", c.Front)
+			}
+		}
+	}
 }

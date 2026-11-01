@@ -214,13 +214,12 @@ func TestShowJSON(t *testing.T) {
 func TestShowVaultReadOnly(t *testing.T) {
 	root := setupSearchTestVault(t)
 
-	before := takeVaultDirSnapshot(t, root)
+	before := snapshotVault(t, root)
 
 	captureRun(t, func() int { return run([]string{"show", "--vault", root, "kv-cache"}) })
 	captureRun(t, func() int { return run([]string{"show", "--vault", root, "--links", "kv-cache"}) })
 	captureRun(t, func() int { return run([]string{"show", "--vault", root, "--json", "kv-cache"}) })
 	captureRun(t, func() int { return run([]string{"show", "--vault", root, "unknown-page"}) })
 
-	after := takeVaultDirSnapshot(t, root)
-	compareVaultSnapshots(t, before, after)
+	assertVaultUnchanged(t, root, before)
 }

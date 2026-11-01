@@ -11,6 +11,7 @@ import (
 	"os"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,12 +21,14 @@ import (
 
 // Options controls windowing for a digest.
 type Options struct {
-	Since, Until time.Time // window [Since, Until)
+	Since, Until time.Time      // window [Since, Until)
+	Loc          *time.Location // location for day arithmetic and formatting (default: time.Local)
 }
 
 // Digest aggregates committed changes in a window.
 type Digest struct {
 	Since, Until time.Time
+	Loc          *time.Location
 	Commits      []Commit
 	New          []PageInfo
 	Updated      []PageInfo
@@ -97,9 +100,14 @@ type commitRecord struct {
 // Build compiles a Digest for the window specified in o from the committed
 // vault and journal.ndjson. Missing journal returns an empty digest without error.
 func Build(v *vault.Vault, journalPath string, o Options) (*Digest, error) {
+	loc := o.Loc
+	if loc == nil {
+		loc = time.Local
+	}
 	d := &Digest{
 		Since: o.Since,
 		Until: o.Until,
+		Loc:   loc,
 	}
 
 	f, err := os.Open(journalPath)
@@ -201,8 +209,8 @@ func Build(v *vault.Vault, journalPath string, o Options) (*Digest, error) {
 		}
 	}
 
-	sinceDay := time.Date(o.Since.UTC().Year(), o.Since.UTC().Month(), o.Since.UTC().Day(), 0, 0, 0, 0, time.UTC)
-	untilDay := time.Date(o.Until.UTC().Year(), o.Until.UTC().Month(), o.Until.UTC().Day(), 0, 0, 0, 0, time.UTC)
+	sinceDay := time.Date(o.Since.In(loc).Year(), o.Since.In(loc).Month(), o.Since.In(loc).Day(), 0, 0, 0, 0, loc)
+	untilDay := time.Date(o.Until.In(loc).Year(), o.Until.In(loc).Month(), o.Until.In(loc).Day(), 0, 0, 0, 0, loc)
 
 	var touchedPaths []string
 	for p := range touchedPathsMap {
@@ -217,8 +225,12 @@ func Build(v *vault.Vault, journalPath string, o Options) (*Digest, error) {
 				d.Deleted = append(d.Deleted, p)
 				continue
 			}
-			createdDate := page.FM.Created.Time.UTC()
-			isNew := !createdDate.IsZero() && !createdDate.Before(sinceDay) && createdDate.Before(untilDay)
+			createdDate := page.FM.Created.Time
+			var createdDay time.Time
+			if !createdDate.IsZero() {
+				createdDay = time.Date(createdDate.Year(), createdDate.Month(), createdDate.Day(), 0, 0, 0, 0, loc)
+			}
+			isNew := !createdDay.IsZero() && !createdDay.Before(sinceDay) && createdDay.Before(untilDay)
 
 			info := PageInfo{
 				Path:    page.Path,
@@ -428,6 +440,48 @@ func isLinkBar(line string) bool {
 		}
 	}
 	return true
+}
+
+// ParseWindow parses sinceStr (e.g. "7d" or "2006-01-02") and untilStr (e.g. "2006-01-02" or "")
+// relative to now in location loc. If loc is nil, time.Local is used.
+func ParseWindow(now time.Time, sinceStr, untilStr string, loc *time.Location) (since, until time.Time, err error) {
+	if loc == nil {
+		loc = time.Local
+	}
+	nowLoc := now.In(loc)
+	today := time.Date(nowLoc.Year(), nowLoc.Month(), nowLoc.Day(), 0, 0, 0, 0, loc)
+	defaultUntil := today.AddDate(0, 0, 1)
+
+	if strings.HasSuffix(sinceStr, "d") {
+		numStr := strings.TrimSuffix(sinceStr, "d")
+		n, err := strconv.Atoi(numStr)
+		if err != nil || n < 1 || n > 3650 {
+			return time.Time{}, time.Time{}, fmt.Errorf("--since: invalid duration %q (must be 1..3650 days)", sinceStr)
+		}
+		since = today.AddDate(0, 0, -n)
+	} else {
+		t, err := time.ParseInLocation("2006-01-02", sinceStr, loc)
+		if err != nil {
+			return time.Time{}, time.Time{}, fmt.Errorf("--since: %q is not Nd or YYYY-MM-DD", sinceStr)
+		}
+		since = time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc)
+	}
+
+	if untilStr == "" {
+		until = defaultUntil
+	} else {
+		t, err := time.ParseInLocation("2006-01-02", untilStr, loc)
+		if err != nil {
+			return time.Time{}, time.Time{}, fmt.Errorf("--until: %q is not YYYY-MM-DD", untilStr)
+		}
+		until = time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc)
+	}
+
+	if !since.Before(until) {
+		return time.Time{}, time.Time{}, fmt.Errorf("--since (%s) must be before --until (%s)",
+			since.Format("2006-01-02"), until.Format("2006-01-02"))
+	}
+	return since, until, nil
 }
 
 // ExtractGist extracts the first prose paragraph of the page body (skipping H1,
@@ -674,8 +728,12 @@ func typePlural(t string) string {
 
 // WriteMarkdown writes the formatted markdown digest to w.
 func WriteMarkdown(w io.Writer, d *Digest) error {
-	sinceStr := d.Since.UTC().Format("2006-01-02")
-	inclusiveEnd := d.Until.UTC().AddDate(0, 0, -1).Format("2006-01-02")
+	loc := d.Loc
+	if loc == nil {
+		loc = time.Local
+	}
+	sinceStr := d.Since.In(loc).Format("2006-01-02")
+	inclusiveEnd := d.Until.In(loc).AddDate(0, 0, -1).Format("2006-01-02")
 
 	fmt.Fprintf(w, "# Wiki digest %s .. %s\n", sinceStr, inclusiveEnd)
 
@@ -741,14 +799,19 @@ func WriteMarkdown(w io.Writer, d *Digest) error {
 	if len(d.Raws) > 0 {
 		fmt.Fprintf(w, "\n## New sources\n")
 		for _, r := range d.Raws {
-			title := r.Title
-			if title == "" {
-				title = r.Path
-			}
-			if strings.HasPrefix(r.SourceURL, "http://") || strings.HasPrefix(r.SourceURL, "https://") {
-				fmt.Fprintf(w, "- %s - %s (`%s`)\n", title, r.SourceURL, r.Path)
+			title := strings.TrimSpace(r.Title)
+			if title == "" || title == r.Path {
+				if strings.HasPrefix(r.SourceURL, "http://") || strings.HasPrefix(r.SourceURL, "https://") {
+					fmt.Fprintf(w, "- `%s` - %s\n", r.Path, r.SourceURL)
+				} else {
+					fmt.Fprintf(w, "- `%s`\n", r.Path)
+				}
 			} else {
-				fmt.Fprintf(w, "- %s (`%s`)\n", title, r.Path)
+				if strings.HasPrefix(r.SourceURL, "http://") || strings.HasPrefix(r.SourceURL, "https://") {
+					fmt.Fprintf(w, "- %s - %s (`%s`)\n", title, r.SourceURL, r.Path)
+				} else {
+					fmt.Fprintf(w, "- %s (`%s`)\n", title, r.Path)
+				}
 			}
 		}
 	}
@@ -764,7 +827,7 @@ func WriteMarkdown(w io.Writer, d *Digest) error {
 		fmt.Fprintf(w, "\n## Commits\n")
 		for _, c := range d.Commits {
 			msg := cutCommitMessage(c.Message, 100)
-			dateStr := c.TS.UTC().Format("2006-01-02")
+			dateStr := c.TS.In(loc).Format("2006-01-02")
 			fmt.Fprintf(w, "- %s %s %s (%s)\n", dateStr, c.ID, msg, c.Actor)
 		}
 	}
@@ -808,6 +871,7 @@ type htmlRawItem struct {
 	Path      string
 	SourceURL string
 	IsHTTP    bool
+	HasTitle  bool
 }
 
 type htmlCommitItem struct {
@@ -895,7 +959,7 @@ em.tags { color: var(--muted); font-style: italic; }
 <h2>New sources</h2>
 <ul>
 {{range .Raws}}
-<li>{{if .Title}}{{.Title}}{{else}}<code>{{.Path}}</code>{{end}}{{if .IsHTTP}} - <a href="{{.SourceURL}}">{{.SourceURL}}</a>{{end}} (<code>{{.Path}}</code>)</li>
+<li>{{if .HasTitle}}{{.Title}}{{if .IsHTTP}} - <a href="{{.SourceURL}}">{{.SourceURL}}</a>{{end}} (<code>{{.Path}}</code>){{else}}<code>{{.Path}}</code>{{if .IsHTTP}} - <a href="{{.SourceURL}}">{{.SourceURL}}</a>{{end}}{{end}}</li>
 {{end}}
 </ul>
 {{end}}
@@ -930,8 +994,12 @@ em.tags { color: var(--muted); font-style: italic; }
 
 // WriteHTML writes a self-contained HTML page containing the digest to w.
 func WriteHTML(w io.Writer, d *Digest) error {
-	sinceStr := d.Since.UTC().Format("2006-01-02")
-	inclusiveEnd := d.Until.UTC().AddDate(0, 0, -1).Format("2006-01-02")
+	loc := d.Loc
+	if loc == nil {
+		loc = time.Local
+	}
+	sinceStr := d.Since.In(loc).Format("2006-01-02")
+	inclusiveEnd := d.Until.In(loc).AddDate(0, 0, -1).Format("2006-01-02")
 	headerDates := sinceStr + " .. " + inclusiveEnd
 
 	data := htmlPageData{
@@ -983,16 +1051,15 @@ func WriteHTML(w io.Writer, d *Digest) error {
 
 	// Raws
 	for _, r := range d.Raws {
-		title := r.Title
-		if title == "" {
-			title = r.Path
-		}
+		title := strings.TrimSpace(r.Title)
+		hasTitle := title != "" && title != r.Path
 		isHTTP := strings.HasPrefix(r.SourceURL, "http://") || strings.HasPrefix(r.SourceURL, "https://")
 		data.Raws = append(data.Raws, htmlRawItem{
 			Title:     title,
 			Path:      r.Path,
 			SourceURL: r.SourceURL,
 			IsHTTP:    isHTTP,
+			HasTitle:  hasTitle,
 		})
 	}
 
@@ -1000,7 +1067,7 @@ func WriteHTML(w io.Writer, d *Digest) error {
 	for _, c := range d.Commits {
 		msg := cutCommitMessage(c.Message, 100)
 		data.Commits = append(data.Commits, htmlCommitItem{
-			DateStr: c.TS.UTC().Format("2006-01-02"),
+			DateStr: c.TS.In(loc).Format("2006-01-02"),
 			ID:      c.ID,
 			Message: msg,
 			Actor:   c.Actor,

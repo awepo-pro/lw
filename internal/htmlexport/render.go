@@ -149,6 +149,35 @@ type citeReplacement struct {
 	html   string
 }
 
+// stripLeadingH1 drops the first non-blank line of body if it is an ATX H1
+// whose text equals title (trimmed, case-insensitive).
+func stripLeadingH1(body, title string) string {
+	trimmedTitle := strings.TrimSpace(title)
+	if trimmedTitle == "" {
+		return body
+	}
+	lines := strings.Split(body, "\n")
+	for i, line := range lines {
+		trimmedLine := strings.TrimSpace(line)
+		if trimmedLine == "" {
+			continue
+		}
+		if strings.HasPrefix(trimmedLine, "#") && !strings.HasPrefix(trimmedLine, "##") {
+			h1Text := strings.TrimSpace(strings.TrimPrefix(trimmedLine, "#"))
+			h1Text = strings.TrimRight(h1Text, "#")
+			h1Text = strings.TrimSpace(h1Text)
+			if strings.EqualFold(h1Text, trimmedTitle) {
+				newLines := make([]string, 0, len(lines)-1)
+				newLines = append(newLines, lines[:i]...)
+				newLines = append(newLines, lines[i+1:]...)
+				return strings.Join(newLines, "\n")
+			}
+		}
+		break
+	}
+	return body
+}
+
 func renderWikiBody(v *vault.Vault, p *vault.Page, currentRelDir string) (string, error) {
 	allCites := cite.Scan(p.Body)
 	var validCites []cite.Cite
@@ -195,6 +224,7 @@ func renderWikiBody(v *vault.Vault, p *vault.Page, currentRelDir string) (string
 			body = body[:rep.offset] + rep.token + body[rep.offset+len(rep.raw):]
 		}
 	}
+	body = stripLeadingH1(body, p.FM.Title)
 
 	md := goldmark.New(
 		goldmark.WithExtensions(
@@ -233,6 +263,7 @@ func renderRawBody(v *vault.Vault, r *vault.RawSource, currentRelDir string) (st
 			body = strings.ReplaceAll(body, m[0], token)
 		}
 	}
+	body = stripLeadingH1(body, r.Title)
 
 	md := goldmark.New(
 		goldmark.WithExtensions(

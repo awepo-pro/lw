@@ -57,6 +57,7 @@ var (
 	reHorizontalSpaces = regexp.MustCompile(`[ \t]+`)
 	reMultipleNewlines = regexp.MustCompile(`\n{3,}`)
 	reOrderedItem      = regexp.MustCompile(`^[0-9]+\.\s+(.*)`)
+	reBelowOrFollowing = regexp.MustCompile(`(?i)\b(below|following)\b`)
 )
 
 // Extract extracts flashcards from every page in v matching o.
@@ -178,12 +179,16 @@ func extractLeadCard(v *vault.Vault, p *vault.Page, o Options, tags []string) (C
 
 // leadFront builds the front prompt for a lead card.
 func leadFront(pt vault.PageType, title string) string {
+	title = strings.TrimSpace(title)
 	switch strings.ToLower(string(pt)) {
 	case "entity", "concept":
 		return "What is " + title + "?"
 	case "comparison":
-		return title + ": what is the comparison?"
+		return "Compare: " + title
 	case "query":
+		if strings.HasSuffix(title, "?") {
+			return title
+		}
 		return title + "?"
 	default:
 		return title + ": summary"
@@ -235,13 +240,36 @@ func extractSectionCards(v *vault.Vault, p *vault.Page, o Options, tags []string
 	return cards
 }
 
-// buildSectionBack constructs the section back using the MinBack fill rule.
+// buildSectionBack constructs the section back using the MinBack fill rule or table/list special cases.
 func buildSectionBack(v *vault.Vault, blocks []block, o Options) string {
+	if len(blocks) == 0 {
+		return ""
+	}
+
+	// (a) If the section's first block is a table, back is that table.
+	if blocks[0].kind == blockTable {
+		return cleanBack(v, blocks[0].text, o.MaxBack)
+	}
+
 	firstProseIdx := -1
 	for i, b := range blocks {
 		if b.kind == blockParagraph {
 			firstProseIdx = i
 			break
+		}
+	}
+
+	// (b) If the chosen paragraph ends with ':' or contains 'below'/'following',
+	// and the next block is a table or list, back is that paragraph plus the table/list.
+	if firstProseIdx >= 0 {
+		paraText := strings.TrimSpace(removeCitations(blocks[firstProseIdx].text))
+		if strings.HasSuffix(paraText, ":") || reBelowOrFollowing.MatchString(paraText) {
+			if firstProseIdx+1 < len(blocks) {
+				next := blocks[firstProseIdx+1]
+				if next.kind == blockTable || next.kind == blockList {
+					return cleanBack(v, blocks[firstProseIdx].text+"\n\n"+next.text, o.MaxBack)
+				}
+			}
 		}
 	}
 
@@ -332,7 +360,8 @@ type blockKind int
 
 const (
 	blockParagraph blockKind = iota
-	blockListItem
+	blockList
+	blockTable
 )
 
 type block struct {
@@ -340,12 +369,40 @@ type block struct {
 	text string
 }
 
-// extractBlocks extracts prose paragraphs and list items, skipping fences,
-// HTML comments, blank lines, headings, tables, and block quotes.
+// parseTableRow parses a table row line starting with '|'.
+// If the row is a separator row (e.g. |---|---|), isSep is true.
+// Otherwise, row is formatted as "cell | cell | cell".
+func parseTableRow(line string) (row string, isSep bool) {
+	trimmed := strings.TrimSpace(line)
+	if !strings.HasPrefix(trimmed, "|") {
+		return "", false
+	}
+	content := strings.TrimPrefix(trimmed, "|")
+	content = strings.TrimSuffix(content, "|")
+	parts := strings.Split(content, "|")
+	var cells []string
+	allSep := len(parts) > 0
+	for _, p := range parts {
+		c := strings.TrimSpace(p)
+		cells = append(cells, c)
+		if len(c) == 0 || strings.Trim(c, "-: ") != "" || !strings.Contains(c, "-") {
+			allSep = false
+		}
+	}
+	if allSep {
+		return "", true
+	}
+	return strings.Join(cells, " | "), false
+}
+
+// extractBlocks extracts prose paragraphs, grouped lists, and tables,
+// skipping fences, HTML comments, blank lines, headings, and block quotes.
 func extractBlocks(markdown string) []block {
 	lines := strings.Split(markdown, "\n")
 	var blocks []block
 	var curParagraph []string
+	var curList []string
+	var curTable []string
 	inFence := false
 	var fenceMarker string
 	inComment := false
@@ -356,6 +413,25 @@ func extractBlocks(markdown string) []block {
 			blocks = append(blocks, block{kind: blockParagraph, text: joined})
 			curParagraph = nil
 		}
+	}
+	flushList := func() {
+		if len(curList) > 0 {
+			joined := strings.Join(curList, "\n")
+			blocks = append(blocks, block{kind: blockList, text: joined})
+			curList = nil
+		}
+	}
+	flushTable := func() {
+		if len(curTable) > 0 {
+			joined := strings.Join(curTable, "\n")
+			blocks = append(blocks, block{kind: blockTable, text: joined})
+			curTable = nil
+		}
+	}
+	flushAll := func() {
+		flushParagraph()
+		flushList()
+		flushTable()
 	}
 
 	for _, rawLine := range lines {
@@ -376,20 +452,20 @@ func extractBlocks(markdown string) []block {
 		}
 
 		if strings.HasPrefix(trimmed, "```") {
-			flushParagraph()
+			flushAll()
 			inFence = true
 			fenceMarker = "```"
 			continue
 		}
 		if strings.HasPrefix(trimmed, "~~~") {
-			flushParagraph()
+			flushAll()
 			inFence = true
 			fenceMarker = "~~~"
 			continue
 		}
 
 		if strings.HasPrefix(trimmed, "<!--") {
-			flushParagraph()
+			flushAll()
 			if !strings.Contains(trimmed, "-->") {
 				inComment = true
 			}
@@ -397,48 +473,57 @@ func extractBlocks(markdown string) []block {
 		}
 
 		if trimmed == "" {
-			flushParagraph()
+			flushAll()
 			continue
 		}
 
 		if strings.HasPrefix(trimmed, "#") {
-			flushParagraph()
+			flushAll()
+			continue
+		}
+
+		if strings.HasPrefix(trimmed, ">") {
+			flushAll()
 			continue
 		}
 
 		if strings.HasPrefix(trimmed, "|") {
 			flushParagraph()
-			continue
-		}
-
-		if strings.HasPrefix(trimmed, ">") {
-			flushParagraph()
+			flushList()
+			row, isSep := parseTableRow(trimmed)
+			if !isSep && row != "" {
+				curTable = append(curTable, row)
+			}
 			continue
 		}
 
 		if isUnorderedListItem(trimmed) {
 			flushParagraph()
+			flushTable()
 			itemText := strings.TrimSpace(trimmed[2:])
-			blocks = append(blocks, block{kind: blockListItem, text: "- " + itemText})
+			curList = append(curList, "- "+itemText)
 			continue
 		}
 
 		if m := reOrderedItem.FindStringSubmatch(trimmed); len(m) > 1 {
 			flushParagraph()
+			flushTable()
 			itemText := strings.TrimSpace(m[1])
-			blocks = append(blocks, block{kind: blockListItem, text: "- " + itemText})
+			curList = append(curList, "- "+itemText)
 			continue
 		}
 
-		if len(blocks) > 0 && blocks[len(blocks)-1].kind == blockListItem && len(curParagraph) == 0 && (strings.HasPrefix(rawLine, "  ") || strings.HasPrefix(rawLine, "\t")) {
-			blocks[len(blocks)-1].text += " " + trimmed
+		if len(curList) > 0 && len(curParagraph) == 0 && len(curTable) == 0 && (strings.HasPrefix(rawLine, "  ") || strings.HasPrefix(rawLine, "\t")) {
+			curList[len(curList)-1] += " " + trimmed
 			continue
 		}
 
+		flushList()
+		flushTable()
 		curParagraph = append(curParagraph, trimmed)
 	}
 
-	flushParagraph()
+	flushAll()
 	return blocks
 }
 

@@ -63,6 +63,7 @@ type Stats struct {
 	UncitedRaws             []string       `json:"uncited_raws"`
 	SupersededRaws          int            `json:"superseded_raws"`
 	Edges                   int            `json:"edges"`
+	DistinctEdges           int            `json:"distinct_edges"`
 	Broken                  int            `json:"broken"`
 	Orphans                 int            `json:"orphans"`
 	AvgOutLinks             float64        `json:"avg_out_links"`
@@ -237,17 +238,26 @@ func Compute(v *vault.Vault, journalPath string, now time.Time, staleDays int) S
 	g := v.Graph()
 	edges := 0
 	broken := 0
+	distinctPairs := make(map[[2]string]bool)
+	pageSet := make(map[string]bool, len(pages))
+	for _, p := range pages {
+		pageSet[p.Path] = true
+	}
 	if g != nil {
 		for _, p := range pages {
 			for _, ref := range g.Outbound(p.Path) {
 				if ref.To != "" {
 					edges++
+					if ref.To != p.Path && pageSet[ref.To] {
+						distinctPairs[[2]string{p.Path, ref.To}] = true
+					}
 				} else {
 					broken++
 				}
 			}
 		}
 	}
+	distinctEdges := len(distinctPairs)
 	orphans := 0
 	if g != nil {
 		orphans = len(g.Orphans())
@@ -396,6 +406,7 @@ func Compute(v *vault.Vault, journalPath string, now time.Time, staleDays int) S
 		UncitedRaws:             uncitedRaws,
 		SupersededRaws:          supersededRaws,
 		Edges:                   edges,
+		DistinctEdges:           distinctEdges,
 		Broken:                  broken,
 		Orphans:                 orphans,
 		AvgOutLinks:             avgOutLinks,
@@ -498,7 +509,8 @@ func WriteText(w io.Writer, s Stats) error {
 
 	// 7. links
 	fmt.Fprintf(w, "\nlinks\n")
-	fmt.Fprintf(w, "  edges: %d, broken: %d, orphans: %d, avg out-links: %.2f\n", s.Edges, s.Broken, s.Orphans, s.AvgOutLinks)
+	fmt.Fprintf(w, "  links: %d refs (%d distinct page pairs), broken: %d, orphans: %d, avg out-links: %.2f\n",
+		s.Edges, s.DistinctEdges, s.Broken, s.Orphans, s.AvgOutLinks)
 
 	// 8. freshness
 	fmt.Fprintf(w, "\nfreshness\n")

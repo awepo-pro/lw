@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 // setupSearchTestVault constructs a minimal test vault with at least 3 pages.
@@ -278,66 +277,16 @@ func TestSearchFiltersAndLimit(t *testing.T) {
 	}
 }
 
-type vaultSnapshotItem struct {
-	size  int64
-	mtime time.Time
-	isDir bool
-}
-
-func takeVaultDirSnapshot(t *testing.T, root string) map[string]vaultSnapshotItem {
-	t.Helper()
-	snap := make(map[string]vaultSnapshotItem)
-	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
-		if rel == ".llmwiki/logs" || strings.HasPrefix(rel, ".llmwiki/logs/") {
-			return nil
-		}
-		snap[rel] = vaultSnapshotItem{
-			size:  info.Size(),
-			mtime: info.ModTime(),
-			isDir: info.IsDir(),
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("take vault snapshot: %v", err)
-	}
-	return snap
-}
-
-func compareVaultSnapshots(t *testing.T, before, after map[string]vaultSnapshotItem) {
-	t.Helper()
-	if len(before) != len(after) {
-		t.Fatalf("vault snapshot entry count mismatch: before %d, after %d", len(before), len(after))
-	}
-	for k, vBefore := range before {
-		vAfter, ok := after[k]
-		if !ok {
-			t.Fatalf("path %q missing after command", k)
-		}
-		if vBefore.size != vAfter.size || !vBefore.mtime.Equal(vAfter.mtime) || vBefore.isDir != vAfter.isDir {
-			t.Fatalf("path %q changed: before %+v, after %+v", k, vBefore, vAfter)
-		}
-	}
-}
-
 // F10 part 1: search writes nothing into the vault
 func TestSearchVaultReadOnly(t *testing.T) {
 	root := setupSearchTestVault(t)
 
-	before := takeVaultDirSnapshot(t, root)
+	before := snapshotVault(t, root)
 
 	captureRun(t, func() int { return run([]string{"search", "--vault", root, "attention"}) })
 	captureRun(t, func() int { return run([]string{"search", "--vault", root, "--json", "attention"}) })
 	captureRun(t, func() int { return run([]string{"search", "--vault", root, "nonexistent"}) })
 	captureRun(t, func() int { return run([]string{"search", "--vault", root, "-n", "0", "attention"}) })
 
-	after := takeVaultDirSnapshot(t, root)
-	compareVaultSnapshots(t, before, after)
+	assertVaultUnchanged(t, root, before)
 }

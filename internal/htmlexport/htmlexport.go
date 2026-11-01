@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/awepo-pro/lw/internal/cite"
 	"github.com/awepo-pro/lw/internal/vault"
@@ -356,7 +357,7 @@ func Export(v *vault.Vault, outDir string, o Options) (Result, error) {
 	var groups []typeGroup
 	for _, pt := range preferredOrder {
 		if list, ok := byType[pt]; ok && len(list) > 0 {
-			groups = append(groups, typeGroup{Type: pt, Pages: list})
+			groups = append(groups, typeGroup{Type: formatTypeHeading(pt), Pages: list})
 			seenTypes[pt] = true
 		}
 	}
@@ -368,7 +369,7 @@ func Export(v *vault.Vault, outDir string, o Options) (Result, error) {
 	}
 	sort.Strings(remainingTypes)
 	for _, t := range remainingTypes {
-		groups = append(groups, typeGroup{Type: t, Pages: byType[t]})
+		groups = append(groups, typeGroup{Type: formatTypeHeading(t), Pages: byType[t]})
 	}
 
 	var rawItems []rawItem
@@ -499,4 +500,29 @@ func copyFileByteForByte(src, dst string) error {
 
 	_, err = io.Copy(out, in)
 	return err
+}
+
+// formatTypeHeading returns the plural capitalised heading for standard wiki page types:
+// Entities, Concepts, Comparisons, Queries, Summaries; other types are capitalised as is.
+func formatTypeHeading(t string) string {
+	switch strings.ToLower(strings.TrimSpace(t)) {
+	case "entity", "entities":
+		return "Entities"
+	case "concept", "concepts":
+		return "Concepts"
+	case "comparison", "comparisons":
+		return "Comparisons"
+	case "query", "queries":
+		return "Queries"
+	case "summary", "summaries":
+		return "Summaries"
+	default:
+		trimmed := strings.TrimSpace(t)
+		if trimmed == "" {
+			return ""
+		}
+		runes := []rune(trimmed)
+		runes[0] = unicode.ToUpper(runes[0])
+		return string(runes)
+	}
 }

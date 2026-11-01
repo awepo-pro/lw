@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -28,11 +27,12 @@ func cmdDigest(args []string) error {
 	formatFlag := fs.String("format", "md", "output format: md or html (default: md)")
 	oFlag := fs.String("o", "", "output file (default: stdout)")
 
-	if err := fs.Parse(args); err != nil {
+	positionals, err := parseInterspersed(fs, args)
+	if err != nil {
 		return &exitError{code: 2}
 	}
-	if fs.NArg() > 0 {
-		fmt.Fprintf(os.Stderr, "lw digest: unexpected argument %q\n", fs.Arg(0))
+	if len(positionals) > 0 {
+		fmt.Fprintf(os.Stderr, "lw digest: unexpected argument %q\n", positionals[0])
 		return &exitError{code: 2}
 	}
 
@@ -41,25 +41,11 @@ func cmdDigest(args []string) error {
 		return &exitError{code: 2}
 	}
 
-	now := time.Now().UTC()
-	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
-	defaultUntil := today.AddDate(0, 0, 1)
-
-	since, err := parseDigestSince(*sinceFlag, today)
+	loc := time.Local
+	now := time.Now().In(loc)
+	since, until, err := digest.ParseWindow(now, *sinceFlag, *untilFlag, loc)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "lw digest: --since: %v\n", err)
-		return &exitError{code: 2}
-	}
-
-	until, err := parseDigestUntil(*untilFlag, defaultUntil)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "lw digest: --until: %v\n", err)
-		return &exitError{code: 2}
-	}
-
-	if !since.Before(until) {
-		fmt.Fprintf(os.Stderr, "lw digest: --since (%s) must be before --until (%s)\n",
-			since.Format("2006-01-02"), until.Format("2006-01-02"))
+		fmt.Fprintf(os.Stderr, "lw digest: %v\n", err)
 		return &exitError{code: 2}
 	}
 
@@ -86,7 +72,7 @@ func cmdDigest(args []string) error {
 	}
 
 	journalPath := filepath.Join(root, ".llmwiki", "journal.ndjson")
-	d, err := digest.Build(v, journalPath, digest.Options{Since: since, Until: until})
+	d, err := digest.Build(v, journalPath, digest.Options{Since: since, Until: until, Loc: loc})
 	if err != nil {
 		return fmt.Errorf("build digest: %w", err)
 	}
@@ -118,33 +104,6 @@ func cmdDigest(args []string) error {
 	}
 
 	return nil
-}
-
-func parseDigestSince(s string, today time.Time) (time.Time, error) {
-	if strings.HasSuffix(s, "d") {
-		numStr := strings.TrimSuffix(s, "d")
-		n, err := strconv.Atoi(numStr)
-		if err != nil || n < 1 || n > 3650 {
-			return time.Time{}, fmt.Errorf("invalid duration %q (must be 1..3650 days)", s)
-		}
-		return today.AddDate(0, 0, -n), nil
-	}
-	t, err := time.Parse("2006-01-02", s)
-	if err != nil {
-		return time.Time{}, fmt.Errorf("%q is not Nd or YYYY-MM-DD", s)
-	}
-	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC), nil
-}
-
-func parseDigestUntil(s string, defaultUntil time.Time) (time.Time, error) {
-	if s == "" {
-		return defaultUntil, nil
-	}
-	t, err := time.Parse("2006-01-02", s)
-	if err != nil {
-		return time.Time{}, fmt.Errorf("%q is not YYYY-MM-DD", s)
-	}
-	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC), nil
 }
 
 func isInsideVault(root, file string) (bool, error) {

@@ -7,9 +7,6 @@ import (
 	"fmt"
 	"os"
 	"sort"
-	"strings"
-
-	"gopkg.in/yaml.v3"
 
 	"github.com/awepo-pro/lw/internal/index"
 	"github.com/awepo-pro/lw/internal/vault"
@@ -35,27 +32,6 @@ type showPageJSON struct {
 	Body      string             `json:"body"`
 }
 
-// extractAliases returns all aliases defined in the page frontmatter,
-// inspecting both ExtraYAML["aliases"] and Extra["aliases"].
-func extractAliases(p *vault.Page) []string {
-	var aliases []string
-	if rawYAML, ok := p.FM.ExtraYAML["aliases"]; ok && strings.TrimSpace(rawYAML) != "" {
-		var list []string
-		if err := yaml.Unmarshal([]byte(rawYAML), &list); err == nil {
-			aliases = append(aliases, list...)
-		} else {
-			var single string
-			if err := yaml.Unmarshal([]byte(rawYAML), &single); err == nil && strings.TrimSpace(single) != "" {
-				aliases = append(aliases, strings.TrimSpace(single))
-			}
-		}
-	}
-	if scalar, ok := p.FM.Extra["aliases"]; ok && strings.TrimSpace(scalar) != "" {
-		aliases = append(aliases, strings.TrimSpace(scalar))
-	}
-	return aliases
-}
-
 // cmdShow prints a wiki page by path, basename, title or alias without
 // using an LLM or an API key. With --links, it also prints outbound and
 // backlink sections; with --json, it emits structured metadata.
@@ -66,15 +42,16 @@ func cmdShow(args []string) error {
 	linksFlag := fs.Bool("links", false, "print outbound links and backlinks after page content")
 	jsonFlag := fs.Bool("json", false, "emit structured page metadata as indented JSON")
 
-	if err := fs.Parse(args); err != nil {
+	positionals, err := parseInterspersed(fs, args)
+	if err != nil {
 		return &exitError{code: 2}
 	}
-	if fs.NArg() != 1 || fs.Arg(0) == "" {
+	if len(positionals) != 1 || positionals[0] == "" {
 		fmt.Fprintln(os.Stderr, "usage: lw show [--vault V] [--links] [--json] <page>")
 		return &exitError{code: 2}
 	}
 
-	arg := fs.Arg(0)
+	arg := positionals[0]
 
 	root, err := findVaultRoot(*vaultPath)
 	if err != nil {
@@ -87,48 +64,7 @@ func cmdShow(args []string) error {
 		return fmt.Errorf("open vault %s: %w", root, err)
 	}
 
-	var matched *vault.Page
-	var ambiguous []*vault.Page
-
-	// (1) vault.Resolve(v, arg)
-	if resolvedPath, ok := vault.Resolve(v, arg); ok {
-		if p, ok := v.Page(resolvedPath); ok {
-			matched = p
-		}
-	}
-
-	// (2) case-insensitive exact match on FM.Title
-	if matched == nil {
-		var titleMatches []*vault.Page
-		for _, p := range v.Pages() {
-			if strings.EqualFold(strings.TrimSpace(p.FM.Title), arg) {
-				titleMatches = append(titleMatches, p)
-			}
-		}
-		if len(titleMatches) == 1 {
-			matched = titleMatches[0]
-		} else if len(titleMatches) > 1 {
-			ambiguous = titleMatches
-		}
-	}
-
-	// (3) case-insensitive exact match on aliases
-	if matched == nil && len(ambiguous) == 0 {
-		var aliasMatches []*vault.Page
-		for _, p := range v.Pages() {
-			for _, a := range extractAliases(p) {
-				if strings.EqualFold(strings.TrimSpace(a), arg) {
-					aliasMatches = append(aliasMatches, p)
-					break
-				}
-			}
-		}
-		if len(aliasMatches) == 1 {
-			matched = aliasMatches[0]
-		} else if len(aliasMatches) > 1 {
-			ambiguous = aliasMatches
-		}
-	}
+	matched, ambiguous := resolvePageArg(v, arg)
 
 	if len(ambiguous) > 1 {
 		sort.Slice(ambiguous, func(i, j int) bool {

@@ -40,11 +40,12 @@ func cmdGraph(args []string) error {
 	pageType := fs.String("type", "", "filter nodes by type, keeping focus node")
 	top := fs.Int("top", 10, "maximum items to display in text summary sections (default 10)")
 
-	if err := fs.Parse(args); err != nil {
+	positionals, err := parseInterspersed(fs, args)
+	if err != nil {
 		return &exitError{code: 2}
 	}
-	if fs.NArg() > 0 {
-		fmt.Fprintf(os.Stderr, "lw graph: unexpected argument %q\n", fs.Arg(0))
+	if len(positionals) > 0 {
+		fmt.Fprintf(os.Stderr, "lw graph: unexpected argument %q\n", positionals[0])
 		return &exitError{code: 2}
 	}
 
@@ -78,12 +79,23 @@ func cmdGraph(args []string) error {
 
 	resolvedFocus := ""
 	if *focus != "" {
-		res, ok := vault.Resolve(v, *focus)
-		if !ok {
+		page, ambiguous := resolvePageArg(v, *focus)
+		if len(ambiguous) > 1 {
+			fmt.Fprintf(os.Stderr, "lw graph: %q is ambiguous\n", *focus)
+			limit := len(ambiguous)
+			if limit > 5 {
+				limit = 5
+			}
+			for i := 0; i < limit; i++ {
+				fmt.Fprintf(os.Stderr, "  %s  (%s)\n", ambiguous[i].Path, ambiguous[i].FM.Title)
+			}
+			return &exitError{code: 1}
+		}
+		if page == nil {
 			fmt.Fprintf(os.Stderr, "lw graph: no page %q\n", *focus)
 			return &exitError{code: 1}
 		}
-		resolvedFocus = res
+		resolvedFocus = page.Path
 	}
 
 	opts := graphexport.Options{

@@ -2,12 +2,10 @@ package main
 
 import (
 	"errors"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/awepo-pro/lw/internal/testutil"
 )
@@ -112,80 +110,17 @@ func TestDigestOutputOutsideWritesFile(t *testing.T) {
 	}
 }
 
-type fileSnapshot struct {
-	size  int64
-	mtime time.Time
-}
-
 // the vault is unchanged after a run (snapshot paths+sizes+mtimes ignoring .llmwiki/logs/)
 func TestDigestVaultUnchanged(t *testing.T) {
 	root := testutil.CopyFixture(t, "minimal")
-
-	takeSnapshot := func() map[string]fileSnapshot {
-		snap := make(map[string]fileSnapshot)
-		logsPrefix := filepath.Join(root, ".llmwiki", "logs")
-		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
-			if walkErr != nil {
-				return walkErr
-			}
-			if strings.HasPrefix(path, logsPrefix) {
-				return nil
-			}
-			if d.IsDir() {
-				return nil
-			}
-			info, err := d.Info()
-			if err != nil {
-				return err
-			}
-			rel, err := filepath.Rel(root, path)
-			if err != nil {
-				return err
-			}
-			snap[rel] = fileSnapshot{
-				size:  info.Size(),
-				mtime: info.ModTime(),
-			}
-			return nil
-		})
-		if err != nil {
-			t.Fatalf("takeSnapshot: %v", err)
-		}
-		return snap
-	}
-
-	before := takeSnapshot()
+	before := snapshotVault(t, root)
 
 	outPath := filepath.Join(t.TempDir(), "digest.md")
 	if err := cmdDigest([]string{"--vault", root, "--since", "365d", "-o", outPath}); err != nil {
 		t.Fatalf("cmdDigest failed: %v", err)
 	}
 
-	after := takeSnapshot()
-
-	if len(before) != len(after) {
-		t.Errorf("file count changed: before %d, after %d", len(before), len(after))
-	}
-
-	for rel, bSnap := range before {
-		aSnap, ok := after[rel]
-		if !ok {
-			t.Errorf("file %s was removed", rel)
-			continue
-		}
-		if aSnap.size != bSnap.size {
-			t.Errorf("file %s size changed: was %d, now %d", rel, bSnap.size, aSnap.size)
-		}
-		if !aSnap.mtime.Equal(bSnap.mtime) {
-			t.Errorf("file %s mtime changed: was %v, now %v", rel, bSnap.mtime, aSnap.mtime)
-		}
-	}
-
-	for rel := range after {
-		if _, ok := before[rel]; !ok {
-			t.Errorf("unexpected new file added: %s", rel)
-		}
-	}
+	assertVaultUnchanged(t, root, before)
 }
 
 // Pending notes in digest output

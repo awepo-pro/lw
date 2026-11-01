@@ -88,10 +88,16 @@ type pageRecord struct {
 	bodyNorm    float64            // L2 norm of bodyVec
 }
 
+// DupeOptions controls duplicate pair generation.
+type DupeOptions struct {
+	IncludeLinked bool
+}
+
 // Corpus holds precomputed features for all pages in a vault.
 type Corpus struct {
-	pages  []*pageRecord
-	byPath map[string]*pageRecord
+	pages      []*pageRecord
+	byPath     map[string]*pageRecord
+	tagWeights map[string]float64
 }
 
 // tokenizeAndFilter lowercases, drops tokens shorter than 3 runes,
@@ -164,6 +170,50 @@ func jaccard(setA, setB map[string]bool) (float64, []string) {
 	return float64(len(shared)) / float64(unionSize), shared
 }
 
+// weightedJaccard calculates idf-weighted Jaccard similarity:
+// weight(tag) = ln(N / df(tag)) (0 when df == N).
+// score = sum of weights of shared tags / sum of weights of the union (0 when the union weight is 0).
+func weightedJaccard(setA, setB map[string]bool, weights map[string]float64) (float64, []string) {
+	if len(setA) == 0 && len(setB) == 0 {
+		return 0, []string{}
+	}
+	var shared []string
+	var sharedWeight float64
+	var unionWeight float64
+
+	for k := range setA {
+		w := weights[k]
+		unionWeight += w
+		if setB[k] {
+			shared = append(shared, k)
+			sharedWeight += w
+		}
+	}
+	for k := range setB {
+		if !setA[k] {
+			unionWeight += weights[k]
+		}
+	}
+
+	sort.Strings(shared)
+	if shared == nil {
+		shared = []string{}
+	}
+
+	if unionWeight <= 0 {
+		return 0, shared
+	}
+
+	score := sharedWeight / unionWeight
+	if score < 0 {
+		return 0, shared
+	}
+	if score > 1 {
+		return 1, shared
+	}
+	return score, shared
+}
+
 // cosineSimilarity calculates the cosine similarity between two tf-idf vectors.
 func cosineSimilarity(vecA, vecB map[string]float64, normA, normB float64) float64 {
 	if normA == 0 || normB == 0 {
@@ -226,6 +276,7 @@ func NewCorpus(v *vault.Vault) *Corpus {
 
 	rawPages := make([]rawPage, 0, nPages)
 	df := make(map[string]int)
+	tagDF := make(map[string]int)
 
 	for _, p := range vaultPages {
 		// Neighbors: resolved outbound + backlinks, excluding self
@@ -259,6 +310,9 @@ func NewCorpus(v *vault.Vault) *Corpus {
 			if cleanTag != "" {
 				tagMap[cleanTag] = true
 			}
+		}
+		for tag := range tagMap {
+			tagDF[tag]++
 		}
 
 		// Title tokens
@@ -320,18 +374,28 @@ func NewCorpus(v *vault.Vault) *Corpus {
 		c.byPath[rec.path] = rec
 	}
 
+	tagWeights := make(map[string]float64, len(tagDF))
+	for tag, count := range tagDF {
+		if count >= nPages {
+			tagWeights[tag] = 0
+		} else {
+			tagWeights[tag] = math.Log(numPagesFloat / float64(count))
+		}
+	}
+	c.tagWeights = tagWeights
+
 	return c
 }
 
 // computeSignals calculates the full Signals breakdown between page A and page B,
 // along with the shared items for explanation.
-func computeSignals(pA, pB *pageRecord) (Signals, Shared) {
+func (c *Corpus) computeSignals(pA, pB *pageRecord) (Signals, Shared) {
 	linksSim, sharedLinks := jaccard(pA.neighbors, pB.neighbors)
 	sourcesSim, sharedSources := jaccard(pA.sources, pB.sources)
-	tagsSim, sharedTags := jaccard(pA.tags, pB.tags)
+	tagsSim, sharedTags := weightedJaccard(pA.tags, pB.tags, c.tagWeights)
 	titleSim, _ := jaccard(pA.titleTokens, pB.titleTokens)
 	bodySim := cosineSimilarity(pA.bodyVec, pB.bodyVec, pA.bodyNorm, pB.bodyNorm)
-	direct := pA.neighbors[pB.path]
+	direct := pA.neighbors[pB.path] || pB.neighbors[pA.path]
 
 	if len(sharedLinks) > 5 {
 		sharedLinks = sharedLinks[:5]
@@ -375,7 +439,7 @@ func (c *Corpus) Related(path string, n int) []Match {
 		if other.path == path {
 			continue
 		}
-		signals, shared := computeSignals(target, other)
+		signals, shared := c.computeSignals(target, other)
 
 		var directBonus float64
 		if signals.Direct {
@@ -417,7 +481,11 @@ func (c *Corpus) Related(path string, n int) []Match {
 // with N > 3000 pages, this executes roughly N*(N-1)/2 vector and set comparisons.
 // Precomputed vectors and maps keep each comparison fast, but callers should
 // account for quadratic scaling.
-func (c *Corpus) Dupes(threshold float64, n int) []Pair {
+func (c *Corpus) Dupes(threshold float64, n int, opts ...DupeOptions) []Pair {
+	var opt DupeOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
 	pairs := make([]Pair, 0)
 	nPages := len(c.pages)
 
@@ -425,9 +493,15 @@ func (c *Corpus) Dupes(threshold float64, n int) []Pair {
 		pA := c.pages[i]
 		for j := i + 1; j < nPages; j++ {
 			pB := c.pages[j]
-			signals, _ := computeSignals(pA, pB)
+			signals, _ := c.computeSignals(pA, pB)
 
-			score := 0.45*signals.Title + 0.35*signals.Body + 0.20*signals.Sources
+			if !opt.IncludeLinked && signals.Direct {
+				continue
+			}
+
+			maxTB := math.Max(signals.Title, signals.Body)
+			sourceTerm := signals.Sources * maxTB
+			score := 0.45*signals.Title + 0.35*signals.Body + 0.20*sourceTerm
 			if score >= threshold {
 				pairs = append(pairs, Pair{
 					A:       pA.path,

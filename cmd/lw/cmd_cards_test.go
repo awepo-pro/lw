@@ -3,50 +3,11 @@ package main
 import (
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/awepo-pro/lw/internal/testutil"
 )
-
-type vaultFileMeta struct {
-	size  int64
-	mtime int64
-}
-
-func snapshotVault(t *testing.T, root string) map[string]vaultFileMeta {
-	t.Helper()
-	snap := make(map[string]vaultFileMeta)
-	err := filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(root, p)
-		if err != nil {
-			return err
-		}
-		relSlash := filepath.ToSlash(rel)
-		if relSlash == ".llmwiki/logs" || strings.HasPrefix(relSlash, ".llmwiki/logs/") {
-			if info.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if info.IsDir() {
-			return nil
-		}
-		snap[relSlash] = vaultFileMeta{
-			size:  info.Size(),
-			mtime: info.ModTime().UnixNano(),
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("snapshotVault: %v", err)
-	}
-	return snap
-}
 
 func TestCardsBadFormat(t *testing.T) {
 	root := testutil.CopyFixture(t, "minimal")
@@ -131,9 +92,5 @@ func TestCardsVaultUnchanged(t *testing.T) {
 		t.Fatalf("exit code = %d, want 0; stderr = %q", code, stderr)
 	}
 
-	after := snapshotVault(t, root)
-
-	if !reflect.DeepEqual(before, after) {
-		t.Fatalf("vault changed after running cards!\nbefore: %+v\nafter: %+v", before, after)
-	}
+	assertVaultUnchanged(t, root, before)
 }

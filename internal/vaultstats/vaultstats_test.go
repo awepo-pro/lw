@@ -422,3 +422,84 @@ func TestVaultStats_S8_WriteTextHeadingsAndLineWidth(t *testing.T) {
 		}
 	}
 }
+
+// TestVaultStats_DistinctEdges tests that distinct page pairs are counted separately from link occurrences,
+// self-links are excluded, and the formatted text line is correct.
+func TestVaultStats_DistinctEdges(t *testing.T) {
+	dir := t.TempDir()
+	schema := "# SCHEMA\n\n## Domain\ntest\n\n## Tags\n- a\n"
+	if err := os.WriteFile(filepath.Join(dir, "SCHEMA.md"), []byte(schema), 0644); err != nil {
+		t.Fatal(err)
+	}
+	conceptsDir := filepath.Join(dir, "wiki", "concepts")
+	if err := os.MkdirAll(conceptsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Page a links b twice, links self once, and links broken once
+	pageA := `---
+title: Page A
+type: concept
+tags: [a]
+---
+# Page A
+Link one to [[page-b]].
+Link two to [[page-b]].
+Self link to [[page-a]].
+Broken link to [[non-existent]].
+`
+	pageB := `---
+title: Page B
+type: concept
+tags: [a]
+---
+# Page B
+No outbound links.
+`
+	pageC := `---
+title: Page C
+type: concept
+tags: [a]
+---
+# Page C
+Orphan page with no links.
+`
+	if err := os.WriteFile(filepath.Join(conceptsDir, "page-a.md"), []byte(pageA), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(conceptsDir, "page-b.md"), []byte(pageB), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(conceptsDir, "page-c.md"), []byte(pageC), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	v, err := vault.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s := vaultstats.Compute(v, filepath.Join(dir, "nonexistent-journal"), time.Now(), 90)
+
+	// Edges (resolved link occurrences, including self): [[page-b]] x2 + [[page-a]] x1 = 3
+	if s.Edges != 3 {
+		t.Errorf("s.Edges = %d, want 3", s.Edges)
+	}
+	// DistinctEdges (distinct (from, to) pairs excluding self): only (page-a -> page-b) = 1
+	if s.DistinctEdges != 1 {
+		t.Errorf("s.DistinctEdges = %d, want 1", s.DistinctEdges)
+	}
+	if s.Broken != 1 {
+		t.Errorf("s.Broken = %d, want 1", s.Broken)
+	}
+
+	var buf bytes.Buffer
+	if err := vaultstats.WriteText(&buf, s); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	wantLine := "links: 3 refs (1 distinct page pairs), broken: 1, orphans: 1"
+	if !strings.Contains(out, wantLine) {
+		t.Errorf("WriteText missing expected line %q\nFull output:\n%s", wantLine, out)
+	}
+}

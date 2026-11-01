@@ -459,3 +459,209 @@ Different body text here.
 		t.Errorf("expected fm.md to be related to inline.md via shared source")
 	}
 }
+
+// TestSimilarLinkedPairHiddenByDefault tests that a linked pair is excluded by default
+// and shown when IncludeLinked is true.
+func TestSimilarLinkedPairHiddenByDefault(t *testing.T) {
+	dir := t.TempDir()
+	schemaContent := "# SCHEMA\n\n## Domain\ntest\n\n## Tags\n- a\n"
+	if err := os.WriteFile(filepath.Join(dir, "SCHEMA.md"), []byte(schemaContent), 0644); err != nil {
+		t.Fatalf("write SCHEMA.md: %v", err)
+	}
+	conceptsDir := filepath.Join(dir, "wiki", "concepts")
+	if err := os.MkdirAll(conceptsDir, 0755); err != nil {
+		t.Fatalf("mkdir concepts: %v", err)
+	}
+
+	page1 := `---
+title: Alpha Page
+created: 2026-08-20
+updated: 2026-08-29
+type: concept
+tags: [a]
+---
+# Alpha Page
+Alpha content linking [[beta-page]].
+`
+	page2 := `---
+title: Beta Page
+created: 2026-08-20
+updated: 2026-08-29
+type: concept
+tags: [a]
+---
+# Beta Page
+Alpha content linking beta.
+`
+	if err := os.WriteFile(filepath.Join(conceptsDir, "alpha-page.md"), []byte(page1), 0644); err != nil {
+		t.Fatalf("write alpha: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(conceptsDir, "beta-page.md"), []byte(page2), 0644); err != nil {
+		t.Fatalf("write beta: %v", err)
+	}
+
+	v, err := vault.Open(dir)
+	if err != nil {
+		t.Fatalf("open vault: %v", err)
+	}
+	corp := NewCorpus(v)
+
+	// Default: excludes linked pairs
+	pairsDefault := corp.Dupes(0.1, 10)
+	if len(pairsDefault) != 0 {
+		t.Errorf("expected 0 pairs by default for linked pages, got %d", len(pairsDefault))
+	}
+
+	// With IncludeLinked: pair is returned
+	pairsLinked := corp.Dupes(0.1, 10, DupeOptions{IncludeLinked: true})
+	if len(pairsLinked) != 1 {
+		t.Fatalf("expected 1 pair with IncludeLinked=true, got %d", len(pairsLinked))
+	}
+	if !pairsLinked[0].Linked {
+		t.Errorf("expected Linked == true for linked pair")
+	}
+}
+
+// TestSimilarTagOnAllPagesZeroScore tests that a tag present on all pages has weight 0
+// and yields Tags == 0 similarity.
+func TestSimilarTagOnAllPagesZeroScore(t *testing.T) {
+	dir := t.TempDir()
+	schemaContent := "# SCHEMA\n\n## Domain\ntest\n\n## Tags\n- universal\n- special\n"
+	if err := os.WriteFile(filepath.Join(dir, "SCHEMA.md"), []byte(schemaContent), 0644); err != nil {
+		t.Fatalf("write SCHEMA.md: %v", err)
+	}
+	conceptsDir := filepath.Join(dir, "wiki", "concepts")
+	if err := os.MkdirAll(conceptsDir, 0755); err != nil {
+		t.Fatalf("mkdir concepts: %v", err)
+	}
+
+	p1 := `---
+title: Page One
+created: 2026-08-20
+updated: 2026-08-29
+type: concept
+tags: [universal]
+---
+# Page One
+Apples and oranges are different fruits.
+`
+	p2 := `---
+title: Page Two
+created: 2026-08-20
+updated: 2026-08-29
+type: concept
+tags: [universal]
+---
+# Page Two
+Cars and trucks are motor vehicles.
+`
+	p3 := `---
+title: Page Three
+created: 2026-08-20
+updated: 2026-08-29
+type: concept
+tags: [universal, special]
+---
+# Page Three
+Quantum computing uses qubits and entanglement.
+`
+	if err := os.WriteFile(filepath.Join(conceptsDir, "p1.md"), []byte(p1), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(conceptsDir, "p2.md"), []byte(p2), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(conceptsDir, "p3.md"), []byte(p3), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	v, err := vault.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	corp := NewCorpus(v)
+
+	matches := corp.Related("wiki/concepts/p1.md", 10)
+	for _, m := range matches {
+		if m.Path == "wiki/concepts/p2.md" {
+			if m.Signals.Tags != 0 {
+				t.Errorf("expected Tags == 0 for universal tag on all pages, got %v", m.Signals.Tags)
+			}
+			// Shared tags should still list "universal" for human explanation
+			foundShared := false
+			for _, st := range m.Shared.Tags {
+				if st == "universal" {
+					foundShared = true
+				}
+			}
+			if !foundShared {
+				t.Errorf("expected 'universal' in Shared.Tags, got %v", m.Shared.Tags)
+			}
+		}
+	}
+}
+
+// TestSimilarSharedSourceOnlyDupeScoreZero tests that two pages sharing only a source
+// and having no title or body similarity get a dupe score of 0.
+func TestSimilarSharedSourceOnlyDupeScoreZero(t *testing.T) {
+	dir := t.TempDir()
+	schemaContent := "# SCHEMA\n\n## Domain\ntest\n\n## Tags\n- a\n"
+	if err := os.WriteFile(filepath.Join(dir, "SCHEMA.md"), []byte(schemaContent), 0644); err != nil {
+		t.Fatalf("write SCHEMA.md: %v", err)
+	}
+	conceptsDir := filepath.Join(dir, "wiki", "concepts")
+	if err := os.MkdirAll(conceptsDir, 0755); err != nil {
+		t.Fatalf("mkdir concepts: %v", err)
+	}
+
+	p1 := `---
+title: Quantum Cryptography
+created: 2026-08-20
+updated: 2026-08-29
+type: concept
+sources: [raw/papers/shared-source.md]
+---
+# Quantum Cryptography
+Photons transmit quantum key distribution signals securely across optical fiber networks.
+`
+	p2 := `---
+title: Culinary Baking Techniques
+created: 2026-08-20
+updated: 2026-08-29
+type: concept
+sources: [raw/papers/shared-source.md]
+---
+# Culinary Baking Techniques
+Yeast fermentation creates carbon dioxide bubbles inside sourdough bread dough.
+`
+	if err := os.WriteFile(filepath.Join(conceptsDir, "crypto.md"), []byte(p1), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(conceptsDir, "baking.md"), []byte(p2), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	v, err := vault.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	corp := NewCorpus(v)
+
+	// Threshold 0.0001: dupe score must be exactly 0 because max(Title, Body) == 0
+	pairs := corp.Dupes(0.0001, 10, DupeOptions{IncludeLinked: true})
+	if len(pairs) != 0 {
+		t.Errorf("expected 0 dupe pairs, got %d (pairs: %+v)", len(pairs), pairs)
+	}
+
+	// Double check that Sources signal is 1.0, but Title and Body are 0
+	signals, _ := corp.computeSignals(corp.byPath["wiki/concepts/crypto.md"], corp.byPath["wiki/concepts/baking.md"])
+	if signals.Sources != 1.0 {
+		t.Errorf("expected Sources == 1.0, got %v", signals.Sources)
+	}
+	if signals.Title != 0 {
+		t.Errorf("expected Title == 0, got %v", signals.Title)
+	}
+	if signals.Body != 0 {
+		t.Errorf("expected Body == 0, got %v", signals.Body)
+	}
+}

@@ -2,73 +2,12 @@ package main
 
 import (
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/awepo-pro/lw/internal/testutil"
 	"github.com/awepo-pro/lw/internal/vaultstats"
 )
-
-type vaultFileSnapshot struct {
-	size  int64
-	mtime time.Time
-}
-
-func snapshotVault(t *testing.T, root string) map[string]vaultFileSnapshot {
-	t.Helper()
-	snap := make(map[string]vaultFileSnapshot)
-	err := filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(root, p)
-		if err != nil {
-			return err
-		}
-		slashRel := filepath.ToSlash(rel)
-		if slashRel == ".llmwiki/logs" || strings.HasPrefix(slashRel, ".llmwiki/logs/") {
-			if info.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !info.IsDir() {
-			snap[slashRel] = vaultFileSnapshot{
-				size:  info.Size(),
-				mtime: info.ModTime(),
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("snapshotVault: %v", err)
-	}
-	return snap
-}
-
-func assertVaultUnchanged(t *testing.T, root string, before map[string]vaultFileSnapshot) {
-	t.Helper()
-	after := snapshotVault(t, root)
-	if len(before) != len(after) {
-		t.Fatalf("vault file count changed: before %d, after %d", len(before), len(after))
-	}
-	for path, b := range before {
-		a, ok := after[path]
-		if !ok {
-			t.Errorf("file %s was removed", path)
-			continue
-		}
-		if a.size != b.size {
-			t.Errorf("file %s size changed: was %d, now %d", path, b.size, a.size)
-		}
-		if !a.mtime.Equal(b.mtime) {
-			t.Errorf("file %s mtime changed: was %v, now %v", path, b.mtime, a.mtime)
-		}
-	}
-}
 
 func TestStats_FixtureCopy(t *testing.T) {
 	root := testutil.CopyFixture(t, "minimal")
@@ -82,6 +21,9 @@ func TestStats_FixtureCopy(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "pages") {
 		t.Errorf("stdout does not contain 'pages':\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "distinct page pairs") {
+		t.Errorf("stdout does not contain 'distinct page pairs':\n%s", stdout)
 	}
 
 	assertVaultUnchanged(t, root, before)
@@ -103,6 +45,17 @@ func TestStats_JSON(t *testing.T) {
 	}
 	if s.Pages == 0 {
 		t.Errorf("s.Pages = 0 in minimal fixture")
+	}
+	if s.DistinctEdges == 0 {
+		t.Errorf("s.DistinctEdges = 0 in minimal fixture")
+	}
+
+	var rawJSON map[string]any
+	if err := json.Unmarshal([]byte(stdout), &rawJSON); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := rawJSON["distinct_edges"]; !ok {
+		t.Errorf("JSON output missing 'distinct_edges' key")
 	}
 }
 

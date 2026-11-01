@@ -47,10 +47,11 @@ func cmdSearch(args []string) error {
 	nFlag := fs.Int("n", 10, "maximum number of hits to return (must be >= 1)")
 	jsonFlag := fs.Bool("json", false, "emit hits as indented JSON array")
 
-	if err := fs.Parse(args); err != nil {
+	positionals, err := parseInterspersed(fs, args)
+	if err != nil {
 		return &exitError{code: 2}
 	}
-	if fs.NArg() == 0 {
+	if len(positionals) == 0 {
 		fmt.Fprintln(os.Stderr, "usage: lw search [--vault V] [--type T] [--tag t]... [-n N] [--json] <words>")
 		return &exitError{code: 2}
 	}
@@ -59,7 +60,7 @@ func cmdSearch(args []string) error {
 		return &exitError{code: 2}
 	}
 
-	q := strings.Join(fs.Args(), " ")
+	q := strings.Join(positionals, " ")
 
 	root, err := findVaultRoot(*vaultPath)
 	if err != nil {

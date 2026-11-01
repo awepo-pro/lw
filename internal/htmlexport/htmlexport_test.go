@@ -333,3 +333,150 @@ func TestHTMLExportDeterminism(t *testing.T) {
 		}
 	}
 }
+
+// TestHTMLExportTitleDedup tests that a leading ATX H1 matching the title is dropped
+// so that the title is not printed twice (for both wiki pages and raw pages).
+func TestHTMLExportTitleDedup(t *testing.T) {
+	vaultDir := t.TempDir()
+	schema := "# SCHEMA\n\n## Domain\ntest\n\n## Tags\n- a\n"
+	if err := os.WriteFile(filepath.Join(vaultDir, "SCHEMA.md"), []byte(schema), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, d := range []string{"wiki/concepts", "raw/papers"} {
+		if err := os.MkdirAll(filepath.Join(vaultDir, d), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Wiki page with matching leading H1
+	page1 := `---
+title: KV Cache
+type: concept
+tags: [a]
+---
+
+# KV Cache
+
+Body paragraph here.
+`
+	if err := os.WriteFile(filepath.Join(vaultDir, "wiki", "concepts", "kv-cache.md"), []byte(page1), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Raw page with matching leading H1
+	raw1 := `---
+title: Attention Paper
+source_url: https://example.com/paper.pdf
+ingested: 2026-10-01
+sha256: 1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef
+---
+
+# Attention Paper
+
+Raw text body.
+`
+	if err := os.WriteFile(filepath.Join(vaultDir, "raw", "papers", "paper.md"), []byte(raw1), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	v, err := vault.Open(vaultDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	outDir := t.TempDir()
+	if _, err := Export(v, outDir, Options{Title: "Title Dedup Test"}); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+
+	// Verify wiki page has only 1 H1 (from template header)
+	wikiHTML, err := os.ReadFile(filepath.Join(outDir, "wiki", "concepts", "kv-cache.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h1Count := strings.Count(string(wikiHTML), "<h1")
+	if h1Count != 1 {
+		t.Errorf("wiki page has %d <h1> tags, want exactly 1; content:\n%s", h1Count, string(wikiHTML))
+	}
+	if !strings.Contains(string(wikiHTML), "<p>Body paragraph here.</p>") {
+		t.Errorf("missing body paragraph in wiki page HTML:\n%s", string(wikiHTML))
+	}
+
+	// Verify raw page has only 1 H1 (from template header)
+	rawHTML, err := os.ReadFile(filepath.Join(outDir, "raw", "papers", "paper.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawH1Count := strings.Count(string(rawHTML), "<h1")
+	if rawH1Count != 1 {
+		t.Errorf("raw page has %d <h1> tags, want exactly 1; content:\n%s", rawH1Count, string(rawHTML))
+	}
+	if !strings.Contains(string(rawHTML), "<p>Raw text body.</p>") {
+		t.Errorf("missing body in raw page HTML:\n%s", string(rawHTML))
+	}
+}
+
+// TestHTMLExportGroupHeadings tests that index.html headings use plural capitalised names
+// for standard types and capitalised as is for custom types.
+func TestHTMLExportGroupHeadings(t *testing.T) {
+	vaultDir := t.TempDir()
+	schema := "# SCHEMA\n\n## Domain\ntest\n\n## Tags\n- a\n"
+	if err := os.WriteFile(filepath.Join(vaultDir, "SCHEMA.md"), []byte(schema), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	subdirs := []string{
+		"wiki/entities", "wiki/concepts", "wiki/comparisons",
+		"wiki/queries", "wiki/summaries", "wiki/references",
+	}
+	for _, d := range subdirs {
+		if err := os.MkdirAll(filepath.Join(vaultDir, d), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	pages := map[string]string{
+		"wiki/entities/e.md":      "---\ntitle: E\ntype: entity\n---\nBody.\n",
+		"wiki/concepts/c.md":      "---\ntitle: C\ntype: concept\n---\nBody.\n",
+		"wiki/comparisons/cmp.md": "---\ntitle: CMP\ntype: comparison\n---\nBody.\n",
+		"wiki/queries/q.md":       "---\ntitle: Q\ntype: query\n---\nBody.\n",
+		"wiki/summaries/s.md":     "---\ntitle: S\ntype: summary\n---\nBody.\n",
+		"wiki/references/r.md":    "---\ntitle: R\ntype: reference\n---\nBody.\n",
+	}
+	for p, content := range pages {
+		if err := os.WriteFile(filepath.Join(vaultDir, p), []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	v, err := vault.Open(vaultDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	outDir := t.TempDir()
+	if _, err := Export(v, outDir, Options{Title: "Group Headings Test"}); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+
+	indexHTML, err := os.ReadFile(filepath.Join(outDir, "index.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(indexHTML)
+
+	wantHeadings := []string{
+		"<h2>Entities</h2>",
+		"<h2>Concepts</h2>",
+		"<h2>Comparisons</h2>",
+		"<h2>Queries</h2>",
+		"<h2>Summaries</h2>",
+		"<h2>Reference</h2>",
+	}
+	for _, h := range wantHeadings {
+		if !strings.Contains(content, h) {
+			t.Errorf("index.html missing heading %s; content:\n%s", h, content)
+		}
+	}
+}
