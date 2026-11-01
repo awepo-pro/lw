@@ -80,7 +80,7 @@ without one. Staging refuses a **new** malformed, out-of-range or
 anchorless page cite with the reason at proposal time; markers a page
 already carries are never re-checked.
 
-## The 18 lint checks
+## The 19 lint checks
 
 `lw lint [--checks <ids>]` runs all of them; the model can only read what the
 engine reports. Severity is three-level — **error**, **warn**, **info** — and
@@ -104,6 +104,7 @@ command still exits 0. A vault with no findings prints `clean`.
 | `src-stale` | warn | a page's `updated` is more than 90 days earlier than a cited source's ingested date |
 | `cite-page` | warn | a paged `^[raw/... p.N]` marker is malformed, or names a page the raw source has no anchor for |
 | `cite-source` | warn | the body cites a `raw/` source the page's `sources:` list does not include |
+| `cite-superseded` | warn | a page body cites a raw that a newer revision supersedes (names the chain tip), or a raw's `supersedes:` names itself or a path that is not a committed raw |
 | `fm-quality` | info | `confidence: low`, `contested: true`, or a single source with no confidence set |
 | `log-rotate` | info | `log.md` exceeds 500 entries |
 | `size-split` | info | body exceeds 200 lines — split candidate |
