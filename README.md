@@ -231,10 +231,12 @@ are the same flag). Exit codes: `0` success, `1` failure, `2` usage error.
 | `show` | `-links`, `-json`, (positional) `<page>` | Print a page by path, basename, title or alias; `--links` adds links and backlinks |
 | `lint` | `-checks <id,id,…>`, `-fix`, `-json` | 19 checks ([docs/vault-schema.md](docs/vault-schema.md#the-19-lint-checks)). Exits 1 only on errors. `--fix` asks the agent to propose repairs — one page at a time (one agent round per page, a single changeset), as a changeset; a page whose round fails is named in the output and fails the command |
 | `graph` | `--format text\|dot\|json\|mermaid`, `--focus <page>`, `--depth N`, `--type T`, `--top N` | Summarise or export the wikilink graph (hubs, orphans, islands) |
+| `stats` | `--json`, `--stale-days <n>` | Vault shape at a glance: types, tags, sourcing, uncited raws, freshness, activity |
 | `note` | `-m "<text>"`; `list`: `-n <count>` | Captures a quick raw note into `notes/` (outside the wiki: no LLM, no changeset, never indexed or snapshotted). No `-m` opens `$VISUAL`/`$EDITOR`; an empty buffer saves nothing |
 | `mcp` | — | stdio MCP server; see below |
 | `doctor` | `--unlock`, `--rebuild-index`, `--discard-changeset`, `--json` | Index freshness, object-store completeness, journal tail, interrupted apply, stale lock, config, provider. Every failure prints the fix. `--discard-changeset` moves the open changeset to `changesets/rejected/`, journalled — the CLI way to discard one without opening the TUI. Exit 1 on any failure |
 | `tui` | — | The TUI; also the default with no command |
+| `completion` | `bash|zsh|fish` | Print a shell completion script (e.g. `source <(lw completion bash)`) |
 
 ## The TUI
 

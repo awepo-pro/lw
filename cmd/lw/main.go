@@ -43,6 +43,7 @@ var verbs = []verb{
 	{"show", cmdShow},
 	{"lint", cmdLint},
 	{"graph", cmdGraph},
+	{"stats", cmdStats},
 	{"mcp", cmdMCP},
 	{"doctor", cmdDoctor},
 	{"sync", cmdSync},
@@ -50,6 +51,7 @@ var verbs = []verb{
 	{"stage", cmdStage},
 	{"storage", cmdStorage},
 	{"ledger", cmdLedger},
+	{"completion", cmdCompletion},
 	{"version", cmdVersion},
 }
 
@@ -204,6 +206,8 @@ commands:
   lint [--fix]                 run the lint checks
   graph [--format text|dot|json|mermaid] [--focus <page> [--depth N]]
                                summarise or export the wikilink graph (hubs, orphans, islands)
+  stats [--json] [--stale-days N]
+                               vault shape at a glance: types, tags, sourcing, uncited raws, freshness, activity
   mcp [--ask]                  run the MCP server over stdio; --ask serves only the read-only
                                ask tools and sees the open changeset as lw query does
   doctor [--unlock] [--rebuild-index] [--discard-changeset] [--json]
@@ -219,6 +223,7 @@ commands:
   ledger check                 verify ledger syntax, dates, and duplicate IDs
   ledger sum [YYYY-MM]         total ledger amounts by currency and category
   ledger import [--dry-run]    copy Syncthing receipts into storage
+  completion bash|zsh|fish     print a shell completion script (e.g. source <(lw completion bash))
   version                      print the build version and exit
 
 flags:
