@@ -45,17 +45,51 @@ func (f Frontmatter) Encode() []byte {
 		writeField(&buf, "contested", "true")
 	}
 
-	extraKeys := make([]string, 0, len(f.Extra))
+	extraKeys := make([]string, 0, len(f.Extra)+len(f.ExtraYAML))
+	seen := make(map[string]struct{}, len(f.Extra)+len(f.ExtraYAML))
 	for k := range f.Extra {
 		extraKeys = append(extraKeys, k)
+		seen[k] = struct{}{}
+	}
+	for k := range f.ExtraYAML {
+		if _, ok := seen[k]; !ok {
+			extraKeys = append(extraKeys, k)
+			seen[k] = struct{}{}
+		}
 	}
 	sort.Strings(extraKeys)
 	for _, k := range extraKeys {
-		writeField(&buf, k, encodeScalar(f.Extra[k]))
+		if val, ok := f.Extra[k]; ok {
+			writeField(&buf, k, encodeScalar(val))
+		} else if yml, ok := f.ExtraYAML[k]; ok {
+			writeCompositeYAML(&buf, k, yml)
+		}
 	}
 
 	buf.WriteString("---\n")
 	return buf.Bytes()
+}
+
+// writeCompositeYAML writes an unknown composite frontmatter field (list or map).
+// If yml is a single-line flow value (starting with [ or { and without newlines),
+// it is emitted on one line: "key: <yml>\n". Otherwise it is emitted as "key:\n"
+// followed by each line indented by two spaces.
+func writeCompositeYAML(buf *bytes.Buffer, key, yml string) {
+	yml = strings.TrimRight(yml, "\r\n")
+	if (strings.HasPrefix(yml, "[") || strings.HasPrefix(yml, "{")) && !strings.Contains(yml, "\n") {
+		buf.WriteString(key)
+		buf.WriteString(": ")
+		buf.WriteString(yml)
+		buf.WriteByte('\n')
+		return
+	}
+	buf.WriteString(key)
+	buf.WriteString(":\n")
+	for _, line := range strings.Split(yml, "\n") {
+		buf.WriteString("  ")
+		buf.WriteString(line)
+		buf.WriteByte('\n')
+	}
 }
 
 // writeField appends one "key: value\n" line to buf.
