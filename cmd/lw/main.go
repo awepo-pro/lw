@@ -180,7 +180,7 @@ commands:
   tool --ask <name> [<json>]   run one read-only tool for an external agent's answer;
                                tool --ask --list prints their schemas
   note [-m "..." | -F <file>]  capture a quick raw note outside the wiki (no LLM, no review)
-  note list [-n N]             list captured notes, newest first
+  note list [-n N] [--pending] list captured notes, newest first (--pending: not yet ingested)
   status                       show the open changeset, if any
   diff [--op <id>]             show the projected diff of the open changeset
   commit -m "..." [--force]    commit the open changeset
