@@ -269,12 +269,19 @@ func parseCents(amtStr string) (int64, error) {
 // element starting with "."), parses every file, and returns the valid transactions
 // (in path, then line order), every issue (same order), and the number of files read.
 // A missing ledger/ directory is not an error: (nil, nil, 0, nil).
+// When <root>/ledger is a symlink to a directory, Load resolves and traverses it;
+// symlinked subdirectories inside the ledger tree are not followed.
 func Load(root string) (txns []Txn, issues []Issue, files int, err error) {
 	ledgerDir := filepath.Join(root, "ledger")
-	info, statErr := os.Stat(ledgerDir)
-	if os.IsNotExist(statErr) {
+	_, lstatErr := os.Lstat(ledgerDir)
+	if os.IsNotExist(lstatErr) {
 		return nil, nil, 0, nil
 	}
+	if lstatErr != nil {
+		return nil, nil, 0, lstatErr
+	}
+
+	info, statErr := os.Stat(ledgerDir)
 	if statErr != nil {
 		return nil, nil, 0, statErr
 	}
@@ -282,17 +289,25 @@ func Load(root string) (txns []Txn, issues []Issue, files int, err error) {
 		return nil, nil, 0, nil
 	}
 
+	resolvedDir := ledgerDir
+	if resolved, rerr := filepath.EvalSymlinks(ledgerDir); rerr == nil {
+		resolvedDir = resolved
+	}
+
 	var mdFiles []string
-	walkErr := filepath.WalkDir(ledgerDir, func(path string, d fs.DirEntry, walkErr error) error {
+	walkErr := filepath.WalkDir(resolvedDir, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
+		if path == resolvedDir {
+			return nil
+		}
 		name := d.Name()
-		rel, relErr := filepath.Rel(root, path)
+		rel, relErr := filepath.Rel(resolvedDir, path)
 		if relErr != nil {
 			return relErr
 		}
-		relSlash := filepath.ToSlash(rel)
+		relSlash := "ledger/" + filepath.ToSlash(rel)
 
 		if d.IsDir() {
 			if strings.HasPrefix(name, ".") {
