@@ -10,7 +10,7 @@ Your vault uses dedicated root directories for mobile capture outside the compil
 - `ledger/YYYY/MM/YYYY-MM-DD.md`: Daily plain-text expense ledgers.
 - `ledger/receipts/YYYY/MM/`: Local receipt images associated with transactions.
 
-Both `notes/` and `ledger/` are kept outside `wiki/` and `raw/`, meaning they are not indexed or compiled into wiki pages.
+Both `notes/` and `ledger/` are kept outside `wiki/` and `raw/`, meaning they are not indexed or compiled into wiki pages. When a note from `notes/` is ingested into the wiki (via `lw ingest --note <id>` or `lw ingest notes/<file>.md`), it lands in `raw/notes/` (074 S3).
 
 ## Grammar v1 (Expense Tracking)
 
@@ -61,12 +61,29 @@ When opening the synced vault in Obsidian on Android:
 
 ## Receipts
 
-Receipts stored under `ledger/receipts/` are not synced by `lw sync` until S2. Syncthing is their only transport for now.
+The managed `.gitignore` contains `/ledger/receipts/` to prevent large binary receipt images from cluttering the Git repository. Receipts delivered to `ledger/receipts/` via Syncthing are copied into `storage/` using `lw ledger import`:
 
-The managed `.gitignore` contains `/ledger/receipts/` to prevent large binary receipt images from cluttering the Git repository. When workflow 074 stage S2 lands, `lw storage` will carry content-addressed receipts across PCs alongside `lw sync`.
+```bash
+lw ledger import
+```
+
+This stores receipts under `receipts/<path>` in content-addressed storage, where `lw sync` carries them across PCs. The original files in `ledger/receipts/` remain untouched.
+
+## Ledger Verification and Totals
+
+Use `lw ledger check` to validate ledger files for grammar syntax, directory layout, date matching, and duplicate IDs:
+
+```bash
+lw ledger check
+```
+
+Use `lw ledger sum` to aggregate amounts by currency and category, optionally filtered by month (`YYYY-MM`):
+
+```bash
+lw ledger sum 2026-10
+```
 
 ## What lw does not do
 
 - `ledger/` is never compiled into the wiki and is invisible to `lw ask`/ingest tools by default.
-- No totals yet (S4 introduces `lw ledger check` and `lw ledger sum` for validation and aggregation).
 - Double-entry accounting is out of scope for v1.

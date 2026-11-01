@@ -285,13 +285,14 @@ func TestLedgerImportUsageAndExitCodes(t *testing.T) {
 		t.Errorf("run(ledger badsub) exit %d, want 2", code)
 	}
 
-	// Subcommands check and sum are unknown in C1 -> exit 2
+	// A-074-4 (C2): check and sum were unknown in C1 (exit 2, a transitional
+	// pin); since C2 they are known subcommands and exit 0 on a clean vault.
 	for _, sub := range []string{"check", "sum"} {
 		_, _, code = captureRun(t, func() int {
 			return run([]string{"ledger", sub, "--vault", root})
 		})
-		if code != 2 {
-			t.Errorf("run(ledger %s) exit %d, want 2 in C1", sub, code)
+		if code != 0 {
+			t.Errorf("run(ledger %s) exit %d, want 0 (known subcommand, clean vault)", sub, code)
 		}
 	}
 
