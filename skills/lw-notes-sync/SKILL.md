@@ -91,6 +91,8 @@ is ingested later. For each IMAGE path `P` with file name `N`:
      already exists, do not move; report the clash.
    - **Embedded only by ledger day files `ledger/YYYY/MM/*.md`, all in one month:** move it to
      `ledger/receipts/YYYY/MM/N` (create the folder with `mkdir -p`), same `-n` and path-free conditions.
+     `ledger/receipts/` is git-ignored, so the move takes it out of `git status`; Step 4 carries it with
+     `LW ledger import` instead.
    - **Embedded with a path** (`![](../x.png)`, `![[attachments/x.png]]`): moving it would break the link and fixing
      the link means editing the note. Leave it, report it as ASK.
    - **Embedded from `wiki/`, or from notes in different folders, or by nothing at all:** leave it, report as ASK.
@@ -113,6 +115,8 @@ beside its note and this step has nothing to do.
 Only if no path is STOP or ASK:
 
 ```bash
+LW ledger check         # only if a ledger/ file changed; a grammar error is ASK: report it, do not sync
+LW ledger import        # copies ledger/receipts/ into lw storage, which lw sync carries (receipts are not in git)
 LW sync
 ```
 
