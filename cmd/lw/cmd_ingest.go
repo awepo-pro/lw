@@ -351,7 +351,7 @@ func cmdIngest(args []string) error {
 		return &exitError{code: 2}
 	}
 	if len(sources) == 0 && len(notes) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: lw ingest <url|path|dir>... [--kind K] [--dry-run]")
+		fmt.Fprintln(os.Stderr, "usage: lw ingest <url|path|dir>... [--note <id>]... [--kind K] [--dry-run]")
 		return &exitError{code: 2}
 	}
 

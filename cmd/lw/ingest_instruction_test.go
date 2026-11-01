@@ -522,7 +522,7 @@ func TestInstructionIntent(t *testing.T) {
 			t.Fatalf("prepareRun 1 failed: %d", code1)
 		}
 		cs1 := rcOpenChangeset(t, root)
-		wantTag := " \u2014 note: " + strings.Repeat("z", 60) + "..."
+		wantTag := " \u2014 note: " + strings.Repeat("z", 60) + "\u2026"
 		wantIntent1 := "ingest " + src1 + wantTag
 		if cs1.Intent != wantIntent1 {
 			t.Errorf("intent = %q, want %q", cs1.Intent, wantIntent1)
