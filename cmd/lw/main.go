@@ -39,6 +39,8 @@ var verbs = []verb{
 	{"trace", cmdTrace},
 	{"revert", cmdRevert},
 	{"query", cmdQuery},
+	{"search", cmdSearch},
+	{"show", cmdShow},
 	{"lint", cmdLint},
 	{"mcp", cmdMCP},
 	{"doctor", cmdDoctor},
@@ -194,6 +196,10 @@ commands:
   query "..."                  ask the curator agent a question
   query --prepare "..."        print a brief for an external agent to answer the question
                                (no LLM, no key); the agent calls lw tool --ask
+  search [--type T] [--tag t] [-n N] [--json] <words>
+                               word-search committed pages (no LLM, no key); exit 1 when nothing matches
+  show [--links] [--json] <page>
+                               print a page by path, basename, title or alias; --links adds links and backlinks
   lint [--fix]                 run the lint checks
   mcp [--ask]                  run the MCP server over stdio; --ask serves only the read-only
                                ask tools and sees the open changeset as lw query does
