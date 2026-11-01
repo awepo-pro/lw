@@ -134,6 +134,9 @@ func normaliseSource(s string) string {
 		s = strings.TrimPrefix(s, "./")
 	}
 	s = strings.TrimSpace(s)
+	if idx := strings.IndexByte(s, '#'); idx != -1 {
+		s = s[:idx]
+	}
 	if s == "" {
 		return ""
 	}
@@ -446,6 +449,9 @@ func (c *Corpus) Related(path string, n int) []Match {
 			directBonus = 0.10
 		}
 		score := 0.30*signals.Links + 0.20*signals.Sources + 0.15*signals.Tags + 0.15*signals.Title + 0.20*signals.Body + directBonus
+		if score > 1.0 {
+			score = 1.0
+		}
 		if score > 0.05 {
 			matches = append(matches, Match{
 				Path:    other.path,
@@ -460,6 +466,9 @@ func (c *Corpus) Related(path string, n int) []Match {
 	sort.Slice(matches, func(i, j int) bool {
 		if matches[i].Score != matches[j].Score {
 			return matches[i].Score > matches[j].Score
+		}
+		if matches[i].Signals.Direct != matches[j].Signals.Direct {
+			return matches[i].Signals.Direct
 		}
 		return matches[i].Path < matches[j].Path
 	})

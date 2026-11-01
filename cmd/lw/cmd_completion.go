@@ -10,6 +10,7 @@ import (
 
 // completionSubcommands maps verbs that take subcommands to those subcommands.
 var completionSubcommands = map[string][]string{
+	"export":     {"html"},
 	"note":       {"list"},
 	"session":    {"list", "show"},
 	"trace":      {"show"},

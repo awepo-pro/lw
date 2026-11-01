@@ -516,3 +516,55 @@ func TestHTMLExportSymlinkDirRefused(t *testing.T) {
 		t.Fatalf("files/directories were written into otherDir: %v", names)
 	}
 }
+
+// TestR5CitationFragment verifies finding R-5: inline citation with fragment resolves to raw html and populates citedBy.
+func TestR5CitationFragment(t *testing.T) {
+	vaultDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(vaultDir, "SCHEMA.md"), []byte("# SCHEMA\n## Domain\ntest\n## Tags\n- test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(vaultDir, "wiki", "concepts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(vaultDir, "raw", "papers"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rawContent := "---\ntitle: Attention Paper\nsource_url: https://example.com/p\ningested: 2026-10-01\nsha256: 1111111111111111111111111111111111111111111111111111111111111111\n---\nAttention is all you need.\n"
+	if err := os.WriteFile(filepath.Join(vaultDir, "raw", "papers", "p.md"), []byte(rawContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pageContent := "---\ntitle: Attention Concept\ntype: concept\ntags: [test]\n---\nSee ^[raw/papers/p.md#L10-L20].\n"
+	if err := os.WriteFile(filepath.Join(vaultDir, "wiki", "concepts", "c.md"), []byte(pageContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	v, err := vault.Open(vaultDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outDir := t.TempDir()
+	if _, err := Export(v, outDir, Options{}); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+
+	// 1. Check raw HTML citedBy contains Attention Concept
+	rawHTML, err := os.ReadFile(filepath.Join(outDir, "raw", "papers", "p.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(rawHTML), "Attention Concept") {
+		t.Errorf("raw/papers/p.html missing citedBy for Attention Concept:\n%s", string(rawHTML))
+	}
+
+	// 2. Check concept HTML cite link points to p.html, not p.md#L10-L20.html
+	conceptHTML, err := os.ReadFile(filepath.Join(outDir, "wiki", "concepts", "c.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(conceptHTML), `href="../../raw/papers/p.md`) {
+		t.Errorf("concept HTML contains unstripped fragment in href:\n%s", string(conceptHTML))
+	}
+	if !strings.Contains(string(conceptHTML), `href="../../raw/papers/p.html"`) {
+		t.Errorf("concept HTML missing expected href to raw/papers/p.html:\n%s", string(conceptHTML))
+	}
+}

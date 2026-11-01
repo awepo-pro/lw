@@ -1,6 +1,7 @@
 package main
 
 import (
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -16,6 +17,23 @@ func resolvePageArg(v *vault.Vault, arg string) (page *vault.Page, ambiguous []*
 		if p, ok := v.Page(resolvedPath); ok {
 			return p, nil
 		}
+	}
+
+	var baseMatches []*vault.Page
+	cleanArg := strings.TrimSuffix(strings.TrimSpace(arg), ".md")
+	if !strings.Contains(cleanArg, "/") {
+		for _, p := range v.Pages() {
+			base := strings.TrimSuffix(filepath.Base(p.Path), ".md")
+			if strings.EqualFold(base, cleanArg) {
+				baseMatches = append(baseMatches, p)
+			}
+		}
+	}
+	if len(baseMatches) > 1 {
+		sort.Slice(baseMatches, func(i, j int) bool {
+			return baseMatches[i].Path < baseMatches[j].Path
+		})
+		return nil, baseMatches
 	}
 
 	var titleMatches []*vault.Page

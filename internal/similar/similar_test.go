@@ -1,6 +1,7 @@
 package similar
 
 import (
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -663,5 +664,83 @@ Yeast fermentation creates carbon dioxide bubbles inside sourdough bread dough.
 	}
 	if signals.Body != 0 {
 		t.Errorf("expected Body == 0, got %v", signals.Body)
+	}
+}
+
+// TestR2ScoreClampedAtMostOne verifies finding R-2: Related scores must never exceed 1.0.
+func TestR2ScoreClampedAtMostOne(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "SCHEMA.md"), []byte("# SCHEMA\n## Domain\ntest\n## Tags\n- physics\n- other\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	conceptsDir := filepath.Join(dir, "wiki", "concepts")
+	if err := os.MkdirAll(conceptsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var sharedLinks string
+	for k := 0; k < 20; k++ {
+		pName := fmt.Sprintf("n%d", k)
+		sharedLinks += fmt.Sprintf(" [[wiki/concepts/%s.md]]", pName)
+		if err := os.WriteFile(filepath.Join(conceptsDir, pName+".md"), []byte(fmt.Sprintf("---\ntitle: %s\ntype: concept\ntags: [other]\n---\nBody\n", pName)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p1 := fmt.Sprintf("---\ntitle: Quantum Computing\ntype: concept\ntags: [physics]\nsources: [raw/paper.md]\n---\nQuantum computing [[wiki/concepts/p2.md]] %s.\n", sharedLinks)
+	p2 := fmt.Sprintf("---\ntitle: Quantum Computing\ntype: concept\ntags: [physics]\nsources: [raw/paper.md]\n---\nQuantum computing [[wiki/concepts/p1.md]] %s.\n", sharedLinks)
+	if err := os.WriteFile(filepath.Join(conceptsDir, "p1.md"), []byte(p1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(conceptsDir, "p2.md"), []byte(p2), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	v, err := vault.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	corpus := NewCorpus(v)
+	matches := corpus.Related("wiki/concepts/p1.md", 5)
+	found := false
+	for _, m := range matches {
+		if m.Path == "wiki/concepts/p2.md" {
+			found = true
+			if m.Score > 1.0 {
+				t.Errorf("match %s has score %f > 1.0 (signals: %+v)", m.Path, m.Score, m.Signals)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("wiki/concepts/p2.md not found in Related matches")
+	}
+}
+
+// TestR5CitationFragment verifies finding R-5: two pages citing different line fragments
+// of the same raw source share the source signal.
+func TestR5CitationFragment(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "SCHEMA.md"), []byte("# SCHEMA\n## Domain\ntest\n## Tags\n- test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "wiki", "concepts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p1 := "---\ntitle: Page One\ntype: concept\ntags: [test]\n---\nBody citing ^[raw/papers/p.md#L10-L20].\n"
+	p2 := "---\ntitle: Page Two\ntype: concept\ntags: [test]\n---\nBody citing ^[raw/papers/p.md#L30-L40].\n"
+	if err := os.WriteFile(filepath.Join(dir, "wiki", "concepts", "p1.md"), []byte(p1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "wiki", "concepts", "p2.md"), []byte(p2), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	v, err := vault.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	corp := NewCorpus(v)
+	matches := corp.Related("wiki/concepts/p1.md", 5)
+	if len(matches) == 0 {
+		t.Fatalf("expected at least 1 match, got 0")
+	}
+	if matches[0].Signals.Sources != 1.0 {
+		t.Errorf("Signals.Sources = %v, want 1.0", matches[0].Signals.Sources)
 	}
 }

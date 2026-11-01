@@ -472,3 +472,37 @@ func TestG8Determinism(t *testing.T) {
 		t.Errorf("non-deterministic WriteDOT output")
 	}
 }
+
+// TestR8NewlineEscapesInDOTAndMermaid verifies finding R-8:
+// dotEscape replaces \r with "" and \n with \n; mermaidEscape replaces \r\n / \n with a space.
+func TestR8NewlineEscapesInDOTAndMermaid(t *testing.T) {
+	g := &Graph{
+		Nodes: []Node{
+			{Path: "wiki/p1.md", Title: "Line1\r\nLine2", Type: "concept"},
+		},
+	}
+
+	var dotBuf bytes.Buffer
+	if err := WriteDOT(&dotBuf, g); err != nil {
+		t.Fatalf("WriteDOT: %v", err)
+	}
+	dotOut := dotBuf.String()
+	if strings.Contains(dotOut, "Line1\nLine2") || strings.Contains(dotOut, "\r") {
+		t.Errorf("WriteDOT contains raw unescaped newline or carriage return:\n%s", dotOut)
+	}
+	if !strings.Contains(dotOut, `label="Line1\nLine2"`) {
+		t.Errorf("WriteDOT missing escaped newline label:\n%s", dotOut)
+	}
+
+	var mermaidBuf bytes.Buffer
+	if err := WriteMermaid(&mermaidBuf, g); err != nil {
+		t.Fatalf("WriteMermaid: %v", err)
+	}
+	mermaidOut := mermaidBuf.String()
+	if strings.Contains(mermaidOut, "Line1\nLine2") || strings.Contains(mermaidOut, "\r") {
+		t.Errorf("WriteMermaid contains raw unescaped newline or carriage return:\n%s", mermaidOut)
+	}
+	if !strings.Contains(mermaidOut, `n0["Line1 Line2"]`) {
+		t.Errorf("WriteMermaid missing space-replaced newline label:\n%s", mermaidOut)
+	}
+}

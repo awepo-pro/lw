@@ -149,6 +149,41 @@ func TestResolvePageArg(t *testing.T) {
 			t.Fatalf("expected nil, nil for missing page, got p=%v, amb=%v", p, amb)
 		}
 	})
+
+	t.Run("ambiguous basename across directories returns candidates sorted by path", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "SCHEMA.md"), []byte("# SCHEMA\n## Domain\ntest\n## Tags\n- test\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(dir, "wiki", "concepts"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(dir, "wiki", "entities"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "wiki", "concepts", "foo.md"), []byte("---\ntitle: Foo Concept\ntype: concept\ntags: [test]\n---\nFoo concept.\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "wiki", "entities", "foo.md"), []byte("---\ntitle: Foo Entity\ntype: entity\ntags: [test]\n---\nFoo entity.\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		vaultObj, err := vault.Open(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p, amb := resolvePageArg(vaultObj, "foo")
+		if p != nil || len(amb) != 2 {
+			t.Fatalf("expected nil page and 2 ambiguous candidates, got p=%v, len(amb)=%d", p, len(amb))
+		}
+		if amb[0].Path != "wiki/concepts/foo.md" || amb[1].Path != "wiki/entities/foo.md" {
+			t.Fatalf("candidates not sorted by path: %v, %v", amb[0].Path, amb[1].Path)
+		}
+
+		p2, amb2 := resolvePageArg(vaultObj, "foo.md")
+		if p2 != nil || len(amb2) != 2 {
+			t.Fatalf("expected nil page and 2 ambiguous candidates for foo.md, got p=%v, len(amb)=%d", p2, len(amb2))
+		}
+	})
 }
 
 func TestResolvePageArg_GraphFocus(t *testing.T) {

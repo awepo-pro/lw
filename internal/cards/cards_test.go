@@ -693,3 +693,112 @@ Learning rate can be tuned using grid search or cosine annealing schedule.
 		}
 	}
 }
+
+// TestR3NestedCodeFence verifies finding R-3: 4-backtick code fences do not prematurely close on nested 3-backtick lines.
+func TestR3NestedCodeFence(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "SCHEMA.md"), []byte("# SCHEMA\n## Domain\ntest\n## Tags\n- test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "wiki", "concepts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	page := "---\ntitle: Markdown Fences\ntype: concept\ntags: [test]\n---\n# Markdown Fences\n\n" +
+		"````markdown\n```go\nfunc secretInsideFence() string { return \"should not be in card\" }\n```\n````\n\n" +
+		"This is the real prose that should become the card back.\n"
+	if err := os.WriteFile(filepath.Join(dir, "wiki", "concepts", "fences.md"), []byte(page), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	v, err := vault.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cards := Extract(v, Options{})
+	if len(cards) == 0 {
+		t.Fatalf("expected at least 1 card, got 0")
+	}
+	for _, c := range cards {
+		if strings.Contains(c.Back, "secretInsideFence") {
+			t.Errorf("card back leaked code inside fence: %q", c.Back)
+		}
+		if !strings.Contains(c.Back, "This is the real prose") {
+			t.Errorf("card back missing real prose: %q", c.Back)
+		}
+	}
+}
+
+// TestR4TruncateRunesCJK verifies finding R-4: 650 CJK runes with one space at index 2
+// yields a card whose back has >= 600 runes before the ellipsis.
+func TestR4TruncateRunesCJK(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "SCHEMA.md"), []byte("# SCHEMA\n## Domain\ntest\n## Tags\n- test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "wiki", "concepts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cjkBody := "\u6982\u5ff5 " + strings.Repeat("\u4e00", 647)
+	page := "---\ntitle: \u91cf\u5b50\u8ba1\u7b97\ntype: concept\ntags: [test]\n---\n# \u91cf\u5b50\u8ba1\u7b97\n\n" + cjkBody + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "wiki", "concepts", "quantum.md"), []byte(page), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	v, err := vault.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cards := Extract(v, Options{MaxBack: 600})
+	if len(cards) == 0 {
+		t.Fatalf("expected at least 1 card, got 0 (card was dropped)")
+	}
+	back := cards[0].Back
+	ellipsisIdx := strings.Index(back, "\u2026")
+	if ellipsisIdx == -1 {
+		t.Fatalf("expected ellipsis in back: %q", back)
+	}
+	beforeEllipsis := strings.TrimRight(back[:ellipsisIdx], " ")
+	runesCount := utf8.RuneCountInString(beforeEllipsis)
+	if runesCount < 600 {
+		t.Errorf("expected >= 600 runes before ellipsis, got %d", runesCount)
+	}
+}
+
+// TestR6EmptyTitleUsesBasename verifies finding R-6: when FM.Title is empty,
+// use the page basename without .md everywhere a title is shown in a card.
+func TestR6EmptyTitleUsesBasename(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "SCHEMA.md"), []byte("# SCHEMA\n## Domain\ntest\n## Tags\n- test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "wiki", "concepts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	page := "---\ntype: concept\ntags: [test]\n---\n# Heading Not Title\n\n" +
+		"This is body of no-title page with enough runes to meet the min back requirement.\n\n" +
+		"## Section One\n\n" +
+		"This is section one body with enough runes to meet the min back requirement.\n"
+	if err := os.WriteFile(filepath.Join(dir, "wiki", "concepts", "no-title.md"), []byte(page), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	v, err := vault.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cards := Extract(v, Options{})
+	if len(cards) < 2 {
+		t.Fatalf("expected at least 2 cards, got %d", len(cards))
+	}
+	lead := cards[0]
+	if lead.Title != "no-title" {
+		t.Errorf("lead card Title = %q, want 'no-title'", lead.Title)
+	}
+	if lead.Front != "What is no-title?" {
+		t.Errorf("lead card Front = %q, want 'What is no-title?'", lead.Front)
+	}
+	sec := cards[1]
+	if sec.Title != "no-title" {
+		t.Errorf("section card Title = %q, want 'no-title'", sec.Title)
+	}
+	if sec.Front != "no-title \u2014 Section One" {
+		t.Errorf("section card Front = %q, want 'no-title \u2014 Section One'", sec.Front)
+	}
+}

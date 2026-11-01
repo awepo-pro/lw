@@ -191,7 +191,11 @@ func renderWikiBody(v *vault.Vault, p *vault.Page, currentRelDir string) (string
 	for i, c := range validCites {
 		n := i + 1
 		token := fmt.Sprintf("LWCITE%05dLW", n)
-		rawHTMLPath := strings.TrimSuffix(c.Source, ".md") + ".html"
+		src := c.Source
+		if idx := strings.IndexByte(src, '#'); idx != -1 {
+			src = src[:idx]
+		}
+		rawHTMLPath := strings.TrimSuffix(src, ".md") + ".html"
 		rel, err := filepath.Rel(currentRelDir, rawHTMLPath)
 		if err != nil {
 			rel = rawHTMLPath

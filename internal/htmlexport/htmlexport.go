@@ -380,14 +380,22 @@ func Export(v *vault.Vault, outDir string, o Options) (Result, error) {
 		for _, p := range pages {
 			citesThis := false
 			for _, s := range p.FM.Sources {
-				if s == r.Path {
+				sClean := s
+				if idx := strings.IndexByte(sClean, '#'); idx != -1 {
+					sClean = sClean[:idx]
+				}
+				if sClean == r.Path {
 					citesThis = true
 					break
 				}
 			}
 			if !citesThis {
 				for _, c := range cite.Scan(p.Body) {
-					if c.Err == "" && c.Source == r.Path {
+					cSrc := c.Source
+					if idx := strings.IndexByte(cSrc, '#'); idx != -1 {
+						cSrc = cSrc[:idx]
+					}
+					if c.Err == "" && cSrc == r.Path {
 						citesThis = true
 						break
 					}

@@ -101,6 +101,42 @@ func TestParseInterspersed(t *testing.T) {
 			t.Errorf("pos = %v, want %v", pos, wantPos)
 		}
 	})
+
+	t.Run("R-1 double dash consumed as flag value", func(t *testing.T) {
+		fs := flag.NewFlagSet("test", flag.ContinueOnError)
+		title := fs.String("title", "", "")
+		force := fs.Bool("force", false, "")
+		pos, err := parseInterspersed(fs, []string{"--title", "--", "out", "--force"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if *title != "--" {
+			t.Errorf("title = %q, want %q", *title, "--")
+		}
+		if !*force {
+			t.Errorf("force = %v, want true", *force)
+		}
+		wantPos := []string{"out"}
+		if !reflect.DeepEqual(pos, wantPos) {
+			t.Errorf("pos = %v, want %v", pos, wantPos)
+		}
+	})
+
+	t.Run("R-1 double dash delimiter after positional", func(t *testing.T) {
+		fs := flag.NewFlagSet("test", flag.ContinueOnError)
+		force := fs.Bool("force", false, "")
+		pos, err := parseInterspersed(fs, []string{"a", "--", "--force"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if *force {
+			t.Errorf("force = true, want false")
+		}
+		wantPos := []string{"a", "--force"}
+		if !reflect.DeepEqual(pos, wantPos) {
+			t.Errorf("pos = %v, want %v", pos, wantPos)
+		}
+	})
 }
 
 func TestVerbsAcceptTrailingFlags(t *testing.T) {

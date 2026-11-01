@@ -232,6 +232,8 @@ func Components(g *Graph) [][]string {
 func dotEscape(s string) string {
 	s = strings.ReplaceAll(s, "\\", "\\\\")
 	s = strings.ReplaceAll(s, "\"", "\\\"")
+	s = strings.ReplaceAll(s, "\r", "")
+	s = strings.ReplaceAll(s, "\n", `\n`)
 	return s
 }
 
@@ -333,6 +335,8 @@ func WriteJSON(w io.Writer, g *Graph) error {
 }
 
 func mermaidEscape(s string) string {
+	s = strings.ReplaceAll(s, "\r", "")
+	s = strings.ReplaceAll(s, "\n", " ")
 	return strings.ReplaceAll(s, "\"", "#quot;")
 }
 

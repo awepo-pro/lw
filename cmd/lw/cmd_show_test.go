@@ -223,3 +223,39 @@ func TestShowVaultReadOnly(t *testing.T) {
 
 	assertVaultUnchanged(t, root, before)
 }
+
+// TestR9ShowAmbiguousBasename verifies finding R-9:
+// show foo with wiki/concepts/foo.md and wiki/entities/foo.md exits 1 and stderr says ambiguous and lists both.
+func TestR9ShowAmbiguousBasename(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "SCHEMA.md"), []byte("# SCHEMA\n## Domain\ntest\n## Tags\n- test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "wiki", "concepts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "wiki", "entities"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p1 := "---\ntitle: Foo Concept\ntype: concept\ntags: [test]\n---\nFoo concept body.\n"
+	p2 := "---\ntitle: Foo Entity\ntype: entity\ntags: [test]\n---\nFoo entity body.\n"
+	if err := os.WriteFile(filepath.Join(dir, "wiki", "concepts", "foo.md"), []byte(p1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "wiki", "entities", "foo.md"), []byte(p2), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, code := captureRun(t, func() int {
+		return run([]string{"show", "--vault", dir, "foo"})
+	})
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1; stdout: %s; stderr: %s", code, stdout, stderr)
+	}
+	if !strings.Contains(stderr, `lw show: "foo" is ambiguous`) {
+		t.Errorf("stderr missing '\"foo\" is ambiguous', got:\n%s", stderr)
+	}
+	if !strings.Contains(stderr, "wiki/concepts/foo.md") || !strings.Contains(stderr, "wiki/entities/foo.md") {
+		t.Errorf("stderr missing ambiguous candidate paths, got:\n%s", stderr)
+	}
+}

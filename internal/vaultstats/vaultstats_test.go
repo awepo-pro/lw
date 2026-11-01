@@ -503,3 +503,33 @@ Orphan page with no links.
 		t.Errorf("WriteText missing expected line %q\nFull output:\n%s", wantLine, out)
 	}
 }
+
+// TestR5CitationFragment verifies finding R-5: inline citation with fragment does not cause uncited raw.
+func TestR5CitationFragment(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "SCHEMA.md"), []byte("# SCHEMA\n## Domain\ntest\n## Tags\n- test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "wiki", "concepts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "raw", "papers"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rawContent := "---\nsource_url: https://example.com/p\ningested: 2026-10-01\nsha256: 1111111111111111111111111111111111111111111111111111111111111111\n---\nPaper body.\n"
+	if err := os.WriteFile(filepath.Join(dir, "raw", "papers", "p.md"), []byte(rawContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pageContent := "---\ntitle: Concept P\ntype: concept\ntags: [test]\n---\nCiting paper ^[raw/papers/p.md#L10-L20].\n"
+	if err := os.WriteFile(filepath.Join(dir, "wiki", "concepts", "p.md"), []byte(pageContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	v, err := vault.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := vaultstats.Compute(v, filepath.Join(dir, "no-journal"), time.Now(), 90)
+	if len(s.UncitedRaws) != 0 {
+		t.Errorf("len(s.UncitedRaws) = %d, want 0 (raws: %v)", len(s.UncitedRaws), s.UncitedRaws)
+	}
+}

@@ -78,13 +78,16 @@ type Stats struct {
 }
 
 // normaliseSource trims spaces, strips surrounding [[ ]], drops a leading "./",
-// and ensures a ".md" suffix when comparing source references.
+// strips any "#fragment", and ensures a ".md" suffix when comparing source references.
 func normaliseSource(s string) string {
 	s = strings.TrimSpace(s)
 	if strings.HasPrefix(s, "[[") && strings.HasSuffix(s, "]]") {
 		s = strings.TrimSpace(s[2 : len(s)-2])
 	}
 	s = strings.TrimPrefix(s, "./")
+	if idx := strings.IndexByte(s, '#'); idx != -1 {
+		s = s[:idx]
+	}
 	if s != "" && !strings.HasSuffix(s, ".md") {
 		s += ".md"
 	}

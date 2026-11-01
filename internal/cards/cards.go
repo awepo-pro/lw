@@ -5,6 +5,7 @@ package cards
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"unicode"
@@ -125,6 +126,15 @@ func extractPageCards(v *vault.Vault, p *vault.Page, o Options) []Card {
 	return out
 }
 
+// pageTitle returns p.FM.Title if non-empty, or the page basename without .md.
+func pageTitle(p *vault.Page) string {
+	if strings.TrimSpace(p.FM.Title) != "" {
+		return strings.TrimSpace(p.FM.Title)
+	}
+	base := filepath.Base(p.Path)
+	return strings.TrimSuffix(base, ".md")
+}
+
 // extractLeadCard extracts the lead card for page p, if eligible.
 func extractLeadCard(v *vault.Vault, p *vault.Page, o Options, tags []string) (Card, bool) {
 	leadStart := 0
@@ -164,13 +174,14 @@ func extractLeadCard(v *vault.Vault, p *vault.Page, o Options, tags []string) (C
 		return Card{}, false
 	}
 
-	front := leadFront(p.FM.Type, p.FM.Title)
+	title := pageTitle(p)
+	front := leadFront(p.FM.Type, title)
 	card := Card{
 		ID:      computeID(p.Path, ""),
 		Front:   front,
 		Back:    back,
 		Path:    p.Path,
-		Title:   p.FM.Title,
+		Title:   title,
 		Section: "",
 		Tags:    tags,
 	}
@@ -224,13 +235,14 @@ func extractSectionCards(v *vault.Vault, p *vault.Page, o Options, tags []string
 			continue
 		}
 
-		front := p.FM.Title + " \u2014 " + sec.Title
+		title := pageTitle(p)
+		front := title + " \u2014 " + sec.Title
 		c := Card{
 			ID:      computeID(p.Path, sec.Title),
 			Front:   front,
 			Back:    back,
 			Path:    p.Path,
-			Title:   p.FM.Title,
+			Title:   title,
 			Section: sec.Title,
 			Tags:    tags,
 		}
@@ -404,7 +416,8 @@ func extractBlocks(markdown string) []block {
 	var curList []string
 	var curTable []string
 	inFence := false
-	var fenceMarker string
+	var fenceChar byte
+	var fenceLen int
 	inComment := false
 
 	flushParagraph := func() {
@@ -438,7 +451,7 @@ func extractBlocks(markdown string) []block {
 		trimmed := strings.TrimSpace(rawLine)
 
 		if inFence {
-			if strings.HasPrefix(trimmed, fenceMarker) && len(trimmed) >= len(fenceMarker) {
+			if isFenceClose(rawLine, fenceChar, fenceLen) {
 				inFence = false
 			}
 			continue
@@ -451,16 +464,11 @@ func extractBlocks(markdown string) []block {
 			continue
 		}
 
-		if strings.HasPrefix(trimmed, "```") {
+		if ch, cnt, ok := isFenceOpen(rawLine); ok {
 			flushAll()
 			inFence = true
-			fenceMarker = "```"
-			continue
-		}
-		if strings.HasPrefix(trimmed, "~~~") {
-			flushAll()
-			inFence = true
-			fenceMarker = "~~~"
+			fenceChar = ch
+			fenceLen = cnt
 			continue
 		}
 
@@ -527,6 +535,42 @@ func extractBlocks(markdown string) []block {
 	return blocks
 }
 
+func isFenceOpen(line string) (byte, int, bool) {
+	i := 0
+	for i < len(line) && line[i] == ' ' && i < 3 {
+		i++
+	}
+	rest := line[i:]
+	if len(rest) < 3 {
+		return 0, 0, false
+	}
+	ch := rest[0]
+	if ch != '`' && ch != '~' {
+		return 0, 0, false
+	}
+	cnt := 0
+	for cnt < len(rest) && rest[cnt] == ch {
+		cnt++
+	}
+	if cnt >= 3 {
+		return ch, cnt, true
+	}
+	return 0, 0, false
+}
+
+func isFenceClose(line string, ch byte, minLen int) bool {
+	trimmed := strings.TrimSpace(line)
+	if len(trimmed) < minLen {
+		return false
+	}
+	for i := 0; i < len(trimmed); i++ {
+		if trimmed[i] != ch {
+			return false
+		}
+	}
+	return true
+}
+
 func isUnorderedListItem(s string) bool {
 	return strings.HasPrefix(s, "- ") || strings.HasPrefix(s, "* ") || strings.HasPrefix(s, "+ ")
 }
@@ -566,8 +610,8 @@ func replaceWikilinks(v *vault.Vault, text string) string {
 			rep = l.Alias
 		} else {
 			if resolved, ok := vault.Resolve(v, l.Target); ok {
-				if targetPage, ok := v.Page(resolved); ok && targetPage.FM.Title != "" {
-					rep = targetPage.FM.Title
+				if targetPage, ok := v.Page(resolved); ok {
+					rep = pageTitle(targetPage)
 				} else {
 					rep = l.Target
 				}
@@ -604,7 +648,8 @@ func truncateRunes(text string, maxBack int) string {
 	}
 
 	cut := maxBack
-	for i := maxBack - 1; i >= 0; i-- {
+	threshold := maxBack * 3 / 4
+	for i := maxBack - 1; i >= threshold; i-- {
 		if unicode.IsSpace(runes[i]) {
 			cut = i
 			break

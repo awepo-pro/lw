@@ -98,3 +98,31 @@ func TestCompletion_Errors(t *testing.T) {
 		}
 	})
 }
+
+// TestR7ExportSubcommandCompletion verifies finding R-7: export verb completes html subcommand.
+func TestR7ExportSubcommandCompletion(t *testing.T) {
+	subs, ok := completionSubcommands["export"]
+	if !ok {
+		t.Fatalf("completionSubcommands missing entry for 'export'")
+	}
+	found := false
+	for _, s := range subs {
+		if s == "html" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("completionSubcommands['export'] = %v, want to contain 'html'", subs)
+	}
+
+	stdout, stderr, code := captureRun(t, func() int {
+		return run([]string{"completion", "bash"})
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr:\n%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "export)") {
+		t.Errorf("bash completion script does not complete 'html' for 'export':\n%s", stdout)
+	}
+}
