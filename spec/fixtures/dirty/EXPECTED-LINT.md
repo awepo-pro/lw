@@ -84,5 +84,5 @@ headings normalize to the same slug — so the 26 rows and their totals are
 unchanged, byte-for-byte. The header's "15 checks" phrasing stays literally
 true of the table: the 26 findings still come from exactly the 15 checks
 listed above, and every one of those 15 still fires at least once. The full
-check set is now 16; the table of record is
-[docs/vault-schema.md](../../../docs/vault-schema.md#the-16-lint-checks).
+check set is now 19; the table of record is
+[docs/vault-schema.md](../../../docs/vault-schema.md#the-19-lint-checks).

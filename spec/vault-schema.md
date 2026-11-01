@@ -89,15 +89,17 @@ Enforced by code, not by prompt:
 - The vault is a normal Obsidian vault by construction — no proprietary
   extension to Markdown or YAML.
 
-## 5. The 16 lint checks (backbone §4 `internal/lint`)
+## 5. The 19 lint checks (backbone §4 `internal/lint`)
 
 Each check is independently testable (`check_<id>.go`); the set is fixed at
-16 (`page-abstract` added by 014, `duplicate-section` added by 020). `Severity` is `error`, `warn`, or `info`; only `error` blocks `lw commit`
+19 (`page-abstract` added by 014, `duplicate-section` by 020, `cite-page` and `cite-source` by 034, `cite-superseded` by 070). `Severity` is `error`, `warn`, or `info`; only `error` blocks `lw commit`
 (`/docs/design.md §7`, `/docs/design.md §10`).
 
 Checks 1–14 come from MASTER §9 **D-V**; check 15, `page-abstract`, was
 added by 014 (wiki-page structure); check 16, `duplicate-section`, was added
-by 020 (dependent staging ops). Checks 1–11 enforce `/docs/design.md`
+by 020 (dependent staging ops); checks 17–18, `cite-page` and `cite-source`,
+by 034 (page-level citations); check 19, `cite-superseded`, by 070 (revised
+source supersedes raw). Checks 1–11 enforce `/docs/design.md`
 §6's mechanical conventions; 12–14 come from the Hermes suite `/docs/design.md` §2
 cites. Hermes's *contradictions* check is deliberately absent — it requires
 judgement, and `internal/lint` is pure Go (`/docs/design.md` §8); it is deferred to
@@ -121,6 +123,9 @@ the v2 roadmap, §8.
 | 14 | `log-rotate` | info | `log.md` exceeds 500 entries and should be rotated to `log-YYYY.md` |
 | 15 | `page-abstract` | warn | a `wiki/` page has no `## Abstract` section (014) |
 | 16 | `duplicate-section` | warn | a `wiki/` page carries two body sections whose headings normalize to the same slug (020) |
+| 17 | `cite-page` | warn | a paged `^[raw/… p.N]` marker is malformed, or names a page the raw source has no anchor for (034) |
+| 18 | `cite-source` | warn | the body cites a `raw/` source the page's `sources:` list does not include (034) |
+| 19 | `cite-superseded` | warn | a page body cites a raw that a newer revision supersedes, or a raw's `supersedes:` names itself or a path that is not a committed raw (070) |
 
 ## 6. The changeset buffer (`/docs/design.md §7`; schema in `changeset.schema.json`)
 

@@ -93,6 +93,14 @@ lw tool --list                       # every offered tool, with its JSON schema
 lw tool --brief                      # print the curator brief again, after a compaction
 ```
 
+- **Notes and instructions.** `--note <id>` (repeatable) names a note under
+  `notes/` by its exact id or a unique prefix (`lw note list --pending` shows
+  the ones not ingested yet); it works with or without `--prepare`.
+  `--instruction "<text>"` or `--instruction-file <path|->` (needs `--prepare`;
+  at most 2000 characters, no control characters) passes your own steering —
+  "only chapter 3, tag it cuda" — into the brief under `## User instruction`.
+  It is stored with the prepare record, so `lw tool --brief` prints it again,
+  and a short form of it tags the changeset intent.
 - **The tools offered** are the registry's, less two: `stage.open` (`--prepare`
   already opened the changeset) and `web.search` (the agent has its own web) —
   17 in all. Either spelling of a name works (`stage.create_page`,
