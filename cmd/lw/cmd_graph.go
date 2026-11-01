@@ -34,11 +34,11 @@ func cmdGraph(args []string) error {
 	fs := flag.NewFlagSet("graph", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	vaultPath := fs.String("vault", "", "vault root (default: nearest ancestor directory containing SCHEMA.md)")
-	format := fs.String("format", "text", "output format: text, dot, json, mermaid (default text)")
+	format := fs.String("format", "text", "output format: text, dot, json, mermaid")
 	focus := fs.String("focus", "", "focus page for ego-graph")
-	depth := fs.Int("depth", 1, "search depth for ego-graph, 1..5 (default 1)")
+	depth := fs.Int("depth", 1, "search depth for ego-graph, 1..5")
 	pageType := fs.String("type", "", "filter nodes by type, keeping focus node")
-	top := fs.Int("top", 10, "maximum items to display in text summary sections (default 10)")
+	top := fs.Int("top", 10, "maximum items to display in text summary sections")
 
 	positionals, err := parseInterspersed(fs, args)
 	if err != nil {

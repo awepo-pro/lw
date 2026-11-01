@@ -480,3 +480,39 @@ func TestHTMLExportGroupHeadings(t *testing.T) {
 		}
 	}
 }
+
+// TestHTMLExportSymlinkDirRefused verifies that a symlinked subdirectory inside
+// outdir pointing at another temp dir returns an error and writes nothing into that other dir.
+func TestHTMLExportSymlinkDirRefused(t *testing.T) {
+	vaultDir := createTestVault(t)
+	v, err := vault.Open(vaultDir)
+	if err != nil {
+		t.Fatalf("open vault: %v", err)
+	}
+
+	outDir := t.TempDir()
+	otherDir := t.TempDir()
+
+	// Create symlinked subdirectory inside outDir pointing to otherDir
+	symlinkSub := filepath.Join(outDir, "wiki")
+	if err := os.Symlink(otherDir, symlinkSub); err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+
+	_, err = Export(v, outDir, Options{Force: true})
+	if err == nil {
+		t.Fatalf("Export into outDir with symlinked subdirectory succeeded, want error")
+	}
+
+	entries, err := os.ReadDir(otherDir)
+	if err != nil {
+		t.Fatalf("read otherDir: %v", err)
+	}
+	if len(entries) != 0 {
+		var names []string
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("files/directories were written into otherDir: %v", names)
+	}
+}

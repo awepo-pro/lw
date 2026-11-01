@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/awepo-pro/lw/internal/htmlexport"
+	"github.com/awepo-pro/lw/internal/safewrite"
 	"github.com/awepo-pro/lw/internal/vault"
 )
 
@@ -52,9 +53,15 @@ func cmdExport(args []string) error {
 		return fmt.Errorf("open vault %s: %w", root, err)
 	}
 
+	guard, err := safewrite.NewGuard(root)
+	if err != nil {
+		return fmt.Errorf("create safewrite guard: %w", err)
+	}
+
 	res, err := htmlexport.Export(v, outDir, htmlexport.Options{
 		Force: *force,
 		Title: *title,
+		Guard: guard,
 	})
 	if err != nil {
 		return err

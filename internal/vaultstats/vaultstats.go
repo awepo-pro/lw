@@ -46,6 +46,7 @@ type WeekCount struct {
 // Stats holds the shape, coverage, and activity metrics of a vault.
 type Stats struct {
 	Pages                   int            `json:"pages"`
+	ParseErrors             int            `json:"parse_errors"`
 	ByType                  map[string]int `json:"by_type"`
 	Raws                    int            `json:"raws"`
 	RawsByKind              map[string]int `json:"raws_by_kind"`
@@ -389,6 +390,7 @@ func Compute(v *vault.Vault, journalPath string, now time.Time, staleDays int) S
 
 	return Stats{
 		Pages:                   len(pages),
+		ParseErrors:             len(v.ParseErrors()),
 		ByType:                  byType,
 		Raws:                    len(raws),
 		RawsByKind:              rawsByKind,
@@ -445,6 +447,9 @@ func WriteText(w io.Writer, s Stats) error {
 	}
 	if len(typeParts) > 0 {
 		fmt.Fprintf(w, "  by type: %s\n", strings.Join(typeParts, ", "))
+	}
+	if s.ParseErrors > 0 {
+		fmt.Fprintf(w, "  parse errors: %d (run lw lint)\n", s.ParseErrors)
 	}
 
 	// 2. raw sources

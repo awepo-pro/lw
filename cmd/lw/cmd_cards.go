@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"flag"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/awepo-pro/lw/internal/cards"
+	"github.com/awepo-pro/lw/internal/safewrite"
 	"github.com/awepo-pro/lw/internal/vault"
 )
 
@@ -91,15 +93,10 @@ func cmdCards(args []string) error {
 	}
 
 	var w io.Writer = os.Stdout
-	var outCloser io.Closer
+	var buf *bytes.Buffer
 	if *outFile != "" {
-		f, err := os.Create(*outFile)
-		if err != nil {
-			return fmt.Errorf("create %s: %w", *outFile, err)
-		}
-		defer f.Close()
-		w = f
-		outCloser = f
+		buf = new(bytes.Buffer)
+		w = buf
 	}
 
 	switch *format {
@@ -114,9 +111,14 @@ func cmdCards(args []string) error {
 		return fmt.Errorf("write cards: %w", err)
 	}
 
-	if outCloser != nil {
-		if err := outCloser.Close(); err != nil {
-			return fmt.Errorf("close %s: %w", *outFile, err)
+	if *outFile != "" {
+		guard, err := safewrite.NewGuard(root)
+		if err != nil {
+			return fmt.Errorf("safewrite guard: %w", err)
+		}
+		if err := guard.WriteFile(*outFile, buf.Bytes()); err != nil {
+			fmt.Fprintf(os.Stderr, "lw cards: %v\n", err)
+			return &exitError{code: 1}
 		}
 		pagesSet := make(map[string]bool)
 		for _, c := range cardList {

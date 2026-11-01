@@ -94,3 +94,30 @@ func TestCardsVaultUnchanged(t *testing.T) {
 
 	assertVaultUnchanged(t, root, before)
 }
+
+// Reproduction 1: cards -o /tmp/x/schema-link where schema-link -> <vault>/SCHEMA.md
+// must exit 1 (refusal on stderr) and leave the vault unchanged.
+func TestCardsSymlinkWriteThroughRefused(t *testing.T) {
+	root := testutil.CopyFixture(t, "minimal")
+	outDir := t.TempDir()
+
+	schemaLink := filepath.Join(outDir, "schema-link")
+	vaultSchema := filepath.Join(root, "SCHEMA.md")
+	if err := os.Symlink(vaultSchema, schemaLink); err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+
+	before := snapshotVault(t, root)
+
+	_, stderr, code := captureRun(t, func() int {
+		return run([]string{"cards", "-o", schemaLink, "--vault", root})
+	})
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1; stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stderr, "refusing to write") {
+		t.Errorf("stderr %q missing 'refusing to write'", stderr)
+	}
+
+	assertVaultUnchanged(t, root, before)
+}

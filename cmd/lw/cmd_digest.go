@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"flag"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/awepo-pro/lw/internal/digest"
+	"github.com/awepo-pro/lw/internal/safewrite"
 	"github.com/awepo-pro/lw/internal/vault"
 )
 
@@ -24,7 +26,7 @@ func cmdDigest(args []string) error {
 	vaultPath := fs.String("vault", "", "vault root (default: nearest ancestor directory containing SCHEMA.md)")
 	sinceFlag := fs.String("since", "7d", "start of window: Nd (1..3650 days) or YYYY-MM-DD")
 	untilFlag := fs.String("until", "", "exclusive end of window: YYYY-MM-DD (default: tomorrow 00:00 UTC)")
-	formatFlag := fs.String("format", "md", "output format: md or html (default: md)")
+	formatFlag := fs.String("format", "md", "output format: md or html")
 	oFlag := fs.String("o", "", "output file (default: stdout)")
 
 	positionals, err := parseInterspersed(fs, args)
@@ -84,13 +86,10 @@ func cmdDigest(args []string) error {
 	d.PendingNotes = pendingStems
 
 	var w io.Writer = os.Stdout
+	var buf *bytes.Buffer
 	if *oFlag != "" {
-		f, err := os.Create(*oFlag)
-		if err != nil {
-			return fmt.Errorf("create output file %s: %w", *oFlag, err)
-		}
-		defer f.Close()
-		w = f
+		buf = new(bytes.Buffer)
+		w = buf
 	}
 
 	if *formatFlag == "html" {
@@ -100,6 +99,17 @@ func cmdDigest(args []string) error {
 	} else {
 		if err := digest.WriteMarkdown(w, d); err != nil {
 			return fmt.Errorf("write markdown: %w", err)
+		}
+	}
+
+	if *oFlag != "" {
+		guard, err := safewrite.NewGuard(root)
+		if err != nil {
+			return fmt.Errorf("safewrite guard: %w", err)
+		}
+		if err := guard.WriteFile(*oFlag, buf.Bytes()); err != nil {
+			fmt.Fprintf(os.Stderr, "lw digest: %v\n", err)
+			return &exitError{code: 1}
 		}
 	}
 

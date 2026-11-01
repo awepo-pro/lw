@@ -154,3 +154,34 @@ func TestDigestPendingNotes(t *testing.T) {
 		t.Errorf("output missing pending note stem:\n%s", content)
 	}
 }
+
+// Reproduction 2: digest -o /tmp/x/log-link where log-link -> <vault>/log.md
+// must exit 1 (refusal on stderr) and leave the vault unchanged.
+func TestDigestSymlinkWriteThroughRefused(t *testing.T) {
+	root := testutil.CopyFixture(t, "minimal")
+	outDir := t.TempDir()
+
+	vaultFile := filepath.Join(root, "log.md")
+	if err := os.WriteFile(vaultFile, []byte("pre-existing vault log"), 0644); err != nil {
+		t.Fatalf("write vault file: %v", err)
+	}
+
+	logLink := filepath.Join(outDir, "log-link")
+	if err := os.Symlink(vaultFile, logLink); err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+
+	before := snapshotVault(t, root)
+
+	_, stderr, code := captureRun(t, func() int {
+		return run([]string{"digest", "-o", logLink, "--vault", root})
+	})
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1; stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stderr, "refusing to write") {
+		t.Errorf("stderr %q missing 'refusing to write'", stderr)
+	}
+
+	assertVaultUnchanged(t, root, before)
+}
