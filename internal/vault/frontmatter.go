@@ -3,7 +3,9 @@ package vault
 import (
 	"bytes"
 	"fmt"
+	"regexp"
 	"strconv"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -20,6 +22,7 @@ type Frontmatter struct {
 	Confidence Confidence
 	Contested  bool
 	Extra      map[string]string // unknown keys, preserved verbatim, emitted sorted
+	ExtraYAML  map[string]string // unknown sequence/mapping keys, raw YAML text, emitted sorted
 }
 
 // openDelim is the required opening line of every frontmatter block.
@@ -92,8 +95,8 @@ func stripLeadingBlankLines(body []byte) []byte {
 }
 
 // decodeFrontmatter parses yamlBytes (the text between the two "---" lines)
-// into a Frontmatter, routing known keys into their struct fields and
-// everything else into Extra.
+// into a Frontmatter, routing known keys into their struct fields,
+// unknown scalar keys into Extra, and unknown composite keys into ExtraYAML.
 func decodeFrontmatter(yamlBytes []byte) (Frontmatter, error) {
 	var raw map[string]yaml.Node
 	if err := yaml.Unmarshal(yamlBytes, &raw); err != nil {
@@ -102,6 +105,7 @@ func decodeFrontmatter(yamlBytes []byte) (Frontmatter, error) {
 
 	var fm Frontmatter
 	extra := map[string]string{}
+	extraYAML := map[string]string{}
 
 	for key, node := range raw {
 		n := node
@@ -124,7 +128,12 @@ func decodeFrontmatter(yamlBytes []byte) (Frontmatter, error) {
 		case "contested":
 			fm.Contested, err = decodeBool(&n)
 		default:
-			extra[key] = n.Value
+			target := resolveAlias(&n)
+			if target.Kind == yaml.SequenceNode || target.Kind == yaml.MappingNode {
+				extraYAML[key] = emitNodeYAML(target)
+			} else {
+				extra[key] = target.Value
+			}
 		}
 		if err != nil {
 			return Frontmatter{}, fmt.Errorf("vault: frontmatter field %q: %w", key, err)
@@ -134,7 +143,189 @@ func decodeFrontmatter(yamlBytes []byte) (Frontmatter, error) {
 	if len(extra) > 0 {
 		fm.Extra = extra
 	}
+	if len(extraYAML) > 0 {
+		fm.ExtraYAML = extraYAML
+	}
 	return fm, nil
+}
+
+// resolveAlias walks any chain of AliasNodes to their target.
+func resolveAlias(n *yaml.Node) *yaml.Node {
+	for n != nil && n.Kind == yaml.AliasNode && n.Alias != nil {
+		n = n.Alias
+	}
+	return n
+}
+
+var plainStrPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_ ./-]*$`)
+
+// isPlainStr reports whether s may be emitted as an unquoted YAML scalar.
+// Plain emission requires a non-empty string starting with a letter or underscore,
+// followed only by alphanumeric, underscore, space, dot, slash, or hyphen,
+// with no leading or trailing space, and not equal (case-insensitively) to any
+// standard YAML boolean or null literal.
+func isPlainStr(s string) bool {
+	if s == "" || strings.HasSuffix(s, " ") {
+		return false
+	}
+	if !plainStrPattern.MatchString(s) {
+		return false
+	}
+	switch strings.ToLower(s) {
+	case "true", "false", "yes", "no", "on", "off", "null", "y", "n":
+		return false
+	default:
+		return true
+	}
+}
+
+// emitScalarYAML emits a scalar node per rule (d) and (e):
+// if Tag is !!str, quote unless isPlainStr is true;
+// if Tag is !!int, !!float, !!bool, !!null, !!timestamp, emit Value verbatim
+// (with empty !!null emitted as "null");
+// otherwise quote with strconv.Quote.
+func emitScalarYAML(n *yaml.Node) string {
+	n = resolveAlias(n)
+	if n == nil {
+		return "null"
+	}
+	switch n.Tag {
+	case "!!str":
+		if isPlainStr(n.Value) {
+			return n.Value
+		}
+		return strconv.Quote(n.Value)
+	case "!!int", "!!float", "!!bool", "!!timestamp":
+		return n.Value
+	case "!!null":
+		if n.Value == "" {
+			return "null"
+		}
+		return n.Value
+	default:
+		return strconv.Quote(n.Value)
+	}
+}
+
+// isFlow reports whether n should be emitted on a single flow line.
+func isFlow(n *yaml.Node) bool {
+	n = resolveAlias(n)
+	if n == nil {
+		return true
+	}
+	if n.Kind == yaml.ScalarNode {
+		return true
+	}
+	if n.Kind == yaml.SequenceNode || n.Kind == yaml.MappingNode {
+		if len(n.Content) == 0 {
+			return true
+		}
+		return (n.Style & yaml.FlowStyle) != 0
+	}
+	return false
+}
+
+// emitFlowSequence emits a sequence in flow style: "[a, b]" or "[]".
+func emitFlowSequence(n *yaml.Node) string {
+	if len(n.Content) == 0 {
+		return "[]"
+	}
+	items := make([]string, len(n.Content))
+	for i, it := range n.Content {
+		items[i] = emitFlowYAML(it)
+	}
+	return "[" + strings.Join(items, ", ") + "]"
+}
+
+// emitFlowMapping emits a mapping in flow style: "{k: v, k2: v2}" or "{}".
+func emitFlowMapping(n *yaml.Node) string {
+	if len(n.Content) == 0 {
+		return "{}"
+	}
+	entries := make([]string, 0, len(n.Content)/2)
+	for i := 0; i < len(n.Content); i += 2 {
+		k := emitScalarYAML(n.Content[i])
+		v := emitFlowYAML(n.Content[i+1])
+		entries = append(entries, k+": "+v)
+	}
+	return "{" + strings.Join(entries, ", ") + "}"
+}
+
+// emitFlowYAML emits n strictly in flow style.
+func emitFlowYAML(n *yaml.Node) string {
+	n = resolveAlias(n)
+	if n == nil {
+		return "null"
+	}
+	switch n.Kind {
+	case yaml.SequenceNode:
+		return emitFlowSequence(n)
+	case yaml.MappingNode:
+		return emitFlowMapping(n)
+	case yaml.ScalarNode:
+		return emitScalarYAML(n)
+	default:
+		return emitScalarYAML(n)
+	}
+}
+
+// emitBlockSequence emits a sequence in block style with "- item" lines.
+// Nested block composites appear on following lines indented by 2 spaces.
+func emitBlockSequence(n *yaml.Node) string {
+	var lines []string
+	for _, it := range n.Content {
+		it = resolveAlias(it)
+		if isFlow(it) {
+			lines = append(lines, "- "+emitFlowYAML(it))
+		} else {
+			lines = append(lines, "-")
+			nestedText := emitNodeYAML(it)
+			for _, line := range strings.Split(nestedText, "\n") {
+				lines = append(lines, "  "+line)
+			}
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// emitBlockMapping emits a mapping in block style with "key: value" lines.
+// Nested block composites appear on following lines indented by 2 spaces.
+func emitBlockMapping(n *yaml.Node) string {
+	var lines []string
+	for i := 0; i < len(n.Content); i += 2 {
+		k := emitScalarYAML(n.Content[i])
+		v := resolveAlias(n.Content[i+1])
+		if isFlow(v) {
+			lines = append(lines, k+": "+emitFlowYAML(v))
+		} else {
+			lines = append(lines, k+":")
+			nestedText := emitNodeYAML(v)
+			for _, line := range strings.Split(nestedText, "\n") {
+				lines = append(lines, "  "+line)
+			}
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// emitNodeYAML walks a yaml.Node and emits canonical YAML text without calling
+// any YAML marshal library function (Correction C-3 constraint).
+func emitNodeYAML(n *yaml.Node) string {
+	n = resolveAlias(n)
+	if n == nil {
+		return "null"
+	}
+	if isFlow(n) {
+		return emitFlowYAML(n)
+	}
+	switch n.Kind {
+	case yaml.SequenceNode:
+		return emitBlockSequence(n)
+	case yaml.MappingNode:
+		return emitBlockMapping(n)
+	default:
+		return emitScalarYAML(n)
+	}
 }
 
 // decodeDate decodes n into *d, treating an explicit YAML null the same as
