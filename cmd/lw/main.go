@@ -35,6 +35,7 @@ var verbs = []verb{
 	{"diff", cmdDiff},
 	{"commit", cmdCommit},
 	{"log", cmdLog},
+	{"digest", cmdDigest},
 	{"session", cmdSession},
 	{"trace", cmdTrace},
 	{"revert", cmdRevert},
@@ -194,6 +195,8 @@ commands:
   diff [--op <id>]             show the projected diff of the open changeset
   commit -m "..." [--force]    commit the open changeset
   log [--rejected] [--agent]   show changeset history
+  digest [--since 7d|DATE] [--format md|html] [-o FILE]
+                               what the wiki learned in a window: new/updated pages with their gist, sources
   session list [--json]        list recorded agent sessions
   session show [<id>] [--plain] [--json] [--thinking]
                                print one session's transcript
