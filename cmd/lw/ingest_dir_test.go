@@ -639,7 +639,7 @@ func TestIngestUsageAndHelp(t *testing.T) {
 		if code != 2 {
 			t.Fatalf("exit code = %d, want 2", code)
 		}
-		want := "usage: lw ingest <url|path|dir>... [--kind K] [--dry-run]\n"
+		want := "usage: lw ingest <url|path|dir>... [--note <id>]... [--kind K] [--dry-run]\n" // A-073-1 (s64 FIX-C, 073 review F4)
 		if stderr != want {
 			t.Fatalf("stderr = %q, want %q", stderr, want)
 		}

@@ -285,3 +285,9 @@ func laterCopy(a, b string) bool {
 	}
 	return a > b
 }
+
+// LaterCopy reports whether raw path a was ingested after b when both carry
+// the same ingested date (A-070-5).
+func LaterCopy(a, b string) bool {
+	return laterCopy(a, b)
+}

@@ -37,7 +37,7 @@ func normalizeInstruction(s string) (string, error) {
 }
 
 // readInstructionFile reads the user instruction from path, or from stdin when
-// path is "-".
+// path is "-". Regular files larger than 64 KiB are refused.
 func readInstructionFile(path string) (string, error) {
 	if path == "-" {
 		b, err := io.ReadAll(io.LimitReader(os.Stdin, 64<<10))
@@ -46,20 +46,28 @@ func readInstructionFile(path string) (string, error) {
 		}
 		return string(b), nil
 	}
-	b, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return "", err
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, 64<<10+1))
+	if err != nil {
+		return "", err
+	}
+	if len(b) > 64<<10 {
+		return "", fmt.Errorf("instruction file %s is larger than 64 KiB", path)
 	}
 	return string(b), nil
 }
 
-// cutInstructionTag cuts firstLine to at most 60 runes, appending "..." if cut.
+// cutInstructionTag cuts firstLine to at most 60 runes, appending "\u2026" if cut.
 func cutInstructionTag(firstLine string) string {
 	r := []rune(firstLine)
 	if len(r) <= maxInstructionTagRunes {
 		return firstLine
 	}
-	return string(r[:maxInstructionTagRunes]) + "..."
+	return string(r[:maxInstructionTagRunes]) + "\u2026"
 }
 
 // instructionIntentTag returns the intent suffix for an instruction, or empty if

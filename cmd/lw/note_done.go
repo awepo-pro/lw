@@ -102,7 +102,7 @@ func noteDoneTagsErr(root string, stems []string) (map[string]string, error) {
 			} else if tip.Ingested.After(bestTip.Ingested.Time) {
 				bestTip = tip
 			} else if tip.Ingested.Time.Equal(bestTip.Ingested.Time) {
-				if tip.Path > bestTip.Path {
+				if vault.LaterCopy(tip.Path, bestTip.Path) {
 					bestTip = tip
 				}
 			}
