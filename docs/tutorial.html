@@ -4,8 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Learn lw</title>
-<meta name="description" content="A hands-on tutorial for lw v2.62.0: from an empty directory to a reviewed, cited markdown wiki.">
-<meta name="lw-version" content="v2.62.0">
+<meta name="description" content="A hands-on tutorial for lw v2.63.0: from an empty directory to a reviewed, cited markdown wiki.">
+<meta name="lw-version" content="v2.63.0">
 <style>
 :root {
   --bg: #fbfaf7;
@@ -230,7 +230,7 @@ footer { margin-top: 80px; color: var(--muted); font-size: 14px; border-top: 1px
 <nav class="toc" id="toc">
   <div class="brand">Learn <code>lw</code><button class="toggle-toc" id="toggleToc" aria-expanded="false">Lessons</button></div>
   <div class="sub">From an empty directory to a reviewed wiki</div>
-  <div class="ver" title="The lw release this page was checked against">lw v2.62.0</div>
+  <div class="ver" title="The lw release this page was checked against">lw v2.63.0</div>
   <ol id="tocList">
     <li><a href="#model"><span class="tick"></span>0 · The mental model</a></li>
     <li><a href="#install"><span class="tick"></span>1 · Install &amp; connect</a></li>
@@ -259,7 +259,7 @@ footer { margin-top: 80px; color: var(--muted); font-size: 14px; border-top: 1px
 
 <main>
 <header class="hero">
-  <div class="ver">Covers lw v2.62.0 · 2026-11-01</div>
+  <div class="ver">Covers lw v2.63.0 · 2026-11-01</div>
   <h1>Learn <code>lw</code> by doing</h1>
   <p class="lede">You start with sources — an article, a paper, a saved chat — and end with a small, cross-linked markdown wiki where every claim cites where it came from. <code>lw</code> is the compiler in the middle. An agent proposes the pages, and you decide what lands.</p>
   <div class="callout">
@@ -267,10 +267,12 @@ footer { margin-top: 80px; color: var(--muted); font-size: 14px; border-top: 1px
     Each lesson has a goal, the commands, what you should see, and a short check at the end. Open a terminal next to it and type along. Mark a lesson done when you've run it. Your progress is saved in this browser only. The terminal output shown here comes from real runs. Long output is trimmed, and trims are marked with <code>…</code>.
   </div>
   <details class="quiz">
-    <summary>Which lw is this page for? (v2.62.0, and what changed since v2.35.0)</summary>
-    <p>This page was checked against <strong>lw v2.62.0</strong>. Run <code>lw version</code>. If yours is older, some behaviour below won't match. If it's newer, trust <code>lw --help</code> where they disagree.</p>
+    <summary>Which lw is this page for? (v2.63.0, and what changed since v2.35.0)</summary>
+    <p>This page was checked against <strong>lw v2.63.0</strong>. Run <code>lw version</code>. If yours is older, some behaviour below won't match. If it's newer, trust <code>lw --help</code> where they disagree.</p>
     <p>Changes since the last edition of this page (v2.35.0):</p>
     <ul>
+      <li><strong>v2.63.0</strong>: <code>lw ledger check</code> / <code>lw ledger sum [YYYY-MM]</code> / <code>lw ledger import</code> (receipts from <code>ledger/receipts/</code> copied into lw storage, never overwritten; a different file under the same name is a conflict, exit 1); a note from the vault's <code>notes/</code> is ingested into <code>raw/notes/</code> instead of <code>raw/articles/</code> (<a href="#more">lesson 10</a>).</li>
+      <li><strong>v2.62.2</strong>: fixes found by independent review: a frontmatter alias cycle no longer crashes lw (the page is a parse error); the note done mark picks the newest copy when two PCs ingested the same note on the same day; <code>--instruction-file</code> refuses files over 64 KiB; the <code>--note</code> help says to repeat the flag (<a href="#health">lesson 9</a>, <a href="#more">lesson 10</a>, <a href="#agent">lesson 11</a>).</li>
       <li><strong>v2.62.0</strong>: list and map frontmatter keys that lw does not know (<code>aliases:</code>, <code>cssclasses:</code>, nested maps) now survive a page rewrite. Before, a patch or rename emptied them (<a href="#health">lesson 9</a>).</li>
       <li><strong>v2.61.0</strong>: <code>lw note list --pending</code> lists only the notes nobody has distilled yet; the ✓ mark no longer vanishes when an unrelated page has a parse error (<a href="#more">lesson 10</a>).</li>
       <li><strong>v2.60.0</strong>: <code>lw ingest --prepare --instruction "…"</code> (or <code>--instruction-file</code>) hands your own wording to the agent in the brief (<a href="#agent">lesson 11</a>).</li>
@@ -388,7 +390,7 @@ go install github.com/awepo-pro/lw/cmd/lw@latest
 brew install awepo-pro/tap/lw
 nix profile install github:awepo-pro/lw</code></pre>
 <pre><code><span class="p">$ </span>lw version
-lw v2.62.0</code></pre>
+lw v2.63.0</code></pre>
   <p>The version comes from the release tag the binary was built from, so a bug report can name the exact build.</p>
 
   <h3>Point it at a model</h3>
@@ -760,7 +762,7 @@ lw note list --pending   <span class="c"># only notes not yet distilled into a r
   <p>When you want a note to become wiki pages, ingest it by its id. A unique prefix is enough, and <code>--note</code> can be repeated:</p>
 <pre><code><span class="p">$ </span>lw ingest --prepare --agent claude-code --note 20261101-162911-compare
 <span class="p">$ </span>lw ingest --note 20261101-162911-compare      <span class="c"># or with lw's own curator and a provider key</span></code></pre>
-  <p>The note is extracted like any other source: it becomes a raw under <code>raw/articles/</code> with the note's path as <code>source_url</code>. After you commit, <code>lw note list</code> shows a <code>✓</code> and the raw's name beside it, and <code>--pending</code> leaves it out:</p>
+  <p>The note is extracted like any other source: it becomes a raw under <code>raw/notes/</code> (with its original <code>&lt;name&gt;.md.orig</code> beside it) with the note's path as <code>source_url</code>. Notes ingested before v2.63.0 stay where they are in <code>raw/articles/</code>; a re-ingest of an edited old note records <code>supersedes:</code> across the two directories. After you commit, <code>lw note list</code> shows a <code>✓</code> and the raw's name beside it, and <code>--pending</code> leaves it out:</p>
 <pre><code><span class="p">$ </span>lw note list -n 4
 20261101-162911-compare-vllm-and-tgi-scheduling  just now  compare vLLM and TGI scheduling  <span class="ok">✓</span> 20261101-162911-compare-vllm-and-tgi-scheduling
 20261101-162911-check-whether-paged-attention-changes-the  just now  check whether paged attention changes the KV-cache trade-off
@@ -795,7 +797,27 @@ lw storage show weights.bin</code></pre>
   <p>Stored files live in <code>storage/</code> and are cataloged in <code>.llmwiki/storage.json</code>. When you connect a remote with <code>lw sync</code> (via a bare git repo over SSH), files travel content-addressed in <code>&lt;remote&gt;.storage/objects/</code> beside git. Writing verbs automatically pull before starting and push after commit, keeping the vault identical across all your machines (see <a href="#sync">lesson 13</a> and <a href="#files">lesson 14</a>).</p>
 
   <h3>Phone notes and a ledger</h3>
-  <p><code>notes/</code>, <code>storage/</code> and <code>ledger/</code> are <strong>non-wiki roots</strong>: lw never indexes or compiles them, and <code>ledger/</code> is invisible to ask and ingest by default. That makes them safe to share with a phone through a file-sync app while the wiki and <code>.llmwiki/</code> stay on your PCs. <code>ledger/receipts/</code> (images) is also kept out of git by the managed <code>.gitignore</code>, so <code>lw sync</code> does not carry receipts yet; the file-sync app does. There are no ledger totals yet. The setup (Obsidian on Android, Syncthing ignores, the one-line expense format) is in <a href="mobile.md">mobile.md</a>.</p>
+  <p><code>notes/</code>, <code>storage/</code> and <code>ledger/</code> are <strong>non-wiki roots</strong>: lw never indexes or compiles them, and <code>ledger/</code> is invisible to ask and ingest by default. That makes them safe to share with a phone through a file-sync app while the wiki and <code>.llmwiki/</code> stay on your PCs. <code>ledger/receipts/</code> (images) is kept out of git by the managed <code>.gitignore</code>, but <code>lw ledger import</code> copies receipts into content-addressed <code>storage/</code> so <code>lw sync</code> carries them across your PCs (existing receipts are kept, never overwritten; a different file under the same name exits 1):</p>
+<pre><code><span class="p">$ </span>lw ledger import
+stored receipts/2026/10/r-20261031-1230.jpg
+stored receipts/2026/10/r-20261031-1900.png
+2 stored, 0 unchanged, 0 conflict(s), 0 error(s)
+run lw sync to carry them to your other PCs</code></pre>
+  <p>To inspect your expense files, use <code>lw ledger check</code> and <code>lw ledger sum</code>. Both commands are strictly read-only and never write anything. <code>check</code> validates syntax, dates, and flags duplicate transaction IDs (such as those from a Syncthing sync conflict copy). <code>sum [YYYY-MM]</code> totals amounts by currency and category in exact cents (never floating-point), printing a warning on stderr if any check issues were detected:</p>
+<pre><code><span class="p">$ </span>lw ledger check
+ledger/2026/10/2026-10-30.md:4: bad line: invalid amount: "-7.5"
+…
+ledger/2026/10/2026-10-31.sync-conflict-20261031-210000-ABCDEFG.md:1: duplicate id 20261031-0900-a (first at ledger/2026/10/2026-10-31.md:1)
+…
+6 issue(s); 10 valid transaction(s) in 4 file(s)</code></pre>
+<pre><code><span class="p">$ </span>lw ledger sum 2026-10
+lw: ledger: 6 issue(s) found; totals may be wrong - run lw ledger check
+HKD  food      -262.50  (5)
+HKD  transit   -23.60   (2)
+HKD  total     -286.10  (7)
+USD  software  -19.98   (2)
+USD  total     -19.98   (2)</code></pre>
+  <p>The setup (Obsidian on Android, Syncthing ignores, the one-line expense format) is in <a href="mobile.md">mobile.md</a>.</p>
 
   <h3>Use lw from another agent (MCP)</h3>
 <pre><code>{
@@ -857,7 +879,7 @@ changeset: cs-66e27d9a93aea4be (opened)   agent: claude-code:demo
 
 ## Sources to compile
 
-- raw: raw/articles/20261101-162911-compare-vllm-and-tgi-scheduling.md
+- raw: raw/notes/20261101-162911-compare-vllm-and-tgi-scheduling.md
   chunks: 1
   title: 
   original source: /home/you/my-vault/notes/20261101-162911-compare-vllm-and-tgi-scheduling.md
@@ -1159,13 +1181,14 @@ Note:    baseline model weights</code></pre>
     <tr><td><code>lw doctor [--unlock] [--rebuild-index] [--discard-changeset]</code></td><td>Health + repairs</td><td>provider check</td></tr>
     <tr><td><code>lw sync [--take-remote] | status | init | clone</code></td><td>Sync vault across PCs via git over SSH</td><td>no</td></tr>
     <tr><td><code>lw storage [add|list|show|get|rm]</code></td><td>Manage non-wiki content-addressed files</td><td>no</td></tr>
+    <tr><td><code>lw ledger check | sum [YYYY-MM] | import [--dry-run]</code></td><td>Check ledger syntax, sum monthly totals in cents, import receipts</td><td>no</td></tr>
     <tr><td><code>lw mcp [--ask]</code></td><td>MCP stdio server; <code>--ask</code> serves ask tools</td><td>no</td></tr>
     <tr><td><code>lw</code> / <code>lw tui</code></td><td>Terminal UI</td><td>Ask only</td></tr>
   </table></div>
   <p><strong>Where to go next:</strong> <a href="vault-schema.md">vault-schema.md</a> · <a href="changesets.md">changesets.md</a> · <a href="tools.md">tools.md</a> · <a href="hotkeys.md">hotkeys.md</a> · <a href="design.md">design.md</a></p>
 </section>
 
-<footer>Covers <strong>lw v2.62.0</strong> (tagged 2026-11-01). It matches <code>lw --help</code>. If a command here doesn't match your build, trust <code>lw --help</code>.</footer>
+<footer>Covers <strong>lw v2.63.0</strong> (tagged 2026-11-01). It matches <code>lw --help</code>. If a command here doesn't match your build, trust <code>lw --help</code>.</footer>
 </main>
 </div>
 
