@@ -1,33 +1,37 @@
 ---
 name: lw-notes-sync
 description: >-
-  Tidy and sync notes the user wrote by hand in their lw (llmwiki) vault (in Obsidian, an editor, or on the phone):
-  move pasted images next to the note that embeds them, check that nothing outside notes/ and ledger/ was hand-edited,
-  then `lw sync` to the remote vault. This is NOT ingest: the notes may be unfinished, so they stay in notes/ and nothing
-  is compiled. Use when the user says "sync my notes", "I wrote notes in the vault, push them", "handle my vault notes",
-  "lw sync my notes", or "I pasted images in Obsidian". Works in any agent with a shell (Claude Code, Codex, Antigravity).
+  Tidy and sync notes and bookkeeping the user wrote directly in Obsidian inside their lw (llmwiki) vault, on the phone
+  or on a PC: move notes Obsidian left at the vault root into notes/, put pasted images beside the note that embeds them
+  and receipt photos into ledger/receipts/, refuse to push hand edits under wiki/ or raw/, then `lw sync` to the remote.
+  This is NOT ingest: the notes may be unfinished. Use when the user says "sync my notes", "handle my notes", "I wrote
+  notes in Obsidian / on my phone", "push my vault notes", or "I pasted images in Obsidian". Works in any agent with a
+  shell (Claude Code, Codex, Antigravity).
 ---
 
 # lw-notes-sync: put hand-written notes on the remote vault, without ingesting them
 
-`notes/` (and `ledger/`) are vault-root folders lw never compiles into the wiki. A note written there by hand is a
-draft: it may be half done. Your job is to make the vault safe to sync and then sync it. You do not ingest, edit or
-judge the notes. Follow this procedure exactly.
+The user writes notes and bookkeeping directly in Obsidian (on the phone, or on a PC), not through `lw`. Obsidian puts
+a new note wherever the user is, often the **vault root**, and with the recommended attachment setting
+(*same folder as current file*) the pasted image lands beside it, so also at the root. lw wants notes in `notes/` and
+receipts in `ledger/receipts/`. Your job: move what Obsidian scattered to where lw expects it, make sure nothing that
+needs review is about to be pushed, and sync. You do not ingest, edit or judge the notes: they may be unfinished.
+Follow this procedure exactly.
 
 ## Rules you must not break
 
 1. **Never ingest.** No `lw ingest`, no `lw tool`. If the user wants a note compiled, that is the `lw-ingest` skill,
    on their say-so, later.
-2. **Never change a note's text or name.** No typo fixes, no frontmatter, no renames. You may only *move image files*
-   as Step 3 allows.
-3. **Never touch `wiki/`, `raw/`, `index.md`, `log.md`, `.llmwiki/`, `storage/`, or `.git/`.** Hand edits there skip the
-   review gate (`wiki/`) or break immutability (`raw/`). If they are dirty, stop and report (Step 2). The one exception
-   is appending `/.stfolder/` to `.git/info/exclude` (Step 2).
+2. **Never change a file's text or name.** No typo fixes, no frontmatter, no renames, no link rewrites. You only
+   *move* files, keeping their names, and only as Step 2 allows. Every move uses `mv -n` (never overwrite).
+3. **Never touch `wiki/`, `raw/`, `index.md`, `log.md`, `SCHEMA.md`, `curator-memory.md`, `.llmwiki/`, `storage/`, or
+   `.git/`.** Hand edits there skip the review gate (`wiki/`) or break immutability (`raw/`). If they are dirty, stop
+   and report (Step 3). The one exception is appending `/.stfolder/` to `.git/info/exclude` (Step 3).
 4. **Never run `lw sync --take-remote`, `lw commit`, `lw revert`, `lw doctor --discard-changeset`, `git reset`,
-   `git checkout`, `git stash`, `git push --force`, or `rm` on anything you did not just move.** A sync conflict goes
-   back to the user.
-5. **Sync only when Step 2 found nothing in the STOP class.** `lw sync` stages the whole vault (`git add -A`), so
-   whatever is dirty gets pushed.
+   `git checkout`, `git stash`, `git push --force`, or `rm`.** Nothing is ever deleted. A sync conflict goes back to
+   the user.
+5. **Sync only when Step 3 found nothing in the STOP or ASK class.** `lw sync` stages the whole vault (`git add -A`),
+   so whatever is in the work tree gets pushed.
 
 ## Step 0: find lw and the vault (once)
 
@@ -49,28 +53,85 @@ LW config | grep -E '^(vault\.path|sync\.remotes)'
 and pass `--vault V` to every `LW` command. If `sync.remotes` is empty, the vault is not under lw sync: stop and tell
 the user to run `lw sync init <remote>` themselves.
 
-## Step 1: see what changed
+## Step 1: look at the vault, not only at git
+
+lw's auto-sync (after `lw commit`, `lw note`, an ingest) also runs `git add -A`, so a note Obsidian dropped at the root
+may already be **committed** there. Work from the files on disk:
 
 ```bash
+find V -maxdepth 1 -type f ! -name '.*' | sort                     # root files
+find V/ledger -type f ! -path '*/ledger/receipts/*' ! -name '*.md' 2>/dev/null | sort   # non-text files in the ledger
 git -C V status --short --untracked-files=all
 LW sync status          # ahead/behind; it fetches but changes nothing
 ```
 
-If `git status` is empty and `ahead 0`, there is nothing to push. Still run `LW sync` to pull if `behind` > 0, then
-report.
+`index.md`, `log.md`, `SCHEMA.md` and `curator-memory.md` are lw's own root files: leave them. Every other root file
+is a candidate for Step 2.
 
-## Step 2: classify every path
+## Step 2: move what Obsidian scattered
 
-Put each path from `git status` in exactly one class:
+Do these in order. Below, `N` is a file name and `enc(N)` is `N` with spaces as `%20`.
+
+**2a. Root notes go to `notes/`.** For each root `X.md` (not one of lw's four):
+
+- If `V/notes/X.md` exists, do not move; report the clash (ASK).
+- If any file links to it with a markdown path link (`](X.md)`, `](./X.md)`, or the `enc` form), moving would break
+  that link: do not move; report (ASK). Wikilinks (`[[X]]`) resolve by name anywhere, so they do not block a move.
+
+  ```bash
+  grep -rlF -e "](X.md)" -e "](./X.md)" -e "]($(printf '%s' 'X.md' | sed 's/ /%20/g'))" V/notes V/ledger V/*.md 2>/dev/null
+  ```
+- Otherwise: `mv -n "V/X.md" "V/notes/X.md"`.
+
+**2b. Root images go beside whoever embeds them.** An image is `.png .jpg .jpeg .gif .webp .svg .heic .avif .bmp`
+(any case). For each root image `N`, after 2a, find the embedders:
+
+```bash
+grep -rlF -e "N" -e "$(printf '%s' 'N' | sed 's/ /%20/g')" V/notes V/ledger V/wiki 2>/dev/null
+```
+
+- **Only notes, all in one folder `D` under `notes/`, every embed path-free** (`![[N]]`, `![[N|caption]]`, `![](N)` or
+  `![](enc(N))`, no `/` before the name): `mv -n "V/N" "V/D/N"`.
+- **Only ledger day files of one month `ledger/YYYY/MM/`, path-free:** `mkdir -p V/ledger/receipts/YYYY/MM` then
+  `mv -n "V/N" "V/ledger/receipts/YYYY/MM/N"`.
+- **Embedded with a path, from `wiki/`, from several folders, or by nothing:** leave it at the root and report it
+  (not a blocker: it is not committed anywhere new, see Step 3). An image nothing embeds is often one whose note has
+  not synced yet; the next run will place it.
+
+**2c. Images inside `ledger/` go to `ledger/receipts/`.** Obsidian pastes a receipt photo beside the day file
+(`ledger/2026/11/r.jpg`); there it would be committed to git as a binary. For each non-`.md` file under
+`ledger/YYYY/MM/` (outside `receipts/`): `mkdir -p V/ledger/receipts/YYYY/MM` then
+`mv -n` it to `V/ledger/receipts/YYYY/MM/N`. Path-free embeds (`[[N]]`, `![[N]]`) still resolve in Obsidian.
+`ledger/receipts/` is git-ignored; Step 4's `lw ledger import` carries it instead.
+
+**2d. Dangling embeds.** For each note under `notes/` that changed or moved, list embedded images that are not on this
+PC:
+
+```bash
+grep -oE '!\[\[[^]|]+\.(png|jpe?g|gif|webp|svg|heic|avif|bmp)' "V/<note>" | sed 's/^!\[\[//' | sort -u |
+  while IFS= read -r img; do [ -n "$(find V -name "$(basename "$img")" -not -path '*/.git/*' -print -quit)" ] || echo "missing: $img"; done
+```
+
+A `missing:` image is still on the device that wrote the note (not synced yet, or pasted into a folder that device does
+not sync). Report it; it does not block the sync. `.heic` / `.avif` / `.bmp` images sync but `lw ingest` cannot embed
+them; mention that if you moved one.
+
+## Step 3: classify what git will push
+
+```bash
+git -C V status --short --untracked-files=all
+```
+
+Put each path in exactly one class:
 
 | Class | Paths | Action |
 |---|---|---|
-| OK | `notes/**`, `ledger/**` | sync as is |
-| OK | `.obsidian/**`, `.gitignore`, `.stignore` | sync as is (lw sync manages `.gitignore` itself) |
+| OK | `notes/**`, `ledger/**`, moves made in Step 2 (they show as a delete at the root plus an add) | sync |
+| OK | `.obsidian/**`, `.gitignore`, `.stignore` | sync (lw sync manages `.gitignore` itself) |
+| OK | a root image Step 2 left in place | sync; it was reported |
 | EXCLUDE | `.stfolder/**` (Syncthing's per-device folder marker) | never commit it; see below |
-| IMAGE | an image (`.png .jpg .jpeg .gif .webp .svg .bmp .avif`) anywhere outside `notes/`, `ledger/`, `raw/`, `wiki/` (Obsidian's default paste location is the vault root) | Step 3 |
-| STOP | anything under `wiki/`, `raw/`, `.llmwiki/`, or `index.md` / `log.md` | do not sync; report |
-| ASK | anything else (a stray `.md` at the root, a PDF, a new folder) | do not sync; report and ask |
+| STOP | anything under `wiki/`, `raw/`, `.llmwiki/`, or `index.md`, `log.md`, `SCHEMA.md`, `curator-memory.md` | do not sync; report |
+| ASK | anything else (a new folder, a PDF, a root note Step 2 could not move) | do not sync; report and ask |
 
 EXCLUDE: `lw sync` rewrites `.gitignore`, so the marker goes in this PC's own git exclude file instead. Append it once:
 
@@ -78,60 +139,18 @@ EXCLUDE: `lw sync` rewrites `.gitignore`, so the marker goes in this PC's own gi
 grep -qxF '/.stfolder/' V/.git/info/exclude 2>/dev/null || echo '/.stfolder/' >> V/.git/info/exclude
 ```
 
-Then `git status` no longer shows it. Never delete `.stfolder/`: Syncthing stops syncing the folder without it.
+Never delete `.stfolder/`: Syncthing stops syncing the folder without it.
 
-A `.md` note written at the vault root instead of `notes/` is ASK, not OK: ask whether it belongs in `notes/`. Moving it
-is the user's call, because other notes may link to it by path.
-
-## Step 3: put each pasted image where its embed is
-
-ingest resolves an image embed relative to the note's own folder, so an image at the vault root is lost when the note
-is ingested later. For each IMAGE path `P` with file name `N`:
-
-1. Find who embeds it. Search for the file name and its URL-encoded form (spaces become `%20`):
-
-   ```bash
-   grep -rlF -e "N" -e "$(printf '%s' "N" | sed 's/ /%20/g')" V/notes V/ledger V/wiki 2>/dev/null
-   ```
-
-2. Decide:
-   - **Embedded only by notes that all sit in one folder `D` under `notes/`, and every embed is path-free**
-     (`![[N]]`, `![[N|caption]]`, or `![](N)` with no `/` before the name): move it there with `mv -n "V/P" "V/D/N"`
-     (`-n` never overwrites). Path-free embeds still resolve in Obsidian, and now ingest finds them too. If `V/D/N`
-     already exists, do not move; report the clash.
-   - **Embedded only by ledger day files `ledger/YYYY/MM/*.md`, all in one month:** move it to
-     `ledger/receipts/YYYY/MM/N` (create the folder with `mkdir -p`), same `-n` and path-free conditions.
-     `ledger/receipts/` is git-ignored, so the move takes it out of `git status`; Step 4 carries it with
-     `LW ledger import` instead.
-   - **Embedded with a path** (`![](../x.png)`, `![[attachments/x.png]]`): moving it would break the link and fixing
-     the link means editing the note. Leave it, report it as ASK.
-   - **Embedded from `wiki/`, or from notes in different folders, or by nothing at all:** leave it, report as ASK.
-     An image nothing embeds may be one the user deleted the embed for; that is their decision.
-
-3. After moving, run `git -C V status --short --untracked-files=all` again and re-classify.
-
-Then look for embeds whose image is not on this PC. An image pasted at the vault root *on the phone* never leaves the
-phone (`.stignore` syncs only `notes/` and `ledger/`), so the note arrives with a dangling embed, and a later ingest
-keeps it dangling without a warning. For each changed note under `notes/`:
-
-```bash
-grep -oE '!\[\[[^]|]+\.(png|jpe?g|gif|webp|svg|bmp|avif)' "V/<note>" | sed 's/^!\[\[//' | sort -u |
-  while IFS= read -r img; do [ -n "$(find V/notes V/ledger -name "$(basename "$img")" -print -quit)" ] || echo "missing: $img"; done
-```
-
-Report each `missing:` under **Left for you** as: *the image is still on the device that wrote the note (pasted at its
-vault root); in Obsidian there, move it into the note's folder, then sync again.* This does not block the sync: the
-note is a draft and the image can follow later.
-
-Then check Obsidian's attachment setting once:
+A Syncthing conflict copy (`*.sync-conflict-*`) is OK to sync, but report it: merging the two versions is the user's
+call. Then check Obsidian's attachment setting once:
 
 ```bash
 cat V/.obsidian/app.json 2>/dev/null
 ```
 
 If `attachmentFolderPath` is missing or is not `"./"`, tell the user (do not edit it yourself): *Obsidian, Settings,
-Files & links, Default location for new attachments: Same folder as current file.* Then the next pasted image lands
-beside its note and this step has nothing to do.
+Files & links, Default location for new attachments: Same folder as current file.* The phone has its own
+`.obsidian/`; the same setting is needed there.
 
 ## Step 4: sync
 
@@ -165,8 +184,9 @@ LW note list --pending -n 20                     # notes not ingested yet; infor
 Report in this shape, short:
 
 - **Synced:** the notes and ledger files that went up (names, not contents).
-- **Images moved:** `from -> to` for each.
-- **Left for you:** every STOP / ASK path and why, plus the Obsidian setting if it is wrong.
+- **Moved:** `from -> to` for each note and image.
+- **Left for you:** every STOP / ASK path and why, images left at the root, `missing:` images, conflict copies, and
+  the Obsidian setting if it is wrong.
 - **Not ingested (by design):** the pending notes. Say "say `ingest note <id>` when one is finished".
 
 Never claim "synced" unless Step 5 showed `ahead 0`.

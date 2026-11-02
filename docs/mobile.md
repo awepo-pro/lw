@@ -47,23 +47,46 @@ back to the phone. The bridge PC must be on for the phone's notes to reach the r
 ## Syncthing-Fork Setup
 
 Share the vault folder between the bridge PC and the phone (on the phone, an empty folder; Obsidian opens it as a
-vault). Restrict synchronization to `notes/` and `ledger/` with a vault-root `.stignore` on **both** sides:
+vault). Create the same vault-root `.stignore` on **both** sides, before the first sync:
 
 ```
+// lw vault <-> phone (Syncthing). Same file on both devices.
+// lw's own root files stay on the PCs
+/index.md
+/log.md
+/SCHEMA.md
+/curator-memory.md
+// what Obsidian on the phone writes: notes, bookkeeping, and notes/images at the vault root
 !/notes
 !/ledger
+!/*.md
+(?i)!/*.png
+(?i)!/*.jpg
+(?i)!/*.jpeg
+(?i)!/*.gif
+(?i)!/*.webp
+(?i)!/*.svg
+(?i)!/*.heic
+// everything else (wiki, raw, .obsidian, .git, .llmwiki, storage) stays put
 *
 ```
 
-Syncthing reads the patterns top-down and the first match wins: `notes/` and `ledger/` are included, everything else
-is ignored. List what to *keep*, not what to skip: a skip list (`wiki`, `raw`, ...) still syncs `index.md`, `log.md`,
-`.obsidian/` and any stray file at the vault root, and two Obsidians writing one `.obsidian/` can produce conflict copies.
+Syncthing reads the patterns top-down and the first match wins:
+
+- lw's own root files (`index.md`, `log.md`, `SCHEMA.md`, `curator-memory.md`) never reach the phone.
+- `notes/`, `ledger/`, and notes and images at the **vault root** are synced. Obsidian creates a note in whatever
+  folder you are in and, with the attachment setting below, pastes its images beside it, so on the phone both often
+  land at the root. The `lw-notes-sync` skill on the bridge PC then moves them into `notes/` (Syncthing carries the
+  move back to the phone).
+- Everything else is ignored: `wiki/`, `raw/`, `.obsidian/` (each device keeps its own), `.git/`, `.llmwiki/`.
+  A note written in another folder on the phone (say `ideas/`) is **not** synced; keep to the root, `notes/` and
+  `ledger/`.
 
 > `.stignore` is not synced by Syncthing, so create it on both sides. Do it **before** the first sync, or Syncthing
 > starts by exchanging the whole vault.
 
-Syncthing also creates a `.stfolder/` marker folder at the vault root. Keep it out of git on the bridge PC, once
-(`lw sync` rewrites `.gitignore`, so the PC's own exclude file is the place):
+Syncthing also creates a `.stfolder/` marker folder at the vault root. Keep it out of git on the bridge PC
+(`lw sync` rewrites `.gitignore`, so the PC's own exclude file is the place; the skill does this the first time):
 
 ```bash
 echo '/.stfolder/' >> "$VAULT/.git/info/exclude"
@@ -75,8 +98,8 @@ Without that line, `lw sync` (`git add -A`) commits the marker and pushes it to 
 
 When opening the synced vault in Obsidian on Android:
 
-1. **Attachment Location**: In Settings -> Files & Links, set "Default location for new attachments" to "same folder as current file". Required, on the phone and on every PC's Obsidian.
-   - *Why*: `lw ingest` resolves image links like `![[img]]` relative to the note beside it, and with the `.stignore` above an image pasted at the vault root never leaves the phone (the note arrives on the PC with a broken embed).
+1. **Attachment Location**: In Settings -> Files & Links, set "Default location for new attachments" to "Same folder as current file", on the phone and on every PC's Obsidian.
+   - *Why*: `lw ingest` resolves image links like `![[img]]` relative to the note. With this setting the image always sits beside its note, so when `lw-notes-sync` moves a root note into `notes/` it can move the image with it. A receipt photo pasted into a ledger day file lands beside it (`ledger/2026/11/`); the skill moves it into `ledger/receipts/2026/11/`, which `lw ledger import` carries.
 2. **QuickAdd Capture**: Set up a QuickAdd capture macro to prompt for amount, currency, category, and description, appending a formatted line to today's ledger file at `ledger/YYYY/MM/YYYY-MM-DD.md`.
 
 ## Receipts
@@ -107,9 +130,9 @@ lw ledger sum 2026-10
 
 | Where | What |
 |---|---|
-| Phone | Write in `notes/` (finished or not), paste images into the note, add ledger lines and receipt photos. |
-| Bridge PC, in an agent | "sync my notes": the `lw-notes-sync` skill moves stray pasted images beside their note, runs `lw ledger check` + `lw ledger import`, then `lw sync`. It never ingests. |
-| Bridge PC, by hand | The same without an agent: `lw ledger check && lw ledger import && lw sync`. |
+| Phone | Write at the vault root or in `notes/` (finished or not), paste images, add ledger lines and receipt photos. |
+| Bridge PC, in an agent | "sync my notes": the `lw-notes-sync` skill moves root notes into `notes/` with their images, receipt photos into `ledger/receipts/`, runs `lw ledger check` + `lw ledger import`, then `lw sync`. It never ingests and never deletes. |
+| Bridge PC, by hand | Move root notes and images into `notes/` and receipt photos into `ledger/receipts/YYYY/MM/` yourself, then `lw ledger check && lw ledger import && lw sync`. |
 | Any PC, when a note is done | "ingest note <id>" (`lw-ingest` skill) or `lw ingest --note <id>`, then review and commit. |
 
 Install the skills on each PC from the lw repo: `git pull && sh skills/install.sh`.
