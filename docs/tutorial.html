@@ -817,7 +817,7 @@ HKD  transit   -23.60   (2)
 HKD  total     -286.10  (7)
 USD  software  -19.98   (2)
 USD  total     -19.98   (2)</code></pre>
-  <p>The setup (Obsidian on Android, Syncthing ignores, the one-line expense format) is in <a href="mobile.md">mobile.md</a>.</p>
+  <p>Setting up the phone (Syncthing, Obsidian, the bridge PC) is in <a href="#sync">lesson 13</a>; the one-line expense format is in <a href="mobile.md">mobile.md</a>.</p>
 
   <h3>Use lw from another agent (MCP)</h3>
 <pre><code>{
@@ -1078,6 +1078,76 @@ cloned /tmp/lw-remote.git into /home/you/vault-clone</code></pre>
 lw: lint: vault format 99 is newer than this lw supports (4): upgrade lw   <span class="c"># exit 1</span></code></pre>
   <p>So after you upgrade lw on one PC, upgrade it on your other PCs before you sync. The current format is 4 (since v2.57.0). An lw older than v2.57.0 does not know format 4, so it refuses such a vault; upgrade it before you sync from it. A vault that was never committed to since v2.55.0 has no stamp yet, so the gate cannot protect it; commit once.</p>
   <p>If two machines commit diverging changes, lw attempts a clean fast-forward rebase. If an irreconcilable conflict occurs, <code>lw sync --take-remote</code> accepts the remote version as authoritative and preserves your local branch for reference.</p>
+
+  <h3>Your phone: notes through Syncthing</h3>
+  <p>On the phone you just use Obsidian: jot a note, log an expense, paste a photo. The phone runs <strong>Syncthing and Obsidian only: no git, no lw, no agent.</strong> It never talks to the remote. Syncthing carries your files between the phone and <em>one</em> PC, the bridge, and an agent there tidies them and runs <code>lw sync</code>:</p>
+<pre><code>phone (Obsidian)  --Syncthing-->  bridge PC vault  --lw sync-->  remote  -->  your other PCs
+  root, notes/, ledger/             lw-notes-sync skill</code></pre>
+  <div class="callout">
+    <strong>Why not git on the phone too?</strong>
+    A second path to the remote means two writers that can diverge, and the phone has no lw to rebase, refuse a conflict, or import receipts. One bridge keeps a single writer per device: Syncthing for the phone, <code>lw sync</code> for PCs. The price: the bridge PC has to be on for phone notes to reach the remote.
+  </div>
+
+  <p><strong>Set it up once.</strong></p>
+  <ol>
+    <li>Install Syncthing-Fork and Obsidian on the phone, Syncthing on the bridge PC, and pair the two devices.</li>
+    <li><strong>Before</strong> sharing the vault folder, create the same <code>.stignore</code> at the vault root on <em>both</em> sides (Syncthing does not sync this file):
+<pre><code>// lw vault &lt;-&gt; phone (Syncthing). Same file on both devices.
+// lw's own root files stay on the PCs
+/index.md
+/log.md
+/SCHEMA.md
+/curator-memory.md
+// what Obsidian on the phone writes: notes, bookkeeping, and notes/images at the vault root
+!/notes
+!/ledger
+!/*.md
+(?i)!/*.png
+(?i)!/*.jpg
+(?i)!/*.jpeg
+(?i)!/*.gif
+(?i)!/*.webp
+(?i)!/*.svg
+(?i)!/*.heic
+// everything else (wiki, raw, .obsidian, .git, .llmwiki, storage) stays put
+*</code></pre>
+      First match wins. lw's own root files stay on the PCs; <code>notes/</code>, <code>ledger/</code>, and notes and images at the <strong>vault root</strong> travel (Obsidian creates a note in whatever folder you are in, often the root, and pastes its images beside it); everything else (<code>wiki/</code>, <code>raw/</code>, each device's own <code>.obsidian/</code>) stays put. A note in some other phone folder, like <code>ideas/</code>, does not sync.</li>
+    <li>Share the vault folder; on the phone, point it at an empty folder and open that folder in Obsidian as a vault.</li>
+    <li>In Obsidian, on the phone <em>and</em> on every PC: Settings → Files &amp; links → <em>Default location for new attachments</em> → <strong>Same folder as current file</strong>. Then an image always sits beside its note and can move with it.</li>
+    <li>Install the agent skills on each PC from the lw repo: <code>git pull &amp;&amp; sh skills/install.sh</code>.</li>
+  </ol>
+
+  <p><strong>Every day.</strong> Write on the phone, drafts included; nothing is compiled. On the bridge PC, tell your agent <em>sync my notes</em>. The <code>lw-notes-sync</code> skill puts what Obsidian scattered where lw expects it, then syncs:</p>
+  <ul>
+    <li>a note at the vault root → <code>notes/</code>, with the images it embeds (even if an earlier auto-sync already committed it at the root);</li>
+    <li>a receipt photo pasted beside a ledger day file → <code>ledger/receipts/YYYY/MM/</code>, then <code>lw ledger check</code> and <code>lw ledger import</code> (receipts travel through lw storage, not git);</li>
+    <li>Syncthing's <code>.stfolder/</code> marker → this PC's <code>.git/info/exclude</code>, once (<code>lw sync</code> owns <code>.gitignore</code>);</li>
+    <li>then <code>lw sync</code>, and Syncthing carries the moves back to the phone.</li>
+  </ul>
+  <p>It only moves files, keeping their names; it never edits, deletes or ingests. It stops without syncing if anything under <code>wiki/</code> or <code>raw/</code> was hand-edited, because <code>lw sync</code> would push that past review. From a test run, the bridge PC's vault root before:</p>
+<pre><code><span class="p">$ </span>ls
+'bus idea.md'                        <span class="c"># new on the phone, at the root</span>
+'Pasted image 20261102150000.png'    <span class="c"># its pasted image, beside it</span>
+'pc root note.md'  'Pasted image PC.png'   <span class="c"># desktop Obsidian, already committed by an auto-sync</span>
+ index.md  log.md  SCHEMA.md  curator-memory.md  ledger  notes  raw  wiki
+<span class="p">$ </span>ls ledger/2026/11
+2026-11-02.md  IMG_20261102_1500.jpg   <span class="c"># receipt photo pasted into the day file</span></code></pre>
+  <p>and the skill's report after:</p>
+<pre><code>- Moved:
+  bus idea.md -&gt; notes/bus idea.md
+  pc root note.md -&gt; notes/pc root note.md
+  Pasted image 20261102150000.png -&gt; notes/Pasted image 20261102150000.png
+  Pasted image PC.png -&gt; notes/Pasted image PC.png
+  ledger/2026/11/IMG_20261102_1500.jpg -&gt; ledger/receipts/2026/11/IMG_20261102_1500.jpg
+- Synced: the notes and images above, ledger/2026/11/2026-11-02.md, the receipt (via lw storage)
+- Left for you: none
+- Not ingested (by design): bus idea, pc root note, ... Say "ingest note &lt;id&gt;" when one is finished.</code></pre>
+  <p>Later, on any PC, <code>lw ingest --note "bus idea"</code> (or <em>ingest note bus idea</em> to your agent) finds the image beside the note and bundles it as <code>raw/assets/bus-idea-pasted-image-20261102150000.png</code>.</p>
+  <div class="callout warn">
+    <strong>An image the PC never received stays a dangling embed.</strong>
+    If a note's image is in a phone folder that does not sync, or has not arrived yet, ingest keeps <code>![[…]]</code> dangling with no lint warning. The skill reports it as <code>missing:</code>; sync again once the image is there, before you ingest that note.
+  </div>
+  <div class="try"><div class="label">Try it</div>On the phone, write a note at the vault root with a pasted image. On the bridge PC say <em>sync my notes</em>, check the phone now shows both under <code>notes/</code>, then on a second PC run <code>lw sync</code> and open the note.</div>
 
   <details class="quiz"><summary>Check: you ran `lw commit` on your desktop. Do you need to run `lw sync` before shutting down?</summary>
     <p>No. Writing verbs like <code>lw commit</code>, <code>lw reject</code>, and <code>lw note</code> automatically push to configured sync remotes when they finish.</p></details>
