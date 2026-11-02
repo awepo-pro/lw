@@ -21,7 +21,8 @@ judge the notes. Follow this procedure exactly.
 2. **Never change a note's text or name.** No typo fixes, no frontmatter, no renames. You may only *move image files*
    as Step 3 allows.
 3. **Never touch `wiki/`, `raw/`, `index.md`, `log.md`, `.llmwiki/`, `storage/`, or `.git/`.** Hand edits there skip the
-   review gate (`wiki/`) or break immutability (`raw/`). If they are dirty, stop and report (Step 2).
+   review gate (`wiki/`) or break immutability (`raw/`). If they are dirty, stop and report (Step 2). The one exception
+   is appending `/.stfolder/` to `.git/info/exclude` (Step 2).
 4. **Never run `lw sync --take-remote`, `lw commit`, `lw revert`, `lw doctor --discard-changeset`, `git reset`,
    `git checkout`, `git stash`, `git push --force`, or `rm` on anything you did not just move.** A sync conflict goes
    back to the user.
@@ -66,9 +67,18 @@ Put each path from `git status` in exactly one class:
 |---|---|---|
 | OK | `notes/**`, `ledger/**` | sync as is |
 | OK | `.obsidian/**`, `.gitignore`, `.stignore` | sync as is (lw sync manages `.gitignore` itself) |
+| EXCLUDE | `.stfolder/**` (Syncthing's per-device folder marker) | never commit it; see below |
 | IMAGE | an image (`.png .jpg .jpeg .gif .webp .svg .bmp .avif`) anywhere outside `notes/`, `ledger/`, `raw/`, `wiki/` (Obsidian's default paste location is the vault root) | Step 3 |
 | STOP | anything under `wiki/`, `raw/`, `.llmwiki/`, or `index.md` / `log.md` | do not sync; report |
 | ASK | anything else (a stray `.md` at the root, a PDF, a new folder) | do not sync; report and ask |
+
+EXCLUDE: `lw sync` rewrites `.gitignore`, so the marker goes in this PC's own git exclude file instead. Append it once:
+
+```bash
+grep -qxF '/.stfolder/' V/.git/info/exclude 2>/dev/null || echo '/.stfolder/' >> V/.git/info/exclude
+```
+
+Then `git status` no longer shows it. Never delete `.stfolder/`: Syncthing stops syncing the folder without it.
 
 A `.md` note written at the vault root instead of `notes/` is ASK, not OK: ask whether it belongs in `notes/`. Moving it
 is the user's call, because other notes may link to it by path.
@@ -99,6 +109,19 @@ is ingested later. For each IMAGE path `P` with file name `N`:
      An image nothing embeds may be one the user deleted the embed for; that is their decision.
 
 3. After moving, run `git -C V status --short --untracked-files=all` again and re-classify.
+
+Then look for embeds whose image is not on this PC. An image pasted at the vault root *on the phone* never leaves the
+phone (`.stignore` syncs only `notes/` and `ledger/`), so the note arrives with a dangling embed, and a later ingest
+keeps it dangling without a warning. For each changed note under `notes/`:
+
+```bash
+grep -oE '!\[\[[^]|]+\.(png|jpe?g|gif|webp|svg|bmp|avif)' "V/<note>" | sed 's/^!\[\[//' | sort -u |
+  while IFS= read -r img; do [ -n "$(find V/notes V/ledger -name "$(basename "$img")" -print -quit)" ] || echo "missing: $img"; done
+```
+
+Report each `missing:` under **Left for you** as: *the image is still on the device that wrote the note (pasted at its
+vault root); in Obsidian there, move it into the note's folder, then sync again.* This does not block the sync: the
+note is a draft and the image can follow later.
 
 Then check Obsidian's attachment setting once:
 
