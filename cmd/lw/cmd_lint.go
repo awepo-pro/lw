@@ -185,6 +185,58 @@ func runLintFix(vaultPath, checksFlag string) error {
 		return fmt.Errorf("create session: %w", err)
 	}
 
+	// FIX-B: before the agent rounds, deterministically sync sources: on pages
+	// with cite-source findings (081).
+	var citeSourcePages []string
+	seenCSPages := map[string]bool{}
+	for _, f := range report.Findings {
+		if f.Check == "cite-source" && f.Path != "" && !seenCSPages[f.Path] {
+			seenCSPages[f.Path] = true
+			citeSourcePages = append(citeSourcePages, f.Path)
+		}
+	}
+	if len(citeSourcePages) > 0 {
+		reg := lintToolRegistry(e, cfg)
+		syncedPages := map[string]bool{}
+		for _, p := range citeSourcePages {
+			argBytes, _ := json.Marshal(map[string]any{
+				"path":      p,
+				"op":        "sync_sources",
+				"section":   "",
+				"content":   "",
+				"rationale": "sync cited sources to sources:",
+			})
+			res, err := reg.Call(context.Background(), "stage.patch_page", argBytes)
+			if err != nil {
+				fmt.Printf("could not sync sources: on %s: %v\n", p, err)
+			} else if res.IsError {
+				fmt.Printf("could not sync sources: on %s: %s\n", p, res.Content)
+			} else {
+				fmt.Printf("synced sources: on %s (cite-source; no model)\n", p)
+				syncedPages[p] = true
+			}
+		}
+		if len(syncedPages) > 0 {
+			var activeRounds []lintFixRound
+			for _, r := range rounds {
+				if syncedPages[r.page] {
+					var remaining []lint.Finding
+					for _, f := range r.findings {
+						if f.Check != "cite-source" {
+							remaining = append(remaining, f)
+						}
+					}
+					if len(remaining) == 0 {
+						continue
+					}
+					r.findings = remaining
+				}
+				activeRounds = append(activeRounds, r)
+			}
+			rounds = activeRounds
+		}
+	}
+
 	// One agent round per page, first-appearance order. A round whose
 	// Send fails is recorded and the loop continues: one broken page must
 	// not cost the others their repairs.

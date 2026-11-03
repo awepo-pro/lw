@@ -187,3 +187,37 @@ func withNotes(res Result, notes []string) Result {
 	}
 	return res
 }
+
+// frontmatterKeys are the recognized YAML frontmatter property keys whose
+// presence directly after a "---" fence indicates a frontmatter block (FIX-B).
+var frontmatterKeys = []string{
+	"title",
+	"created",
+	"updated",
+	"type",
+	"tags",
+	"sources",
+	"confidence",
+	"contested",
+	"aliases",
+}
+
+// findFrontmatterBlock finds a frontmatter block in text: a line that is
+// exactly "---" (trailing spaces/tabs trimmed) immediately followed by a
+// line starting with one of title:, created:, updated:, type:, tags:, sources:,
+// confidence:, contested:, aliases:. It returns the matched key (without the
+// colon) and true, or "", false if no frontmatter block is found (FIX-B).
+func findFrontmatterBlock(text string) (string, bool) {
+	lines := strings.Split(text, "\n")
+	for i := 0; i < len(lines)-1; i++ {
+		if strings.TrimRight(lines[i], " \t\r") == "---" {
+			lineNext := lines[i+1]
+			for _, k := range frontmatterKeys {
+				if strings.HasPrefix(lineNext, k+":") {
+					return k, true
+				}
+			}
+		}
+	}
+	return "", false
+}

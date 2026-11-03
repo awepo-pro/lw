@@ -38,7 +38,7 @@ const stagePatchPageSchema = `{
     "path":{"type":"string","description":"Vault-relative page path, e.g. wiki/concepts/kv-cache.md."},
     "section":{"type":"string","description":"The exact heading line of the target section, e.g. \"## Related\". Use \"\" for the lead: the text between the frontmatter and the first heading."},
     "occurrence":{"type":"integer","minimum":1,"description":"Which copy of a heading that appears more than once on the page: 1 (the default) is the first. Above 1 only with replace_text or remove_section."},
-    "op":{"type":"string","enum":["replace_text","replace_section","append_section","insert_after","insert_before","remove_section"],"description":"replace_text: replace the find text, which must occur exactly once inside the section. replace_section: replace the WHOLE section body below its heading, subsections included. append_section: add content at the end of the section. insert_after / insert_before: add content as a new section next to this one. remove_section: delete the section."},
+    "op":{"type":"string","enum":["replace_text","replace_section","append_section","insert_after","insert_before","remove_section","sync_sources"],"description":"replace_text: replace the find text, which must occur exactly once inside the section. replace_section: replace the WHOLE section body below its heading, subsections included. append_section: add content at the end of the section. insert_after / insert_before: add content as a new section next to this one. remove_section: delete the section. sync_sources: add every raw source the body cites to sources: (no text change; send section \"\" and content \"\")."},
     "find":{"type":"string","description":"replace_text only: the exact text to replace, copied from the page. It must occur exactly once inside the section."},
     "content":{"type":"string","description":"replace_text: the replacement for find. replace_section: the new body WITHOUT the heading line. append_section: the text to add. insert_after / insert_before: the new section, heading line included. remove_section: send \"\"."},
     "allow_shrink":{"type":"boolean","description":"Confirms a deletion the shrink rule refused. A replace_section or replace_text that drops more than half of a section of 400 bytes or more is refused first; repeating the call with allow_shrink true then applies it. Setting it before a refusal has no effect."},
@@ -88,6 +88,14 @@ func isElisionPlaceholder(text string) bool {
 	return strings.HasPrefix(strings.TrimSpace(text), elisionPrefix)
 }
 
+func createFrontmatterBlockRefusal(key string) string {
+	return fmt.Sprintf("body contains a frontmatter block (a \"---\" line followed by %q); frontmatter comes from the create_page fields, not the body. Send the body without the block.", key+":")
+}
+
+func patchFrontmatterBlockRefusal(key string) string {
+	return fmt.Sprintf("content contains a frontmatter block (a \"---\" line followed by %q); frontmatter is not page text and no patch op writes it. To add raw sources the body cites to sources:, use op sync_sources. Send the content without the block.", key+":")
+}
+
 type stageCreatePageArgs struct {
 	Path       string   `json:"path"`
 	Title      string   `json:"title"`
@@ -105,6 +113,9 @@ func stageCreatePageTool(d Deps) Tool {
 		var a stageCreatePageArgs
 		if err := decodeArgs(args, &a); err != nil {
 			return badArgs("stage.create_page", err, `{"path":"wiki/concepts/new-page.md","title":"New Page"}`), nil
+		}
+		if key, ok := findFrontmatterBlock(a.Body); ok {
+			return Result{IsError: true, Content: createFrontmatterBlockRefusal(key)}, nil
 		}
 		if isElisionPlaceholder(a.Body) { // 041 A-041-5: before anything is built from it
 			return Result{IsError: true, Content: elisionRefusal}, nil
@@ -162,11 +173,16 @@ func stagePatchPageTool(d Deps) Tool {
 		if err := decodeArgs(args, &a); err != nil {
 			return badArgs("stage.patch_page", err, `{"path":"wiki/concepts/kv-cache.md","section":"## Related","op":"append_section","content":"- [[new-page]]","rationale":"add a related page"}`), nil
 		}
+		if a.Op != "remove_section" && a.Op != "sync_sources" {
+			if key, ok := findFrontmatterBlock(a.Content); ok {
+				return Result{IsError: true, Content: patchFrontmatterBlockRefusal(key)}, nil
+			}
+		}
 		// 041 A-041-5: every op that writes its content — replace_text,
 		// replace_section, append_section, insert_after, insert_before — is
 		// refused when that content is an elision placeholder. remove_section
-		// ignores its content, so a placeholder there changes nothing.
-		if a.Op != "remove_section" && isElisionPlaceholder(a.Content) {
+		// and sync_sources ignore content, so a placeholder there changes nothing.
+		if a.Op != "remove_section" && a.Op != "sync_sources" && isElisionPlaceholder(a.Content) {
 			return Result{IsError: true, Content: elisionRefusal}, nil
 		}
 		if d.Vault == nil {
@@ -178,6 +194,40 @@ func stagePatchPageTool(d Deps) Tool {
 		}
 		if !ok {
 			return onFail, nil
+		}
+		if a.Op == "sync_sources" {
+			if page.FM.Sources == nil {
+				return Result{IsError: true, Content: "sync_sources needs a sources: key; this page has none, so the reviewer adds it by hand"}, nil
+			}
+			fm := page.FM
+			merged, added := citedSources(d, page.FM.Sources, page.Body)
+			if len(added) == 0 {
+				return Result{IsError: true, Content: fmt.Sprintf("no change: this patch leaves %s exactly as it already reads (staged edits included); nothing was staged.", a.Path)}, nil
+			}
+			fm.Sources = merged
+			updated := vault.Page{Path: page.Path, FM: fm, Body: page.Body}
+			if bytes.Equal(updated.Serialize(), page.Serialize()) {
+				return Result{IsError: true, Content: fmt.Sprintf("no change: this patch leaves %s exactly as it already reads (staged edits included); nothing was staged.", a.Path)}, nil
+			}
+			hunks := stage.ComputeHunks(string(page.Serialize()), string(updated.Serialize()))
+			for i := range hunks {
+				hunks[i].Path = a.Path
+				hunks[i].Section = vault.PreambleHeading
+			}
+			res, err := appendStageOp(d, "stage.patch_page", stage.Op{
+				Kind:      stage.OpPatchPage,
+				Path:      a.Path,
+				Section:   vault.PreambleHeading,
+				Before:    page.SHA256(),
+				Content:   updated.Serialize(),
+				Hunks:     hunks,
+				Rationale: a.Rationale,
+			})
+			if err == nil && !res.IsError {
+				res = withNotes(res, []string{sourcesNote(added)})
+				arms.disarm(shrinkArmKey(a.Path, vault.PreambleHeading))
+			}
+			return res, err
 		}
 		secName := strings.ToLower(strings.TrimSpace(a.Section))
 		if secName == "" || secName == "preamble" || secName == "(preamble)" {
@@ -295,7 +345,7 @@ func stagePatchPageTool(d Deps) Tool {
 		case "remove_section":
 			body = vault.RemoveSection(page.Body, sec) // Content ignored
 		default:
-			return Result{IsError: true, Content: fmt.Sprintf("op %q is invalid; use replace_text, replace_section, append_section, insert_after, insert_before or remove_section", a.Op)}, nil
+			return Result{IsError: true, Content: fmt.Sprintf("op %q is invalid; use replace_text, replace_section, append_section, insert_after, insert_before, remove_section or sync_sources", a.Op)}, nil
 		}
 		// 050 D2: sources: follows the citations. A raw source the new body
 		// cites and the page does not list joins the frontmatter, so the

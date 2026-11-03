@@ -207,9 +207,10 @@
             "append_section",
             "insert_after",
             "insert_before",
-            "remove_section"
+            "remove_section",
+            "sync_sources"
           ],
-          "description": "replace_text: replace the find text, which must occur exactly once inside the section. replace_section: replace the WHOLE section body below its heading, subsections included. append_section: add content at the end of the section. insert_after / insert_before: add content as a new section next to this one. remove_section: delete the section."
+          "description": "replace_text: replace the find text, which must occur exactly once inside the section. replace_section: replace the WHOLE section body below its heading, subsections included. append_section: add content at the end of the section. insert_after / insert_before: add content as a new section next to this one. remove_section: delete the section. sync_sources: add every raw source the body cites to sources: (no text change; send section \"\" and content \"\")."
         },
         "find": {
           "type": "string",

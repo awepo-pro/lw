@@ -173,6 +173,19 @@ func agentToolDeps(e *stage.Engine, cfg *config.Config, ex extract.Extractor) to
 	}
 }
 
+// lintToolRegistry returns the tools.Registry built over the same deps the
+// lint agent's own registry uses (FIX-B).
+func lintToolRegistry(e *stage.Engine, cfg *config.Config) *tools.Registry {
+	if cfg == nil {
+		cfg = config.Default()
+	}
+	root := ""
+	if e != nil {
+		root = e.Vault().Root()
+	}
+	return tools.NewRegistry(agentToolDeps(e, cfg, agentExtractors(root, cfg)))
+}
+
 // ingestToolDeps is agentToolDeps plus what only an ingest turn knows: the
 // committed raws it compiles pages from (055). Split out of newIngestAgent so
 // the one line that carries them into the registry — tools.Deps.Recompile, the
