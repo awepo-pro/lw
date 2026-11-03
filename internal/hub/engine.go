@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 var ledgerDayRegex = regexp.MustCompile(`^ledger/[0-9]{4}/[0-9]{2}/[0-9]{4}-[0-9]{2}-[0-9]{2}\.md$`)
@@ -31,6 +32,26 @@ func New(o Options) (*Engine, error) {
 	if err != nil {
 		return nil, fmt.Errorf("dir %q is not a git work tree: %w (output: %s)", o.Dir, err, strings.TrimSpace(string(out)))
 	}
+	topLevel := strings.TrimSpace(string(out))
+
+	absDir, err := filepath.Abs(o.Dir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get absolute path of %q: %w", o.Dir, err)
+	}
+
+	realTop, err := filepath.EvalSymlinks(topLevel)
+	if err != nil {
+		return nil, fmt.Errorf("eval symlinks %q: %w", topLevel, err)
+	}
+	realDir, err := filepath.EvalSymlinks(absDir)
+	if err != nil {
+		return nil, fmt.Errorf("eval symlinks %q: %w", absDir, err)
+	}
+
+	if filepath.Clean(realTop) != filepath.Clean(realDir) {
+		return nil, fmt.Errorf("dir %q is not a git work tree root (top-level is %q)", o.Dir, topLevel)
+	}
+
 	return &Engine{opts: o}, nil
 }
 
@@ -117,8 +138,11 @@ func (e *Engine) collectManifestFiles() ([]FileEntry, error) {
 		if CheckPath(relSlash) != nil {
 			return nil
 		}
-		fi, err := d.Info()
-		if err != nil || !fi.Mode().IsRegular() {
+		if err := checkSymlinksAndParents(e.opts.Dir, relSlash); err != nil {
+			return nil
+		}
+		fi, err := os.Lstat(p)
+		if err != nil || fi.Mode()&os.ModeSymlink != 0 || !fi.Mode().IsRegular() {
 			return nil
 		}
 		data, err := os.ReadFile(p)
@@ -193,11 +217,23 @@ func (e *Engine) Changes(ctx context.Context, since string) (Changes, error) {
 			continue
 		}
 		full := filepath.Join(e.opts.Dir, filepath.FromSlash(p))
-		data, err := os.ReadFile(full)
-		if err == nil {
-			sha := hexSHA256(data)
-			changed = append(changed, Change{Path: p, SHA256: &sha})
-		} else if os.IsNotExist(err) {
+		fi, lstatErr := os.Lstat(full)
+		if lstatErr == nil {
+			if fi.Mode()&os.ModeSymlink != 0 {
+				continue
+			}
+			if err := checkSymlinksAndParents(e.opts.Dir, p); err != nil {
+				continue
+			}
+			if !fi.Mode().IsRegular() {
+				continue
+			}
+			data, err := os.ReadFile(full)
+			if err == nil {
+				sha := hexSHA256(data)
+				changed = append(changed, Change{Path: p, SHA256: &sha})
+			}
+		} else if os.IsNotExist(lstatErr) {
 			changed = append(changed, Change{Path: p, SHA256: nil})
 		}
 	}
@@ -225,12 +261,6 @@ func (e *Engine) Put(ctx context.Context, dev Device, p, base string, body []byt
 	if len(body) > MaxBodyBytes {
 		return PutResult{}, &Error{Code: CodeTooLarge, Message: "body too large"}
 	}
-	if err := checkSymlinksAndParents(e.opts.Dir, p); err != nil {
-		return PutResult{}, err
-	}
-	if err := checkCaseCollision(e.opts.Dir, p); err != nil {
-		return PutResult{}, err
-	}
 
 	var unlock func()
 	if e.opts.Lock != nil {
@@ -247,6 +277,13 @@ func (e *Engine) Put(ctx context.Context, dev Device, p, base string, body []byt
 		}
 	}
 	defer releaseLock()
+
+	if err := checkSymlinksAndParents(e.opts.Dir, p); err != nil {
+		return PutResult{}, err
+	}
+	if err := checkCaseCollision(e.opts.Dir, p); err != nil {
+		return PutResult{}, err
+	}
 
 	fullPath := filepath.Join(e.opts.Dir, filepath.FromSlash(p))
 	currentBytes, readErr := os.ReadFile(fullPath)
@@ -272,7 +309,7 @@ func (e *Engine) Put(ctx context.Context, dev Device, p, base string, body []byt
 
 	if base == BaseNew {
 		if !exists {
-			if err := writeAtomic(fullPath, body); err != nil {
+			if err := writeAtomic(e.opts.Dir, p, body); err != nil {
 				return PutResult{}, err
 			}
 			result = ResultApplied
@@ -292,7 +329,7 @@ func (e *Engine) Put(ctx context.Context, dev Device, p, base string, body []byt
 					mergedBytes, changed := mergeLedgerDay(currentBytes, body)
 					result = ResultMerged
 					if changed {
-						if err := writeAtomic(fullPath, mergedBytes); err != nil {
+						if err := writeAtomic(e.opts.Dir, p, mergedBytes); err != nil {
 							return PutResult{}, err
 						}
 						finalSHA = hexSHA256(mergedBytes)
@@ -314,7 +351,7 @@ func (e *Engine) Put(ctx context.Context, dev Device, p, base string, body []byt
 		}
 	} else {
 		if !exists {
-			if err := writeAtomic(fullPath, body); err != nil {
+			if err := writeAtomic(e.opts.Dir, p, body); err != nil {
 				return PutResult{}, err
 			}
 			result = ResultResurrected
@@ -327,7 +364,7 @@ func (e *Engine) Put(ctx context.Context, dev Device, p, base string, body []byt
 			}
 		} else {
 			if base == currentSHA {
-				if err := writeAtomic(fullPath, body); err != nil {
+				if err := writeAtomic(e.opts.Dir, p, body); err != nil {
 					return PutResult{}, err
 				}
 				result = ResultApplied
@@ -343,7 +380,7 @@ func (e *Engine) Put(ctx context.Context, dev Device, p, base string, body []byt
 					mergedBytes, changed := mergeLedgerDay(currentBytes, body)
 					result = ResultMerged
 					if changed {
-						if err := writeAtomic(fullPath, mergedBytes); err != nil {
+						if err := writeAtomic(e.opts.Dir, p, mergedBytes); err != nil {
 							return PutResult{}, err
 						}
 						finalSHA = hexSHA256(mergedBytes)
@@ -367,10 +404,9 @@ func (e *Engine) Put(ctx context.Context, dev Device, p, base string, body []byt
 
 	releaseLock()
 
+	var importErr error
 	if needImportReceipts && e.opts.ImportReceipts != nil {
-		if err := e.opts.ImportReceipts([]string{p}); err != nil {
-			return PutResult{}, err
-		}
+		importErr = e.opts.ImportReceipts([]string{p})
 	}
 
 	var commitErr error
@@ -384,6 +420,10 @@ func (e *Engine) Put(ctx context.Context, dev Device, p, base string, body []byt
 		SHA256:       finalSHA,
 		ConflictPath: conflictPath,
 		Head:         e.getHead(),
+	}
+
+	if importErr != nil {
+		return PutResult{}, importErr
 	}
 
 	if commitErr != nil {
@@ -401,17 +441,11 @@ func (e *Engine) Delete(ctx context.Context, dev Device, p, base string) (Delete
 	if err := CheckPath(p); err != nil {
 		return DeleteResult{}, err
 	}
-	if strings.HasPrefix(p, "ledger/receipts/") {
-		return DeleteResult{}, &Error{Code: CodeOutOfScope, Message: "DELETE under ledger/receipts/ is not allowed"}
+	if p == "ledger/receipts" || strings.HasPrefix(p, "ledger/receipts/") {
+		return DeleteResult{}, &Error{Code: CodeOutOfScope, Message: "DELETE under ledger/receipts is not allowed"}
 	}
 	if !isValidBase(base) {
 		return DeleteResult{}, &Error{Code: CodeBadRequest, Message: "invalid base"}
-	}
-	if err := checkSymlinksAndParents(e.opts.Dir, p); err != nil {
-		return DeleteResult{}, err
-	}
-	if err := checkCaseCollision(e.opts.Dir, p); err != nil {
-		return DeleteResult{}, err
 	}
 
 	var unlock func()
@@ -429,6 +463,13 @@ func (e *Engine) Delete(ctx context.Context, dev Device, p, base string) (Delete
 		}
 	}
 	defer releaseLock()
+
+	if err := checkSymlinksAndParents(e.opts.Dir, p); err != nil {
+		return DeleteResult{}, err
+	}
+	if err := checkCaseCollision(e.opts.Dir, p); err != nil {
+		return DeleteResult{}, err
+	}
 
 	fullPath := filepath.Join(e.opts.Dir, filepath.FromSlash(p))
 	currentBytes, readErr := os.ReadFile(fullPath)
@@ -477,6 +518,27 @@ func (e *Engine) Delete(ctx context.Context, dev Device, p, base string) (Delete
 	return res, nil
 }
 
+func truncateUTF8(s string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	if len(s) <= maxBytes {
+		return s
+	}
+	var lastValid int
+	for offset := range s {
+		if offset > maxBytes {
+			break
+		}
+		lastValid = offset
+	}
+	_, size := utf8.DecodeRuneInString(s[lastValid:])
+	if lastValid+size <= maxBytes {
+		return s[:lastValid+size]
+	}
+	return s[:lastValid]
+}
+
 func (e *Engine) createConflictCopy(dev Device, relPath string, body []byte) (string, error) {
 	now := time.Now().UTC()
 	if e.opts.Now != nil {
@@ -488,31 +550,56 @@ func (e *Engine) createConflictCopy(dev Device, relPath string, body []byte) (st
 	ext := path.Ext(base)
 	stem := strings.TrimSuffix(base, ext)
 
-	candidateName := fmt.Sprintf("%s.conflict-%s-%s%s", stem, dev.Name, timeStr, ext)
-	var relCandidate string
-	if dir == "." || dir == "" {
-		relCandidate = candidateName
-	} else {
-		relCandidate = path.Join(dir, candidateName)
+	targetDir := filepath.Join(e.opts.Dir, filepath.FromSlash(dir))
+	entries, _ := os.ReadDir(targetDir)
+
+	isTaken := func(name, full string) bool {
+		for _, entry := range entries {
+			if strings.EqualFold(entry.Name(), name) {
+				return true
+			}
+		}
+		if _, err := os.Lstat(full); !os.IsNotExist(err) {
+			return true
+		}
+		return false
 	}
 
-	full := filepath.Join(e.opts.Dir, filepath.FromSlash(relCandidate))
-	if _, err := os.Lstat(full); !os.IsNotExist(err) {
+	prefix := ""
+	if dir != "." && dir != "" {
+		prefix = dir + "/"
+	}
+
+	buildCandidate := func(seq int) (relCandidate string, candidateName string, full string) {
+		var suffix string
+		if seq == 1 {
+			suffix = fmt.Sprintf(".conflict-%s-%s%s", dev.Name, timeStr, ext)
+		} else {
+			suffix = fmt.Sprintf(".conflict-%s-%s-%d%s", dev.Name, timeStr, seq, ext)
+		}
+		maxStemLen := 512 - len(prefix) - len(suffix)
+		shortStem := truncateUTF8(stem, maxStemLen)
+		candidateName = shortStem + suffix
+		relCandidate = prefix + candidateName
+		full = filepath.Join(e.opts.Dir, filepath.FromSlash(relCandidate))
+		return relCandidate, candidateName, full
+	}
+
+	relCandidate, candidateName, full := buildCandidate(1)
+	if isTaken(candidateName, full) {
 		for i := 2; ; i++ {
-			candidateName = fmt.Sprintf("%s.conflict-%s-%s-%d%s", stem, dev.Name, timeStr, i, ext)
-			if dir == "." || dir == "" {
-				relCandidate = candidateName
-			} else {
-				relCandidate = path.Join(dir, candidateName)
-			}
-			full = filepath.Join(e.opts.Dir, filepath.FromSlash(relCandidate))
-			if _, err := os.Lstat(full); os.IsNotExist(err) {
+			relCandidate, candidateName, full = buildCandidate(i)
+			if !isTaken(candidateName, full) {
 				break
 			}
 		}
 	}
 
-	if err := writeAtomic(full, body); err != nil {
+	if err := CheckPath(relCandidate); err != nil {
+		return "", err
+	}
+
+	if err := writeAtomic(e.opts.Dir, relCandidate, body); err != nil {
 		return "", err
 	}
 	return relCandidate, nil
@@ -527,7 +614,10 @@ func mergeLedgerDay(current, phone []byte) ([]byte, bool) {
 	yLines := make(map[string]bool)
 	for _, line := range strings.Split(yStr, "\n") {
 		line = strings.TrimSuffix(line, "\r")
-		yLines[line] = true
+		line = strings.TrimPrefix(line, "\xef\xbb\xbf")
+		if line != "" {
+			yLines[line] = true
+		}
 	}
 
 	result := yStr
@@ -541,6 +631,7 @@ func mergeLedgerDay(current, phone []byte) ([]byte, bool) {
 
 	for _, rawLine := range phoneLines {
 		line := strings.TrimSuffix(rawLine, "\r")
+		line = strings.TrimPrefix(line, "\xef\xbb\xbf")
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
@@ -561,11 +652,42 @@ func mergeLedgerDay(current, phone []byte) ([]byte, bool) {
 	return []byte(result), true
 }
 
-func writeAtomic(targetPath string, data []byte) error {
-	parent := filepath.Dir(targetPath)
-	if err := os.MkdirAll(parent, 0o755); err != nil {
+func writeAtomic(dir, relPath string, data []byte) error {
+	segments := strings.Split(relPath, "/")
+	curr := dir
+	for i := 0; i < len(segments)-1; i++ {
+		curr = filepath.Join(curr, segments[i])
+		if err := os.Mkdir(curr, 0o755); err != nil && !os.IsExist(err) {
+			return err
+		}
+		fi, err := os.Lstat(curr)
+		if err != nil {
+			return err
+		}
+		if fi.Mode()&os.ModeSymlink != 0 {
+			return &Error{Code: CodeOutOfScope, Message: "symlinks are not permitted"}
+		}
+		if !fi.IsDir() {
+			return &Error{Code: CodeOutOfScope, Message: "parent component is not a directory"}
+		}
+	}
+	parent := curr
+	fi, err := os.Lstat(parent)
+	if err != nil {
 		return err
 	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return &Error{Code: CodeOutOfScope, Message: "symlinks are not permitted"}
+	}
+	if !fi.IsDir() {
+		return &Error{Code: CodeOutOfScope, Message: "parent component is not a directory"}
+	}
+
+	targetPath := filepath.Join(parent, segments[len(segments)-1])
+	if fi, err := os.Lstat(targetPath); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		return &Error{Code: CodeOutOfScope, Message: "symlinks are not permitted"}
+	}
+
 	tmp, err := os.CreateTemp(parent, ".hub-tmp-*")
 	if err != nil {
 		return err
