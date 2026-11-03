@@ -845,7 +845,8 @@ func TestPatchPageSchemaDescribesOps(t *testing.T) {
 	}
 	wantDescriptions := map[string]string{
 		"path":         `Vault-relative page path, e.g. wiki/concepts/kv-cache.md.`,
-		"section":      `The exact heading line of the target section, e.g. "## Related".`,
+		"section":      `The exact heading line of the target section, e.g. "## Related". Use "" for the lead: the text between the frontmatter and the first heading.`,
+		"occurrence":   `Which copy of a heading that appears more than once on the page: 1 (the default) is the first. Above 1 only with replace_text or remove_section.`,
 		"op":           `replace_text: replace the find text, which must occur exactly once inside the section. replace_section: replace the WHOLE section body below its heading, subsections included. append_section: add content at the end of the section. insert_after / insert_before: add content as a new section next to this one. remove_section: delete the section.`,
 		"find":         `replace_text only: the exact text to replace, copied from the page. It must occur exactly once inside the section.`,
 		"content":      `replace_text: the replacement for find. replace_section: the new body WITHOUT the heading line. append_section: the text to add. insert_after / insert_before: the new section, heading line included. remove_section: send "".`,
@@ -866,6 +867,9 @@ func TestPatchPageSchemaDescribesOps(t *testing.T) {
 	}
 	if got := schema.Properties["allow_shrink"].Type; got != "boolean" {
 		t.Fatalf("allow_shrink type = %q, want boolean", got)
+	}
+	if got := schema.Properties["occurrence"].Type; got != "integer" {
+		t.Fatalf("occurrence type = %q, want integer", got)
 	}
 }
 

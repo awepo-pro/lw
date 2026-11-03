@@ -192,7 +192,12 @@
         },
         "section": {
           "type": "string",
-          "description": "The exact heading line of the target section, e.g. \"## Related\"."
+          "description": "The exact heading line of the target section, e.g. \"## Related\". Use \"\" for the lead: the text between the frontmatter and the first heading."
+        },
+        "occurrence": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Which copy of a heading that appears more than once on the page: 1 (the default) is the first. Above 1 only with replace_text or remove_section."
         },
         "op": {
           "type": "string",

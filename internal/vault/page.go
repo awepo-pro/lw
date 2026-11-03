@@ -56,9 +56,29 @@ func (p *Page) Serialize() []byte {
 	return out
 }
 
+// PreambleHeading is the heading line for the lead pseudo-section:
+// the region between frontmatter and the first heading.
+const PreambleHeading = "(preamble)"
+
 // Section returns the Section whose Heading — the full raw heading line,
 // e.g. "## Related" — exactly matches heading, and whether one was found.
+// When heading is PreambleHeading ("(preamble)"), it returns the lead
+// pseudo-section (Start 0, Body 0, End = Start of the first heading, or
+// len(Body) if the page has no headings).
 func (p *Page) Section(heading string) (Section, bool) {
+	if heading == PreambleHeading {
+		end := len(p.Body)
+		if len(p.Sections) > 0 {
+			end = p.Sections[0].Start
+		}
+		return Section{
+			Level:   0,
+			Heading: PreambleHeading,
+			Start:   0,
+			Body:    0,
+			End:     end,
+		}, true
+	}
 	for _, s := range p.Sections {
 		if s.Heading == heading {
 			return s, true
