@@ -10,6 +10,7 @@ import (
 // 020 amendment (workflow T-C): duplicate-section joins as check 16.
 // 034 amendment (A-034-2): cite-page joins as check 17, cite-source as 18.
 // 070 amendment (A-070-1): cite-superseded joins as check 19.
+// 081 amendment (A-081-5): body-frontmatter joins as check 20.
 var wantCheckOrder = []string{
 	"fm-required",
 	"fm-taxonomy",
@@ -30,15 +31,17 @@ var wantCheckOrder = []string{
 	"cite-page",
 	"cite-source",
 	"cite-superseded",
+	"body-frontmatter",
 }
 
 // TestAllReturnsEighteenInTableOrder — renamed by each joining amendment,
 // most recently 034 (A-034-2): cite-page joins as check 17, cite-source as
-// check 18. A-070-1 bumps the pin to 19 (cite-superseded).
+// check 18. A-070-1 bumps the pin to 19 (cite-superseded). A-081-5 bumps the pin
+// to 20 (body-frontmatter).
 func TestAllReturnsEighteenInTableOrder(t *testing.T) {
 	checks := All()
-	if len(checks) != 19 {
-		t.Fatalf("len(All()) = %d, want 19", len(checks))
+	if len(checks) != 20 {
+		t.Fatalf("len(All()) = %d, want 20", len(checks))
 	}
 
 	var got []string
@@ -65,11 +68,12 @@ func TestSelectChecksEmptyMeansAll(t *testing.T) {
 	// 020 amendment (workflow T-C): duplicate-section joins as check 16.
 	// 034 amendment (A-034-2): cite-page and cite-source join as 17 and 18.
 	// 070 amendment (A-070-1): count pin bumped to 19.
-	if got := len(selectChecks(nil)); got != 19 {
-		t.Fatalf("selectChecks(nil) has %d checks, want 19", got)
+	// 081 amendment (A-081-5): count pin bumped to 20.
+	if got := len(selectChecks(nil)); got != 20 {
+		t.Fatalf("selectChecks(nil) has %d checks, want 20", got)
 	}
-	if got := len(selectChecks([]string{})); got != 19 {
-		t.Fatalf("selectChecks([]string{}) has %d checks, want 19", got)
+	if got := len(selectChecks([]string{})); got != 20 {
+		t.Fatalf("selectChecks([]string{}) has %d checks, want 20", got)
 	}
 }
 
