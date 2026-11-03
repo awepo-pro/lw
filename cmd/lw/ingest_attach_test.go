@@ -617,3 +617,38 @@ func TestIngestAttachUnmatchedWithAlreadyAttached(t *testing.T) {
 		t.Errorf("found open changesets: %d, want 0", len(entries))
 	}
 }
+
+// TestIngestAttachDirAllNotTextExitsZero pins workflow 080 FIX1 / review R-1:
+// when every walked file in a directory is skipped during extraction (e.g. not text),
+// ingest --attach exits 0 cleanly without claiming no input matched a committed raw source,
+// and opens no changeset.
+func TestIngestAttachDirAllNotTextExitsZero(t *testing.T) {
+	root := testutil.CopyFixture(t, "minimal")
+	D := t.TempDir()
+	binaryFile := filepath.Join(D, "binary.txt")
+	content := bytes.Repeat([]byte{0x00, 0x01, 0x02, 0xff, 0xfe, 0x00, 0x00, 0x10}, 64)
+	if err := os.WriteFile(binaryFile, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, code := captureRun(t, func() int {
+		return run([]string{"ingest", "--attach", D, "--vault", root})
+	})
+	if code != 0 {
+		t.Fatalf("expected code 0, got %d; stdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+	}
+	wantSkip := "skipped " + filepath.Join(D, "binary.txt") + ": not text"
+	if !strings.Contains(stdout, wantSkip) {
+		t.Errorf("stdout = %q, want it to contain %q", stdout, wantSkip)
+	}
+	unwantedErr := "no input matches a committed raw source"
+	if strings.Contains(stderr, unwantedErr) {
+		t.Errorf("stderr = %q, want it NOT to contain %q", stderr, unwantedErr)
+	}
+
+	openDir := filepath.Join(root, ".llmwiki", "changesets", "open")
+	entries, _ := os.ReadDir(openDir)
+	if len(entries) > 0 {
+		t.Errorf("found open changesets: %d, want 0", len(entries))
+	}
+}

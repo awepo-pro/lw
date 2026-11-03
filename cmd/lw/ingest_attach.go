@@ -146,6 +146,7 @@ func runIngestAttach(
 	}
 	var plans []attachPlan
 	var matchedCount int
+	var unmatchedCount int
 	matchedRaw := make(map[string]string)
 	for _, d := range docs {
 		sha := tools.SourceBodySHA(d.doc.Markdown)
@@ -157,6 +158,7 @@ func runIngestAttach(
 			}
 		}
 		if match == nil {
+			unmatchedCount++
 			fmt.Printf("skipped %s: no committed raw source matches its extracted body (sha256 %s) \u2014 run lw ingest %s to ingest it as a new source\n", d.src, sha[:12], d.src)
 			continue
 		}
@@ -195,7 +197,7 @@ func runIngestAttach(
 		})
 	}
 
-	if matchedCount == 0 {
+	if matchedCount == 0 && unmatchedCount > 0 {
 		return errors.New("nothing to attach: no input matches a committed raw source")
 	}
 
