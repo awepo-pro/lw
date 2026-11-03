@@ -96,7 +96,10 @@ func cmdLint(args []string) error {
 // PAGE AT A TIME (020 T-D): the report's findings are bucketed by path,
 // and each bucket drives one agent round through the same stage.* tools
 // any other agent turn uses, inside the single changeset and session the
-// command opened. The model never computes lint results itself
+// command opened. Findings with severity info are advisory and not sent
+// to --fix (081): if no warn or error findings exist, it reports that info
+// findings are advisory and exits 0 before loading config or constructing
+// an agent. The model never computes lint results itself
 // (00-conventions.md §5); it only reads what lint.Run already reported.
 // Per-page rounds keep ops dependent-safe (each round validates against
 // the changeset's own staged state), contain a failure to one page, and
@@ -138,6 +141,17 @@ func runLintFix(vaultPath, checksFlag string) error {
 		return nil
 	}
 
+	infoCount := 0
+	for _, f := range report.Findings {
+		if f.Severity == lint.SevInfo {
+			infoCount++
+		}
+	}
+	if report.Errors+report.Warns == 0 {
+		fmt.Printf("nothing to fix: %d info finding(s) are advisory; lw lint lists them\n", infoCount)
+		return nil
+	}
+
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
@@ -151,12 +165,14 @@ func runLintFix(vaultPath, checksFlag string) error {
 		return fmt.Errorf("construct agent: %w", err)
 	}
 
+	rounds, intent := planLintFix(report)
+
 	// 019: open — or, when a changeset is already open, JOIN it, saying so
 	// on stderr before the first round. A failed round's partial ops stay
 	// live (020 FIX-3b, unchanged below): --fix has no rejectAndReturn
 	// path, so there is no rollback to scope — the ops remain for review,
 	// and the failure lines say which page staged them.
-	cs, joined, err := e.OpenOrJoin(lintFixIntent(report), stage.Author{Kind: "agent", Model: cfg.LLM.Model})
+	cs, joined, err := e.OpenOrJoin(intent, stage.Author{Kind: "agent", Model: cfg.LLM.Model})
 	if err != nil {
 		return fmt.Errorf("open changeset: %w", err)
 	}
@@ -168,8 +184,6 @@ func runLintFix(vaultPath, checksFlag string) error {
 	if err != nil {
 		return fmt.Errorf("create session: %w", err)
 	}
-
-	rounds := planLintFixRounds(report)
 
 	// One agent round per page, first-appearance order. A round whose
 	// Send fails is recorded and the loop continues: one broken page must
@@ -250,9 +264,33 @@ func lintFixPartialOpsClause(cs *stage.Changeset, page string) string {
 }
 
 // lintFixIntent builds a changeset intent line describing what --fix is
-// repairing.
+// repairing. Only warn and error findings are repaired; info findings are
+// advisory (081).
 func lintFixIntent(report lint.Report) string {
-	return fmt.Sprintf("lint --fix: repair %d finding(s)", len(report.Findings))
+	n := 0
+	for _, f := range report.Findings {
+		if f.Severity != lint.SevInfo {
+			n++
+		}
+	}
+	return fmt.Sprintf("lint --fix: repair %d finding(s)", n)
+}
+
+// planLintFix plans rounds and the changeset intent line from report,
+// filtering out info findings which are advisory and not sent to --fix (081).
+func planLintFix(report lint.Report) ([]lintFixRound, string) {
+	var fixable []lint.Finding
+	for _, f := range report.Findings {
+		if f.Severity != lint.SevInfo {
+			fixable = append(fixable, f)
+		}
+	}
+	fixReport := lint.Report{
+		Findings: fixable,
+		Errors:   report.Errors,
+		Warns:    report.Warns,
+	}
+	return planLintFixRounds(fixReport), lintFixIntent(fixReport)
 }
 
 // lintFixRound is one agent round of --fix: every finding the report
@@ -282,18 +320,22 @@ func planLintFixRounds(report lint.Report) []lintFixRound {
 	return rounds
 }
 
+const lintFixHonestRepairParagraph = "An honest repair makes the page better for its reader. Never add a link, citation, source or sentence only to satisfy a check: a link must lead to a page this page's reader would want next, and a citation must name a source that states the claim. When no honest repair exists (for example, no existing page is genuinely related), stage nothing for that finding and say why in one line; leaving a finding is an acceptable outcome. Text that lands on a page, a link's context included, describes the content and never mentions the lint check.\n\n"
+
 // buildLintFixRoundMessage writes the message for round i of n: it names
 // only this round's page (or says "vault-level" when the round has no
-// page) and asks for repairs to that page alone. Only the final round's
-// message asks for stage.close — an agent that closes early is contained
-// by review, so nothing guards against it.
+// page) and asks for repairs to that page alone, emphasizing that repairs
+// must be honest (081). Only the final round's message asks for
+// stage.close — an agent that closes early is contained by review, so
+// nothing guards against it.
 func buildLintFixRoundMessage(r lintFixRound, i, n int) string {
 	var b strings.Builder
 	if r.page == "" {
-		fmt.Fprintf(&b, "The vault's lint check reported %d vault-level finding(s) (round %d of %d). They are not tied to a single page. Propose a repair for each one using the stage.* tools (a patch, a rename, a link, whatever fits), stating your rationale, and touch only what these findings name — no other page may be modified this round.\n\n", len(r.findings), i+1, n)
+		fmt.Fprintf(&b, "The vault's lint check reported %d vault-level finding(s) (round %d of %d). They are not tied to a single page. For each one, stage a repair with the stage.* tools (a patch, a rename, a link, whatever fits) only when an honest one exists, stating your rationale, and touch only what these findings name \u2014 no other page may be modified this round.\n\n", len(r.findings), i+1, n)
 	} else {
-		fmt.Fprintf(&b, "The vault's lint check reported findings for page %s; this round covers that page only (round %d of %d). Propose a repair for each finding below using the stage.* tools (a patch, a rename, a link, whatever fits), stating your rationale. Touch this page only — no other page may be modified this round.\n\n", r.page, i+1, n)
+		fmt.Fprintf(&b, "The vault's lint check reported findings for page %s; this round covers that page only (round %d of %d). For each finding below, stage a repair with the stage.* tools (a patch, a rename, a link, whatever fits) only when an honest one exists, stating your rationale. Touch this page only \u2014 no other page may be modified this round.\n\n", r.page, i+1, n)
 	}
+	b.WriteString(lintFixHonestRepairParagraph)
 	if i < n-1 {
 		b.WriteString("Do not close the changeset: more pages follow in later rounds.\n\n")
 	} else {
