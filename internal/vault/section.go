@@ -80,10 +80,22 @@ func collectHeadings(doc ast.Node, src []byte) []heading {
 			return ast.WalkContinue, nil
 		}
 		textStart := lines.At(0).Start
-		heads = append(heads, heading{level: h.Level, start: lineStart(src, textStart)})
+		start := lineStart(src, textStart)
+		if !isATXLine(src[start:]) {
+			return ast.WalkContinue, nil
+		}
+		heads = append(heads, heading{level: h.Level, start: start})
 		return ast.WalkContinue, nil
 	})
 	return heads
+}
+
+func isATXLine(b []byte) bool {
+	i := 0
+	for i < len(b) && i < 3 && b[i] == ' ' {
+		i++
+	}
+	return i < len(b) && b[i] == '#'
 }
 
 // buildSection computes the full Section for heads[i], given src and the
@@ -231,6 +243,12 @@ func InsertAfterSection(body string, sec Section, block string) string {
 	inserted := strings.TrimRight(block, "\n")
 	tail := body[sec.End:]
 
+	if head == "" {
+		if tail == "" {
+			return inserted + "\n"
+		}
+		return inserted + "\n\n" + tail
+	}
 	if tail == "" {
 		return head + "\n\n" + inserted + "\n"
 	}
