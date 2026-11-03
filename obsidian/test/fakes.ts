@@ -12,6 +12,8 @@ export class FakeVaultIO implements VaultIO {
   files = new Map<string, Uint8Array>();
   getRecordedSha?: (path: string) => string | undefined;
   throwOnReadPaths?: Set<string>;
+  onBeforeGuardedWrite?: (p: string, expectedSha: string | null) => Promise<void> | void;
+  onBeforeGuardedRemove?: (p: string, expectedSha: string) => Promise<void> | void;
 
   async list(): Promise<string[]> {
     const res: string[] = [];
@@ -82,6 +84,32 @@ export class FakeVaultIO implements VaultIO {
   async exists(p: string): Promise<boolean> {
     return this.files.has(p);
   }
+
+  async writeIfUnchanged(p: string, expectedSha: string | null, bytes: Uint8Array): Promise<boolean> {
+    if (this.onBeforeGuardedWrite) {
+      await this.onBeforeGuardedWrite(p, expectedSha);
+    }
+    const current = this.files.get(p);
+    const currentSha = current ? nodeSha256(current) : null;
+    if (currentSha !== expectedSha) {
+      return false;
+    }
+    this.files.set(p, new Uint8Array(bytes));
+    return true;
+  }
+
+  async removeIfUnchanged(p: string, expectedSha: string): Promise<boolean> {
+    if (this.onBeforeGuardedRemove) {
+      await this.onBeforeGuardedRemove(p, expectedSha);
+    }
+    const current = this.files.get(p);
+    const currentSha = current ? nodeSha256(current) : null;
+    if (currentSha !== expectedSha || !current) {
+      return false;
+    }
+    this.files.delete(p);
+    return true;
+  }
 }
 
 interface HubCommit {
@@ -102,6 +130,8 @@ export class FakeHub {
   simulateNetworkError = false;
   simulateDevicePending = false;
   forceFullChanges = false;
+  pathErrors = new Map<string, { status: number; code: string; message: string }>();
+  onDelete?: (path: string, base: string) => { result: string } | null;
   onPut?: (path: string, base: string, bodyBytes: Uint8Array) => {
     result: string;
     sha256?: string;
@@ -193,6 +223,17 @@ export class FakeHub {
           headers: { "content-type": "application/json" },
           json: { error: { code: "device_pending", message: "device pending" } },
           text: JSON.stringify({ error: { code: "device_pending", message: "device pending" } }),
+        };
+      }
+
+      const qPath = urlObj.searchParams.get("path") || "";
+      if (qPath && this.pathErrors.has(qPath)) {
+        const err = this.pathErrors.get(qPath)!;
+        return {
+          status: err.status,
+          headers: { "content-type": "application/json" },
+          json: { error: { code: err.code, message: err.message } },
+          text: JSON.stringify({ error: { code: err.code, message: err.message } }),
         };
       }
 
@@ -350,6 +391,20 @@ export class FakeHub {
       if (pathname === "/v1/file" && method === "DELETE") {
         const path = urlObj.searchParams.get("path") || "";
         const base = urlObj.searchParams.get("base") || "";
+
+        if (this.onDelete) {
+          const custom = this.onDelete(path, base);
+          if (custom) {
+            const resBody = { result: custom.result, head: this.head };
+            return {
+              status: 200,
+              headers: { "content-type": "application/json" },
+              json: resBody,
+              text: JSON.stringify(resBody),
+            };
+          }
+        }
+
         const existing = this.files.get(path);
 
         if (!existing) {

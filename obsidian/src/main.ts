@@ -8,6 +8,7 @@ import {
   requestUrl,
 } from "obsidian";
 import { checkPath } from "./scope";
+import { sha256hex } from "./hash";
 import {
   HubClient,
   type RequestFn,
@@ -16,6 +17,9 @@ import {
 } from "./hubclient";
 import {
   SyncEngine,
+  handleVaultDeleteEvent,
+  handleVaultRenameEvent,
+  listRecursively,
   type State,
   type VaultIO,
 } from "./engine";
@@ -40,8 +44,6 @@ export default class LWSyncPlugin extends Plugin {
   engine!: SyncEngine;
   private statusBarEl!: HTMLElement;
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
-  private isEngineWriting = false;
-  private syncInProgress = false;
 
   async onload(): Promise<void> {
     await this.loadPluginData();
@@ -183,7 +185,6 @@ export default class LWSyncPlugin extends Plugin {
   private registerVaultEvents(): void {
     this.registerEvent(
       this.app.vault.on("create", (file) => {
-        if (this.isEngineWriting) return;
         if (file instanceof TFile && checkPath(file.path).ok) {
           this.engine.queuePut(file.path);
           this.scheduleSync();
@@ -193,7 +194,6 @@ export default class LWSyncPlugin extends Plugin {
 
     this.registerEvent(
       this.app.vault.on("modify", (file) => {
-        if (this.isEngineWriting) return;
         if (file instanceof TFile && checkPath(file.path).ok) {
           this.engine.queuePut(file.path);
           this.scheduleSync();
@@ -203,24 +203,15 @@ export default class LWSyncPlugin extends Plugin {
 
     this.registerEvent(
       this.app.vault.on("delete", (file) => {
-        if (this.isEngineWriting) return;
-        if (file instanceof TFile && checkPath(file.path).ok) {
-          const recorded = this.engineState.files[file.path];
-          if (recorded) {
-            this.engine.queueDel(file.path, recorded);
-            this.scheduleSync();
-          }
-        }
+        handleVaultDeleteEvent(this.engine, file, file instanceof TFile);
+        this.scheduleSync();
       })
     );
 
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) => {
-        if (this.isEngineWriting) return;
-        if (file instanceof TFile) {
-          this.engine.queueRename(oldPath, file.path);
-          this.scheduleSync();
-        }
+        handleVaultRenameEvent(this.engine, file, oldPath, file instanceof TFile);
+        this.scheduleSync();
       })
     );
   }
@@ -235,17 +226,7 @@ export default class LWSyncPlugin extends Plugin {
   }
 
   async triggerSync(): Promise<void> {
-    if (this.syncInProgress) {
-      return;
-    }
-    this.syncInProgress = true;
-    try {
-      await this.engine.flush();
-    } catch {
-      // Errors are surfaced through engine status
-    } finally {
-      this.syncInProgress = false;
-    }
+    await this.engine.triggerSync();
   }
 
   private createVaultIO(adapter: DataAdapter): VaultIO {
@@ -265,34 +246,9 @@ export default class LWSyncPlugin extends Plugin {
       }
     };
 
-    const listRecursively = async (folder: string): Promise<string[]> => {
-      const result: string[] = [];
-      try {
-        const listing = await adapter.list(folder);
-        for (const f of listing.files) {
-          const normalized = f.replace(/\\/g, "/");
-          if (checkPath(normalized).ok) {
-            result.push(normalized);
-          }
-        }
-        for (const sub of listing.folders) {
-          const normalizedSub = sub.replace(/\\/g, "/");
-          const parts = normalizedSub.split("/");
-          if (parts.some((p) => p.startsWith("."))) {
-            continue;
-          }
-          const children = await listRecursively(sub);
-          result.push(...children);
-        }
-      } catch {
-        // ignore errors reading directory
-      }
-      return result;
-    };
-
     return {
       list: async (): Promise<string[]> => {
-        const all = await listRecursively("");
+        const all = await listRecursively(adapter, "");
         return all.sort();
       },
       read: async (p: string): Promise<Uint8Array | null> => {
@@ -302,34 +258,65 @@ export default class LWSyncPlugin extends Plugin {
         return new Uint8Array(buf);
       },
       write: async (p: string, bytes: Uint8Array): Promise<void> => {
-        this.isEngineWriting = true;
-        try {
-          const slashIdx = p.lastIndexOf("/");
-          if (slashIdx !== -1) {
-            await ensureDir(p.slice(0, slashIdx));
-          }
-          const buf = bytes.buffer.slice(
-            bytes.byteOffset,
-            bytes.byteOffset + bytes.byteLength
-          );
-          await adapter.writeBinary(p, buf);
-        } finally {
-          this.isEngineWriting = false;
+        const slashIdx = p.lastIndexOf("/");
+        if (slashIdx !== -1) {
+          await ensureDir(p.slice(0, slashIdx));
         }
+        const buf = bytes.buffer.slice(
+          bytes.byteOffset,
+          bytes.byteOffset + bytes.byteLength
+        );
+        await adapter.writeBinary(p, buf);
       },
       remove: async (p: string): Promise<void> => {
-        this.isEngineWriting = true;
-        try {
-          const exists = await adapter.exists(p);
-          if (exists) {
-            await adapter.remove(p);
-          }
-        } finally {
-          this.isEngineWriting = false;
+        const exists = await adapter.exists(p);
+        if (exists) {
+          await adapter.remove(p);
         }
       },
       exists: async (p: string): Promise<boolean> => {
         return await adapter.exists(p);
+      },
+      writeIfUnchanged: async (
+        p: string,
+        expectedSha: string | null,
+        bytes: Uint8Array
+      ): Promise<boolean> => {
+        const exists = await adapter.exists(p);
+        let currentSha: string | null = null;
+        if (exists) {
+          const curBuf = await adapter.readBinary(p);
+          currentSha = await sha256hex(new Uint8Array(curBuf));
+        }
+        if (currentSha !== expectedSha) {
+          return false;
+        }
+        const slashIdx = p.lastIndexOf("/");
+        if (slashIdx !== -1) {
+          await ensureDir(p.slice(0, slashIdx));
+        }
+        const buf = bytes.buffer.slice(
+          bytes.byteOffset,
+          bytes.byteOffset + bytes.byteLength
+        );
+        await adapter.writeBinary(p, buf);
+        return true;
+      },
+      removeIfUnchanged: async (
+        p: string,
+        expectedSha: string
+      ): Promise<boolean> => {
+        const exists = await adapter.exists(p);
+        if (!exists) {
+          return false;
+        }
+        const curBuf = await adapter.readBinary(p);
+        const currentSha = await sha256hex(new Uint8Array(curBuf));
+        if (currentSha !== expectedSha) {
+          return false;
+        }
+        await adapter.remove(p);
+        return true;
       },
     };
   }

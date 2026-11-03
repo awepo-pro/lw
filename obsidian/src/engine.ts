@@ -6,7 +6,12 @@ import {
   NetworkError,
 } from "./hubclient";
 import {
+  CODE_BAD_REQUEST,
+  CODE_CASE_COLLISION,
   CODE_DEVICE_PENDING,
+  CODE_OUT_OF_SCOPE,
+  CODE_TOO_LARGE,
+  MAX_BODY_BYTES,
   PROTOCOL_VERSION,
   type Changes,
   type PutResult,
@@ -18,6 +23,8 @@ export interface VaultIO {
   write(p: string, bytes: Uint8Array): Promise<void>;
   remove(p: string): Promise<void>;
   exists(p: string): Promise<boolean>;
+  writeIfUnchanged(p: string, expectedSha: string | null, bytes: Uint8Array): Promise<boolean>;
+  removeIfUnchanged(p: string, expectedSha: string): Promise<boolean>;
 }
 
 export type Op =
@@ -53,7 +60,7 @@ export function toDeviceSlug(name: string): string {
 interface CoalescedOp {
   type: "put" | "del";
   path: string;
-  base: string;
+  base?: string;
   entries: Op[];
 }
 
@@ -72,23 +79,13 @@ export class SyncEngine {
     }
   }
 
-  queuePut(path: string, base?: string): void {
+  queuePut(path: string, _base?: string): void {
     if (!checkPath(path).ok) {
       return;
-    }
-    let resolvedBase = base;
-    if (resolvedBase === undefined) {
-      const lastOpForPath = [...this.options.state.queue].reverse().find((q) => q.path === path);
-      if (lastOpForPath && lastOpForPath.type === "del") {
-        resolvedBase = "new";
-      } else {
-        resolvedBase = this.options.state.files[path] || "new";
-      }
     }
     this.options.state.queue.push({
       type: "put",
       path,
-      base: resolvedBase,
     });
     void this.saveState();
   }
@@ -126,6 +123,32 @@ export class SyncEngine {
     void this.saveState();
   }
 
+  queueFolderDelete(prefix: string): void {
+    const pfx = prefix.endsWith("/") ? prefix : `${prefix}/`;
+    const paths = Object.keys(this.options.state.files).sort();
+    for (const p of paths) {
+      if (p.startsWith(pfx)) {
+        const recorded = this.options.state.files[p];
+        this.queueDel(p, recorded);
+      }
+    }
+  }
+
+  queueFolderRename(oldPrefix: string, newPrefix: string): void {
+    const oldPfx = oldPrefix.endsWith("/") ? oldPrefix : `${oldPrefix}/`;
+    const newPfx = newPrefix.endsWith("/") ? newPrefix : `${newPrefix}/`;
+    const paths = Object.keys(this.options.state.files).sort();
+    for (const p of paths) {
+      if (p.startsWith(oldPfx)) {
+        const suffix = p.slice(oldPfx.length);
+        const newPath = newPfx + suffix;
+        this.queuePut(newPath);
+        const recorded = this.options.state.files[p];
+        this.queueDel(p, recorded);
+      }
+    }
+  }
+
   private coalesceQueue(): CoalescedOp[] {
     const queue = this.options.state.queue;
     const result: CoalescedOp[] = [];
@@ -140,7 +163,6 @@ export class SyncEngine {
           const coalesced: CoalescedOp = {
             type: "put",
             path: op.path,
-            base: op.base !== undefined ? op.base : (this.options.state.files[op.path] || "new"),
             entries: [op],
           };
           activePutByPath.set(op.path, coalesced);
@@ -171,31 +193,34 @@ export class SyncEngine {
     if (res.result === "conflict_copy") {
       if (res.conflict_path) {
         this.options.onNotice?.(`Conflict on ${path}: saved to ${res.conflict_path}`);
-        await this.options.vault.write(res.conflict_path, bytes);
-        this.options.state.files[res.conflict_path] = localSha;
+        const okConflict = await this.options.vault.writeIfUnchanged(res.conflict_path, null, bytes);
+        if (okConflict) {
+          this.options.state.files[res.conflict_path] = localSha;
+        } else {
+          this.queuePut(res.conflict_path);
+        }
       }
-      this.options.state.files[path] = localSha;
-      await this.saveState();
-
       const hubFile = await this.options.client.getFile(path);
-      await this.options.vault.write(path, hubFile.data);
-      this.options.state.files[path] = hubFile.sha256;
+      const ok = await this.options.vault.writeIfUnchanged(path, localSha, hubFile.data);
+      if (ok) {
+        this.options.state.files[path] = hubFile.sha256;
+      } else {
+        this.queuePut(path);
+      }
+      await this.saveState();
+    } else if (res.result === "merged") {
+      this.options.onNotice?.(`Merged ${path}`);
+      const hubFile = await this.options.client.getFile(path);
+      const ok = await this.options.vault.writeIfUnchanged(path, localSha, hubFile.data);
+      if (ok) {
+        this.options.state.files[path] = res.sha256;
+      } else {
+        this.queuePut(path);
+      }
       await this.saveState();
     } else {
-      if (res.result === "merged") {
-        this.options.onNotice?.(`Merged ${path}`);
-      }
-      if (res.sha256 !== localSha) {
-        const hubFile = await this.options.client.getFile(path);
-        this.options.state.files[path] = localSha;
-        await this.saveState();
-        await this.options.vault.write(path, hubFile.data);
-        this.options.state.files[path] = res.sha256;
-        await this.saveState();
-      } else {
-        this.options.state.files[path] = res.sha256;
-        await this.saveState();
-      }
+      this.options.state.files[path] = res.sha256;
+      await this.saveState();
     }
 
     return res;
@@ -239,25 +264,40 @@ export class SyncEngine {
           if (op.type === "put") {
             const bytes = await this.options.vault.read(op.path);
             if (bytes !== null) {
+              if (bytes.length > MAX_BODY_BYTES) {
+                const reason = CODE_TOO_LARGE;
+                lastError = `${op.path}: ${reason}`;
+                this.options.onNotice?.(`${op.path}: ${reason}`);
+                coalesced.shift();
+                const entrySet = new Set(op.entries);
+                this.options.state.queue = this.options.state.queue.filter((q) => !entrySet.has(q));
+                await this.saveState();
+                continue;
+              }
+
               const localSha = await sha256hex(bytes);
               const recorded = this.options.state.files[op.path];
 
-              if (recorded !== undefined && localSha === recorded && op.base !== "new") {
-                // F6 echo: skip request
+              if (recorded !== undefined && localSha === recorded) {
+                // skip already in sync
               } else {
-                const base = op.base || recorded || "new";
+                const base = recorded !== undefined ? recorded : "new";
                 await this.uploadAndSettle(op.path, base, bytes);
               }
             }
           } else if (op.type === "del") {
-            const base = this.options.state.files[op.path] || op.base;
+            const base = this.options.state.files[op.path] || op.base || "";
             const res = await this.options.client.deleteFile(op.path, base);
             if (res.result === "deleted" || res.result === "already_gone") {
               delete this.options.state.files[op.path];
             } else if (res.result === "refused_changed") {
               const hubFile = await this.options.client.getFile(op.path);
-              await this.options.vault.write(op.path, hubFile.data);
-              this.options.state.files[op.path] = hubFile.sha256;
+              const ok = await this.options.vault.writeIfUnchanged(op.path, null, hubFile.data);
+              if (ok) {
+                this.options.state.files[op.path] = hubFile.sha256;
+              } else {
+                this.queuePut(op.path);
+              }
             }
           }
 
@@ -266,6 +306,22 @@ export class SyncEngine {
           this.options.state.queue = this.options.state.queue.filter((q) => !entrySet.has(q));
           await this.saveState();
         } catch (err) {
+          if (
+            err instanceof HubError &&
+            (err.code === CODE_TOO_LARGE ||
+              err.code === CODE_OUT_OF_SCOPE ||
+              err.code === CODE_BAD_REQUEST ||
+              err.code === CODE_CASE_COLLISION)
+          ) {
+            const reason = err.code;
+            lastError = `${op.path}: ${reason}`;
+            this.options.onNotice?.(`${op.path}: ${reason}`);
+            coalesced.shift();
+            const entrySet = new Set(op.entries);
+            this.options.state.queue = this.options.state.queue.filter((q) => !entrySet.has(q));
+            await this.saveState();
+            continue;
+          }
           if (err instanceof HubError && err.code === CODE_DEVICE_PENDING) {
             const slug = toDeviceSlug(this.options.client.options.deviceName);
             this.setStatus(`lw: waiting for approval (run: lw hub approve ${slug})`);
@@ -278,7 +334,11 @@ export class SyncEngine {
       // 3. Pull Changes
       await this.pull(this.options.state.head);
 
-      this.setStatus("lw: synced");
+      if (this.options.state.queue.length === 0) {
+        this.setStatus("lw: synced");
+      } else {
+        this.setStatus(`lw: ${this.options.state.queue.length} queued`);
+      }
     } catch (err: unknown) {
       if (err instanceof HubError && err.code === CODE_DEVICE_PENDING) {
         const slug = toDeviceSlug(this.options.client.options.deviceName);
@@ -320,6 +380,9 @@ export class SyncEngine {
     }
 
     for (const c of changes.changed) {
+      if (this.options.state.queue.some((q) => q.path === c.path)) {
+        continue;
+      }
       const localBytes = await this.options.vault.read(c.path);
 
       if (c.sha256 === null) {
@@ -331,16 +394,24 @@ export class SyncEngine {
         const recorded = this.options.state.files[c.path];
 
         if (localSha === recorded) {
-          await this.options.vault.remove(c.path);
           delete this.options.state.files[c.path];
+          const ok = await this.options.vault.removeIfUnchanged(c.path, localSha);
+          if (!ok) {
+            this.options.state.files[c.path] = localSha;
+            this.queuePut(c.path);
+          }
         } else {
           await this.uploadAndSettle(c.path, recorded || "new", localBytes);
         }
       } else {
         if (!localBytes) {
           const hubFile = await this.options.client.getFile(c.path);
-          await this.options.vault.write(c.path, hubFile.data);
-          this.options.state.files[c.path] = hubFile.sha256;
+          const ok = await this.options.vault.writeIfUnchanged(c.path, null, hubFile.data);
+          if (ok) {
+            this.options.state.files[c.path] = hubFile.sha256;
+          } else {
+            this.queuePut(c.path);
+          }
           continue;
         }
 
@@ -351,8 +422,12 @@ export class SyncEngine {
           this.options.state.files[c.path] = c.sha256;
         } else if (recorded !== undefined && localSha === recorded) {
           const hubFile = await this.options.client.getFile(c.path);
-          await this.options.vault.write(c.path, hubFile.data);
-          this.options.state.files[c.path] = hubFile.sha256;
+          const ok = await this.options.vault.writeIfUnchanged(c.path, localSha, hubFile.data);
+          if (ok) {
+            this.options.state.files[c.path] = hubFile.sha256;
+          } else {
+            this.queuePut(c.path);
+          }
         } else {
           await this.uploadAndSettle(c.path, recorded || "new", localBytes);
         }
@@ -368,19 +443,18 @@ export class SyncEngine {
     const manifestMap = new Map(files.map((f) => [f.path, f.sha256]));
 
     for (const f of files) {
-      const exists = await this.options.vault.exists(f.path);
-      if (!exists) {
-        const dl = await this.options.client.getFile(f.path);
-        await this.options.vault.write(f.path, dl.data);
-        this.options.state.files[f.path] = dl.sha256;
+      if (this.options.state.queue.some((q) => q.path === f.path)) {
         continue;
       }
-
       const localBytes = await this.options.vault.read(f.path);
       if (!localBytes) {
         const dl = await this.options.client.getFile(f.path);
-        await this.options.vault.write(f.path, dl.data);
-        this.options.state.files[f.path] = dl.sha256;
+        const ok = await this.options.vault.writeIfUnchanged(f.path, null, dl.data);
+        if (ok) {
+          this.options.state.files[f.path] = dl.sha256;
+        } else {
+          this.queuePut(f.path);
+        }
         continue;
       }
 
@@ -391,8 +465,12 @@ export class SyncEngine {
         this.options.state.files[f.path] = f.sha256;
       } else if (recorded !== undefined && localSha === recorded) {
         const dl = await this.options.client.getFile(f.path);
-        await this.options.vault.write(f.path, dl.data);
-        this.options.state.files[f.path] = dl.sha256;
+        const ok = await this.options.vault.writeIfUnchanged(f.path, localSha, dl.data);
+        if (ok) {
+          this.options.state.files[f.path] = dl.sha256;
+        } else {
+          this.queuePut(f.path);
+        }
       } else {
         const putRes = await this.uploadAndSettle(f.path, recorded || "new", localBytes);
         if (putRes.conflict_path) {
@@ -413,8 +491,12 @@ export class SyncEngine {
       }
       const localSha = await sha256hex(bytes);
       if (recorded !== undefined && localSha === recorded) {
-        await this.options.vault.remove(p);
         delete this.options.state.files[p];
+        const ok = await this.options.vault.removeIfUnchanged(p, localSha);
+        if (!ok) {
+          this.options.state.files[p] = localSha;
+          this.queuePut(p);
+        }
       } else {
         const putRes = await this.uploadAndSettle(p, recorded || "new", bytes);
         if (putRes.conflict_path) {
@@ -423,4 +505,97 @@ export class SyncEngine {
       }
     }
   }
+
+  private syncInProgress = false;
+  private syncPending = false;
+
+  async triggerSync(): Promise<void> {
+    if (this.syncInProgress) {
+      this.syncPending = true;
+      return;
+    }
+    this.syncInProgress = true;
+    try {
+      do {
+        this.syncPending = false;
+        try {
+          await this.flush();
+        } catch {
+          // errors are surfaced through engine status
+        }
+      } while (this.syncPending);
+    } finally {
+      this.syncInProgress = false;
+    }
+  }
+}
+
+export function handleVaultDeleteEvent(
+  engine: SyncEngine,
+  file: { path: string },
+  isFile: boolean
+): void {
+  if (isFile) {
+    if (checkPath(file.path).ok) {
+      const recorded = engine.options.state.files[file.path];
+      if (recorded) {
+        engine.queueDel(file.path, recorded);
+      }
+    }
+  } else {
+    engine.queueFolderDelete(file.path);
+  }
+}
+
+export function handleVaultRenameEvent(
+  engine: SyncEngine,
+  file: { path: string },
+  oldPath: string,
+  isFile: boolean
+): void {
+  if (isFile) {
+    engine.queueRename(oldPath, file.path);
+  } else {
+    engine.queueFolderRename(oldPath, file.path);
+  }
+}
+
+export interface DirectoryListing {
+  files: string[];
+  folders: string[];
+}
+
+export interface DirectoryAdapter {
+  list(folder: string): Promise<DirectoryListing>;
+}
+
+export async function listRecursively(adapter: DirectoryAdapter, folder: string): Promise<string[]> {
+  const result: string[] = [];
+  try {
+    const listing = await adapter.list(folder);
+    for (const f of listing.files) {
+      const normalized = f.replace(/\\/g, "/");
+      if (checkPath(normalized).ok) {
+        result.push(normalized);
+      }
+    }
+    for (const sub of listing.folders) {
+      const normalizedSub = sub.replace(/\\/g, "/");
+      const parts = normalizedSub.split("/").filter((p) => p.length > 0);
+      if (parts.some((p) => p.startsWith("."))) {
+        continue;
+      }
+      if (folder === "" || folder === ".") {
+        const rootFolder = parts[0];
+        if (rootFolder !== "notes" && rootFolder !== "ledger") {
+          continue;
+        }
+      }
+      const children = await listRecursively(adapter, sub);
+      result.push(...children);
+    }
+  } catch {
+    // ignore
+  }
+  return result;
 }
