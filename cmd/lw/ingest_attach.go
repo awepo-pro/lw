@@ -16,10 +16,10 @@ import (
 	"github.com/awepo-pro/lw/internal/vault"
 )
 
-// runIngestAttach implements `lw ingest --attach <file|url|dir>...` (058 S2).
+// runIngestAttach implements `lw ingest --attach <file|url|dir>...` (058 S2, 080).
 // It backfills verbatim original files beside committed raw sources whose
-// body hashes match, stages the updates deterministically with Author{Kind: "human"},
-// and calls no model.
+// body hashes match, skips unmatched inputs, stages the updates deterministically
+// with Author{Kind: "human"}, and calls no model.
 func runIngestAttach(
 	ctx context.Context,
 	openEng func() error,
@@ -145,6 +145,8 @@ func runIngestAttach(
 		beforeSHA string
 	}
 	var plans []attachPlan
+	var matchedCount int
+	var unmatchedCount int
 	matchedRaw := make(map[string]string)
 	for _, d := range docs {
 		sha := tools.SourceBodySHA(d.doc.Markdown)
@@ -156,8 +158,11 @@ func runIngestAttach(
 			}
 		}
 		if match == nil {
-			return fmt.Errorf("attach %s: no committed raw source matches its extracted body (sha256 %s) — run lw ingest %s to ingest it as a new source", d.src, sha[:12], d.src)
+			unmatchedCount++
+			fmt.Printf("skipped %s: no committed raw source matches its extracted body (sha256 %s) \u2014 run lw ingest %s to ingest it as a new source\n", d.src, sha[:12], d.src)
+			continue
 		}
+		matchedCount++
 		if match.Original != "" {
 			fmt.Printf("skipped %s: %s already has original %s\n", d.src, match.Path, match.Original)
 			continue
@@ -190,6 +195,10 @@ func runIngestAttach(
 			origBytes: d.origBytes,
 			beforeSHA: beforeSHA,
 		})
+	}
+
+	if matchedCount == 0 && unmatchedCount > 0 {
+		return errors.New("nothing to attach: no input matches a committed raw source")
 	}
 
 	// 7. If all matches already have originals, exit 0 cleanly.
