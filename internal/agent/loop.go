@@ -1012,7 +1012,13 @@ func (l *Loop) dispatchToolCall(ctx context.Context, sessionID string, round int
 	budget.noteRead(canonical)
 	budget.noteSearch(canonical)
 	l.noteStageOpen(ctx, canonical, args, openedNone, res)
-	repeats.noteResult(tc.Function.Name, tc.Function.Arguments, tc.ID, round, res.IsError)
+	isErr := res.IsError
+	if isErr && tools.ShrinkRefusal(res.Content) {
+		// 043 T2, 081 R-2: a shrink refusal armed a path+section key for
+		// confirmation; treat it as the state change it is, never as a failure.
+		isErr = false
+	}
+	repeats.noteResult(tc.Function.Name, tc.Function.Arguments, tc.ID, round, isErr)
 
 	// 038 T4 (A7): one tool event per dispatched call, written the moment
 	// the result exists — before the events and records below, so a turn

@@ -449,9 +449,6 @@ func guardedReplace(page *vault.Page, sec vault.Section, a stagePatchPageArgs, c
 	if res := refuseNestedLoss(page, sec, normalizeToolBody(a.Content)); res != nil {
 		return "", res, false
 	}
-	if res := refuseNestedLoss(page, sec, normalizeToolBody(a.Content)); res != nil {
-		return "", res, false
-	}
 	newRegion := normalizeToolBody(a.Content)
 	if sec.Heading == vault.PreambleHeading && sec.End < len(page.Body) {
 		newRegion = strings.TrimRight(a.Content, "\n") + "\n\n"
