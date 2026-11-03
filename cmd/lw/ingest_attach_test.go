@@ -204,9 +204,10 @@ func TestIngestAttachSkipsAlreadyAttached(t *testing.T) {
 	}
 }
 
-// TestIngestAttachUnmatchedFailsBeforeChangeset pins D9 error behaviour:
-// when an input does not match any committed raw's body SHA, exits 1
-// naming the 12-hex SHA and opens no changeset.
+// TestIngestAttachUnmatchedFailsBeforeChangeset pins workflow 080:
+// when no input matches any committed raw's body SHA, prints skip on stdout,
+// exits 1 with "lw: ingest: nothing to attach: no input matches a committed raw source",
+// and opens no changeset.
 func TestIngestAttachUnmatchedFailsBeforeChangeset(t *testing.T) {
 	root := testutil.CopyFixture(t, "minimal")
 	tempDir := t.TempDir()
@@ -230,9 +231,13 @@ func TestIngestAttachUnmatchedFailsBeforeChangeset(t *testing.T) {
 		t.Fatalf("expected exit code 1, got %d; stdout:\n%s\nstderr:\n%s", code, stdout, stderr)
 	}
 
-	wantErr := fmt.Sprintf("attach %s: no committed raw source matches its extracted body (sha256 %s) — run lw ingest %s to ingest it as a new source", srcFile, sha12, srcFile)
-	if !strings.Contains(stderr, wantErr) {
-		t.Errorf("stderr = %q, want it to contain %q", stderr, wantErr)
+	wantSkip := fmt.Sprintf("skipped %s: no committed raw source matches its extracted body (sha256 %s) \u2014 run lw ingest %s to ingest it as a new source", srcFile, sha12, srcFile)
+	if !strings.Contains(stdout, wantSkip) {
+		t.Errorf("stdout = %q, want it to contain %q", stdout, wantSkip)
+	}
+	wantStderr := "lw: ingest: nothing to attach: no input matches a committed raw source"
+	if !strings.Contains(stderr, wantStderr) {
+		t.Errorf("stderr = %q, want it to contain %q", stderr, wantStderr)
 	}
 
 	// Verify no changeset was opened
@@ -321,4 +326,294 @@ func TestIngestAttachFlagsAndDryRun(t *testing.T) {
 			t.Errorf("found open changesets: %d, want 0", len(entries))
 		}
 	})
+}
+
+// TestIngestAttachSkipsUnmatchedInBatch pins workflow 080:
+// when an unmatched input appears alongside a matched input in a batch,
+// the unmatched input is skipped with a notice on stdout, the matched input
+// is staged in an open changeset, and the command exits 0 without an ingest error.
+func TestIngestAttachSkipsUnmatchedInBatch(t *testing.T) {
+	root := testutil.CopyFixture(t, "minimal")
+	tempDir := t.TempDir()
+
+	v, err := vault.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kvRaw, ok := v.RawSource("raw/articles/kv-cache-explained.md")
+	if !ok {
+		t.Fatal("missing kv-cache-explained.md in fixture")
+	}
+	matchedFile := filepath.Join(tempDir, "kv-cache.md")
+	if err := os.WriteFile(matchedFile, []byte(kvRaw.Body), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	unmatchedFile := filepath.Join(tempDir, "unmatched-unique-paper.md")
+	unmatchedBody := "# Completely Unmatched Paper\n\nThis body has never been committed to the vault.\n"
+	if err := os.WriteFile(unmatchedFile, []byte(unmatchedBody), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	doc, err := extract.NewFile().Extract(context.Background(), unmatchedFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sha12 := tools.SourceBodySHA(doc.Markdown)[:12]
+	wantSkip := fmt.Sprintf("skipped %s: no committed raw source matches its extracted body (sha256 %s) \u2014 run lw ingest %s to ingest it as a new source", unmatchedFile, sha12, unmatchedFile)
+
+	stdout, stderr, code := captureRun(t, func() int {
+		return run([]string{"ingest", "--attach", unmatchedFile, matchedFile, "--vault", root})
+	})
+	if code != 0 {
+		t.Fatalf("expected code 0, got %d; stdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, wantSkip) {
+		t.Errorf("stdout = %q, want it to contain %q", stdout, wantSkip)
+	}
+	if strings.Contains(stderr, "lw: ingest:") {
+		t.Errorf("stderr = %q, want it not to contain %q", stderr, "lw: ingest:")
+	}
+
+	openDir := filepath.Join(root, ".llmwiki", "changesets", "open")
+	entries, err := os.ReadDir(openDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 open changeset directory, got %d", len(entries))
+	}
+
+	eng, err := stage.OpenEngine(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eng.Close()
+	cs, err := eng.Current()
+	if err != nil {
+		t.Fatalf("read open changeset: %v", err)
+	}
+	live := cs.Live()
+	if len(live) != 1 {
+		t.Fatalf("expected 1 live op, got %d", len(live))
+	}
+	if live[0].Kind != stage.OpIngestSource {
+		t.Errorf("op kind = %v, want %v", live[0].Kind, stage.OpIngestSource)
+	}
+	if live[0].Path != "raw/articles/kv-cache-explained.md" {
+		t.Errorf("op path = %q, want raw/articles/kv-cache-explained.md", live[0].Path)
+	}
+	if live[0].OriginalPath != "raw/articles/kv-cache-explained.md.orig" {
+		t.Errorf("op original path = %q, want raw/articles/kv-cache-explained.md.orig", live[0].OriginalPath)
+	}
+}
+
+// TestIngestAttachDirSkipsUnmatched pins workflow 080:
+// when a directory passed to lw ingest --attach contains both an unmatched file
+// and a matched file, the directory walk processes both, skips the unmatched file,
+// stages the matched file, and exits 0.
+func TestIngestAttachDirSkipsUnmatched(t *testing.T) {
+	root := testutil.CopyFixture(t, "minimal")
+	d := t.TempDir()
+
+	v, err := vault.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kvRaw, ok := v.RawSource("raw/articles/kv-cache-explained.md")
+	if !ok {
+		t.Fatal("missing kv-cache-explained.md in fixture")
+	}
+	matchedFile := filepath.Join(d, "kv-cache.md")
+	if err := os.WriteFile(matchedFile, []byte(kvRaw.Body), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	unmatchedFile := filepath.Join(d, "unmatched-unique-paper.md")
+	unmatchedBody := "# Completely Unmatched Paper\n\nThis body has never been committed to the vault.\n"
+	if err := os.WriteFile(unmatchedFile, []byte(unmatchedBody), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	doc, err := extract.NewFile().Extract(context.Background(), unmatchedFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sha12 := tools.SourceBodySHA(doc.Markdown)[:12]
+	wantSkip := fmt.Sprintf("skipped %s: no committed raw source matches its extracted body (sha256 %s) \u2014 run lw ingest %s to ingest it as a new source", unmatchedFile, sha12, unmatchedFile)
+
+	stdout, stderr, code := captureRun(t, func() int {
+		return run([]string{"ingest", "--attach", d, "--vault", root})
+	})
+	if code != 0 {
+		t.Fatalf("expected code 0, got %d; stdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, wantSkip) {
+		t.Errorf("stdout = %q, want it to contain %q", stdout, wantSkip)
+	}
+
+	openDir := filepath.Join(root, ".llmwiki", "changesets", "open")
+	entries, err := os.ReadDir(openDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 open changeset directory, got %d", len(entries))
+	}
+
+	eng, err := stage.OpenEngine(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eng.Close()
+	cs, err := eng.Current()
+	if err != nil {
+		t.Fatalf("read open changeset: %v", err)
+	}
+	live := cs.Live()
+	if len(live) != 1 {
+		t.Fatalf("expected 1 live op, got %d", len(live))
+	}
+	if live[0].Kind != stage.OpIngestSource {
+		t.Errorf("op kind = %v, want %v", live[0].Kind, stage.OpIngestSource)
+	}
+	if live[0].Path != "raw/articles/kv-cache-explained.md" {
+		t.Errorf("op path = %q, want raw/articles/kv-cache-explained.md", live[0].Path)
+	}
+}
+
+// TestIngestAttachDryRunSkipsUnmatched pins workflow 080:
+// in dry-run mode, unmatched inputs are skipped on stdout and matched inputs
+// have their would-attach plans printed later on stdout, with 0 open changesets and exit 0.
+func TestIngestAttachDryRunSkipsUnmatched(t *testing.T) {
+	root := testutil.CopyFixture(t, "minimal")
+	tempDir := t.TempDir()
+
+	v, err := vault.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kvRaw, ok := v.RawSource("raw/articles/kv-cache-explained.md")
+	if !ok {
+		t.Fatal("missing kv-cache-explained.md in fixture")
+	}
+	matchedFile := filepath.Join(tempDir, "kv-cache.md")
+	if err := os.WriteFile(matchedFile, []byte(kvRaw.Body), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	unmatchedFile := filepath.Join(tempDir, "unmatched-unique-paper.md")
+	unmatchedBody := "# Completely Unmatched Paper\n\nThis body has never been committed to the vault.\n"
+	if err := os.WriteFile(unmatchedFile, []byte(unmatchedBody), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	doc, err := extract.NewFile().Extract(context.Background(), unmatchedFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sha12 := tools.SourceBodySHA(doc.Markdown)[:12]
+	wantSkip := fmt.Sprintf("skipped %s: no committed raw source matches its extracted body (sha256 %s) \u2014 run lw ingest %s to ingest it as a new source", unmatchedFile, sha12, unmatchedFile)
+	wantAttach := fmt.Sprintf("would attach %s -> raw/articles/kv-cache-explained.md (original: raw/articles/kv-cache-explained.md.orig)", matchedFile)
+
+	stdout, stderr, code := captureRun(t, func() int {
+		return run([]string{"ingest", "--attach", "--dry-run", unmatchedFile, matchedFile, "--vault", root})
+	})
+	if code != 0 {
+		t.Fatalf("expected code 0, got %d; stdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+	}
+
+	skipIdx := strings.Index(stdout, wantSkip)
+	if skipIdx == -1 {
+		t.Errorf("stdout = %q, want it to contain %q", stdout, wantSkip)
+	}
+	attachIdx := strings.Index(stdout, wantAttach)
+	if attachIdx == -1 {
+		t.Errorf("stdout = %q, want it to contain %q", stdout, wantAttach)
+	}
+	if skipIdx != -1 && attachIdx != -1 && attachIdx <= skipIdx {
+		t.Errorf("expected would-attach line to appear at a later index than skip message; skipIdx=%d attachIdx=%d", skipIdx, attachIdx)
+	}
+
+	openDir := filepath.Join(root, ".llmwiki", "changesets", "open")
+	entries, _ := os.ReadDir(openDir)
+	if len(entries) > 0 {
+		t.Errorf("found open changesets: %d, want 0", len(entries))
+	}
+}
+
+// TestIngestAttachUnmatchedWithAlreadyAttached pins workflow 080:
+// when one input is unmatched and another matches a raw source that already has an original,
+// the unmatched input is skipped, the matched input is skipped as already attached,
+// and the command exits 0 with "nothing to attach: every matched raw source already has an original"
+// and 0 open changesets.
+func TestIngestAttachUnmatchedWithAlreadyAttached(t *testing.T) {
+	root := testutil.CopyFixture(t, "minimal")
+	tempDir := t.TempDir()
+
+	v, err := vault.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kvRaw, ok := v.RawSource("raw/articles/kv-cache-explained.md")
+	if !ok {
+		t.Fatal("missing kv-cache-explained.md in fixture")
+	}
+
+	// Update raw/articles/kv-cache-explained.md to already have an original
+	rawDiskPath := filepath.Join(root, "raw", "articles", "kv-cache-explained.md")
+	existingOrig := "raw/articles/kv-cache-explained.html"
+	origSHA := "1111222233334444111122223333444411112222333344441111222233334444"
+	kvDisk, err := os.ReadFile(rawDiskPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withOrig := strings.Replace(string(kvDisk), "---\n\n", fmt.Sprintf("original: %s\noriginal_sha256: %s\n---\n\n", existingOrig, origSHA), 1)
+	if err := os.WriteFile(rawDiskPath, []byte(withOrig), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Prepare source file with matching body
+	matchedFile := filepath.Join(tempDir, "kv-cache.md")
+	if err := os.WriteFile(matchedFile, []byte(kvRaw.Body), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	unmatchedFile := filepath.Join(tempDir, "unmatched-unique-paper.md")
+	unmatchedBody := "# Completely Unmatched Paper\n\nThis body has never been committed to the vault.\n"
+	if err := os.WriteFile(unmatchedFile, []byte(unmatchedBody), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	doc, err := extract.NewFile().Extract(context.Background(), unmatchedFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sha12 := tools.SourceBodySHA(doc.Markdown)[:12]
+	wantSkip := fmt.Sprintf("skipped %s: no committed raw source matches its extracted body (sha256 %s) \u2014 run lw ingest %s to ingest it as a new source", unmatchedFile, sha12, unmatchedFile)
+	wantAlready := fmt.Sprintf("skipped %s: raw/articles/kv-cache-explained.md already has original %s", matchedFile, existingOrig)
+	wantNothing := "nothing to attach: every matched raw source already has an original"
+
+	stdout, stderr, code := captureRun(t, func() int {
+		return run([]string{"ingest", "--attach", unmatchedFile, matchedFile, "--vault", root})
+	})
+	if code != 0 {
+		t.Fatalf("expected code 0, got %d; stdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, wantSkip) {
+		t.Errorf("stdout = %q, want it to contain %q", stdout, wantSkip)
+	}
+	if !strings.Contains(stdout, wantAlready) {
+		t.Errorf("stdout = %q, want it to contain %q", stdout, wantAlready)
+	}
+	if !strings.Contains(stdout, wantNothing) {
+		t.Errorf("stdout = %q, want it to contain %q", stdout, wantNothing)
+	}
+
+	// Verify no changeset was opened
+	openDir := filepath.Join(root, ".llmwiki", "changesets", "open")
+	entries, _ := os.ReadDir(openDir)
+	if len(entries) > 0 {
+		t.Errorf("found open changesets: %d, want 0", len(entries))
+	}
 }
