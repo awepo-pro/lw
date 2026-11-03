@@ -967,3 +967,172 @@ func TestDeleteFile(t *testing.T) {
 		t.Fatalf("unexpected delete result: %+v", res)
 	}
 }
+
+func TestFix1UnknownDeviceStateUnauthorized(t *testing.T) {
+	env := setupTestEnv(t, nil)
+	now := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
+	_, err := env.devices.RegisterPending("device-test-fix1", "Test Fix 1", "awepo-pro@github", "127.0.0.1", now)
+	if err != nil {
+		t.Fatalf("RegisterPending failed: %v", err)
+	}
+	records, err := env.devices.readFile()
+	if err != nil {
+		t.Fatalf("readFile failed: %v", err)
+	}
+	for i := range records {
+		if records[i].ID == "device-test-fix1" {
+			records[i].State = "disabled"
+		}
+	}
+	if err := env.devices.writeFile(records); err != nil {
+		t.Fatalf("writeFile failed: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/v1/hello", nil)
+	req.RemoteAddr = "127.0.0.1:40000"
+	req.Header.Set("Tailscale-User-Login", "awepo-pro@github")
+	req.Header.Set("X-LW-Device", "device-test-fix1")
+
+	w := httptest.NewRecorder()
+	env.handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status 401 Unauthorized for unknown device state, got %d", w.Code)
+	}
+
+	var errResp hub.ErrorBody
+	if err := json.NewDecoder(w.Body).Decode(&errResp); err != nil {
+		t.Fatalf("failed to decode error body: %v", err)
+	}
+	if errResp.Error.Code != hub.CodeUnauthorized {
+		t.Fatalf("expected error code %q, got %q", hub.CodeUnauthorized, errResp.Error.Code)
+	}
+}
+
+func TestFix4TouchLastSeenLogError(t *testing.T) {
+	env := setupTestEnv(t, nil)
+	env.approveDevice(t, "dev-approved-001", "pixel")
+
+	env.now = env.now.Add(2 * time.Minute)
+
+	lockPath := env.devPath + ".lock"
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		t.Fatalf("create lockfile failed: %v", err)
+	}
+	f.Close()
+	if err := os.Chmod(lockPath, 0400); err != nil {
+		t.Fatalf("chmod lockfile failed: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(lockPath, 0600)
+	})
+
+	req := httptest.NewRequest("GET", "/v1/hello", nil)
+	req.RemoteAddr = "127.0.0.1:40000"
+	req.Header.Set("Tailscale-User-Login", "awepo-pro@github")
+	req.Header.Set("X-LW-Device", "dev-approved-001")
+	req.Header.Set("X-Forwarded-For", "100.70.80.99")
+
+	w := httptest.NewRecorder()
+	env.handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", w.Code)
+	}
+
+	if len(env.logs) == 0 {
+		t.Fatalf("expected TouchLastSeen error to be logged through cfg.Log, but env.logs is empty")
+	}
+	found := false
+	for _, l := range env.logs {
+		if strings.Contains(l, "touch last seen error") || strings.Contains(l, "permission denied") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected TouchLastSeen error in logs, got %v", env.logs)
+	}
+}
+
+func TestFix5XForwardedForLastElement(t *testing.T) {
+	env := setupTestEnv(t, nil)
+
+	reqReg := httptest.NewRequest("GET", "/v1/hello", nil)
+	reqReg.RemoteAddr = "127.0.0.1:40000"
+	reqReg.Header.Set("Tailscale-User-Login", "awepo-pro@github")
+	reqReg.Header.Set("X-LW-Device", "device-test-fix5")
+	reqReg.Header.Set("X-LW-Device-Name", "test-device")
+	reqReg.Header.Set("X-Forwarded-For", "203.0.113.1, 100.70.80.96")
+
+	wReg := httptest.NewRecorder()
+	env.handler.ServeHTTP(wReg, reqReg)
+	if wReg.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 device_pending, got %d", wReg.Code)
+	}
+
+	rec, ok, err := env.devices.Get("device-test-fix5")
+	if err != nil || !ok {
+		t.Fatalf("Get device failed: %v", err)
+	}
+	if rec.LastAddr != "100.70.80.96" {
+		t.Fatalf("registration: expected LastAddr %q, got %q", "100.70.80.96", rec.LastAddr)
+	}
+
+	if _, err := env.devices.Approve("device-test-fix5"); err != nil {
+		t.Fatalf("Approve failed: %v", err)
+	}
+	env.now = env.now.Add(2 * time.Minute)
+
+	reqSeen := httptest.NewRequest("GET", "/v1/hello", nil)
+	reqSeen.RemoteAddr = "127.0.0.1:40000"
+	reqSeen.Header.Set("Tailscale-User-Login", "awepo-pro@github")
+	reqSeen.Header.Set("X-LW-Device", "device-test-fix5")
+	reqSeen.Header.Set("X-Forwarded-For", "198.51.100.2, 100.70.80.99")
+
+	wSeen := httptest.NewRecorder()
+	env.handler.ServeHTTP(wSeen, reqSeen)
+	if wSeen.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", wSeen.Code)
+	}
+
+	rec, ok, err = env.devices.Get("device-test-fix5")
+	if err != nil || !ok {
+		t.Fatalf("Get device after touch failed: %v", err)
+	}
+	if rec.LastAddr != "100.70.80.99" {
+		t.Fatalf("last seen: expected LastAddr %q, got %q", "100.70.80.99", rec.LastAddr)
+	}
+}
+
+func TestFixO1CapDeviceName64Bytes(t *testing.T) {
+	env := setupTestEnv(t, nil)
+
+	longName := strings.Repeat("a", 63) + "\xe4\xb8\x96"
+
+	req := httptest.NewRequest("GET", "/v1/hello", nil)
+	req.RemoteAddr = "127.0.0.1:40000"
+	req.Header.Set("Tailscale-User-Login", "awepo-pro@github")
+	req.Header.Set("X-LW-Device", "device-test-fix-o1")
+	req.Header.Set("X-LW-Device-Name", longName)
+
+	w := httptest.NewRecorder()
+	env.handler.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 device_pending, got %d", w.Code)
+	}
+
+	rec, ok, err := env.devices.Get("device-test-fix-o1")
+	if err != nil || !ok {
+		t.Fatalf("Get device failed: %v", err)
+	}
+
+	if len([]byte(rec.Name)) > 64 {
+		t.Fatalf("expected device Name <= 64 bytes, got %d bytes: %q", len([]byte(rec.Name)), rec.Name)
+	}
+	expectedName := strings.Repeat("a", 63)
+	if rec.Name != expectedName {
+		t.Fatalf("expected device Name %q, got %q", expectedName, rec.Name)
+	}
+}

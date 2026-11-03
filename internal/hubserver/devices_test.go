@@ -147,3 +147,16 @@ func TestSlugRules(t *testing.T) {
 		}
 	}
 }
+
+func TestFix3UniqueSlugDisambiguationMaxLen(t *testing.T) {
+	existing := map[string]bool{
+		"123456789012345678901234": true,
+	}
+	cand := uniqueSlug("123456789012345678901234", existing)
+	if len(cand) > 24 {
+		t.Fatalf("uniqueSlug exceeded 24 chars: got %q (len %d)", cand, len(cand))
+	}
+	if cand != "1234567890123456789012-2" {
+		t.Fatalf("expected '1234567890123456789012-2', got %q", cand)
+	}
+}

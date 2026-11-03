@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/awepo-pro/lw/internal/hub"
@@ -91,7 +92,8 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if name == "" {
 			name = "phone"
 		}
-		remoteAddr := r.Header.Get("X-Forwarded-For")
+		name = truncateUTF8(name, 64)
+		remoteAddr := extractLastAddr(r)
 		_, err := s.devices.RegisterPending(deviceID, name, user, remoteAddr, now)
 		if err != nil {
 			s.cfg.Log("hubserver: register pending error: %v", err)
@@ -111,12 +113,12 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if rec.State != hub.DeviceApproved {
-		writeError(w, http.StatusForbidden, hub.CodeUnauthorized, "device not approved")
+		writeError(w, http.StatusUnauthorized, hub.CodeUnauthorized, "device not approved")
 		return
 	}
 
 	// Approved device: touch LastSeen at most once a minute
-	remoteAddr := r.Header.Get("X-Forwarded-For")
+	remoteAddr := extractLastAddr(r)
 	goTouch := true
 	if rec.LastSeen != "" {
 		if t, err := time.Parse(time.RFC3339, rec.LastSeen); err == nil {
@@ -126,7 +128,9 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if goTouch {
-		_, _ = s.devices.TouchLastSeen(deviceID, remoteAddr, now)
+		if _, err := s.devices.TouchLastSeen(deviceID, remoteAddr, now); err != nil {
+			s.cfg.Log("hubserver: touch last seen error: %v", err)
+		}
 	}
 
 	// 5. Routes dispatch
@@ -342,4 +346,20 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 			Message: message,
 		},
 	})
+}
+
+func extractLastAddr(r *http.Request) string {
+	xff := r.Header.Values("X-Forwarded-For")
+	if len(xff) == 0 {
+		return ""
+	}
+	raw := strings.Join(xff, ",")
+	parts := strings.Split(raw, ",")
+	for i := len(parts) - 1; i >= 0; i-- {
+		s := strings.TrimSpace(parts[i])
+		if s != "" {
+			return s
+		}
+	}
+	return ""
 }

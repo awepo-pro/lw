@@ -10,6 +10,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/awepo-pro/lw/internal/hub"
 )
@@ -207,6 +208,7 @@ func (d *Devices) Get(id string) (DeviceRecord, bool, error) {
 }
 
 func (d *Devices) RegisterPending(id, name, user, remoteAddr string, now time.Time) (DeviceRecord, error) {
+	name = truncateUTF8(name, 64)
 	var record DeviceRecord
 	err := d.withLock(func() error {
 		records, err := d.readFile()
@@ -330,9 +332,29 @@ func uniqueSlug(base string, existingSlugs map[string]bool) string {
 		return base
 	}
 	for i := 2; ; i++ {
-		cand := fmt.Sprintf("%s-%d", base, i)
+		suffix := fmt.Sprintf("-%d", i)
+		b := base
+		if len(b)+len(suffix) > 24 {
+			b = b[:24-len(suffix)]
+		}
+		cand := b + suffix
 		if !existingSlugs[cand] {
 			return cand
 		}
 	}
+}
+
+func truncateUTF8(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	n := 0
+	for n < len(s) {
+		_, size := utf8.DecodeRuneInString(s[n:])
+		if n+size > maxBytes {
+			break
+		}
+		n += size
+	}
+	return s[:n]
 }
