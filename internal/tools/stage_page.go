@@ -114,7 +114,7 @@ func stageCreatePageTool(d Deps) Tool {
 		if err := decodeArgs(args, &a); err != nil {
 			return badArgs("stage.create_page", err, `{"path":"wiki/concepts/new-page.md","title":"New Page"}`), nil
 		}
-		if key, ok := findFrontmatterBlock(a.Body); ok {
+		if key, _, ok := vault.FindFrontmatterBlock(a.Body); ok {
 			return Result{IsError: true, Content: createFrontmatterBlockRefusal(key)}, nil
 		}
 		if isElisionPlaceholder(a.Body) { // 041 A-041-5: before anything is built from it
@@ -174,7 +174,7 @@ func stagePatchPageTool(d Deps) Tool {
 			return badArgs("stage.patch_page", err, `{"path":"wiki/concepts/kv-cache.md","section":"## Related","op":"append_section","content":"- [[new-page]]","rationale":"add a related page"}`), nil
 		}
 		if a.Op != "remove_section" && a.Op != "sync_sources" {
-			if key, ok := findFrontmatterBlock(a.Content); ok {
+			if key, _, ok := vault.FindFrontmatterBlock(a.Content); ok {
 				return Result{IsError: true, Content: patchFrontmatterBlockRefusal(key)}, nil
 			}
 		}

@@ -68,10 +68,11 @@ func TestDirtyFixtureEighteenRowsTwentySixFindings(t *testing.T) {
 	if !m.hasReport {
 		t.Fatalf("report did not load: %v", m.loadErr)
 	}
-	// 070 A-070-4: 18 -> 19 (cite-superseded, check 19). It fires 0 times on
+	// 070 A-070-4: 18 -> 19 (cite-superseded, check 19).
+	// 081 A-081-5: 19 -> 20 (body-frontmatter, check 20). It fires 0 times on
 	// these fixtures, so the 26 findings below are unchanged.
-	if got := len(m.checks); got != 19 {
-		t.Fatalf("len(lint.All()) = %d, want 19", got)
+	if got := len(m.checks); got != 20 {
+		t.Fatalf("len(lint.All()) = %d, want 20", got)
 	}
 	if got := len(m.report.Findings); got != 26 {
 		t.Fatalf("len(report.Findings) = %d, want 26", got)

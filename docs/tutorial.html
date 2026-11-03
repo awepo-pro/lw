@@ -1217,6 +1217,7 @@ Note:    baseline model weights</code></pre>
     <tr><td><code>vault format N is newer than this lw supports (M): upgrade lw</code></td><td>Another PC with a newer lw wrote this vault. Upgrade lw here (reinstall as in lesson 1, then check <code>lw version</code> and which <code>lw</code> your shell finds first). lw refuses rather than guess.</td></tr>
     <tr><td><code>ambiguous note prefix …</code> / <code>no note matching …</code></td><td><code>--note</code> needs an id or a prefix that matches exactly one file in <code>notes/</code>. Run <code>lw note list</code>, copy more of the id.</td></tr>
     <tr><td><code>cite-superseded</code> warning</td><td>A page still cites an older raw after you re-ingested an edited source. Re-point it with a reviewed patch (lesson 3), or ignore it if the old wording is what the page should keep.</td></tr>
+    <tr><td><code>body-frontmatter</code> warning</td><td>A page body carries a duplicated frontmatter block. Remove the extra copy so only the real frontmatter at the top remains.</td></tr>
     <tr><td><code>aliases:</code> or another list key came back empty on a page</td><td>A rewrite by lw v2.61.0 or older flattened it. Upgrade lw on every PC, retype the key (or, if the vault is under <code>lw sync</code>, take it from the vault's git history) and commit.</td></tr>
     <tr><td><code>warning: lint regresses</code> after ingest</td><td>The changeset is still open. Review it with <code>lw diff</code>, drop the bad hunks, or commit with <code>--force</code> (which is recorded in the journal).</td></tr>
   </table></div>
@@ -1243,7 +1244,7 @@ Note:    baseline model weights</code></pre>
     <tr><td><code>lw commit -m "…" [--force]</code></td><td>Land the changeset</td><td>no</td></tr>
     <tr><td><code>lw query "…"</code></td><td>Cited, read-only answer</td><td>yes</td></tr>
     <tr><td><code>lw query --prepare "…"</code></td><td>Print brief for external agent ask (keyless)</td><td>no</td></tr>
-    <tr><td><code>lw lint [--fix] [--json]</code></td><td>19 checks; <code>--fix</code> stages repairs</td><td>fix only</td></tr>
+    <tr><td><code>lw lint [--fix] [--json]</code></td><td>20 checks; <code>--fix</code> stages repairs</td><td>fix only</td></tr>
     <tr><td><code>lw log [--rejected] [--agent] [--page p]</code></td><td>Journal</td><td>no</td></tr>
     <tr><td><code>lw revert &lt;commit&gt;</code></td><td>Open an inverse changeset</td><td>no</td></tr>
     <tr><td><code>lw session list | show [id]</code></td><td>Agent transcripts</td><td>no</td></tr>

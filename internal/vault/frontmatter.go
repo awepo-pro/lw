@@ -462,3 +462,39 @@ func decodeStringList(n *yaml.Node) ([]string, error) {
 	}
 	return list, nil
 }
+
+// frontmatterBlockKeys are the recognized YAML frontmatter property keys whose
+// presence directly after a "---" fence indicates a frontmatter block (FIX-B, FIX-C).
+var frontmatterBlockKeys = []string{
+	"title",
+	"created",
+	"updated",
+	"type",
+	"tags",
+	"sources",
+	"confidence",
+	"contested",
+	"aliases",
+}
+
+// FindFrontmatterBlock scans text for a frontmatter block: a line that is
+// exactly "---" (after trimming trailing spaces, tabs, and CR) immediately
+// followed by a line starting with one of the 9 recognized frontmatter keys
+// ("title:", "created:", "updated:", "type:", "tags:", "sources:",
+// "confidence:", "contested:", "aliases:"). It returns the matched key (without
+// the colon), the 1-based line number of that "---" line in text, and ok = true,
+// or "", 0, false if no frontmatter block is found (FIX-C FC.1).
+func FindFrontmatterBlock(text string) (key string, line int, ok bool) {
+	lines := strings.Split(text, "\n")
+	for i := 0; i < len(lines)-1; i++ {
+		if strings.TrimRight(lines[i], " \t\r") == "---" {
+			lineNext := lines[i+1]
+			for _, k := range frontmatterBlockKeys {
+				if strings.HasPrefix(lineNext, k+":") {
+					return k, i + 1, true
+				}
+			}
+		}
+	}
+	return "", 0, false
+}
