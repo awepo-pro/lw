@@ -431,3 +431,37 @@ func TestPatchPageSchemaSyncSources(t *testing.T) {
 		t.Fatalf("op description does not end with %q:\n%s", wantSuffix, schema.Properties["op"].Description)
 	}
 }
+
+// TestPatchPageAllowsFencedFrontmatterBlock pins workflow 081, FD.3:
+// stage.patch_page allows content containing a frontmatter block inside a fenced
+// code block, while refusing the same block outside a fence.
+func TestPatchPageAllowsFencedFrontmatterBlock(t *testing.T) {
+	fm := defaultFBMixin([]string{"raw/articles/a.md"})
+	body := "Lead paragraph.\n\n## Section A\n\nContent A.\n"
+
+	reg, e, _ := setupFBVault(t, fm, body)
+
+	fencedContent := "x\n\n```yaml\n---\ntitle: Foo\n---\n```\n"
+	payload := map[string]any{
+		"path":      fbW,
+		"section":   "## Section A",
+		"op":        "replace_section",
+		"content":   fencedContent,
+		"rationale": "add fenced yaml example",
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := callTool(t, reg, "stage.patch_page", string(b))
+	if res.IsError {
+		t.Fatalf("unexpected refusal for fenced frontmatter block: %s", res.Content)
+	}
+	cs, err := e.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cs.Live()) != 1 {
+		t.Fatalf("live ops = %d, want 1", len(cs.Live()))
+	}
+}

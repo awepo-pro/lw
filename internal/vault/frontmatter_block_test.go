@@ -117,3 +117,54 @@ func TestFindFrontmatterBlock(t *testing.T) {
 		}
 	})
 }
+
+// TestFindFrontmatterBlockSkipsFences pins workflow 081, FD.3:
+// FindFrontmatterBlock ignores frontmatter blocks inside fenced code blocks
+// (``` or ~~~ fences, closing fence of the same char at least as long as opening).
+func TestFindFrontmatterBlockSkipsFences(t *testing.T) {
+	cases := []struct {
+		name     string
+		content  string
+		wantKey  string
+		wantLine int
+		wantOK   bool
+	}{
+		{
+			name:    "fenced code block with backticks",
+			content: "x\n\n```yaml\n---\ntitle: Foo\n---\n```\n",
+			wantOK:  false,
+		},
+		{
+			name:    "fenced code block with tildes",
+			content: "x\n\n~~~yaml\n---\ntitle: Foo\n---\n~~~\n",
+			wantOK:  false,
+		},
+		{
+			name:    "fenced code block with 4 backticks containing 3 backticks",
+			content: "x\n\n````yaml\n```\n---\ntitle: Foo\n---\n````\n",
+			wantOK:  false,
+		},
+		{
+			name:     "unfenced frontmatter block is still detected",
+			content:  "x\n\n---\ntitle: Foo\n---\n",
+			wantKey:  "title",
+			wantLine: 3,
+			wantOK:   true,
+		},
+		{
+			name:     "frontmatter block after closed fence is detected",
+			content:  "```\ncode\n```\n---\ntitle: Foo\n---\n",
+			wantKey:  "title",
+			wantLine: 4,
+			wantOK:   true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotKey, gotLine, gotOK := vault.FindFrontmatterBlock(tc.content)
+			if gotOK != tc.wantOK || gotKey != tc.wantKey || gotLine != tc.wantLine {
+				t.Errorf("got (%q, %d, %v), want (%q, %d, %v)", gotKey, gotLine, gotOK, tc.wantKey, tc.wantLine, tc.wantOK)
+			}
+		})
+	}
+}

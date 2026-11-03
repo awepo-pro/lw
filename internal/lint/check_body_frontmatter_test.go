@@ -234,3 +234,31 @@ Summary.
 		t.Fatalf("got %d findings, want 0: %+v", len(report.Findings), report.Findings)
 	}
 }
+
+// TestBodyFrontmatterSkipsFencedCodeBlocks pins workflow 081, FD.3:
+// lines inside fenced code blocks (``` or ~~~) containing frontmatter blocks
+// produce 0 body-frontmatter findings.
+func TestBodyFrontmatterSkipsFencedCodeBlocks(t *testing.T) {
+	pageFenced := `---
+title: Fenced Block
+created: 2026-09-01
+updated: 2026-09-02
+type: concept
+tags: [test]
+---
+
+Lead text.
+
+` + "```yaml\n---\ntitle: Foo\n---\n```\n" + `
+## Abstract
+
+Summary.
+`
+	ctx := buildVault(t, map[string]string{
+		"wiki/concepts/fenced.md": pageFenced,
+	})
+	report := lint.Run(ctx, []string{"body-frontmatter"})
+	if len(report.Findings) != 0 {
+		t.Fatalf("got %d findings, want 0: %+v", len(report.Findings), report.Findings)
+	}
+}

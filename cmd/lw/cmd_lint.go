@@ -217,14 +217,38 @@ func runLintFix(vaultPath, checksFlag string) error {
 			}
 		}
 		if len(syncedPages) > 0 {
+			// Read staged sources for each synced page so only findings whose
+			// raw source actually joined sources: are dropped (081 FD.2/R2-2).
+			stagedSources := map[string]map[string]bool{}
+			for p := range syncedPages {
+				b, ok, err := e.StagedFile(p)
+				if err != nil || !ok {
+					continue
+				}
+				page, err := vault.ParsePage(p, b)
+				if err != nil {
+					continue
+				}
+				srcs := make(map[string]bool, len(page.FM.Sources))
+				for _, s := range page.FM.Sources {
+					srcs[s] = true
+				}
+				stagedSources[p] = srcs
+			}
+
 			var activeRounds []lintFixRound
 			for _, r := range rounds {
 				if syncedPages[r.page] {
+					srcs := stagedSources[r.page]
 					var remaining []lint.Finding
 					for _, f := range r.findings {
-						if f.Check != "cite-source" {
-							remaining = append(remaining, f)
+						if f.Check == "cite-source" {
+							raw := extractCiteSourceRaw(f.Message)
+							if raw != "" && srcs != nil && srcs[raw] {
+								continue
+							}
 						}
+						remaining = append(remaining, f)
 					}
 					if len(remaining) == 0 {
 						continue
@@ -343,6 +367,17 @@ func planLintFix(report lint.Report) ([]lintFixRound, string) {
 		Warns:    report.Warns,
 	}
 	return planLintFixRounds(fixReport), lintFixIntent(fixReport)
+}
+
+// extractCiteSourceRaw extracts the raw source path from a cite-source finding message:
+// "cites <raw> in the body but sources: does not list it; add it to sources:".
+func extractCiteSourceRaw(msg string) string {
+	const prefix = "cites "
+	const suffix = " in the body but sources: does not list it; add it to sources:"
+	if strings.HasPrefix(msg, prefix) && strings.HasSuffix(msg, suffix) {
+		return msg[len(prefix) : len(msg)-len(suffix)]
+	}
+	return ""
 }
 
 // lintFixRound is one agent round of --fix: every finding the report

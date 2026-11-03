@@ -352,3 +352,93 @@ Text citing ^[raw/papers/leviathan-2023.md].
 		t.Errorf("round 1 missing cite-source finding:\n%s", msg)
 	}
 }
+
+// TestLintFixSyncKeepsUnresolvedCiteSourceInRound pins workflow 081, FD.2 (R2-2):
+// after a successful sync of page P, drop a cite-source finding of P from P's round
+// only when the raw it names is in the staged page's sources:; an unresolvable source
+// that was not added to sources: remains in the page's agent round.
+func TestLintFixSyncKeepsUnresolvedCiteSourceInRound(t *testing.T) {
+	maxTokens8192Env(t)
+	root := setupLintFixSyncFixture(t, "p-partial")
+
+	// Page P cites both a committed raw source (kv-cache-explained.md) and an
+	// unresolvable raw source (missing-source.md). Its sources: list is empty.
+	pageP := `---
+title: Page P Partial
+created: 2026-08-01
+updated: 2026-08-01
+type: concept
+tags: [inference]
+sources: []
+confidence: high
+---
+
+# Page P Partial
+
+## Abstract
+
+Text citing ^[raw/articles/kv-cache-explained.md] and ^[raw/articles/missing-source.md].
+
+## Related
+
+- [[kv-cache]] \u2014 link 1.
+- [[flash-attention]] \u2014 link 2.
+`
+	if err := os.WriteFile(filepath.Join(root, "wiki", "concepts", "p-partial.md"), []byte(pageP), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var rec *roundRecordingAgent
+	withFakeAgent(t, func(e *stage.Engine, cfg *config.Config, sessions agent.SessionStore) (agent.Agent, error) {
+		rec = &roundRecordingAgent{e: e, sessions: sessions}
+		return rec, nil
+	})
+
+	stdout, stderr, code := captureRun(t, func() int {
+		return run([]string{"lint", "--fix", "--vault", root})
+	})
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr, stdout)
+	}
+
+	wantSyncLine := "synced sources: on wiki/concepts/p-partial.md (cite-source; no model)"
+	if !strings.Contains(stdout, wantSyncLine) {
+		t.Errorf("stdout does not contain %q; stdout:\n%s", wantSyncLine, stdout)
+	}
+
+	// Page P must receive an agent round because missing-source.md was not synced into sources:
+	if len(rec.msgs) != 1 {
+		t.Fatalf("agent received %d round(s), want exactly 1; msgs:\n%q", len(rec.msgs), rec.msgs)
+	}
+	msg := rec.msgs[0]
+	if !strings.Contains(msg, "wiki/concepts/p-partial.md") {
+		t.Errorf("round 1 does not name p-partial.md:\n%s", msg)
+	}
+	if !strings.Contains(msg, "raw/articles/missing-source.md") {
+		t.Errorf("round 1 missing cite-source finding for missing-source.md:\n%s", msg)
+	}
+	if strings.Contains(msg, "raw/articles/kv-cache-explained.md") {
+		t.Errorf("round 1 unexpectedly retains synced cite-source finding for kv-cache-explained.md:\n%s", msg)
+	}
+
+	// Verify the staged page has kv-cache-explained.md in sources:
+	e, err := stage.OpenEngine(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close()
+
+	b, ok, err := e.StagedFile("wiki/concepts/p-partial.md")
+	if err != nil || !ok {
+		t.Fatalf("StagedFile for p-partial ok=%v err=%v", ok, err)
+	}
+	page, err := vault.ParsePage("wiki/concepts/p-partial.md", b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSources := []string{"raw/articles/kv-cache-explained.md"}
+	if len(page.FM.Sources) != 1 || page.FM.Sources[0] != wantSources[0] {
+		t.Errorf("p-partial staged sources = %v, want %v", page.FM.Sources, wantSources)
+	}
+}
