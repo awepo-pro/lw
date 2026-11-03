@@ -27,6 +27,8 @@ import (
 	"github.com/awepo-pro/lw/internal/config"
 	"github.com/awepo-pro/lw/internal/extract"
 	"github.com/awepo-pro/lw/internal/extract/cache"
+	"github.com/awepo-pro/lw/internal/hub"
+	"github.com/awepo-pro/lw/internal/hubserver"
 	"github.com/awepo-pro/lw/internal/index"
 	"github.com/awepo-pro/lw/internal/llm"
 	"github.com/awepo-pro/lw/internal/stage"
@@ -375,6 +377,9 @@ func runDoctor(ctx context.Context, root string, o doctorOptions) doctorReport {
 		rep.Checks = append(rep.Checks, *c)
 	}
 	if c := checkPDFExtractor(ctx, cfg, cfgErr, root, o.probe); c != nil {
+		rep.Checks = append(rep.Checks, *c)
+	}
+	if c := checkHub(cfg, cfgErr); c != nil {
 		rep.Checks = append(rep.Checks, *c)
 	}
 	rep.Checks = append(rep.Checks, checkLLMBudget(cfg, cfgErr))
@@ -1344,4 +1349,64 @@ func checkStorage(v *vault.Vault) doctorCheck {
 		c.Remedy = "move untracked files out of storage/, or lw storage add them"
 	}
 	return c
+}
+
+// checkHub reports the hub server configuration and pending devices count (079 S4).
+// It is nil (no line printed) when [hub] is not configured.
+func checkHub(cfg *config.Config, cfgErr error) *doctorCheck {
+	if cfgErr != nil || cfg == nil || cfg.Hub == nil {
+		return nil
+	}
+	const name = "hub"
+	devicesPath := filepath.Join(config.ConfigDir(), "hub-devices.json")
+	d, err := hubserver.OpenDevices(devicesPath)
+	if err != nil {
+		return &doctorCheck{
+			Name:   name,
+			OK:     false,
+			Detail: fmt.Sprintf("devices store error: %v", err),
+			Remedy: "check permissions on " + devicesPath,
+		}
+	}
+	records, err := d.List()
+	if err != nil {
+		return &doctorCheck{
+			Name:   name,
+			OK:     false,
+			Detail: fmt.Sprintf("devices store error: %v", err),
+			Remedy: "check permissions on " + devicesPath,
+		}
+	}
+	pending := 0
+	for _, r := range records {
+		if r.State == hub.DevicePending {
+			pending++
+		}
+	}
+	port := cfg.Hub.Port
+	if port == 0 {
+		port = 8779
+	}
+	if len(cfg.Hub.Users) == 0 {
+		return &doctorCheck{
+			Name:   name,
+			OK:     false,
+			Detail: fmt.Sprintf("port %d, no [hub] users configured", port),
+			Remedy: "add users = [...] to [hub] in config.toml",
+		}
+	}
+	if pending > 0 {
+		return &doctorCheck{
+			Name:   name,
+			OK:     true,
+			Warn:   true,
+			Detail: fmt.Sprintf("port %d; %d device(s) (%d pending)", port, len(records), pending),
+			Remedy: "run lw hub approve <slug> to approve pending devices",
+		}
+	}
+	return &doctorCheck{
+		Name:   name,
+		OK:     true,
+		Detail: fmt.Sprintf("port %d; %d device(s) (0 pending)", port, len(records)),
+	}
 }
