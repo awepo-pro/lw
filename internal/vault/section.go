@@ -33,6 +33,11 @@ var slugNonAlnum = regexp.MustCompile(`[^a-z0-9]+`)
 // regexp — a fenced code block's contents are never re-parsed as block
 // structure, so a line reading "## not a heading" inside one never becomes
 // an *ast.Heading node in the first place.
+//
+// Setext headings (paragraph text underlined with === or ---) are
+// deliberately excluded — never sections, matching internal/stage/mdsection.go
+// and backbone §2.4. Vault pages are ATX-only by convention and the
+// engine's hunk parser is ATX-only by design.
 func ParseSections(body string) []Section {
 	src := []byte(body)
 	doc := goldmark.New().Parser().Parse(text.NewReader(src))
@@ -55,8 +60,9 @@ type heading struct {
 }
 
 // collectHeadings walks doc for *ast.Heading nodes and returns one heading
-// per node, in document order, with Start already rewound to the beginning
-// of the heading's source line.
+// per ATX heading node, in document order, with Start already rewound to the
+// beginning of the heading's source line. Setext headings are deliberately
+// skipped, matching internal/stage/mdsection.go and backbone §2.4.
 //
 // goldmark's Lines() segments for an ATX heading cover only the text after
 // the "#"s (see the spike behind this file), so Start here is not that
@@ -90,12 +96,33 @@ func collectHeadings(doc ast.Node, src []byte) []heading {
 	return heads
 }
 
+// isATXLine reports whether b begins with a CommonMark ATX heading line (§4.2),
+// matching the engine's rule in internal/stage/mdsection.go: after 0-3 leading
+// spaces, 1 to 6 '#' characters, then a space, a tab, or end of line.
+// Setext headings (e.g. text underlined with --- or ===) are deliberately not
+// sections per backbone §2.4 and mdsection.go.
 func isATXLine(b []byte) bool {
-	i := 0
-	for i < len(b) && i < 3 && b[i] == ' ' {
+	i, spaces := 0, 0
+	for i < len(b) && b[i] == ' ' {
+		i++
+		spaces++
+	}
+	if spaces > 3 {
+		return false
+	}
+	start := i
+	for i < len(b) && b[i] == '#' {
 		i++
 	}
-	return i < len(b) && b[i] == '#'
+	n := i - start
+	if n == 0 || n > 6 {
+		return false
+	}
+	if i == len(b) {
+		return true
+	}
+	c := b[i]
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
 }
 
 // buildSection computes the full Section for heads[i], given src and the
