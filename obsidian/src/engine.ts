@@ -19,6 +19,7 @@ import {
 import {
   decideNotice,
   formatStatusText,
+  getHubHost,
   type StatusSummary,
 } from "./status";
 
@@ -48,7 +49,7 @@ export interface SyncEngineOptions {
   client: HubClient;
   state: State;
   saveState?: (state: State) => Promise<void>;
-  onNotice?: (msg: string) => void;
+  onNotice?: (msg: string, opts?: { sticky?: boolean }) => void;
   onStatusChange?: (status: string) => void;
   pluginVersion?: string;
   manifest?: { version: string };
@@ -73,6 +74,7 @@ interface CoalescedOp {
 
 export class SyncEngine {
   hasSyncedOnce = false;
+  offline = false;
   lastSyncTime: string | null = null;
   lastError: string = "";
 
@@ -95,9 +97,9 @@ export class SyncEngine {
     return formatStatusText(this.getStatusSummary());
   }
 
-  private notify(notice: string | null): void {
+  private notify(notice: string | null, opts?: { sticky?: boolean }): void {
     if (notice && this.options.onNotice) {
-      this.options.onNotice(notice);
+      this.options.onNotice(notice, opts);
     }
   }
 
@@ -400,11 +402,20 @@ export class SyncEngine {
         this.setStatus(`lw: ${this.options.state.queue.length} queued`);
       }
 
-      const notice = decideNotice(
-        { kind: "synced", filesSynced },
-        { isMobile: !!this.options.isMobile, hasSyncedOnce: this.hasSyncedOnce }
-      );
-      this.notify(notice);
+      if (this.offline) {
+        this.offline = false;
+        const notice = decideNotice(
+          { kind: "back_online", filesSynced },
+          { isMobile: !!this.options.isMobile, hasSyncedOnce: this.hasSyncedOnce }
+        );
+        this.notify(notice);
+      } else {
+        const notice = decideNotice(
+          { kind: "synced", filesSynced },
+          { isMobile: !!this.options.isMobile, hasSyncedOnce: this.hasSyncedOnce }
+        );
+        this.notify(notice);
+      }
       this.hasSyncedOnce = true;
       this.lastSyncTime = new Date().toISOString();
       this.lastError = "";
@@ -424,11 +435,15 @@ export class SyncEngine {
       if (err instanceof NetworkError) {
         const n = this.options.state.queue.length;
         this.setStatus(`lw: offline (${n} queued)`);
-        const notice = decideNotice(
-          { kind: "offline", queued: n },
-          { isMobile: !!this.options.isMobile, hasSyncedOnce: this.hasSyncedOnce }
-        );
-        this.notify(notice);
+        if (!this.offline) {
+          this.offline = true;
+          const host = getHubHost(this.options.client.options.baseUrl);
+          const notice = decideNotice(
+            { kind: "offline_episode", host, queued: n },
+            { isMobile: !!this.options.isMobile, hasSyncedOnce: this.hasSyncedOnce }
+          );
+          this.notify(notice, { sticky: true });
+        }
       } else {
         this.setStatus(`lw: error: ${lastError}`);
         if (err instanceof HubError) {
@@ -609,6 +624,11 @@ export class SyncEngine {
 
   private syncInProgress = false;
   private syncPending = false;
+  lastSyncEndTimestamp: number | null = null;
+
+  get isSyncing(): boolean {
+    return this.syncInProgress;
+  }
 
   async triggerSync(): Promise<void> {
     if (this.syncInProgress) {
@@ -627,6 +647,7 @@ export class SyncEngine {
       } while (this.syncPending);
     } finally {
       this.syncInProgress = false;
+      this.lastSyncEndTimestamp = Date.now();
     }
   }
 }

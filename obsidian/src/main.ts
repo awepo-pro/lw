@@ -25,7 +25,7 @@ import {
   type State,
   type VaultIO,
 } from "./engine";
-import { DEFAULT_SETTINGS, type PluginSettings } from "./status";
+import { DEFAULT_SETTINGS, shouldPollNow, shouldSyncOnNoteOpen, type PluginSettings } from "./status";
 
 interface PersistedData {
   settings?: PluginSettings;
@@ -85,8 +85,12 @@ export default class LWSyncPlugin extends Plugin {
         this.engineState = s;
         await this.savePluginData();
       },
-      onNotice: (msg: string) => {
-        new Notice(msg);
+      onNotice: (msg: string, opts?: { sticky?: boolean }) => {
+        if (opts?.sticky) {
+          new Notice(msg, 0);
+        } else {
+          new Notice(msg);
+        }
       },
       onStatusChange: (status: string) => {
         this.updateStatus(status);
@@ -127,11 +131,36 @@ export default class LWSyncPlugin extends Plugin {
       document.removeEventListener("visibilitychange", onVisibilityChange);
     });
 
-    // 5 min interval trigger
+    // Foreground poll: tick every 5 s, sync when 30 s have passed since the last sync ended (shouldPollNow).
     this.registerInterval(
       window.setInterval(() => {
-        void this.triggerSync();
-      }, 5 * 60 * 1000)
+        const msSinceLastSyncEnd =
+          this.engine.lastSyncEndTimestamp !== null
+            ? Date.now() - this.engine.lastSyncEndTimestamp
+            : Infinity;
+        if (
+          shouldPollNow(
+            document.visibilityState === "visible",
+            msSinceLastSyncEnd,
+            this.engine.isSyncing
+          )
+        ) {
+          void this.triggerSync();
+        }
+      }, 5 * 1000)
+    );
+
+    // Sync on note open
+    this.registerEvent(
+      this.app.workspace.on("file-open", () => {
+        const msSinceLastSyncEnd =
+          this.engine.lastSyncEndTimestamp !== null
+            ? Date.now() - this.engine.lastSyncEndTimestamp
+            : Infinity;
+        if (shouldSyncOnNoteOpen(this.engine.isSyncing, msSinceLastSyncEnd)) {
+          void this.triggerSync();
+        }
+      })
     );
 
     // Initial sync on plugin load

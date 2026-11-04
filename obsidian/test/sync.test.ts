@@ -4,7 +4,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { checkPath } from "../src/scope";
 import { sha256hex } from "../src/hash";
 import { HubClient, adaptObsidianResponse, HubError } from "../src/hubclient";
-import { decideNotice, formatStatusText, DEFAULT_SETTINGS } from "../src/status";
+import { decideNotice, formatStatusText, DEFAULT_SETTINGS, shouldPollNow, shouldSyncOnNoteOpen, getHubHost } from "../src/status";
 import {
   SyncEngine,
   handleVaultDeleteEvent,
@@ -1240,7 +1240,12 @@ describe("S3 sync suite", () => {
     fakeHub.simulateNetworkError = true;
     mobileEngine.queuePut("notes/queued.md");
     await expect(mobileEngine.flush()).rejects.toThrow();
-    expect(mobileNotices).toContain("lw: offline (1 queued)");
+    // A-079-4: the first-failure notice now names Tailscale (A-079-3); the behaviour is unchanged.
+    expect(
+      mobileNotices.some(
+        (n) => n.includes("can't reach the hub") && n.includes("Tailscale") && n.includes("1 change(s)")
+      )
+    ).toBe(true);
     fakeHub.simulateNetworkError = false;
 
     // Device pending surfaces waiting approval notice on mobile
@@ -1300,5 +1305,208 @@ describe("S3 sync suite", () => {
 
     expect(fakeHub.lastStatusReport).toBeDefined();
     expect(fakeHub.lastStatusReport?.plugin_version).toBe("0.7.9");
+  });
+
+  it("P1-1 Foreground poll: shouldPollNow returns true only when visible, not syncing, and >= 30000ms elapsed", () => {
+    // Hidden -> never poll
+    expect(shouldPollNow(false, 30000, false)).toBe(false);
+    expect(shouldPollNow(false, 60000, false)).toBe(false);
+
+    // Syncing in progress -> never poll
+    expect(shouldPollNow(true, 30000, true)).toBe(false);
+    expect(shouldPollNow(true, 60000, true)).toBe(false);
+
+    // Elapsed time < 30000ms -> do not poll
+    expect(shouldPollNow(true, 0, false)).toBe(false);
+    expect(shouldPollNow(true, 29999, false)).toBe(false);
+
+    // Visible, not syncing, and elapsed >= 30000ms -> poll
+    expect(shouldPollNow(true, 30000, false)).toBe(true);
+    expect(shouldPollNow(true, 30001, false)).toBe(true);
+    expect(shouldPollNow(true, Infinity, false)).toBe(true);
+  });
+
+  it("P1-2 Sync on note open: shouldSyncOnNoteOpen skips when syncing or last sync ended < 10s ago", () => {
+    // Sync running -> skip
+    expect(shouldSyncOnNoteOpen(true, 10000)).toBe(false);
+    expect(shouldSyncOnNoteOpen(true, 20000)).toBe(false);
+
+    // Sync not running but last sync ended < 10000ms ago -> skip
+    expect(shouldSyncOnNoteOpen(false, 0)).toBe(false);
+    expect(shouldSyncOnNoteOpen(false, 9999)).toBe(false);
+
+    // Sync not running and last sync ended >= 10000ms ago -> sync
+    expect(shouldSyncOnNoteOpen(false, 10000)).toBe(true);
+    expect(shouldSyncOnNoteOpen(false, 10001)).toBe(true);
+    expect(shouldSyncOnNoteOpen(false, Infinity)).toBe(true);
+
+  });
+
+  it("P1-3 Offline episodes: tracks offline state and raises notices on mobile", async () => {
+    // Pure logic in status.ts
+    expect(
+      decideNotice(
+        { kind: "offline_episode", host: "hub.tailscale.net", queued: 2 },
+        { isMobile: true, hasSyncedOnce: false }
+      )
+    ).toBe("lw: can't reach the hub (hub.tailscale.net). Is Tailscale on? 2 change(s) saved on this phone; they will sync when you're back.");
+
+    expect(
+      decideNotice(
+        { kind: "back_online", filesSynced: 3 },
+        { isMobile: true, hasSyncedOnce: false }
+      )
+    ).toBe("lw: back online - synced 3 change(s)");
+
+    // Desktop returns null
+    expect(
+      decideNotice(
+        { kind: "offline_episode", host: "hub.tailscale.net", queued: 2 },
+        { isMobile: false, hasSyncedOnce: false }
+      )
+    ).toBeNull();
+    expect(
+      decideNotice(
+        { kind: "back_online", filesSynced: 3 },
+        { isMobile: false, hasSyncedOnce: false }
+      )
+    ).toBeNull();
+
+    // getHubHost parses hosts cleanly
+    expect(getHubHost("http://localhost:8765")).toBe("localhost:8765");
+    expect(getHubHost("https://hub.example.com/path")).toBe("hub.example.com");
+    expect(getHubHost("hub.tailscale.net:8765")).toBe("hub.tailscale.net:8765");
+
+    const mobileNotices: Array<{ msg: string; sticky?: boolean }> = [];
+    const mobileEngine = new SyncEngine({
+      vault: fakeVault,
+      client: hubClient,
+      state,
+      onNotice: (msg, opts) => mobileNotices.push({ msg, sticky: opts?.sticky }),
+      onStatusChange: (s) => statuses.push(s),
+      isMobile: true,
+    });
+
+    expect(mobileEngine.offline).toBe(false);
+
+    // Initial sync
+    await mobileEngine.flush();
+    mobileNotices.length = 0;
+
+    // 1. Two consecutive network failures -> exactly one notice, sticky, text contains Tailscale and host
+    fakeHub.simulateNetworkError = true;
+    await fakeVault.write("notes/test.md", new TextEncoder().encode("test note"));
+    mobileEngine.queuePut("notes/test.md");
+    await expect(mobileEngine.flush()).rejects.toThrow();
+
+    expect(mobileEngine.offline).toBe(true);
+    expect(mobileNotices.length).toBe(1);
+    expect(mobileNotices[0].sticky).toBe(true);
+    expect(mobileNotices[0].msg).toContain("Tailscale");
+    expect(mobileNotices[0].msg).toContain("localhost");
+    expect(mobileNotices[0].msg).toContain("1 change(s) saved on this phone; they will sync when you're back.");
+
+    // Second network failure while already offline -> no new notice
+    await expect(mobileEngine.flush()).rejects.toThrow();
+    expect(mobileNotices.length).toBe(1);
+    expect(mobileEngine.offline).toBe(true);
+
+    // 2. First successful sync while offline -> second notice "back online"
+    fakeHub.simulateNetworkError = false;
+    await mobileEngine.flush();
+    expect(mobileEngine.offline).toBe(false);
+    expect(mobileNotices.length).toBe(2);
+    expect(mobileNotices[1].sticky).toBeFalsy();
+    expect(mobileNotices[1].msg).toBe("lw: back online - synced 1 change(s)");
+
+    // 3. Failure, success, failure -> a NEW offline notice
+    fakeHub.simulateNetworkError = true;
+    await fakeVault.write("notes/test2.md", new TextEncoder().encode("test note 2"));
+    mobileEngine.queuePut("notes/test2.md");
+    await expect(mobileEngine.flush()).rejects.toThrow();
+    expect(mobileEngine.offline).toBe(true);
+    expect(mobileNotices.length).toBe(3);
+    expect(mobileNotices[2].sticky).toBe(true);
+    expect(mobileNotices[2].msg).toContain("Tailscale");
+    expect(mobileNotices[2].msg).toContain("1 change(s) saved on this phone; they will sync when you're back.");
+    fakeHub.simulateNetworkError = false;
+
+    // Recover from offline
+    await mobileEngine.flush();
+    expect(mobileEngine.offline).toBe(false);
+
+    // 4. A hub_error does not set offline
+    const errorClient = new HubClient({
+      baseUrl: "http://localhost",
+      deviceId: DEVICE_ID,
+      deviceName: DEVICE_NAME,
+      request: async () => ({
+        status: 403,
+        headers: { "content-type": "application/json" },
+        text: JSON.stringify({ error: { code: "device_revoked", message: "device revoked" } }),
+      }),
+    });
+    const errorEngine = new SyncEngine({
+      vault: fakeVault,
+      client: errorClient,
+      state,
+      onNotice: (msg, opts) => mobileNotices.push({ msg, sticky: opts?.sticky }),
+      onStatusChange: (s) => statuses.push(s),
+      isMobile: true,
+    });
+    await expect(errorEngine.flush()).rejects.toThrow("device_revoked");
+    expect(errorEngine.offline).toBe(false);
+
+    // 5. Desktop does not raise offline notices
+    const desktopNotices: Array<{ msg: string; sticky?: boolean }> = [];
+    const desktopEngine = new SyncEngine({
+      vault: fakeVault,
+      client: hubClient,
+      state,
+      onNotice: (msg, opts) => desktopNotices.push({ msg, sticky: opts?.sticky }),
+      onStatusChange: (s) => statuses.push(s),
+      isMobile: false,
+    });
+    fakeHub.simulateNetworkError = true;
+    await expect(desktopEngine.flush()).rejects.toThrow();
+    expect(desktopNotices.length).toBe(0);
+    fakeHub.simulateNetworkError = false;
+  });
+
+  it("P1-4 The first-sync 'lw: synced N files' notice stays as is; routine syncs stay silent", async () => {
+    const p14Notices: Array<{ msg: string; sticky?: boolean }> = [];
+    const p14Engine = new SyncEngine({
+      vault: fakeVault,
+      client: hubClient,
+      state,
+      onNotice: (msg, opts) => p14Notices.push({ msg, sticky: opts?.sticky }),
+      onStatusChange: (s) => statuses.push(s),
+      isMobile: true,
+    });
+
+    // 1. First sync emits "lw: synced 0 files"
+    await p14Engine.flush();
+    expect(p14Notices.length).toBe(1);
+    expect(p14Notices[0].msg).toBe("lw: synced 0 files");
+
+    // 2. Routine sync stays silent
+    await p14Engine.flush();
+    expect(p14Notices.length).toBe(1);
+
+    // 3. Enter offline state
+    fakeHub.simulateNetworkError = true;
+    await expect(p14Engine.flush()).rejects.toThrow();
+    expect(p14Notices.length).toBe(2);
+    expect(p14Notices[1].msg).toContain("Tailscale");
+    fakeHub.simulateNetworkError = false;
+
+    // 4. Recovery sync emits back online notice
+    await p14Engine.flush();
+    expect(p14Notices.length).toBe(3);
+    expect(p14Notices[2].msg).toBe("lw: back online - synced 0 change(s)");
+
+    // 5. Subsequent routine sync is silent again
+    await p14Engine.flush();
+    expect(p14Notices.length).toBe(3);
   });
 });
