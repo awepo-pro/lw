@@ -4,8 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Learn lw</title>
-<meta name="description" content="A hands-on tutorial for lw v2.63.0: from an empty directory to a reviewed, cited markdown wiki.">
-<meta name="lw-version" content="v2.63.0">
+<meta name="description" content="A hands-on tutorial for lw v2.65.0: from an empty directory to a reviewed, cited markdown wiki.">
+<meta name="lw-version" content="v2.65.0">
 <style>
 :root {
   --bg: #fbfaf7;
@@ -230,7 +230,7 @@ footer { margin-top: 80px; color: var(--muted); font-size: 14px; border-top: 1px
 <nav class="toc" id="toc">
   <div class="brand">Learn <code>lw</code><button class="toggle-toc" id="toggleToc" aria-expanded="false">Lessons</button></div>
   <div class="sub">From an empty directory to a reviewed wiki</div>
-  <div class="ver" title="The lw release this page was checked against">lw v2.63.0</div>
+  <div class="ver" title="The lw release this page was checked against">lw v2.65.0</div>
   <ol id="tocList">
     <li><a href="#model"><span class="tick"></span>0 · The mental model</a></li>
     <li><a href="#install"><span class="tick"></span>1 · Install &amp; connect</a></li>
@@ -259,7 +259,7 @@ footer { margin-top: 80px; color: var(--muted); font-size: 14px; border-top: 1px
 
 <main>
 <header class="hero">
-  <div class="ver">Covers lw v2.63.0 · 2026-11-01</div>
+  <div class="ver">Covers lw v2.65.0 · 2026-11-04</div>
   <h1>Learn <code>lw</code> by doing</h1>
   <p class="lede">You start with sources — an article, a paper, a saved chat — and end with a small, cross-linked markdown wiki where every claim cites where it came from. <code>lw</code> is the compiler in the middle. An agent proposes the pages, and you decide what lands.</p>
   <div class="callout">
@@ -267,10 +267,11 @@ footer { margin-top: 80px; color: var(--muted); font-size: 14px; border-top: 1px
     Each lesson has a goal, the commands, what you should see, and a short check at the end. Open a terminal next to it and type along. Mark a lesson done when you've run it. Your progress is saved in this browser only. The terminal output shown here comes from real runs. Long output is trimmed, and trims are marked with <code>…</code>.
   </div>
   <details class="quiz">
-    <summary>Which lw is this page for? (v2.63.0, and what changed since v2.35.0)</summary>
-    <p>This page was checked against <strong>lw v2.63.0</strong>. Run <code>lw version</code>. If yours is older, some behaviour below won't match. If it's newer, trust <code>lw --help</code> where they disagree.</p>
+    <summary>Which lw is this page for? (v2.65.0, and what changed since v2.35.0)</summary>
+    <p>This page was checked against <strong>lw v2.65.0</strong>. Run <code>lw version</code>. If yours is older, some behaviour below won't match. If it's newer, trust <code>lw --help</code> where they disagree.</p>
     <p>Changes since the last edition of this page (v2.35.0):</p>
     <ul>
+      <li><strong>v2.65.0</strong>: phone sync with <code>lw hub</code> and the Obsidian plugin over Tailscale; automatic pull before write and self-healing divergence; conflict copies for concurrent note edits (<a href="#sync">lesson 13</a>).</li>
       <li><strong>v2.63.0</strong>: <code>lw ledger check</code> / <code>lw ledger sum [YYYY-MM]</code> / <code>lw ledger import</code> (receipts from <code>ledger/receipts/</code> copied into lw storage, never overwritten; a different file under the same name is a conflict, exit 1); a note from the vault's <code>notes/</code> is ingested into <code>raw/notes/</code> instead of <code>raw/articles/</code> (<a href="#more">lesson 10</a>).</li>
       <li><strong>v2.62.2</strong>: fixes found by independent review: a frontmatter alias cycle no longer crashes lw (the page is a parse error); the note done mark picks the newest copy when two PCs ingested the same note on the same day; <code>--instruction-file</code> refuses files over 64 KiB; the <code>--note</code> help says to repeat the flag (<a href="#health">lesson 9</a>, <a href="#more">lesson 10</a>, <a href="#agent">lesson 11</a>).</li>
       <li><strong>v2.62.0</strong>: list and map frontmatter keys that lw does not know (<code>aliases:</code>, <code>cssclasses:</code>, nested maps) now survive a page rewrite. Before, a patch or rename emptied them (<a href="#health">lesson 9</a>).</li>
@@ -1079,7 +1080,48 @@ lw: lint: vault format 99 is newer than this lw supports (4): upgrade lw   <span
   <p>So after you upgrade lw on one PC, upgrade it on your other PCs before you sync. The current format is 4 (since v2.57.0). An lw older than v2.57.0 does not know format 4, so it refuses such a vault; upgrade it before you sync from it. A vault that was never committed to since v2.55.0 has no stamp yet, so the gate cannot protect it; commit once.</p>
   <p>If two machines commit diverging changes, lw attempts a clean fast-forward rebase. If an irreconcilable conflict occurs, <code>lw sync --take-remote</code> accepts the remote version as authoritative and preserves your local branch for reference.</p>
 
-  <h3>Your phone: notes through Syncthing</h3>
+  <h3>Your phone: built-in sync with lw hub</h3>
+  <p>The primary phone path is built-in sync using <code>lw hub</code> and the "lw sync" Obsidian plugin over your private Tailscale network (tailnet). No PC needs to be on, and the phone runs <strong>no git, no lw, and no Syncthing</strong>. An always-on machine on your tailnet runs <code>lw hub serve</code> behind <code>tailscale serve</code> and synchronizes directly with the remote vault:</p>
+<pre><code>phone (Obsidian + lw sync)  --HTTPS over tailnet-->  tailscale serve (hub host)  -->  lw hub serve (127.0.0.1:8779)  -->  hub vault clone  --lw sync-->  remote  -->  every PC</code></pre>
+  <p>The phone syncs <code>notes/</code>, <code>ledger/</code> day files and receipts, and notes created at the vault root. It never receives or touches <code>wiki/</code>, <code>raw/</code>, or metadata files.</p>
+
+  <p><strong>Host commands (once).</strong> On an always-on host connected to your tailnet that can reach the vault remote:</p>
+  <ol>
+    <li>Clone the vault on the host: <code>lw sync clone &lt;remote&gt; &lt;dir&gt;</code> (and ensure <code>[sync] remotes</code> in the host's <code>~/.config/lw/config.toml</code> points to that remote).</li>
+    <li>Add the hub configuration to the host's <code>~/.config/lw/config.toml</code>:
+<pre><code>[hub]
+  port = 8779
+  users = ["you@github"]      <span class="c"># your Tailscale login name as shown by tailscale status</span></code></pre></li>
+    <li>Print the systemd service unit and commands (changes nothing on disk):
+<pre><code><span class="p">$ </span>lw hub install --print --vault &lt;dir&gt;</code></pre>
+      Save the printed unit to <code>~/.config/systemd/user/lw-hub.service</code> and run the four commands:
+<pre><code>tailscale serve --bg --https=8779 http://127.0.0.1:8779
+systemctl --user daemon-reload
+systemctl --user enable --now lw-hub.service
+loginctl enable-linger you</code></pre></li>
+    <li>Check status: <code>lw hub status --vault &lt;dir&gt;</code> (shows port, users, device counts, and remote sync state).</li>
+  </ol>
+
+  <p><strong>Plugin steps.</strong> On Android (sideloaded until BRAT release):</p>
+  <ol>
+    <li>Install Tailscale on the phone, log in to your tailnet, and open an empty vault folder in Obsidian.</li>
+    <li>Copy <code>main.js</code> (from <code>obsidian/dist/main.js</code>) and <code>manifest.json</code> into <code>&lt;vault&gt;/.obsidian/plugins/lw-sync/</code>.</li>
+    <li>In Obsidian: <em>Settings → Community plugins</em>, enable community plugins, and turn on <strong>lw sync</strong>.</li>
+    <li>In plugin settings, configure <strong>Hub URL</strong> (e.g. <code>https://&lt;hub-host&gt;.&lt;tailnet&gt;.ts.net:8779</code>) and <strong>Device Name</strong> (e.g. <code>phone</code>).</li>
+    <li>The phone displays <em>"lw: waiting for approval (run: lw hub approve phone)"</em>. On the hub host, list devices and approve:
+<pre><code><span class="p">$ </span>lw hub devices          <span class="c"># the phone is listed as pending: check its name and tailnet address</span>
+<span class="p">$ </span>lw hub approve phone
+approved phone
+<span class="p">$ </span>lw hub devices
+NAME  STATE  LAST SEEN  ADDR  PLUGIN  LAST ERROR
+phone  approved  2026-11-04T07:42:16Z  100.101.244.8  0.0.0  -</code></pre>
+      Approve only devices you recognise; <code>lw hub revoke &lt;name&gt;</code> takes access back. The phone then syncs and displays <em>"lw: synced N files"</em>.</li>
+  </ol>
+
+  <p><strong>Conflicts.</strong> If a note was modified on the phone and another machine before syncing, the note keeps the version that reached the hub first. The conflicting version is saved alongside it as <code>&lt;name&gt;.conflict-&lt;device&gt;-&lt;YYYYMMDD-HHMMSS&gt;.md</code>. Resolve it by hand: merge the edits into the note and delete the conflict file. Ledger day files (<code>ledger/YYYY/MM/YYYY-MM-DD.md</code>) never conflict (lines are merged). Any active conflict copies are listed when running <code>lw sync</code> on a PC or <code>lw hub status</code> on the hub host.</p>
+  <p>For complete host setup, background sync timings, offline queueing, self-healing hub divergence, and Obsidian quirks, see <a href="mobile.md">docs/mobile.md</a>.</p>
+
+  <h3>Alternative: phone notes through Syncthing</h3>
   <p>On the phone you just use Obsidian: jot a note, log an expense, paste a photo. The phone runs <strong>Syncthing and Obsidian only: no git, no lw, no agent.</strong> It never talks to the remote. Syncthing carries your files between the phone and <em>one</em> PC, the bridge, and an agent there tidies them and runs <code>lw sync</code>:</p>
 <pre><code>phone (Obsidian)  --Syncthing-->  bridge PC vault  --lw sync-->  remote  -->  your other PCs
   root, notes/, ledger/             lw-notes-sync skill</code></pre>
@@ -1250,6 +1292,7 @@ Note:    baseline model weights</code></pre>
     <tr><td><code>lw trace [-n N] | trace show &lt;ref&gt;</code></td><td>Per-turn traces</td><td>no</td></tr>
     <tr><td><code>lw doctor [--unlock] [--rebuild-index] [--discard-changeset]</code></td><td>Health + repairs</td><td>provider check</td></tr>
     <tr><td><code>lw sync [--take-remote] | status | init | clone</code></td><td>Sync vault across PCs via git over SSH</td><td>no</td></tr>
+    <tr><td><code>lw hub serve | status | devices | approve | revoke | install</code></td><td>Phone sync hub over Tailscale</td><td>no</td></tr>
     <tr><td><code>lw storage [add|list|show|get|rm]</code></td><td>Manage non-wiki content-addressed files</td><td>no</td></tr>
     <tr><td><code>lw ledger check | sum [YYYY-MM] | import [--dry-run]</code></td><td>Check ledger syntax, sum monthly totals in cents, import receipts</td><td>no</td></tr>
     <tr><td><code>lw mcp [--ask]</code></td><td>MCP stdio server; <code>--ask</code> serves ask tools</td><td>no</td></tr>
@@ -1258,7 +1301,7 @@ Note:    baseline model weights</code></pre>
   <p><strong>Where to go next:</strong> <a href="vault-schema.md">vault-schema.md</a> · <a href="changesets.md">changesets.md</a> · <a href="tools.md">tools.md</a> · <a href="hotkeys.md">hotkeys.md</a> · <a href="design.md">design.md</a></p>
 </section>
 
-<footer>Covers <strong>lw v2.63.0</strong> (tagged 2026-11-01). It matches <code>lw --help</code>. If a command here doesn't match your build, trust <code>lw --help</code>.</footer>
+<footer>Covers <strong>lw v2.65.0</strong> (tagged 2026-11-04). It matches <code>lw --help</code>. If a command here doesn't match your build, trust <code>lw --help</code>.</footer>
 </main>
 </div>
 
