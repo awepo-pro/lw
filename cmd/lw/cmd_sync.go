@@ -400,7 +400,23 @@ func syncRun(vaultPath string, takeRemote bool) error {
 		return err
 	}
 	tracker.maybePrintNote(nil)
+	printConflictCopies(os.Stdout, root)
 	return nil
+}
+
+func printConflictCopies(w io.Writer, root string) {
+	conflicts := findConflictCopies(root)
+	if len(conflicts) == 0 {
+		return
+	}
+	word := "copies"
+	if len(conflicts) == 1 {
+		word = "copy"
+	}
+	fmt.Fprintf(w, "%d conflict %s to resolve: merge each into its note, then delete it:\n", len(conflicts), word)
+	for _, c := range conflicts {
+		fmt.Fprintf(w, "  %s\n", c)
+	}
 }
 
 // syncPullAndCommit is the local half of an explicit sync: with no commit

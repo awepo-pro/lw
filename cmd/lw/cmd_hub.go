@@ -16,6 +16,7 @@ import (
 	"os/signal"
 	"os/user"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -37,6 +38,7 @@ var (
 	hubHealBeforeTake    func()
 	hubHealAfterRecord   func()
 	hubHealBeforeReapply func()
+	hubStartupHook       func(ctx context.Context) error
 )
 
 // resetHubRefreshTimer forces the next Refresh to pull by clearing the rate-limit timestamp.
@@ -57,6 +59,42 @@ func disableHubRefreshForTest(disabled bool) {
 	hubRefreshMu.Lock()
 	defer hubRefreshMu.Unlock()
 	hubRefreshDisabled = disabled
+}
+
+var conflictCopyPattern = regexp.MustCompile(`^.+\.conflict-[a-z0-9-]+-[0-9]{8}-[0-9]{6}(\.[^.]+)?$`)
+
+func findConflictCopies(root string) []string {
+	var conflicts []string
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if path != root && strings.HasPrefix(d.Name(), ".") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		base := d.Name()
+		if !conflictCopyPattern.MatchString(base) {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return nil
+		}
+		slashRel := filepath.ToSlash(rel)
+		if err := hub.CheckPath(slashRel); err != nil {
+			return nil
+		}
+		conflicts = append(conflicts, slashRel)
+		return nil
+	})
+	sort.Strings(conflicts)
+	return conflicts
 }
 
 type hubHealingContextKeyType struct{}
@@ -614,6 +652,23 @@ func setupHubWiring(vaultPath string, overridePort int, devicesPath string) (roo
 		return "", nil, nil, nil, 0, nil, fmt.Errorf("create hub handler: %w", err)
 	}
 
+	startupPull := func(ctx context.Context) error {
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		err := doPull(ctx)
+		hubRefreshMu.Lock()
+		lastHubRefresh = time.Now()
+		hubRefreshMu.Unlock()
+		if err != nil {
+			slog.Warn("hub: startup pull", "err", err)
+		} else {
+			slog.Info("hub: startup pull", "status", "ok")
+		}
+		return err
+	}
+	hubStartupHook = startupPull
+
 	return root, engine, handler, pusher, port, cfg.Hub.Users, nil
 }
 
@@ -637,6 +692,10 @@ func cmdHubServe(args []string) error {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", addr, err)
+	}
+
+	if hubStartupHook != nil {
+		_ = hubStartupHook(context.Background())
 	}
 
 	srv := &http.Server{
@@ -735,6 +794,12 @@ func cmdHubStatus(args []string) error {
 		fmt.Println("remote: diverged from remote: run lw sync on the hub host")
 	} else {
 		fmt.Println("remote: in sync")
+	}
+
+	conflicts := findConflictCopies(absRoot)
+	fmt.Printf("conflicts: %d\n", len(conflicts))
+	for _, c := range conflicts {
+		fmt.Printf("  %s\n", c)
 	}
 	return nil
 }
