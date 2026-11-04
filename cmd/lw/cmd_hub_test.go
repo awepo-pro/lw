@@ -2,14 +2,13 @@ package main
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -282,18 +281,20 @@ func TestC5(t *testing.T) {
 	b.write("notes/shared.md", pcBody)
 	b.lw("sync")
 
-	// 3. Hub edits notes/shared.md with conflicting edit
-	h := sha256.Sum256([]byte(initialBody))
-	initialSHA := hex.EncodeToString(h[:])
+	// 3. Hub edits notes/shared.md with conflicting edit (manual edit on the hub)
 	hubBody := []byte("# Shared note\nhub content edit\n")
-	putReq := httptest.NewRequest("PUT", "/v1/file?path=notes/shared.md&base="+initialSHA, bytes.NewReader(hubBody))
-	putReq.RemoteAddr = "127.0.0.1:12345"
-	putReq.Header.Set("Tailscale-User-Login", "phone-user")
-	putReq.Header.Set("X-LW-Device", devID)
-	putRec := httptest.NewRecorder()
-	hServer.ServeHTTP(putRec, putReq)
+	a.write("notes/shared.md", string(hubBody))
+	gitAdd := exec.Command("git", "-C", a.root, "add", "notes/shared.md")
+	if out, err := gitAdd.CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v, out=%s", err, string(out))
+	}
+	gitCmd := exec.Command("git", "-C", a.root, "-c", "user.name=test", "-c", "user.email=test@test", "commit", "-am", "manual edit on the hub")
+	if out, err := gitCmd.CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v, out=%s", err, string(out))
+	}
 
 	// Pusher runs and attempts to pull/rebase from remote, which fails because notes/shared.md diverges!
+	pusher.Trigger()
 	pusher.Flush(20*time.Second, nil)
 
 	// Marker file must exist in .git/lw-hub-diverged

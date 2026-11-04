@@ -20,6 +20,27 @@ import (
 
 var ledgerDayRegex = regexp.MustCompile(`^ledger/[0-9]{4}/[0-9]{2}/[0-9]{4}-[0-9]{2}-[0-9]{2}\.md$`)
 
+type writeContextKeyType struct{}
+
+var writeContextKey = writeContextKeyType{}
+
+// WithWriteContext marks ctx as originating from a write operation (Put/Delete).
+func WithWriteContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, writeContextKey, true)
+}
+
+// IsWriteContext returns true if ctx was marked as a write operation.
+func IsWriteContext(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	v, _ := ctx.Value(writeContextKey).(bool)
+	return v
+}
+
 // Engine implements Service.
 type Engine struct {
 	opts Options
@@ -262,6 +283,16 @@ func (e *Engine) Put(ctx context.Context, dev Device, p, base string, body []byt
 		return PutResult{}, &Error{Code: CodeTooLarge, Message: "body too large"}
 	}
 
+	if e.opts.Refresh != nil {
+		if err := e.opts.Refresh(WithWriteContext(ctx)); err != nil {
+			var hubErr *Error
+			if errors.As(err, &hubErr) {
+				return PutResult{}, hubErr
+			}
+			// Other errors ignored
+		}
+	}
+
 	var unlock func()
 	if e.opts.Lock != nil {
 		u, err := e.opts.Lock()
@@ -444,6 +475,16 @@ func (e *Engine) Delete(ctx context.Context, dev Device, p, base string) (Delete
 	}
 	if !isValidBase(base) {
 		return DeleteResult{}, &Error{Code: CodeBadRequest, Message: "invalid base"}
+	}
+
+	if e.opts.Refresh != nil {
+		if err := e.opts.Refresh(WithWriteContext(ctx)); err != nil {
+			var hubErr *Error
+			if errors.As(err, &hubErr) {
+				return DeleteResult{}, hubErr
+			}
+			// Other errors ignored
+		}
 	}
 
 	var unlock func()

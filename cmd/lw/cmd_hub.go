@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"os/user"
 	"path/filepath"
@@ -28,8 +30,13 @@ import (
 )
 
 var (
-	lastHubRefresh time.Time
-	hubRefreshMu   sync.Mutex
+	lastHubRefresh       time.Time
+	hubRefreshMu         sync.Mutex
+	hubRefreshDisabled   bool
+	hubHealMu            sync.Mutex
+	hubHealBeforeTake    func()
+	hubHealAfterRecord   func()
+	hubHealBeforeReapply func()
 )
 
 // resetHubRefreshTimer forces the next Refresh to pull by clearing the rate-limit timestamp.
@@ -37,6 +44,38 @@ func resetHubRefreshTimer() {
 	hubRefreshMu.Lock()
 	defer hubRefreshMu.Unlock()
 	lastHubRefresh = time.Time{}
+}
+
+// setHubRefreshTimer sets lastHubRefresh for testing rate limits.
+func setHubRefreshTimer(t time.Time) {
+	hubRefreshMu.Lock()
+	defer hubRefreshMu.Unlock()
+	lastHubRefresh = t
+}
+
+func disableHubRefreshForTest(disabled bool) {
+	hubRefreshMu.Lock()
+	defer hubRefreshMu.Unlock()
+	hubRefreshDisabled = disabled
+}
+
+type hubHealingContextKeyType struct{}
+
+var hubHealingContextKey = hubHealingContextKeyType{}
+
+func withHubHealing(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, hubHealingContextKey, true)
+}
+
+func isHubHealing(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	v, _ := ctx.Value(hubHealingContextKey).(bool)
+	return v
 }
 
 func hubUsage(w io.Writer) {
@@ -126,6 +165,226 @@ func lockVaultWait(root string, timeout time.Duration) (func(), error) {
 	}
 }
 
+type healedPathInfo struct {
+	Path         string
+	Result       string
+	ConflictPath string
+	Slug         string
+}
+
+type recordedPath struct {
+	Path    string
+	Bytes   []byte
+	Deleted bool
+	Slug    string
+}
+
+func healHubDivergence(ctx context.Context, root string, syncOpts vaultsync.Options, engine *hub.Engine) (bool, error) {
+	hubHealMu.Lock()
+	defer hubHealMu.Unlock()
+
+	// RE-CHECK: fetch remote state; if no longer diverged (Behind == 0 or pull succeeds), return healed=true.
+	stStatus, errStatus := vaultsync.Status(ctx, syncOpts)
+	if errStatus == nil && (stStatus.Behind == 0 || !stStatus.Diverged()) {
+		if stStatus.Behind > 0 && stStatus.Ahead == 0 {
+			_, _ = syncPull(ctx, syncOpts, stage.FormatVersion)
+		}
+		clearHubDiverged(root)
+		return true, nil
+	}
+
+	trackRef := stage.SyncTrackingRef
+	cmd := exec.CommandContext(ctx, "git", "-C", root, "log", "--reverse", "--format=%H %s", trackRef+"..HEAD")
+	out, err := cmd.Output()
+	if err != nil {
+		return false, err
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) == 0 || (len(lines) == 1 && lines[0] == "") {
+		return false, nil
+	}
+
+	type commitMeta struct {
+		Hash    string
+		Subject string
+		Slug    string
+	}
+	var commits []commitMeta
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		hash, subj, _ := strings.Cut(line, " ")
+		if !strings.HasPrefix(subj, "hub: ") {
+			return false, nil
+		}
+		slug := "hub-heal"
+		trimmed := strings.TrimPrefix(subj, "hub: ")
+		fields := strings.Fields(trimmed)
+		if len(fields) >= 1 && fields[0] != "sweep" {
+			slug = fields[0]
+		}
+		commits = append(commits, commitMeta{
+			Hash:    hash,
+			Subject: subj,
+			Slug:    slug,
+		})
+	}
+
+	pathSlug := make(map[string]string)
+	var touchedOrder []string
+	seenTouched := make(map[string]bool)
+
+	for _, c := range commits {
+		cmdDiff := exec.CommandContext(ctx, "git", "-C", root, "diff-tree", "--no-commit-id", "--name-only", "-r", "-z", c.Hash)
+		diffOut, err := cmdDiff.Output()
+		if err != nil {
+			return false, err
+		}
+		parts := bytes.Split(diffOut, []byte{0})
+		for _, part := range parts {
+			if len(part) == 0 {
+				continue
+			}
+			p := string(part)
+			if !seenTouched[p] {
+				seenTouched[p] = true
+				touchedOrder = append(touchedOrder, p)
+			}
+			if _, ok := pathSlug[p]; !ok {
+				pathSlug[p] = c.Slug
+			}
+		}
+	}
+
+	// Write marker with reason "healing" BEFORE taking lock in step a),
+	// closing the write gate to prevent new writes from landing before TakeRemote.
+	markHubDiverged(root, "healing")
+
+	// a) Under the vault lock, record for every path those commits touched
+	// that passes hub.CheckPath: the hub's current bytes (or "deleted").
+	releaseLock, err := lockVaultWait(root, 15*time.Second)
+	if err != nil {
+		markHubDiverged(root, fmt.Sprintf("lock vault for heal: %v", err))
+		return false, err
+	}
+
+	recorded := make(map[string]*recordedPath)
+	for _, p := range touchedOrder {
+		if err := hub.CheckPath(p); err != nil {
+			continue
+		}
+		fullPath := filepath.Join(root, filepath.FromSlash(p))
+		data, readErr := os.ReadFile(fullPath)
+		if readErr == nil {
+			recorded[p] = &recordedPath{
+				Path:    p,
+				Bytes:   data,
+				Deleted: false,
+				Slug:    pathSlug[p],
+			}
+		} else if os.IsNotExist(readErr) {
+			recorded[p] = &recordedPath{
+				Path:    p,
+				Bytes:   nil,
+				Deleted: true,
+				Slug:    pathSlug[p],
+			}
+		} else {
+			releaseLock()
+			markHubDiverged(root, fmt.Sprintf("read %s: %v", p, readErr))
+			return false, readErr
+		}
+	}
+	releaseLock()
+
+	if hubHealAfterRecord != nil {
+		hubHealAfterRecord()
+	}
+
+	// b) Take the remote exactly like lw sync --take-remote (reuse it; local commits
+	// land on a lw-diverged-<time> branch, nothing is deleted).
+	// NOTE: Marker stays closed ("healing") across TakeRemote!
+	if hubHealBeforeTake != nil {
+		hubHealBeforeTake()
+	}
+
+	backupBranch, stTake, err := vaultsync.TakeRemote(ctx, syncOpts, stage.FormatVersion)
+	if err != nil {
+		markHubDiverged(root, fmt.Sprintf("take remote failed: %v", err))
+		return false, err
+	}
+	recordSync(root, stTake.Remote, nil)
+	_, _ = rebuildIndexIfStale(root)
+	_ = backupBranch
+
+	// Only THEN clear the marker so re-applying through engine.Put can acquire lock/commit.
+	clearHubDiverged(root)
+
+	if hubHealBeforeReapply != nil {
+		hubHealBeforeReapply()
+	}
+
+	// c) Re-apply each recorded file through the engine as
+	// Put(Device{Name: slug}, path, hub.BaseNew, bytes).
+	var sortedPaths []string
+	for p := range recorded {
+		sortedPaths = append(sortedPaths, p)
+	}
+	sort.Strings(sortedPaths)
+
+	healCtx := withHubHealing(ctx)
+	var healed []healedPathInfo
+	for _, p := range sortedPaths {
+		rec := recorded[p]
+		if rec.Deleted {
+			continue
+		}
+		slug := rec.Slug
+		if slug == "" {
+			slug = "hub-heal"
+		}
+		dev := hub.Device{Name: slug}
+		res, err := engine.Put(healCtx, dev, rec.Path, hub.BaseNew, rec.Bytes)
+		if err != nil {
+			markHubDiverged(root, fmt.Sprintf("re-apply %s: %v", rec.Path, err))
+			return false, err
+		}
+		healed = append(healed, healedPathInfo{
+			Path:         rec.Path,
+			Result:       res.Result,
+			ConflictPath: res.ConflictPath,
+			Slug:         slug,
+		})
+	}
+
+	// d) Commit, clear the marker, push; log one line per healed path to lw.log.
+	if _, err := commitWorkLocked(root, syncOpts, "hub: sweep"); err != nil {
+		slog.Warn("hub: heal sweep commit", "err", err)
+	}
+	clearHubDiverged(root)
+
+	_ = storageUpload(ctx, root, syncOpts)
+	stPush, errPush := syncPush(ctx, syncOpts)
+	if errPush != nil {
+		markHubDiverged(root, fmt.Sprintf("heal push: %v", errPush))
+		return false, errPush
+	}
+	_ = stPush
+
+	for _, hp := range healed {
+		if hp.ConflictPath != "" {
+			slog.Info("hub: heal", "path", hp.Path, "result", hp.Result, "conflict", hp.ConflictPath, "slug", hp.Slug)
+		} else {
+			slog.Info("hub: heal", "path", hp.Path, "result", hp.Result, "slug", hp.Slug)
+		}
+	}
+
+	return true, nil
+}
+
 func setupHubWiring(vaultPath string, overridePort int, devicesPath string) (root string, engine *hub.Engine, handler http.Handler, pusher *syncPusher, port int, users []string, err error) {
 	// 1. Vault must be under lw sync
 	root, o, err := syncSetup(vaultPath, syncModeWrite)
@@ -169,6 +428,16 @@ func setupHubWiring(vaultPath string, overridePort int, devicesPath string) (roo
 		}
 		st, err := syncPull(ctx, syncOpts, stage.FormatVersion)
 		if errors.Is(err, vaultsync.ErrDiverged) || st.Diverged() {
+			if engine != nil {
+				healed, healErr := healHubDivergence(ctx, root, syncOpts, engine)
+				if healErr == nil && healed {
+					clearHubDiverged(root)
+					if st.Pulled > 0 {
+						_, _ = rebuildIndexIfStale(root)
+					}
+					return nil
+				}
+			}
 			markHubDiverged(root, fmt.Sprintf("diverged from %s: %d ahead, %d behind", st.Remote, st.Ahead, st.Behind))
 			return &hub.Error{Code: hub.CodeDiverged, Message: "hub vault diverged from the remote; run lw sync on the hub host"}
 		}
@@ -203,6 +472,13 @@ func setupHubWiring(vaultPath string, overridePort int, devicesPath string) (roo
 		}
 		stPull, errPull := syncPull(ctx, syncOpts, stage.FormatVersion)
 		if errors.Is(errPull, vaultsync.ErrDiverged) || stPull.Diverged() {
+			if engine != nil {
+				healed, healErr := healHubDivergence(ctx, root, syncOpts, engine)
+				if healErr == nil && healed {
+					clearHubDiverged(root)
+					return logResult(syncPushResult{Remote: stPull.Remote, Pushed: 1, Pulled: stPull.Pulled, StorageErr: storageErr})
+				}
+			}
 			markHubDiverged(root, fmt.Sprintf("diverged from %s: %d ahead, %d behind", stPull.Remote, stPull.Ahead, stPull.Behind))
 			return logResult(syncPushResult{Remote: stPull.Remote, Err: errPull, StorageErr: storageErr})
 		}
@@ -215,6 +491,13 @@ func setupHubWiring(vaultPath string, overridePort int, devicesPath string) (roo
 		}
 		stPush, errPush := syncPush(ctx, syncOpts)
 		if errors.Is(errPush, vaultsync.ErrDiverged) || stPush.Diverged() {
+			if engine != nil {
+				healed, healErr := healHubDivergence(ctx, root, syncOpts, engine)
+				if healErr == nil && healed {
+					clearHubDiverged(root)
+					return logResult(syncPushResult{Remote: stPush.Remote, Pushed: 1, StorageErr: storageErr})
+				}
+			}
 			markHubDiverged(root, fmt.Sprintf("diverged from %s: %d ahead, %d behind", stPush.Remote, stPush.Ahead, stPush.Behind))
 			return logResult(syncPushResult{Remote: stPush.Remote, Err: errPush, StorageErr: storageErr})
 		}
@@ -225,6 +508,10 @@ func setupHubWiring(vaultPath string, overridePort int, devicesPath string) (roo
 	}
 
 	pusher = newSyncPusher(runPush, 1*time.Second)
+
+	hubRefreshMu.Lock()
+	lastHubRefresh = time.Now()
+	hubRefreshMu.Unlock()
 
 	hubOpts := hub.Options{
 		Dir: root,
@@ -267,9 +554,20 @@ func setupHubWiring(vaultPath string, overridePort int, devicesPath string) (roo
 			return nil
 		},
 		Refresh: func(ctx context.Context) error {
+			if isHubHealing(ctx) {
+				return nil
+			}
+			limit := 10 * time.Second
+			if hub.IsWriteContext(ctx) {
+				limit = 2 * time.Second
+			}
 			hubRefreshMu.Lock()
+			if hubRefreshDisabled {
+				hubRefreshMu.Unlock()
+				return nil
+			}
 			elapsed := time.Since(lastHubRefresh)
-			if elapsed < 10*time.Second {
+			if elapsed < limit {
 				hubRefreshMu.Unlock()
 				if isHubDiverged(root) {
 					return &hub.Error{Code: hub.CodeDiverged, Message: "hub vault diverged from the remote; run lw sync on the hub host"}
