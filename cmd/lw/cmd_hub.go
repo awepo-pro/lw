@@ -774,6 +774,12 @@ func cmdHubServe(args []string) error {
 	}
 	attachLoggingAt(root)
 
+	// Catch SIGTERM before the port opens: the startup pull below can take
+	// seconds, and a stop that lands in it must still take the shutdown path.
+	sigChan := make(chan os.Signal, 2)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigChan)
+
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -803,9 +809,6 @@ func cmdHubServe(args []string) error {
 			}
 		}
 	}()
-
-	sigChan := make(chan os.Signal, 2)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
 	serverErr := make(chan error, 1)
 	go func() {
