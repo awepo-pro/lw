@@ -43,6 +43,7 @@ var verbs = []verb{
 	{"mcp", cmdMCP},
 	{"doctor", cmdDoctor},
 	{"sync", cmdSync},
+	{"hub", cmdHub},
 	{"tui", cmdTUI},
 	{"stage", cmdStage},
 	{"storage", cmdStorage},
@@ -204,6 +205,13 @@ commands:
   sync init <remote>           put this vault under lw sync and push it to an empty remote
   sync clone <remote> <dir>    copy a synced vault from its remote to this PC
                                (lw sync owns the vault's .gitignore and rewrites it)
+  hub serve [--vault P] [--port N]
+                               serve phone sync on loopback
+  hub status                   show hub status and diverged state
+  hub devices [--json]         list registered devices
+  hub approve <slug|id>        approve a pending phone device
+  hub revoke <slug|id>         revoke an approved phone device
+  hub install --print          print systemd user unit and tailscale serve commands
   tui                          launch the terminal UI (default with no command)
   storage [add|list|show|get|rm]
                                manage non-wiki storage files in the vault

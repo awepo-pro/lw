@@ -202,6 +202,18 @@ commands:
                                ask tools and sees the open changeset as lw query does
   doctor [--unlock] [--rebuild-index] [--discard-changeset] [--json]
                                check vault and lock health
+  sync [--take-remote]         pull then push the vault through its [sync] remotes
+  sync status                  show ahead/behind against the remote, without changing anything
+  sync init <remote>           put this vault under lw sync and push it to an empty remote
+  sync clone <remote> <dir>    copy a synced vault from its remote to this PC
+                               (lw sync owns the vault's .gitignore and rewrites it)
+  hub serve [--vault P] [--port N]
+                               serve phone sync on loopback
+  hub status                   show hub status and diverged state
+  hub devices [--json]         list registered devices
+  hub approve <slug|id>        approve a pending phone device
+  hub revoke <slug|id>         revoke an approved phone device
+  hub install --print          print systemd user unit and tailscale serve commands
   tui                          launch the terminal UI (default with no command)
 
 flags:
@@ -231,6 +243,8 @@ are the same flag). Exit codes: `0` success, `1` failure, `2` usage error.
 | `note` | `-m "<text>"`; `list`: `-n <count>` | Captures a quick raw note into `notes/` (outside the wiki: no LLM, no changeset, never indexed or snapshotted). No `-m` opens `$VISUAL`/`$EDITOR`; an empty buffer saves nothing |
 | `mcp` | — | stdio MCP server; see below |
 | `doctor` | `--unlock`, `--rebuild-index`, `--discard-changeset`, `--json` | Index freshness, object-store completeness, journal tail, interrupted apply, stale lock, config, provider. Every failure prints the fix. `--discard-changeset` moves the open changeset to `changesets/rejected/`, journalled — the CLI way to discard one without opening the TUI. Exit 1 on any failure |
+| `sync` | `status`, `init <remote>`, `clone <remote> <dir>`, `--take-remote` | Pull then push the vault through its [sync] remotes over SSH |
+| `hub` | `serve`, `status`, `devices`, `approve <name>`, `revoke <name>`, `install --print` | Built-in phone sync hub over Tailscale |
 | `tui` | — | The TUI; also the default with no command |
 
 ## The TUI

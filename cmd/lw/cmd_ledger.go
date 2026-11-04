@@ -207,14 +207,22 @@ func cmdLedgerImport(args []string) error {
 	}
 	attachLoggingAt(root)
 
+	return importReceipts(os.Stdout, root, *dryRun)
+}
+
+// importReceipts imports receipts under ledger/receipts/ into lw storage.
+// When w is non-nil, it prints progress and summary lines matching `lw ledger import`.
+func importReceipts(w io.Writer, root string, dryRun bool) error {
 	receiptsDir := filepath.Join(root, vault.LedgerDir, "receipts")
 	if _, err := os.Stat(receiptsDir); os.IsNotExist(err) {
-		fmt.Println("0 stored, 0 unchanged, 0 conflict(s), 0 error(s)")
+		if w != nil {
+			fmt.Fprintln(w, "0 stored, 0 unchanged, 0 conflict(s), 0 error(s)")
+		}
 		return nil
 	}
 
 	var items []receiptFile
-	err = filepath.WalkDir(receiptsDir, func(path string, d fs.DirEntry, err error) error {
+	err := filepath.WalkDir(receiptsDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -267,51 +275,73 @@ func cmdLedgerImport(args []string) error {
 	for _, item := range items {
 		sum, err := fileSHA256(item.srcPath)
 		if err != nil {
-			fmt.Printf("error %s: %v\n", item.name, err)
+			if w != nil {
+				fmt.Fprintf(w, "error %s: %v\n", item.name, err)
+			}
 			errorsCount++
 			continue
 		}
 
 		existing, found, err := st.Show(item.name)
 		if err != nil {
-			fmt.Printf("error %s: %v\n", item.name, err)
+			if w != nil {
+				fmt.Fprintf(w, "error %s: %v\n", item.name, err)
+			}
 			errorsCount++
 			continue
 		}
 
 		if found {
 			if existing.SHA256 == sum {
-				fmt.Printf("unchanged %s\n", item.name)
+				if w != nil {
+					fmt.Fprintf(w, "unchanged %s\n", item.name)
+				}
 				unchanged++
 			} else {
-				fmt.Printf("conflict %s: storage holds different bytes (lw storage show %s)\n", item.name, item.name)
+				if w != nil {
+					fmt.Fprintf(w, "conflict %s: storage holds different bytes (lw storage show %s)\n", item.name, item.name)
+				}
 				conflicts++
 			}
 			continue
 		}
 
-		if *dryRun {
-			fmt.Printf("would store %s\n", item.name)
+		if dryRun {
+			if w != nil {
+				fmt.Fprintf(w, "would store %s\n", item.name)
+			}
 			stored++
 		} else {
 			_, err := st.Add(item.srcPath, item.name, "ledger receipt", false)
 			if err != nil {
-				fmt.Printf("error %s: %v\n", item.name, err)
+				if w != nil {
+					fmt.Fprintf(w, "error %s: %v\n", item.name, err)
+				}
 				errorsCount++
 				continue
 			}
-			fmt.Printf("stored %s\n", item.name)
+			if w != nil {
+				fmt.Fprintf(w, "stored %s\n", item.name)
+			}
 			stored++
 		}
 	}
 
-	fmt.Printf("%d stored, %d unchanged, %d conflict(s), %d error(s)\n", stored, unchanged, conflicts, errorsCount)
-	if stored > 0 && !*dryRun {
-		fmt.Println("run lw sync to carry them to your other PCs")
+	if w != nil {
+		fmt.Fprintf(w, "%d stored, %d unchanged, %d conflict(s), %d error(s)\n", stored, unchanged, conflicts, errorsCount)
+		if stored > 0 && !dryRun {
+			fmt.Fprintln(w, "run lw sync to carry them to your other PCs")
+		}
 	}
 
 	if conflicts > 0 || errorsCount > 0 {
-		return &exitError{code: 1}
+		if w != nil {
+			return &exitError{code: 1}
+		}
+		if errorsCount > 0 {
+			return fmt.Errorf("import receipts had %d error(s)", errorsCount)
+		}
+		return fmt.Errorf("import receipts had %d conflict(s)", conflicts)
 	}
 	return nil
 }

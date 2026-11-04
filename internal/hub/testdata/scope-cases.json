@@ -1,0 +1,224 @@
+{
+ "comment": "079 scope table, shared by internal/hub (Go) and obsidian/ (TS). allow=true: CheckPath returns nil. allow=false: CheckPath returns *hub.Error with this code. Rules: MASTER Contract section 5.",
+ "cases": [
+  {
+   "path": "notes/a.md",
+   "allow": true
+  },
+  {
+   "path": "notes/sub/deep/b.md",
+   "allow": true
+  },
+  {
+   "path": "notes/img.png",
+   "allow": true
+  },
+  {
+   "path": "notes/2026-11-03 idea (draft).md",
+   "allow": true
+  },
+  {
+   "path": "notes/\u65e5\u672c\u8a9e.md",
+   "allow": true
+  },
+  {
+   "path": "ledger/2026/11/2026-11-03.md",
+   "allow": true
+  },
+  {
+   "path": "ledger/receipts/2026/11/r-20261103-1020.jpg",
+   "allow": true
+  },
+  {
+   "path": "ledger/notes.md",
+   "allow": true
+  },
+  {
+   "path": "todo.md",
+   "allow": true
+  },
+  {
+   "path": "Photo.JPG",
+   "allow": true
+  },
+  {
+   "path": "pic.jpeg",
+   "allow": true
+  },
+  {
+   "path": "anim.gif",
+   "allow": true
+  },
+  {
+   "path": "shot.webp",
+   "allow": true
+  },
+  {
+   "path": "diagram.svg",
+   "allow": true
+  },
+  {
+   "path": "cam.HEIC",
+   "allow": true
+  },
+  {
+   "path": "Untitled.MD",
+   "allow": true
+  },
+  {
+   "path": "index.md",
+   "allow": false,
+   "code": "out_of_scope"
+  },
+  {
+   "path": "log.md",
+   "allow": false,
+   "code": "out_of_scope"
+  },
+  {
+   "path": "SCHEMA.md",
+   "allow": false,
+   "code": "out_of_scope"
+  },
+  {
+   "path": "curator-memory.md",
+   "allow": false,
+   "code": "out_of_scope"
+  },
+  {
+   "path": "Index.md",
+   "allow": false,
+   "code": "out_of_scope"
+  },
+  {
+   "path": "wiki/a.md",
+   "allow": false,
+   "code": "out_of_scope"
+  },
+  {
+   "path": "raw/notes/a.md",
+   "allow": false,
+   "code": "out_of_scope"
+  },
+  {
+   "path": "storage/x.bin",
+   "allow": false,
+   "code": "out_of_scope"
+  },
+  {
+   "path": ".llmwiki/format",
+   "allow": false,
+   "code": "out_of_scope"
+  },
+  {
+   "path": ".obsidian/app.json",
+   "allow": false,
+   "code": "out_of_scope"
+  },
+  {
+   "path": ".git/config",
+   "allow": false,
+   "code": "out_of_scope"
+  },
+  {
+   "path": "notes/.hidden.md",
+   "allow": false,
+   "code": "out_of_scope"
+  },
+  {
+   "path": "notes/.trash/a.md",
+   "allow": false,
+   "code": "out_of_scope"
+  },
+  {
+   "path": "ledger/.x/a.md",
+   "allow": false,
+   "code": "out_of_scope"
+  },
+  {
+   "path": "doc.pdf",
+   "allow": false,
+   "code": "out_of_scope"
+  },
+  {
+   "path": "script.sh",
+   "allow": false,
+   "code": "out_of_scope"
+  },
+  {
+   "path": "README",
+   "allow": false,
+   "code": "out_of_scope"
+  },
+  {
+   "path": "dir/a.md",
+   "allow": false,
+   "code": "out_of_scope"
+  },
+  {
+   "path": "notes",
+   "allow": false,
+   "code": "out_of_scope"
+  },
+  {
+   "path": "ledger",
+   "allow": false,
+   "code": "out_of_scope"
+  },
+  {
+   "path": "",
+   "allow": false,
+   "code": "bad_request"
+  },
+  {
+   "path": "/notes/a.md",
+   "allow": false,
+   "code": "bad_request"
+  },
+  {
+   "path": "notes//a.md",
+   "allow": false,
+   "code": "bad_request"
+  },
+  {
+   "path": "notes/./a.md",
+   "allow": false,
+   "code": "bad_request"
+  },
+  {
+   "path": "notes/../wiki/a.md",
+   "allow": false,
+   "code": "bad_request"
+  },
+  {
+   "path": "../notes/a.md",
+   "allow": false,
+   "code": "bad_request"
+  },
+  {
+   "path": "notes/a.md/",
+   "allow": false,
+   "code": "bad_request"
+  },
+  {
+   "path": "notes\\a.md",
+   "allow": false,
+   "code": "bad_request"
+  },
+  {
+   "path": "notes/a\u0000.md",
+   "allow": false,
+   "code": "bad_request"
+  },
+  {
+   "path": "notes/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.md",
+   "allow": false,
+   "code": "bad_request"
+  },
+  {
+   "path": "LOG.MD",
+   "allow": false,
+   "code": "out_of_scope"
+  }
+ ]
+}

@@ -233,7 +233,7 @@ func guardVault(root string) error {
 // commitWorkLocked is the commit of the work tree to git: under the vault lock
 // for that commit alone, with no commit half-applied. The commit message is
 // read under it, from the same journal the commit sees.
-func commitWorkLocked(root string, o vaultsync.Options) (bool, error) {
+func commitWorkLocked(root string, o vaultsync.Options, msg ...string) (bool, error) {
 	release, err := lockVault(root)
 	if err != nil {
 		return false, err
@@ -242,7 +242,11 @@ func commitWorkLocked(root string, o vaultsync.Options) (bool, error) {
 	if err := noInterruptedCommit(root); err != nil {
 		return false, err
 	}
-	return syncCommitWork(o, syncCommitMessage(root))
+	m := syncCommitMessage(root)
+	if len(msg) > 0 && msg[0] != "" {
+		m = msg[0]
+	}
+	return syncCommitWork(o, m)
 }
 
 // syncAppendOnly is the vault's one append-only file: the journal. An open

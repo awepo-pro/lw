@@ -215,6 +215,12 @@ func (s *Sync) RemoteList() []string {
 	return append([]string(nil), s.Remotes...)
 }
 
+// Hub is the [hub] table (079 S4): phone sync server configuration.
+type Hub struct {
+	Port  int      `toml:"port,omitempty"`
+	Users []string `toml:"users,omitempty"`
+}
+
 // ErrNoPDFViewer is what Open.Argv returns for a template that names no
 // viewer: there is nothing to compile, and inventing a default would exec
 // a program the user never chose. (034 T5.)
@@ -295,6 +301,7 @@ type Config struct {
 	// byte-identically (see shadowConfig).
 	Vault Vault `toml:"vault"`
 	Sync  *Sync `toml:"sync"`
+	Hub   *Hub  `toml:"hub"`
 }
 
 // shadowLLM is LLM with Limits nested inside it as "limits", so encoding
@@ -331,6 +338,12 @@ type shadowSync struct {
 	Auto    *bool    `toml:"auto,omitempty"`
 }
 
+// shadowHub is Hub with the on-disk tags (079 S4).
+type shadowHub struct {
+	Port  int      `toml:"port,omitempty"`
+	Users []string `toml:"users,omitempty"`
+}
+
 // shadowConfig is the on-disk shape of Config: the same fields, with Limits
 // relocated under LLM. It exists solely so Load/Save can hand BurntSushi a
 // struct whose tags actually produce the documented nested table; Config
@@ -358,6 +371,7 @@ type shadowConfig struct {
 	// them round-trips byte-identically, the rule [open] and [trace] follow.
 	Vault Vault      `toml:"vault,omitempty"`
 	Sync  shadowSync `toml:"sync,omitempty"`
+	Hub   *shadowHub `toml:"hub,omitempty"`
 }
 
 // toShadow converts a Config to its on-disk shape, for Save.
@@ -380,6 +394,7 @@ func toShadow(c *Config) shadowConfig {
 		Trace:   c.Trace,
 		Vault:   c.Vault,
 		Sync:    syncToShadow(c.Sync),
+		Hub:     hubToShadow(c.Hub),
 	}
 }
 
@@ -391,6 +406,15 @@ func syncToShadow(s *Sync) shadowSync {
 		return shadowSync{}
 	}
 	return shadowSync{Remotes: s.RemoteList(), Auto: s.Auto}
+}
+
+// hubToShadow converts Config.Hub to its on-disk shape. A nil table and a
+// table with nothing in it both become nil, which Save omits.
+func hubToShadow(h *Hub) *shadowHub {
+	if h == nil || (h.Port == 0 && len(h.Users) == 0) {
+		return nil
+	}
+	return &shadowHub{Port: h.Port, Users: append([]string(nil), h.Users...)}
 }
 
 // fromShadow converts a decoded on-disk shape back to the public Config, for
@@ -414,6 +438,7 @@ func fromShadow(s shadowConfig) *Config {
 		Trace:   s.Trace,
 		Vault:   s.Vault,
 		Sync:    syncFromShadow(s.Sync),
+		Hub:     hubFromShadow(s.Hub),
 	}
 }
 
@@ -424,6 +449,22 @@ func syncFromShadow(s shadowSync) *Sync {
 		return nil
 	}
 	return &Sync{Remotes: append([]string(nil), s.Remotes...), Auto: s.Auto}
+}
+
+// hubFromShadow converts the decoded [hub] table back to Config.Hub: nil
+// when the file named neither key, so "no table" survives a Load unchanged.
+func hubFromShadow(s *shadowHub) *Hub {
+	if s == nil || (s.Port == 0 && len(s.Users) == 0) {
+		return nil
+	}
+	port := s.Port
+	if port == 0 {
+		port = 8779
+	}
+	return &Hub{
+		Port:  port,
+		Users: append([]string(nil), s.Users...),
+	}
 }
 
 // Load reads <ConfigDir()>/config.toml. A missing config file is not an
@@ -636,6 +677,17 @@ func mergeOverDefault(def, file *Config, md toml.MetaData) *Config {
 	// nothing to keep from it, and a file that names only auto still says so.
 	if md.IsDefined("sync", "remotes") || md.IsDefined("sync", "auto") {
 		def.Sync = file.Sync
+	}
+	// The [hub] table is taken whole: Default() ships none.
+	if md.IsDefined("hub", "port") || md.IsDefined("hub", "users") || md.IsDefined("hub") {
+		if file.Hub != nil {
+			def.Hub = file.Hub
+		} else {
+			def.Hub = &Hub{Port: 8779}
+		}
+		if def.Hub.Port == 0 {
+			def.Hub.Port = 8779
+		}
 	}
 	return def
 }

@@ -5,3 +5,5 @@
 .llmwiki/
 .env
 /.testlogs/
+/obsidian/node_modules/
+/obsidian/dist/
