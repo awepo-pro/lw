@@ -14,7 +14,13 @@ description: >-
 The user writes notes and bookkeeping directly in Obsidian (on the phone, or on a PC), not through `lw`. Obsidian puts
 a new note wherever the user is, often the **vault root**, and with the recommended attachment setting
 (*same folder as current file*) the pasted image lands beside it, so also at the root. lw wants notes in `notes/` and
-receipts in `ledger/receipts/`. Your job: move what Obsidian scattered to where lw expects it, make sure nothing that
+receipts in `ledger/receipts/`.
+
+With `lw hub`, the phone's notes reach the remote directly; no bridge PC has to carry them. They arrive on every PC
+where Obsidian left them (often the vault root), so this skill is still how a PC tidies them into `notes/`, whichever
+device wrote them, before `lw sync`. On the Syncthing phone path this skill also bridges what arrived from the phone.
+
+Your job: move what Obsidian scattered to where lw expects it, make sure nothing that
 needs review is about to be pushed, and sync. You do not ingest, edit or judge the notes: they may be unfinished.
 Follow this procedure exactly.
 
