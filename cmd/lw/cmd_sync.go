@@ -396,11 +396,11 @@ func syncRun(vaultPath string, takeRemote bool) error {
 	endNotice = slowNotice(os.Stderr, "fetching storage files")
 	issues.add(storageFetch(ctx, root, o))
 	endNotice()
+	tracker.maybePrintNote(nil)
+	printConflictCopies(os.Stdout, root)
 	if err := issues.finish(os.Stderr); err != nil {
 		return err
 	}
-	tracker.maybePrintNote(nil)
-	printConflictCopies(os.Stdout, root)
 	return nil
 }
 

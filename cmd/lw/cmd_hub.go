@@ -61,16 +61,24 @@ func disableHubRefreshForTest(disabled bool) {
 	hubRefreshDisabled = disabled
 }
 
-var conflictCopyPattern = regexp.MustCompile(`^.+\.conflict-[a-z0-9-]+-[0-9]{8}-[0-9]{6}(\.[^.]+)?$`)
+var conflictCopyPattern = regexp.MustCompile(`^.+\.conflict-[a-z0-9-]+-[0-9]{8}-[0-9]{6}(-[0-9]+)?(\.[^.]+)?$`)
+
+var testConflictCopiesWalkHook func(path string)
 
 func findConflictCopies(root string) []string {
 	var conflicts []string
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if testConflictCopiesWalkHook != nil {
+			testConflictCopiesWalkHook(path)
+		}
 		if err != nil {
 			return nil
 		}
 		if d.IsDir() {
 			if path != root && strings.HasPrefix(d.Name(), ".") {
+				return filepath.SkipDir
+			}
+			if filepath.Dir(path) == root && d.Name() != "notes" && d.Name() != "ledger" {
 				return filepath.SkipDir
 			}
 			return nil
@@ -217,6 +225,32 @@ type recordedPath struct {
 	Slug    string
 }
 
+const storageCatalogPath = ".llmwiki/storage.json"
+
+func parseGitStatusPorcelainZ(data []byte) []string {
+	var paths []string
+	parts := bytes.Split(data, []byte{0})
+	for i := 0; i < len(parts); i++ {
+		part := parts[i]
+		if len(part) < 3 {
+			continue
+		}
+		xy := string(part[:2])
+		p := string(part[3:])
+		if p != "" {
+			paths = append(paths, filepath.ToSlash(p))
+		}
+		if strings.ContainsAny(xy, "RC") && i+1 < len(parts) {
+			i++
+			orig := string(parts[i])
+			if orig != "" {
+				paths = append(paths, filepath.ToSlash(orig))
+			}
+		}
+	}
+	return paths
+}
+
 func healHubDivergence(ctx context.Context, root string, syncOpts vaultsync.Options, engine *hub.Engine) (bool, error) {
 	hubHealMu.Lock()
 	defer hubHealMu.Unlock()
@@ -231,14 +265,26 @@ func healHubDivergence(ctx context.Context, root string, syncOpts vaultsync.Opti
 		return true, nil
 	}
 
+	// a) Under the vault lock:
+	// compute the LOCAL-SIDE path set = every path touched by the local-only commits
+	// (diff-tree; include both sides of a rename: use --no-renames) UNION every dirty
+	// path from git status --porcelain -z --untracked-files=all.
+	releaseLock, err := lockVaultWait(root, 15*time.Second)
+	if err != nil {
+		markHubDiverged(root, fmt.Sprintf("lock vault for heal: %v", err))
+		return false, err
+	}
+
 	trackRef := stage.SyncTrackingRef
 	cmd := exec.CommandContext(ctx, "git", "-C", root, "log", "--reverse", "--format=%H %s", trackRef+"..HEAD")
 	out, err := cmd.Output()
 	if err != nil {
+		releaseLock()
 		return false, err
 	}
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 	if len(lines) == 0 || (len(lines) == 1 && lines[0] == "") {
+		releaseLock()
 		return false, nil
 	}
 
@@ -256,6 +302,7 @@ func healHubDivergence(ctx context.Context, root string, syncOpts vaultsync.Opti
 		}
 		hash, subj, _ := strings.Cut(line, " ")
 		if !strings.HasPrefix(subj, "hub: ") {
+			releaseLock()
 			return false, nil
 		}
 		slug := "hub-heal"
@@ -274,11 +321,13 @@ func healHubDivergence(ctx context.Context, root string, syncOpts vaultsync.Opti
 	pathSlug := make(map[string]string)
 	var touchedOrder []string
 	seenTouched := make(map[string]bool)
+	localSidePaths := make(map[string]bool)
 
 	for _, c := range commits {
-		cmdDiff := exec.CommandContext(ctx, "git", "-C", root, "diff-tree", "--no-commit-id", "--name-only", "-r", "-z", c.Hash)
+		cmdDiff := exec.CommandContext(ctx, "git", "-C", root, "diff-tree", "--no-commit-id", "--name-only", "--no-renames", "-r", "-z", c.Hash)
 		diffOut, err := cmdDiff.Output()
 		if err != nil {
+			releaseLock()
 			return false, err
 		}
 		parts := bytes.Split(diffOut, []byte{0})
@@ -286,28 +335,51 @@ func healHubDivergence(ctx context.Context, root string, syncOpts vaultsync.Opti
 			if len(part) == 0 {
 				continue
 			}
-			p := string(part)
+			p := filepath.ToSlash(string(part))
+			localSidePaths[p] = true
 			if !seenTouched[p] {
 				seenTouched[p] = true
 				touchedOrder = append(touchedOrder, p)
 			}
-			if _, ok := pathSlug[p]; !ok {
-				pathSlug[p] = c.Slug
-			}
+			pathSlug[p] = c.Slug
 		}
 	}
 
-	// Write marker with reason "healing" BEFORE taking lock in step a),
-	// closing the write gate to prevent new writes from landing before TakeRemote.
-	markHubDiverged(root, "healing")
-
-	// a) Under the vault lock, record for every path those commits touched
-	// that passes hub.CheckPath: the hub's current bytes (or "deleted").
-	releaseLock, err := lockVaultWait(root, 15*time.Second)
+	// UNION every dirty path from git status --porcelain -z --untracked-files=all
+	cmdStatus := exec.CommandContext(ctx, "git", "-C", root, "status", "--porcelain", "-z", "--untracked-files=all")
+	statusOut, err := cmdStatus.Output()
 	if err != nil {
-		markHubDiverged(root, fmt.Sprintf("lock vault for heal: %v", err))
+		releaseLock()
 		return false, err
 	}
+	dirtyPaths := parseGitStatusPorcelainZ(statusOut)
+	for _, p := range dirtyPaths {
+		localSidePaths[p] = true
+		if !seenTouched[p] {
+			seenTouched[p] = true
+			touchedOrder = append(touchedOrder, p)
+		}
+		if _, ok := pathSlug[p]; !ok {
+			pathSlug[p] = "hub-heal"
+		}
+	}
+
+	// If ANY path in the local-side path set fails hub.CheckPath -> do not heal:
+	// return (false, nil) BEFORE marking "healing" or touching anything.
+	// .llmwiki/storage.json is the ONE path outside CheckPath that the heal accepts.
+	for p := range localSidePaths {
+		if p == storageCatalogPath {
+			continue
+		}
+		if err := hub.CheckPath(p); err != nil {
+			releaseLock()
+			return false, nil
+		}
+	}
+
+	// Write marker with reason "healing" closing the write gate to prevent
+	// new writes from landing before TakeRemote.
+	markHubDiverged(root, "healing")
 
 	recorded := make(map[string]*recordedPath)
 	for _, p := range touchedOrder {
@@ -316,19 +388,23 @@ func healHubDivergence(ctx context.Context, root string, syncOpts vaultsync.Opti
 		}
 		fullPath := filepath.Join(root, filepath.FromSlash(p))
 		data, readErr := os.ReadFile(fullPath)
+		slug := pathSlug[p]
+		if slug == "" {
+			slug = "hub-heal"
+		}
 		if readErr == nil {
 			recorded[p] = &recordedPath{
 				Path:    p,
 				Bytes:   data,
 				Deleted: false,
-				Slug:    pathSlug[p],
+				Slug:    slug,
 			}
 		} else if os.IsNotExist(readErr) {
 			recorded[p] = &recordedPath{
 				Path:    p,
 				Bytes:   nil,
 				Deleted: true,
-				Slug:    pathSlug[p],
+				Slug:    slug,
 			}
 		} else {
 			releaseLock()
@@ -396,6 +472,16 @@ func healHubDivergence(ctx context.Context, root string, syncOpts vaultsync.Opti
 			ConflictPath: res.ConflictPath,
 			Slug:         slug,
 		})
+	}
+
+	// Re-import receipts: after TakeRemote the remote's catalog wins; after step c's
+	// re-apply and BEFORE the commit, the heal calls the same Options.ImportReceipts
+	// the engine uses (it is idempotent: already-catalogued receipts count as "unchanged",
+	// nothing is overwritten), so every receipt on disk is catalogued again on top of
+	// the remote's catalog.
+	if err := importReceipts(nil, root, false); err != nil {
+		markHubDiverged(root, fmt.Sprintf("import receipts: %v", err))
+		return false, err
 	}
 
 	// d) Commit, clear the marker, push; log one line per healed path to lw.log.
