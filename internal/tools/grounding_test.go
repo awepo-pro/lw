@@ -29,10 +29,9 @@ const rawNotFoundBase = `raw source %q was not found; provide the exact vault-re
 // part with; 036 inserts the closest-sources clause just before it.
 const rawListPointer = `; call raw.list to see every raw source`
 
-// frontmatterClause is D2's clause, copied byte for byte from the frozen
-// block: it follows the valid-headings list when the model asked for the
-// frontmatter or the text above the first heading as if it were a section.
-const frontmatterClause = `. Frontmatter and the text above the first heading are not sections: to change text under the page title use op replace_text on the title heading (e.g. "# Title"); frontmatter changes go through stage.create_page on a new page or the user`
+// frontmatterClause is the clause (amended in 081 under A-081-1) that follows
+// the valid-headings list when the model asked for the frontmatter as if it were a section.
+const frontmatterClause = `. Frontmatter is not a section and no patch op writes it; sources: follows the page's citations automatically. The text between the frontmatter and the first heading is section "" (the lead).`
 
 // resolvedLine is D3's line for arg resolving to path, copied byte for byte
 // from the frozen block (arrow included), blank-line-terminated.
@@ -245,8 +244,8 @@ func TestPatchSectionNotFoundHeadings(t *testing.T) {
 		}
 	})
 
-	for _, sec := range []string{"frontmatter", "---", "Preamble", "", " FrontMatter ", "PREAMBLE", "\t---\n"} {
-		t.Run("frontmatter or preamble "+strconv.Quote(sec), func(t *testing.T) {
+	for _, sec := range []string{"frontmatter", "---", " FrontMatter ", "\t---\n"} {
+		t.Run("frontmatter "+strconv.Quote(sec), func(t *testing.T) {
 			r := callTool(t, reg, "stage.patch_page", patchArgs(t, page, sec))
 			want := `section ` + strconv.Quote(sec) + ` was not found on ` + page + `; valid headings are: ` + heads + frontmatterClause
 			if !r.IsError || r.Content != want {

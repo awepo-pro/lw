@@ -1012,7 +1012,13 @@ func (l *Loop) dispatchToolCall(ctx context.Context, sessionID string, round int
 	budget.noteRead(canonical)
 	budget.noteSearch(canonical)
 	l.noteStageOpen(ctx, canonical, args, openedNone, res)
-	repeats.noteResult(tc.Function.Name, tc.Function.Arguments, tc.ID, round, res.IsError)
+	// 043 T2, 081 R-2/R2-1: a shrink refusal arms a path+section key for
+	// confirmation; it is neither a failure to remember (which would block the
+	// confirmation repeat) nor a state change (which would clear the repeat
+	// guard for all other pages), so it is not recorded in repeats at all.
+	if !res.IsError || !tools.ShrinkRefusal(res.Content) {
+		repeats.noteResult(tc.Function.Name, tc.Function.Arguments, tc.ID, round, res.IsError)
+	}
 
 	// 038 T4 (A7): one tool event per dispatched call, written the moment
 	// the result exists — before the events and records below, so a turn

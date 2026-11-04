@@ -258,11 +258,11 @@ Cites both sources.^[raw/papers/old.md] ^[raw/papers/stale.md]
 }
 
 // TestCiteSuperseded_L4_RegistryAndOrder tests L4 from workflow 070:
-// len(All()) == 19; check order: cite-superseded registered after cite-source.
+// len(All()) == 20 (081 A-081-5); check order: cite-superseded registered after cite-source.
 func TestCiteSuperseded_L4_RegistryAndOrder(t *testing.T) {
 	checks := lint.All()
-	if len(checks) != 19 {
-		t.Fatalf("len(All()) = %d, want 19", len(checks))
+	if len(checks) != 20 {
+		t.Fatalf("len(All()) = %d, want 20", len(checks))
 	}
 
 	citeSourceIdx := -1

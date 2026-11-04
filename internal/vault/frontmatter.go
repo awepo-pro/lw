@@ -462,3 +462,109 @@ func decodeStringList(n *yaml.Node) ([]string, error) {
 	}
 	return list, nil
 }
+
+// frontmatterBlockKeys are the recognized YAML frontmatter property keys whose
+// presence directly after a "---" fence indicates a frontmatter block (FIX-B, FIX-C).
+var frontmatterBlockKeys = []string{
+	"title",
+	"created",
+	"updated",
+	"type",
+	"tags",
+	"sources",
+	"confidence",
+	"contested",
+	"aliases",
+}
+
+// fenceOpen reports whether line opens a CommonMark fenced code block: 0-3
+// leading spaces, then a run of 3 or more identical '`' or '~' characters.
+// A backtick fence's info string (everything after the opening run) must
+// not itself contain a backtick (CommonMark §4.5); a tilde fence's info
+// string has no such restriction. ch and n are the fence character and how
+// many of it opened the fence — fenceClose needs both to recognize a valid
+// closing line (081 FD.3).
+func fenceOpen(line string) (ch byte, n int, ok bool) {
+	i, spaces := 0, 0
+	for i < len(line) && line[i] == ' ' {
+		i++
+		spaces++
+	}
+	if spaces > 3 || i >= len(line) {
+		return 0, 0, false
+	}
+	c := line[i]
+	if c != '`' && c != '~' {
+		return 0, 0, false
+	}
+	start := i
+	for i < len(line) && line[i] == c {
+		i++
+	}
+	count := i - start
+	if count < 3 {
+		return 0, 0, false
+	}
+	if c == '`' && strings.IndexByte(line[i:], '`') >= 0 {
+		return 0, 0, false
+	}
+	return c, count, true
+}
+
+// fenceClose reports whether line closes a fence that was opened with
+// openCount consecutive ch characters: 0-3 leading spaces, then a run of ch
+// at least openCount long, then nothing but trailing spaces, tabs or CR (081 FD.3).
+func fenceClose(line string, ch byte, openCount int) bool {
+	i, spaces := 0, 0
+	for i < len(line) && line[i] == ' ' {
+		i++
+		spaces++
+	}
+	if spaces > 3 || i >= len(line) || line[i] != ch {
+		return false
+	}
+	start := i
+	for i < len(line) && line[i] == ch {
+		i++
+	}
+	if i-start < openCount {
+		return false
+	}
+	for ; i < len(line); i++ {
+		if line[i] != ' ' && line[i] != '\t' && line[i] != '\r' {
+			return false
+		}
+	}
+	return true
+}
+
+// FindFrontmatterBlock scans text for a frontmatter block: a line that is
+// exactly "---" (after trimming trailing spaces, tabs, and CR) immediately
+// followed by a line starting with one of the 9 recognized frontmatter keys
+// ("title:", "created:", "updated:", "type:", "tags:", "sources:",
+// "confidence:", "contested:", "aliases:"). Lines inside fenced code blocks
+// (``` or ~~~ fences, closing fence of the same char at least as long as opening,
+// per internal/stage/mdsection.go) are ignored (081 FD.3/R2-4). It returns the
+// matched key (without the colon), the 1-based line number of that "---" line
+// in text, and ok = true, or "", 0, false if no frontmatter block is found.
+func FindFrontmatterBlock(text string) (key string, line int, ok bool) {
+	lines := strings.Split(text, "\n")
+	for i := 0; i < len(lines)-1; i++ {
+		if ch, n, okFence := fenceOpen(lines[i]); okFence {
+			i++
+			for i < len(lines) && !fenceClose(lines[i], ch, n) {
+				i++
+			}
+			continue
+		}
+		if strings.TrimRight(lines[i], " \t\r") == "---" {
+			lineNext := lines[i+1]
+			for _, k := range frontmatterBlockKeys {
+				if strings.HasPrefix(lineNext, k+":") {
+					return k, i + 1, true
+				}
+			}
+		}
+	}
+	return "", 0, false
+}

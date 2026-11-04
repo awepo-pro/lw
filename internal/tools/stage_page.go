@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -35,8 +36,9 @@ const stagePatchPageSchema = `{
   "type":"object",
   "properties":{
     "path":{"type":"string","description":"Vault-relative page path, e.g. wiki/concepts/kv-cache.md."},
-    "section":{"type":"string","description":"The exact heading line of the target section, e.g. \"## Related\"."},
-    "op":{"type":"string","enum":["replace_text","replace_section","append_section","insert_after","insert_before","remove_section"],"description":"replace_text: replace the find text, which must occur exactly once inside the section. replace_section: replace the WHOLE section body below its heading, subsections included. append_section: add content at the end of the section. insert_after / insert_before: add content as a new section next to this one. remove_section: delete the section."},
+    "section":{"type":"string","description":"The exact heading line of the target section, e.g. \"## Related\". Use \"\" for the lead: the text between the frontmatter and the first heading."},
+    "occurrence":{"type":"integer","minimum":1,"description":"Which copy of a heading that appears more than once on the page: 1 (the default) is the first. Above 1 only with replace_text or remove_section."},
+    "op":{"type":"string","enum":["replace_text","replace_section","append_section","insert_after","insert_before","remove_section","sync_sources"],"description":"replace_text: replace the find text, which must occur exactly once inside the section. replace_section: replace the WHOLE section body below its heading, subsections included. append_section: add content at the end of the section. insert_after / insert_before: add content as a new section next to this one. remove_section: delete the section. sync_sources: add every raw source the body cites to sources: (no text change; send section \"\" and content \"\")."},
     "find":{"type":"string","description":"replace_text only: the exact text to replace, copied from the page. It must occur exactly once inside the section."},
     "content":{"type":"string","description":"replace_text: the replacement for find. replace_section: the new body WITHOUT the heading line. append_section: the text to add. insert_after / insert_before: the new section, heading line included. remove_section: send \"\"."},
     "allow_shrink":{"type":"boolean","description":"Confirms a deletion the shrink rule refused. A replace_section or replace_text that drops more than half of a section of 400 bytes or more is refused first; repeating the call with allow_shrink true then applies it. Setting it before a refusal has no effect."},
@@ -86,6 +88,14 @@ func isElisionPlaceholder(text string) bool {
 	return strings.HasPrefix(strings.TrimSpace(text), elisionPrefix)
 }
 
+func createFrontmatterBlockRefusal(key string) string {
+	return fmt.Sprintf("body contains a frontmatter block (a \"---\" line followed by %q); frontmatter comes from the create_page fields, not the body. Send the body without the block.", key+":")
+}
+
+func patchFrontmatterBlockRefusal(key string) string {
+	return fmt.Sprintf("content contains a frontmatter block (a \"---\" line followed by %q); frontmatter is not page text and no patch op writes it. To add raw sources the body cites to sources:, use op sync_sources. Send the content without the block.", key+":")
+}
+
 type stageCreatePageArgs struct {
 	Path       string   `json:"path"`
 	Title      string   `json:"title"`
@@ -103,6 +113,9 @@ func stageCreatePageTool(d Deps) Tool {
 		var a stageCreatePageArgs
 		if err := decodeArgs(args, &a); err != nil {
 			return badArgs("stage.create_page", err, `{"path":"wiki/concepts/new-page.md","title":"New Page"}`), nil
+		}
+		if key, _, ok := vault.FindFrontmatterBlock(a.Body); ok {
+			return Result{IsError: true, Content: createFrontmatterBlockRefusal(key)}, nil
 		}
 		if isElisionPlaceholder(a.Body) { // 041 A-041-5: before anything is built from it
 			return Result{IsError: true, Content: elisionRefusal}, nil
@@ -127,6 +140,7 @@ func stageCreatePageTool(d Deps) Tool {
 type stagePatchPageArgs struct {
 	Path        string `json:"path"`
 	Section     string `json:"section"`
+	Occurrence  int    `json:"occurrence,omitempty"`
 	Op          string `json:"op"`
 	Find        string `json:"find"`
 	Content     string `json:"content"`
@@ -159,11 +173,16 @@ func stagePatchPageTool(d Deps) Tool {
 		if err := decodeArgs(args, &a); err != nil {
 			return badArgs("stage.patch_page", err, `{"path":"wiki/concepts/kv-cache.md","section":"## Related","op":"append_section","content":"- [[new-page]]","rationale":"add a related page"}`), nil
 		}
+		if a.Op != "remove_section" && a.Op != "sync_sources" {
+			if key, _, ok := vault.FindFrontmatterBlock(a.Content); ok {
+				return Result{IsError: true, Content: patchFrontmatterBlockRefusal(key)}, nil
+			}
+		}
 		// 041 A-041-5: every op that writes its content — replace_text,
 		// replace_section, append_section, insert_after, insert_before — is
 		// refused when that content is an elision placeholder. remove_section
-		// ignores its content, so a placeholder there changes nothing.
-		if a.Op != "remove_section" && isElisionPlaceholder(a.Content) {
+		// and sync_sources ignore content, so a placeholder there changes nothing.
+		if a.Op != "remove_section" && a.Op != "sync_sources" && isElisionPlaceholder(a.Content) {
 			return Result{IsError: true, Content: elisionRefusal}, nil
 		}
 		if d.Vault == nil {
@@ -176,9 +195,99 @@ func stagePatchPageTool(d Deps) Tool {
 		if !ok {
 			return onFail, nil
 		}
-		sec, ok := page.Section(a.Section)
-		if !ok {
-			return Result{IsError: true, Content: patchSectionNotFound(a.Section, a.Path, page)}, nil
+		if a.Op == "sync_sources" {
+			if page.FM.Sources == nil {
+				return Result{IsError: true, Content: "sync_sources needs a sources: key; this page has none, so the reviewer adds it by hand"}, nil
+			}
+			fm := page.FM
+			merged, added := citedSources(d, page.FM.Sources, page.Body)
+			if len(added) == 0 {
+				return Result{IsError: true, Content: fmt.Sprintf("no change: this patch leaves %s exactly as it already reads (staged edits included); nothing was staged.", a.Path)}, nil
+			}
+			fm.Sources = merged
+			updated := vault.Page{Path: page.Path, FM: fm, Body: page.Body}
+			if bytes.Equal(updated.Serialize(), page.Serialize()) {
+				return Result{IsError: true, Content: fmt.Sprintf("no change: this patch leaves %s exactly as it already reads (staged edits included); nothing was staged.", a.Path)}, nil
+			}
+			hunks := stage.ComputeHunks(string(page.Serialize()), string(updated.Serialize()))
+			for i := range hunks {
+				hunks[i].Path = a.Path
+				hunks[i].Section = vault.PreambleHeading
+			}
+			res, err := appendStageOp(d, "stage.patch_page", stage.Op{
+				Kind:      stage.OpPatchPage,
+				Path:      a.Path,
+				Section:   vault.PreambleHeading,
+				Before:    page.SHA256(),
+				Content:   updated.Serialize(),
+				Hunks:     hunks,
+				Rationale: a.Rationale,
+			})
+			if err == nil && !res.IsError {
+				res = withNotes(res, []string{sourcesNote(added)})
+				arms.disarm(shrinkArmKey(a.Path, vault.PreambleHeading))
+			}
+			return res, err
+		}
+		secName := strings.ToLower(strings.TrimSpace(a.Section))
+		if secName == "" || secName == "preamble" || secName == "(preamble)" {
+			a.Section = vault.PreambleHeading
+		}
+		if a.Occurrence < 0 {
+			return Result{IsError: true, Content: "occurrence must be 1 or more"}, nil
+		}
+		if a.Occurrence == 0 {
+			a.Occurrence = 1
+		}
+		if a.Occurrence > 1 && a.Op != "remove_section" && a.Op != "replace_text" {
+			return Result{IsError: true, Content: "occurrence above 1 works with remove_section and replace_text only. To merge two copies, append the second copy's text to the first (occurrence 1), then remove_section the second (occurrence 2)."}, nil
+		}
+		var sec vault.Section
+		if a.Section == vault.PreambleHeading {
+			var ok bool
+			sec, ok = page.Section(vault.PreambleHeading)
+			if !ok {
+				return Result{IsError: true, Content: patchSectionNotFound(a.Section, a.Path, page)}, nil
+			}
+			if a.Occurrence > 1 {
+				return Result{IsError: true, Content: fmt.Sprintf("section %q occurs 1 times on %s; occurrence must be 1 to 1", a.Section, a.Path)}, nil
+			}
+		} else {
+			var matches []vault.Section
+			for _, s := range page.Sections {
+				if s.Heading == a.Section {
+					matches = append(matches, s)
+				}
+			}
+			if len(matches) == 0 {
+				return Result{IsError: true, Content: patchSectionNotFound(a.Section, a.Path, page)}, nil
+			}
+			if a.Occurrence > len(matches) {
+				return Result{IsError: true, Content: fmt.Sprintf("section %q occurs %d times on %s; occurrence must be 1 to %d", a.Section, len(matches), a.Path, len(matches))}, nil
+			}
+			sec = matches[a.Occurrence-1]
+			if a.Op == "remove_section" && len(matches) > 1 {
+				targetText := strings.TrimSpace(page.Body[sec.Body:sec.End])
+				if targetText != "" {
+					for idx, m := range matches {
+						if idx+1 == a.Occurrence {
+							continue
+						}
+						if strings.TrimSpace(page.Body[m.Body:m.End]) == "" {
+							j := idx + 1
+							k := a.Occurrence
+							n := len(targetText)
+							return Result{
+								IsError: true,
+								Content: fmt.Sprintf(removeDupKeepTextFormat, k, a.Section, a.Path, n, j, k, j),
+							}, nil
+						}
+					}
+				}
+			}
+		}
+		if a.Op == "insert_before" && a.Section == vault.PreambleHeading {
+			return Result{IsError: true, Content: "insert_before cannot target the lead: nothing comes before it. Use insert_after on the lead, or insert_before on the first heading."}, nil
 		}
 		var body string
 		var armConsumed bool // 043 T2: the check consumed the key's arm…
@@ -255,7 +364,7 @@ func stagePatchPageTool(d Deps) Tool {
 		case "remove_section":
 			body = vault.RemoveSection(page.Body, sec) // Content ignored
 		default:
-			return Result{IsError: true, Content: fmt.Sprintf("op %q is invalid; use replace_text, replace_section, append_section, insert_after, insert_before or remove_section", a.Op)}, nil
+			return Result{IsError: true, Content: fmt.Sprintf("op %q is invalid; use replace_text, replace_section, append_section, insert_after, insert_before, remove_section or sync_sources", a.Op)}, nil
 		}
 		// 050 D2: sources: follows the citations. A raw source the new body
 		// cites and the page does not list joins the frontmatter, so the
@@ -279,6 +388,12 @@ func stagePatchPageTool(d Deps) Tool {
 			notes = append(notes, sourcesNote(addedSources))
 		}
 		updated := vault.Page{Path: page.Path, FM: fm, Body: body}
+		if bytes.Equal(updated.Serialize(), page.Serialize()) {
+			if armConsumed {
+				arms.arm(armKey)
+			}
+			return Result{IsError: true, Content: fmt.Sprintf("no change: this patch leaves %s exactly as it already reads (staged edits included); nothing was staged.", a.Path)}, nil
+		}
 		hunks := stage.ComputeHunks(string(page.Serialize()), string(updated.Serialize()))
 		for i := range hunks {
 			hunks[i].Path = a.Path
@@ -333,6 +448,11 @@ const shrinkConfirmLine = `"allow_shrink" counts only as a confirmation after th
 // one place.
 const shrinkAdviceLine = `For a small edit (a link, a sentence) use op replace_text. If deleting this text is intended, repeat the call with "allow_shrink": true.`
 
+// removeDupKeepTextFormat is the refusal format when remove_section targets a
+// heading copy that holds text while another copy is empty (workflow 081 FIX-E / C-2).
+// Removing the text-bearing copy would delete that text and keep the empty copy.
+const removeDupKeepTextFormat = "remove_section refused: occurrence %d of section %q on %s holds %d bytes of text and occurrence %d is empty, so removing occurrence %d would delete that text and keep the empty copy. To drop the duplicated heading, remove_section occurrence %d."
+
 // shrinkArmKey keys a pending shrink confirmation by path and section
 // (043 T2): a confirmation licenses deleting most of THAT section and
 // nothing else, and the op — replace_section or replace_text — is beside
@@ -380,7 +500,14 @@ func guardedReplace(page *vault.Page, sec vault.Section, a stagePatchPageArgs, c
 		}
 		switch n := strings.Count(page.Body[sec.Body:sec.End], a.Find); {
 		case n == 0:
-			return "", &Result{IsError: true, Content: fmt.Sprintf("find text was not found in section %q of %s; copy it exactly from wiki.get (whitespace and punctuation included)", a.Section, a.Path)}, false
+			msg := fmt.Sprintf("find text was not found in section %q of %s; copy it exactly from wiki.get (whitespace and punctuation included)", a.Section, a.Path)
+			for _, line := range strings.Split(a.Find, "\n") {
+				if strings.TrimRight(line, " \t\r") == a.Section {
+					msg += fmt.Sprintf(" (find includes the heading line %q, which is not part of the section's text; to delete a duplicated heading, use op remove_section on the copy with no text under it; occurrence picks the copy, 1 is the first)", a.Section)
+					break
+				}
+			}
+			return "", &Result{IsError: true, Content: msg}, false
 		case n > 1:
 			return "", &Result{IsError: true, Content: fmt.Sprintf("find text occurs %d times in section %q of %s; include more surrounding text so it matches exactly once", n, a.Section, a.Path)}, false
 		}
@@ -397,6 +524,12 @@ func guardedReplace(page *vault.Page, sec vault.Section, a stagePatchPageArgs, c
 		return "", res, false
 	}
 	newRegion := normalizeToolBody(a.Content)
+	if sec.Heading == vault.PreambleHeading && sec.End < len(page.Body) {
+		newRegion = strings.TrimRight(a.Content, "\n") + "\n\n"
+	}
+	if strings.TrimSpace(page.Body[sec.Body:sec.End]) == strings.TrimSpace(a.Content) {
+		return page.Body, nil, false
+	}
 	if res := refuseShrink(page.Body, sec, newRegion, a); res != nil {
 		if confirmed {
 			return vault.ReplaceSection(page.Body, sec, newRegion), nil, true
@@ -522,14 +655,10 @@ func cutRunes(s string, n int) string {
 }
 
 // frontmatterSectionClause follows a patch refusal's heading list when the
-// section asked for was the frontmatter or the text above the first heading.
-// Neither is a section — buildSection opens one at each heading line — so
-// no spelling of the argument can ever reach them, and listing the headings
-// alone sends the model round the same loop (live: "frontmatter", "---",
-// "preamble" and "" were each tried). The clause names the two ways out: a
-// replace_text on the title heading for text under the page title, and
-// stage.create_page or the user for frontmatter, which no patch op writes.
-const frontmatterSectionClause = `. Frontmatter and the text above the first heading are not sections: to change text under the page title use op replace_text on the title heading (e.g. "# Title"); frontmatter changes go through stage.create_page on a new page or the user`
+// section asked for was frontmatter or "---". Frontmatter is not a section
+// and no patch op writes it; the clause directs the model to sources:
+// and explains that text between frontmatter and the first heading is section "".
+const frontmatterSectionClause = `. Frontmatter is not a section and no patch op writes it; sources: follows the page's citations automatically. The text between the frontmatter and the first heading is section "" (the lead).`
 
 // patchSectionNotFound is stage.patch_page's refusal for a section its page
 // does not have (036 D2). It is wiki.get's message — the section as given,
@@ -537,8 +666,8 @@ const frontmatterSectionClause = `. Frontmatter and the text above the first hea
 // would have run against, so a page whose staged state dropped a section
 // lists the staged headings, not the committed ones. A page without any
 // heading says "(none)" rather than ending on a bare "are: ". A section
-// argument that is, trimmed and lowercased, "frontmatter", "---",
-// "preamble" or empty gains frontmatterSectionClause.
+// argument that is, trimmed and lowercased, "frontmatter" or "---"
+// gains frontmatterSectionClause.
 func patchSectionNotFound(section, pagePath string, p *vault.Page) string {
 	list := "(none)"
 	if heads := sectionHeadings(p); len(heads) > 0 {
@@ -546,7 +675,7 @@ func patchSectionNotFound(section, pagePath string, p *vault.Page) string {
 	}
 	msg := fmt.Sprintf("section %q was not found on %s; valid headings are: %s", section, pagePath, list)
 	switch strings.ToLower(strings.TrimSpace(section)) {
-	case "frontmatter", "---", "preamble", "":
+	case "frontmatter", "---":
 		msg += frontmatterSectionClause
 	}
 	return msg
