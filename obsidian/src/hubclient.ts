@@ -32,6 +32,31 @@ export interface RequestParam {
   body?: string | ArrayBuffer | Uint8Array;
 }
 
+export interface ObsidianResponseLike {
+  status: number;
+  headers: Record<string, string>;
+  arrayBuffer?: ArrayBuffer;
+  text?: string;
+  json?: unknown;
+}
+
+export function adaptObsidianResponse(res: ObsidianResponseLike): RequestResponse {
+  const adapted: RequestResponse = {
+    status: res.status,
+    headers: res.headers,
+    arrayBuffer: res.arrayBuffer,
+    body: res.arrayBuffer ? new Uint8Array(res.arrayBuffer) : undefined,
+  };
+  Object.defineProperty(adapted, "text", {
+    get() {
+      return res.text;
+    },
+    enumerable: true,
+    configurable: true,
+  });
+  return adapted;
+}
+
 export interface RequestResponse {
   status: number;
   headers: Record<string, string>;
@@ -88,13 +113,7 @@ export class HubClient {
     if (res.status < 200 || res.status >= 300) {
       let code = "internal";
       let message = `HTTP ${res.status}`;
-      if (res.json && typeof res.json === "object" && "error" in (res.json as Record<string, unknown>)) {
-        const errObj = (res.json as { error: { code?: string; message?: string } }).error;
-        if (errObj) {
-          code = errObj.code || code;
-          message = errObj.message || message;
-        }
-      } else if (res.text) {
+      if (typeof res.text === "string" && res.text.trim().length > 0) {
         try {
           const parsed = JSON.parse(res.text) as { error?: { code?: string; message?: string } };
           if (parsed?.error) {
@@ -104,6 +123,12 @@ export class HubClient {
         } catch {
           message = res.text;
         }
+      } else if (res.json && typeof res.json === "object" && "error" in (res.json as Record<string, unknown>)) {
+        const errObj = (res.json as { error: { code?: string; message?: string } }).error;
+        if (errObj) {
+          code = errObj.code || code;
+          message = errObj.message || message;
+        }
       }
       throw new HubError(res.status, code, message);
     }
@@ -112,11 +137,11 @@ export class HubClient {
   }
 
   private parseJson<T>(res: RequestResponse): T {
+    if (typeof res.text === "string" && res.text.trim().length > 0) {
+      return JSON.parse(res.text) as T;
+    }
     if (res.json !== undefined && res.json !== null) {
       return res.json as T;
-    }
-    if (res.text) {
-      return JSON.parse(res.text) as T;
     }
     throw new Error("Empty response body when JSON expected");
   }

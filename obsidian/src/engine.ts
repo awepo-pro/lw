@@ -16,6 +16,11 @@ import {
   type Changes,
   type PutResult,
 } from "./protocol";
+import {
+  decideNotice,
+  formatStatusText,
+  type StatusSummary,
+} from "./status";
 
 export interface VaultIO {
   list(): Promise<string[]>; // in-scope paths only
@@ -46,6 +51,8 @@ export interface SyncEngineOptions {
   onNotice?: (msg: string) => void;
   onStatusChange?: (status: string) => void;
   pluginVersion?: string;
+  manifest?: { version: string };
+  isMobile?: boolean;
 }
 
 export function toDeviceSlug(name: string): string {
@@ -65,7 +72,34 @@ interface CoalescedOp {
 }
 
 export class SyncEngine {
+  hasSyncedOnce = false;
+  lastSyncTime: string | null = null;
+  lastError: string = "";
+
   constructor(public readonly options: SyncEngineOptions) {}
+
+  getPluginVersion(): string {
+    return this.options.manifest?.version || this.options.pluginVersion || "0.0.0";
+  }
+
+  getStatusSummary(): StatusSummary {
+    return {
+      pluginVersion: this.getPluginVersion(),
+      lastSyncTime: this.lastSyncTime,
+      queueLength: this.options.state.queue.length,
+      lastError: this.lastError || "none",
+    };
+  }
+
+  getStatusText(): string {
+    return formatStatusText(this.getStatusSummary());
+  }
+
+  private notify(notice: string | null): void {
+    if (notice && this.options.onNotice) {
+      this.options.onNotice(notice);
+    }
+  }
 
   private async saveState(): Promise<void> {
     if (this.options.saveState) {
@@ -229,9 +263,21 @@ export class SyncEngine {
   async flush(): Promise<void> {
     let lastError = "";
     let canReportStatus = false;
+    let filesSynced = 0;
 
     try {
       this.setStatus("lw: syncing...");
+
+      // 0. Check empty hub URL
+      if (!this.options.client.options.baseUrl || !this.options.client.options.baseUrl.trim()) {
+        this.setStatus("lw: set the hub URL in settings");
+        const notice = decideNotice(
+          { kind: "empty_hub_url" },
+          { isMobile: !!this.options.isMobile, hasSyncedOnce: this.hasSyncedOnce }
+        );
+        this.notify(notice);
+        return;
+      }
 
       // 1. Check Hello
       let hello;
@@ -241,6 +287,11 @@ export class SyncEngine {
         if (err instanceof HubError && err.code === CODE_DEVICE_PENDING) {
           const slug = toDeviceSlug(this.options.client.options.deviceName);
           this.setStatus(`lw: waiting for approval (run: lw hub approve ${slug})`);
+          const notice = decideNotice(
+            { kind: "waiting_approval", slug },
+            { isMobile: !!this.options.isMobile, hasSyncedOnce: this.hasSyncedOnce }
+          );
+          this.notify(notice);
           return;
         }
         throw err;
@@ -283,6 +334,7 @@ export class SyncEngine {
               } else {
                 const base = recorded !== undefined ? recorded : "new";
                 await this.uploadAndSettle(op.path, base, bytes);
+                filesSynced++;
               }
             }
           } else if (op.type === "del") {
@@ -290,6 +342,7 @@ export class SyncEngine {
             const res = await this.options.client.deleteFile(op.path, base);
             if (res.result === "deleted" || res.result === "already_gone") {
               delete this.options.state.files[op.path];
+              filesSynced++;
             } else if (res.result === "refused_changed") {
               const hubFile = await this.options.client.getFile(op.path);
               const ok = await this.options.vault.writeIfUnchanged(op.path, null, hubFile.data);
@@ -298,6 +351,7 @@ export class SyncEngine {
               } else {
                 this.queuePut(op.path);
               }
+              filesSynced++;
             }
           }
 
@@ -325,6 +379,11 @@ export class SyncEngine {
           if (err instanceof HubError && err.code === CODE_DEVICE_PENDING) {
             const slug = toDeviceSlug(this.options.client.options.deviceName);
             this.setStatus(`lw: waiting for approval (run: lw hub approve ${slug})`);
+            const notice = decideNotice(
+              { kind: "waiting_approval", slug },
+              { isMobile: !!this.options.isMobile, hasSyncedOnce: this.hasSyncedOnce }
+            );
+            this.notify(notice);
             return;
           }
           throw err;
@@ -332,32 +391,60 @@ export class SyncEngine {
       }
 
       // 3. Pull Changes
-      await this.pull(this.options.state.head);
+      const pulledCount = await this.pull(this.options.state.head);
+      filesSynced += pulledCount;
 
       if (this.options.state.queue.length === 0) {
         this.setStatus("lw: synced");
       } else {
         this.setStatus(`lw: ${this.options.state.queue.length} queued`);
       }
+
+      const notice = decideNotice(
+        { kind: "synced", filesSynced },
+        { isMobile: !!this.options.isMobile, hasSyncedOnce: this.hasSyncedOnce }
+      );
+      this.notify(notice);
+      this.hasSyncedOnce = true;
+      this.lastSyncTime = new Date().toISOString();
+      this.lastError = "";
     } catch (err: unknown) {
       if (err instanceof HubError && err.code === CODE_DEVICE_PENDING) {
         const slug = toDeviceSlug(this.options.client.options.deviceName);
         this.setStatus(`lw: waiting for approval (run: lw hub approve ${slug})`);
+        const notice = decideNotice(
+          { kind: "waiting_approval", slug },
+          { isMobile: !!this.options.isMobile, hasSyncedOnce: this.hasSyncedOnce }
+        );
+        this.notify(notice);
         return;
       }
       lastError = err instanceof Error ? err.message : String(err);
+      this.lastError = lastError;
       if (err instanceof NetworkError) {
         const n = this.options.state.queue.length;
         this.setStatus(`lw: offline (${n} queued)`);
+        const notice = decideNotice(
+          { kind: "offline", queued: n },
+          { isMobile: !!this.options.isMobile, hasSyncedOnce: this.hasSyncedOnce }
+        );
+        this.notify(notice);
       } else {
         this.setStatus(`lw: error: ${lastError}`);
+        if (err instanceof HubError) {
+          const notice = decideNotice(
+            { kind: "hub_error", code: err.code },
+            { isMobile: !!this.options.isMobile, hasSyncedOnce: this.hasSyncedOnce }
+          );
+          this.notify(notice);
+        }
       }
       throw err;
     } finally {
       if (canReportStatus) {
         try {
           await this.options.client.postStatus({
-            plugin_version: this.options.pluginVersion || "0.0.0",
+            plugin_version: this.getPluginVersion(),
             last_error: lastError,
             queue_len: this.options.state.queue.length,
             at: new Date().toISOString(),
@@ -369,14 +456,15 @@ export class SyncEngine {
     }
   }
 
-  private async pull(since: string): Promise<void> {
+  private async pull(since: string): Promise<number> {
     const changes: Changes = await this.options.client.changes(since);
+    let filesSynced = 0;
 
     if (changes.full) {
-      await this.reconcileFull(changes);
+      filesSynced = await this.reconcileFull(changes);
       this.options.state.head = changes.head;
       await this.saveState();
-      return;
+      return filesSynced;
     }
 
     for (const c of changes.changed) {
@@ -400,8 +488,10 @@ export class SyncEngine {
             this.options.state.files[c.path] = localSha;
             this.queuePut(c.path);
           }
+          filesSynced++;
         } else {
           await this.uploadAndSettle(c.path, recorded || "new", localBytes);
+          filesSynced++;
         }
       } else {
         if (!localBytes) {
@@ -412,6 +502,7 @@ export class SyncEngine {
           } else {
             this.queuePut(c.path);
           }
+          filesSynced++;
           continue;
         }
 
@@ -428,19 +519,23 @@ export class SyncEngine {
           } else {
             this.queuePut(c.path);
           }
+          filesSynced++;
         } else {
           await this.uploadAndSettle(c.path, recorded || "new", localBytes);
+          filesSynced++;
         }
       }
     }
 
     this.options.state.head = changes.head;
     await this.saveState();
+    return filesSynced;
   }
 
-  private async reconcileFull(changes: Changes): Promise<void> {
+  private async reconcileFull(changes: Changes): Promise<number> {
     const files = changes.files || [];
     const manifestMap = new Map(files.map((f) => [f.path, f.sha256]));
+    let filesSynced = 0;
 
     for (const f of files) {
       if (this.options.state.queue.some((q) => q.path === f.path)) {
@@ -455,6 +550,7 @@ export class SyncEngine {
         } else {
           this.queuePut(f.path);
         }
+        filesSynced++;
         continue;
       }
 
@@ -471,11 +567,13 @@ export class SyncEngine {
         } else {
           this.queuePut(f.path);
         }
+        filesSynced++;
       } else {
         const putRes = await this.uploadAndSettle(f.path, recorded || "new", localBytes);
         if (putRes.conflict_path) {
           manifestMap.set(putRes.conflict_path, localSha);
         }
+        filesSynced++;
       }
     }
 
@@ -497,13 +595,16 @@ export class SyncEngine {
           this.options.state.files[p] = localSha;
           this.queuePut(p);
         }
+        filesSynced++;
       } else {
         const putRes = await this.uploadAndSettle(p, recorded || "new", bytes);
         if (putRes.conflict_path) {
           manifestMap.set(putRes.conflict_path, localSha);
         }
+        filesSynced++;
       }
     }
+    return filesSynced;
   }
 
   private syncInProgress = false;

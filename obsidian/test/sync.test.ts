@@ -3,7 +3,8 @@ import * as path from "node:path";
 import { describe, it, expect, beforeEach } from "vitest";
 import { checkPath } from "../src/scope";
 import { sha256hex } from "../src/hash";
-import { HubClient } from "../src/hubclient";
+import { HubClient, adaptObsidianResponse, HubError } from "../src/hubclient";
+import { decideNotice, formatStatusText, DEFAULT_SETTINGS } from "../src/status";
 import {
   SyncEngine,
   handleVaultDeleteEvent,
@@ -1103,5 +1104,201 @@ describe("S3 sync suite", () => {
     // Must NOT descend into wiki or raw at root!
     expect(visitedFolders).not.toContain("wiki");
     expect(visitedFolders).not.toContain("raw");
+  });
+
+  it("A5-1 Obsidian response adaptation: lazy text, no json getter access, getFile returns bytes, JSON parses, error yields code", async () => {
+    // 1. Fake response whose json getter throws (like Obsidian's RequestUrlResponse on non-JSON body)
+    const nonJsonMarkdown = "- (id:: x)\nledger item";
+    const nonJsonBuffer = new TextEncoder().encode(nonJsonMarkdown).buffer;
+    const fakeObsidianFileResponse = {
+      status: 200,
+      headers: { "x-lw-sha256": "fake-sha-123" },
+      arrayBuffer: nonJsonBuffer,
+      text: nonJsonMarkdown,
+      get json(): unknown {
+        throw new SyntaxError("No number after minus sign in JSON at position 1 (line 1 column 2)");
+      },
+    };
+
+    // Client using adaptObsidianResponse
+    const client = new HubClient({
+      baseUrl: "http://127.0.0.1:8765",
+      deviceId: "dev-1",
+      deviceName: "phone",
+      request: async (param) => {
+        if (param.url.includes("/v1/file")) {
+          return adaptObsidianResponse(fakeObsidianFileResponse);
+        }
+        if (param.url.includes("/v1/hello")) {
+          return adaptObsidianResponse({
+            status: 200,
+            headers: { "content-type": "application/json" },
+            arrayBuffer: new TextEncoder().encode(
+              JSON.stringify({ protocol: 1, lw_version: "0.1.0", vault_format: 1, head: "h1", device: "approved" })
+            ).buffer,
+            text: JSON.stringify({ protocol: 1, lw_version: "0.1.0", vault_format: 1, head: "h1", device: "approved" }),
+            get json(): unknown {
+              throw new SyntaxError("json getter should not be called");
+            },
+          });
+        }
+        if (param.url.includes("/v1/manifest")) {
+          return adaptObsidianResponse({
+            status: 403,
+            headers: { "content-type": "application/json" },
+            arrayBuffer: new TextEncoder().encode(
+              JSON.stringify({ error: { code: "device_pending", message: "pending approval" } })
+            ).buffer,
+            text: JSON.stringify({ error: { code: "device_pending", message: "pending approval" } }),
+            get json(): unknown {
+              throw new SyntaxError("json getter should not be called");
+            },
+          });
+        }
+        throw new Error("unexpected route");
+      },
+    });
+
+    // 1. getFile returns bytes without calling json getter
+    const fileRes = await client.getFile("ledger/2026/11/2026-11-03.md");
+    expect(new TextDecoder().decode(fileRes.data)).toBe(nonJsonMarkdown);
+    expect(fileRes.sha256).toBe("fake-sha-123");
+
+    // 2. JSON endpoint still parses text itself
+    const helloRes = await client.hello();
+    expect(helloRes.protocol).toBe(1);
+    expect(helloRes.device).toBe("approved");
+
+    // 3. Error body still yields its code from text
+    await expect(client.manifest()).rejects.toThrow("device_pending");
+  });
+
+  it("A5-2 mobile notice decision logic and show status command", async () => {
+    // 1. Pure function decisions on desktop (isMobile: false) -> never show notice
+    expect(decideNotice({ kind: "waiting_approval", slug: "phone" }, { isMobile: false, hasSyncedOnce: false })).toBeNull();
+    expect(decideNotice({ kind: "offline", queued: 2 }, { isMobile: false, hasSyncedOnce: false })).toBeNull();
+    expect(decideNotice({ kind: "hub_error", code: "device_revoked" }, { isMobile: false, hasSyncedOnce: false })).toBeNull();
+    expect(decideNotice({ kind: "synced", filesSynced: 3 }, { isMobile: false, hasSyncedOnce: false })).toBeNull();
+
+    // 2. Pure function decisions on mobile (isMobile: true) -> surface important states
+    expect(
+      decideNotice({ kind: "waiting_approval", slug: "phone" }, { isMobile: true, hasSyncedOnce: false })
+    ).toBe("lw: waiting for approval (run: lw hub approve phone)");
+
+    expect(
+      decideNotice({ kind: "offline", queued: 3 }, { isMobile: true, hasSyncedOnce: false })
+    ).toBe("lw: offline (3 queued)");
+
+    expect(
+      decideNotice({ kind: "hub_error", code: "device_revoked" }, { isMobile: true, hasSyncedOnce: false })
+    ).toBe("lw: hub error (device_revoked)");
+
+    // First successful sync on mobile shows Notice
+    expect(
+      decideNotice({ kind: "synced", filesSynced: 2 }, { isMobile: true, hasSyncedOnce: false })
+    ).toBe("lw: synced 2 files");
+
+    // Routine sync after first does NOT show Notice
+    expect(
+      decideNotice({ kind: "synced", filesSynced: 2 }, { isMobile: true, hasSyncedOnce: true })
+    ).toBeNull();
+
+    // 3. formatStatusText contains plugin version, last sync time, queue length, last error
+    const statusText = formatStatusText({
+      pluginVersion: "0.1.2",
+      lastSyncTime: "2026-11-04T12:00:00.000Z",
+      queueLength: 4,
+      lastError: "connection refused",
+    });
+    expect(statusText).toContain("0.1.2");
+    expect(statusText).toContain("2026-11-04T12:00:00.000Z");
+    expect(statusText).toContain("4");
+    expect(statusText).toContain("connection refused");
+
+    // 4. SyncEngine mobile Notice integration
+    const mobileNotices: string[] = [];
+    const mobileEngine = new SyncEngine({
+      vault: fakeVault,
+      client: hubClient,
+      state,
+      onNotice: (msg) => mobileNotices.push(msg),
+      onStatusChange: (s) => statuses.push(s),
+      manifest: { version: "0.1.2" },
+      isMobile: true,
+    });
+
+    // First successful sync after load emits Notice
+    await mobileEngine.flush();
+    expect(mobileNotices).toContain("lw: synced 0 files");
+
+    // Routine sync after that does NOT emit another synced notice
+    mobileNotices.length = 0;
+    await mobileEngine.flush();
+    expect(mobileNotices.some((n) => n.includes("lw: synced"))).toBe(false);
+
+    // Network error surfaces offline notice on mobile
+    fakeHub.simulateNetworkError = true;
+    mobileEngine.queuePut("notes/queued.md");
+    await expect(mobileEngine.flush()).rejects.toThrow();
+    expect(mobileNotices).toContain("lw: offline (1 queued)");
+    fakeHub.simulateNetworkError = false;
+
+    // Device pending surfaces waiting approval notice on mobile
+    fakeHub.simulateDevicePending = true;
+    await mobileEngine.flush();
+    expect(mobileNotices).toContain("lw: waiting for approval (run: lw hub approve phone)");
+    fakeHub.simulateDevicePending = false;
+
+    // getStatusText returns current state
+    const engineStatus = mobileEngine.getStatusText();
+    expect(engineStatus).toContain("0.1.2");
+    expect(engineStatus).toContain("Queue length: 1");
+  });
+
+  it("A5-3 DEFAULT hubUrl is empty and empty hubUrl prevents sync with notice", async () => {
+    // DEFAULT hubUrl must be ""
+    expect(DEFAULT_SETTINGS.hubUrl).toBe("");
+
+    // With empty hubUrl, plugin does not sync and shows notice on mobile
+    const mobileNotices: string[] = [];
+    const mobileStatuses: string[] = [];
+    const emptyClient = new HubClient({
+      baseUrl: "",
+      deviceId: "dev-empty",
+      deviceName: "phone",
+      request: fakeHub.requestHandler,
+    });
+    const emptyEngine = new SyncEngine({
+      vault: fakeVault,
+      client: emptyClient,
+      state: { head: "", files: {}, queue: [{ type: "put", path: "notes/empty.md" }], deviceId: "dev-empty" },
+      onNotice: (msg) => mobileNotices.push(msg),
+      onStatusChange: (s) => mobileStatuses.push(s),
+      isMobile: true,
+    });
+
+    const requestsBefore = fakeHub.requests.length;
+    await emptyEngine.flush();
+
+    // No network requests were made
+    expect(fakeHub.requests.length).toBe(requestsBefore);
+    expect(mobileStatuses).toContain("lw: set the hub URL in settings");
+    expect(mobileNotices).toContain("lw: set the hub URL in settings");
+  });
+
+  it("A5-4 Plugin version: report manifest version in POST /v1/status instead of 0.0.0", async () => {
+    const versionedEngine = new SyncEngine({
+      vault: fakeVault,
+      client: hubClient,
+      state,
+      onNotice: (msg) => notices.push(msg),
+      onStatusChange: (s) => statuses.push(s),
+      manifest: { version: "0.7.9" },
+    });
+
+    await versionedEngine.flush();
+
+    expect(fakeHub.lastStatusReport).toBeDefined();
+    expect(fakeHub.lastStatusReport?.plugin_version).toBe("0.7.9");
   });
 });

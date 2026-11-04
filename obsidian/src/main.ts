@@ -1,5 +1,6 @@
 import {
   Notice,
+  Platform,
   Plugin,
   PluginSettingTab,
   Setting,
@@ -11,6 +12,7 @@ import { checkPath } from "./scope";
 import { sha256hex } from "./hash";
 import {
   HubClient,
+  adaptObsidianResponse,
   type RequestFn,
   type RequestParam,
   type RequestResponse,
@@ -23,16 +25,7 @@ import {
   type State,
   type VaultIO,
 } from "./engine";
-
-interface PluginSettings {
-  hubUrl: string;
-  deviceName: string;
-}
-
-const DEFAULT_SETTINGS: PluginSettings = {
-  hubUrl: "http://127.0.0.1:8765",
-  deviceName: "phone",
-};
+import { DEFAULT_SETTINGS, type PluginSettings } from "./status";
 
 interface PersistedData {
   settings?: PluginSettings;
@@ -48,8 +41,10 @@ export default class LWSyncPlugin extends Plugin {
   async onload(): Promise<void> {
     await this.loadPluginData();
 
-    this.statusBarEl = this.addStatusBarItem();
-    this.updateStatus("lw: ready");
+    if (!Platform.isMobile) {
+      this.statusBarEl = this.addStatusBarItem();
+      this.updateStatus("lw: ready");
+    }
 
     const vaultIO = this.createVaultIO(this.app.vault.adapter);
 
@@ -72,14 +67,7 @@ export default class LWSyncPlugin extends Plugin {
         throw: false,
       });
 
-      return {
-        status: res.status,
-        headers: res.headers,
-        arrayBuffer: res.arrayBuffer,
-        body: res.arrayBuffer ? new Uint8Array(res.arrayBuffer) : undefined,
-        json: res.json,
-        text: res.text,
-      };
+      return adaptObsidianResponse(res);
     };
 
     const client = new HubClient({
@@ -103,7 +91,9 @@ export default class LWSyncPlugin extends Plugin {
       onStatusChange: (status: string) => {
         this.updateStatus(status);
       },
-      pluginVersion: this.manifest.version || "0.0.0",
+      manifest: this.manifest,
+      pluginVersion: this.manifest?.version || "0.0.0",
+      isMobile: Platform.isMobile,
     });
 
     this.registerVaultEvents();
@@ -113,6 +103,14 @@ export default class LWSyncPlugin extends Plugin {
       name: "lw: Sync now",
       callback: () => {
         void this.triggerSync();
+      },
+    });
+
+    this.addCommand({
+      id: "show-status",
+      name: "lw: Show status",
+      callback: () => {
+        new Notice(this.engine.getStatusText());
       },
     });
 
@@ -226,6 +224,13 @@ export default class LWSyncPlugin extends Plugin {
   }
 
   async triggerSync(): Promise<void> {
+    if (!this.settings.hubUrl || !this.settings.hubUrl.trim()) {
+      this.updateStatus("lw: set the hub URL in settings");
+      if (Platform.isMobile) {
+        new Notice("lw: set the hub URL in settings");
+      }
+      return;
+    }
     await this.engine.triggerSync();
   }
 
