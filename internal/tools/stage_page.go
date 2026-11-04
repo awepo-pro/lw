@@ -266,6 +266,25 @@ func stagePatchPageTool(d Deps) Tool {
 				return Result{IsError: true, Content: fmt.Sprintf("section %q occurs %d times on %s; occurrence must be 1 to %d", a.Section, len(matches), a.Path, len(matches))}, nil
 			}
 			sec = matches[a.Occurrence-1]
+			if a.Op == "remove_section" && len(matches) > 1 {
+				targetText := strings.TrimSpace(page.Body[sec.Body:sec.End])
+				if targetText != "" {
+					for idx, m := range matches {
+						if idx+1 == a.Occurrence {
+							continue
+						}
+						if strings.TrimSpace(page.Body[m.Body:m.End]) == "" {
+							j := idx + 1
+							k := a.Occurrence
+							n := len(targetText)
+							return Result{
+								IsError: true,
+								Content: fmt.Sprintf(removeDupKeepTextFormat, k, a.Section, a.Path, n, j, k, j),
+							}, nil
+						}
+					}
+				}
+			}
 		}
 		if a.Op == "insert_before" && a.Section == vault.PreambleHeading {
 			return Result{IsError: true, Content: "insert_before cannot target the lead: nothing comes before it. Use insert_after on the lead, or insert_before on the first heading."}, nil
@@ -429,6 +448,11 @@ const shrinkConfirmLine = `"allow_shrink" counts only as a confirmation after th
 // one place.
 const shrinkAdviceLine = `For a small edit (a link, a sentence) use op replace_text. If deleting this text is intended, repeat the call with "allow_shrink": true.`
 
+// removeDupKeepTextFormat is the refusal format when remove_section targets a
+// heading copy that holds text while another copy is empty (workflow 081 FIX-E / C-2).
+// Removing the text-bearing copy would delete that text and keep the empty copy.
+const removeDupKeepTextFormat = "remove_section refused: occurrence %d of section %q on %s holds %d bytes of text and occurrence %d is empty, so removing occurrence %d would delete that text and keep the empty copy. To drop the duplicated heading, remove_section occurrence %d."
+
 // shrinkArmKey keys a pending shrink confirmation by path and section
 // (043 T2): a confirmation licenses deleting most of THAT section and
 // nothing else, and the op — replace_section or replace_text — is beside
@@ -479,7 +503,7 @@ func guardedReplace(page *vault.Page, sec vault.Section, a stagePatchPageArgs, c
 			msg := fmt.Sprintf("find text was not found in section %q of %s; copy it exactly from wiki.get (whitespace and punctuation included)", a.Section, a.Path)
 			for _, line := range strings.Split(a.Find, "\n") {
 				if strings.TrimRight(line, " \t\r") == a.Section {
-					msg += fmt.Sprintf(" (find includes the heading line %q, which is not part of the section's text; to delete a duplicated heading, use op remove_section, with occurrence for a later copy)", a.Section)
+					msg += fmt.Sprintf(" (find includes the heading line %q, which is not part of the section's text; to delete a duplicated heading, use op remove_section on the copy with no text under it; occurrence picks the copy, 1 is the first)", a.Section)
 					break
 				}
 			}

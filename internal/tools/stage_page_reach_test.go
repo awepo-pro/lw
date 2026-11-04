@@ -490,10 +490,10 @@ func TestReach_F2_16_OccurrenceAboveOneOpRefusal(t *testing.T) {
 	}
 }
 
-// TestReach_F2_17_HeadingLineInFindHint pins workflow 081, F2.17 (R4 hint):
+// TestReach_F2_17_HeadingLineInFindHint pins workflow 081, F2.17 (R4 hint) and FE.4 (amendment A-081-6):
 // B3, replace_text ## What it is find ## What it is\n## What it is content ## What it is ->
 // IsError = today's find-not-found text followed by (exact)
-// " (find includes the heading line \"## What it is\", which is not part of the section's text; to delete a duplicated heading, use op remove_section, with occurrence for a later copy)".
+// " (find includes the heading line \"## What it is\", which is not part of the section's text; to delete a duplicated heading, use op remove_section on the copy with no text under it; occurrence picks the copy, 1 is the first)".
 // The hint is added whenever a line of find, trimmed of trailing spaces/tabs, equals the target section's heading line.
 func TestReach_F2_17_HeadingLineInFindHint(t *testing.T) {
 	reg, _, _ := setupReachVault(t, b3)
@@ -515,7 +515,7 @@ func TestReach_F2_17_HeadingLineInFindHint(t *testing.T) {
 		t.Fatalf("expected error result, got: %+v", res)
 	}
 	todayPrefix := fmt.Sprintf("find text was not found in section %q of %s; copy it exactly from wiki.get (whitespace and punctuation included)", "## What it is", reachW)
-	const wantHint = ` (find includes the heading line "## What it is", which is not part of the section's text; to delete a duplicated heading, use op remove_section, with occurrence for a later copy)`
+	const wantHint = ` (find includes the heading line "## What it is", which is not part of the section's text; to delete a duplicated heading, use op remove_section on the copy with no text under it; occurrence picks the copy, 1 is the first)`
 	want := todayPrefix + wantHint
 	if res.Content != want {
 		t.Fatalf("content =\n%q\nwant\n%q", res.Content, want)
