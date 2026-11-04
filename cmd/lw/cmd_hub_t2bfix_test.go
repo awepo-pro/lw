@@ -18,8 +18,9 @@ import (
 	"github.com/awepo-pro/lw/internal/hubserver"
 )
 
-// TestReceiptCommitPaths verifies whether receipt import creates a commit
-// touching a tracked path outside CheckPath (e.g. .llmwiki/storage.json).
+// TestReceiptCommitPaths pins the premise of D-T2b's one exception: a hub receipt PUT
+// commits .llmwiki/storage.json, a tracked path outside hub.CheckPath. If this ever
+// stops being true, revisit storageCatalogPath in healHubDivergence.
 func TestReceiptCommitPaths(t *testing.T) {
 	a, _, remote := syncPair(t)
 	a.setConfig(fmt.Sprintf("[sync]\nremotes = [%q]\n[hub]\nport = 8780\nusers = [\"phone-user\"]\n", remote))
@@ -57,7 +58,9 @@ func TestReceiptCommitPaths(t *testing.T) {
 	if err != nil {
 		t.Fatalf("diff-tree: %v", err)
 	}
-	t.Logf("DIFF TREE HEAD:\n%s", string(outDiff))
+	if !strings.Contains(string(outDiff), storageCatalogPath) {
+		t.Fatalf("receipt commit does not touch %s; diff-tree HEAD:\n%s", storageCatalogPath, outDiff)
+	}
 }
 
 // TestT2bFix1a: C11 race + an orphaned in-scope write (write notes/orphan.md into the hub tree, uncommitted)
@@ -428,6 +431,9 @@ func TestT2bFix3(t *testing.T) {
 		t.Fatalf("findConflictCopies found out-of-scope files: %v", conflicts)
 	}
 
+	if len(visited) == 0 {
+		t.Fatal("walk hook was never called")
+	}
 	for _, v := range visited {
 		if strings.HasPrefix(v, "raw/nested") {
 			t.Fatalf("findConflictCopies descended into %s; should have skipped top-level raw/", v)
