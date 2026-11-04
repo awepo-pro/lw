@@ -105,12 +105,34 @@ func clearHubDiverged(root string) {
 	_ = os.Remove(hubDivergedMarkerPath(root))
 }
 
+func lockVaultWait(root string, timeout time.Duration) (func(), error) {
+	deadline := time.Now().Add(timeout)
+	backoff := 25 * time.Millisecond
+	for {
+		release, err := lockVault(root)
+		if err == nil {
+			return release, nil
+		}
+		if !errors.Is(err, errSyncBusy) {
+			return nil, err
+		}
+		if time.Now().After(deadline) {
+			return nil, err
+		}
+		time.Sleep(backoff)
+		if backoff < 250*time.Millisecond {
+			backoff *= 2
+		}
+	}
+}
+
 func setupHubWiring(vaultPath string, overridePort int, devicesPath string) (root string, engine *hub.Engine, handler http.Handler, pusher *syncPusher, port int, users []string, err error) {
 	// 1. Vault must be under lw sync
 	root, o, err := syncSetup(vaultPath, syncModeWrite)
 	if err != nil {
 		return "", nil, nil, nil, 0, nil, fmt.Errorf("vault is not under lw sync (run lw sync init first): %w", err)
 	}
+	attachLoggingAt(root)
 
 	// 2. [hub] users must be configured
 	cfg, err := config.Load()
@@ -161,19 +183,31 @@ func setupHubWiring(vaultPath string, overridePort int, devicesPath string) (roo
 	}
 
 	runPush := func(ctx context.Context) syncPushResult {
+		logResult := func(res syncPushResult) syncPushResult {
+			slog.Info("hub: push", "remote", res.Remote, "pushed", res.Pushed, "pulled", res.Pulled, "rebased", res.Rebased, "err", res.Err, "storage_err", res.StorageErr)
+			return res
+		}
+
 		if err := guardVault(root); err != nil {
-			return syncPushResult{Err: err}
+			return logResult(syncPushResult{Err: err})
 		}
 		if _, err := vaultsync.Recover(ctx, syncOpts); err != nil {
-			return syncPushResult{Err: err}
+			return logResult(syncPushResult{Err: err})
+		}
+		if _, err := commitWorkLocked(root, syncOpts, "hub: sweep"); err != nil {
+			return logResult(syncPushResult{Err: err})
+		}
+		storageErr := storageUpload(ctx, root, syncOpts)
+		if storageErr != nil {
+			slog.Warn("hub: storage upload", "err", storageErr)
 		}
 		stPull, errPull := syncPull(ctx, syncOpts, stage.FormatVersion)
 		if errors.Is(errPull, vaultsync.ErrDiverged) || stPull.Diverged() {
 			markHubDiverged(root, fmt.Sprintf("diverged from %s: %d ahead, %d behind", stPull.Remote, stPull.Ahead, stPull.Behind))
-			return syncPushResult{Remote: stPull.Remote, Err: errPull}
+			return logResult(syncPushResult{Remote: stPull.Remote, Err: errPull, StorageErr: storageErr})
 		}
 		if errPull != nil {
-			return syncPushResult{Remote: stPull.Remote, Err: errPull}
+			return logResult(syncPushResult{Remote: stPull.Remote, Err: errPull, StorageErr: storageErr})
 		}
 		clearHubDiverged(root)
 		if stPull.Pulled > 0 {
@@ -182,12 +216,12 @@ func setupHubWiring(vaultPath string, overridePort int, devicesPath string) (roo
 		stPush, errPush := syncPush(ctx, syncOpts)
 		if errors.Is(errPush, vaultsync.ErrDiverged) || stPush.Diverged() {
 			markHubDiverged(root, fmt.Sprintf("diverged from %s: %d ahead, %d behind", stPush.Remote, stPush.Ahead, stPush.Behind))
-			return syncPushResult{Remote: stPush.Remote, Err: errPush}
+			return logResult(syncPushResult{Remote: stPush.Remote, Err: errPush, StorageErr: storageErr})
 		}
 		if errPush != nil {
-			return syncPushResult{Remote: stPush.Remote, Err: errPush}
+			return logResult(syncPushResult{Remote: stPush.Remote, Err: errPush, StorageErr: storageErr})
 		}
-		return syncPushResult{Remote: stPush.Remote, Pushed: stPush.Pushed, Pulled: stPull.Pulled, Rebased: stPull.Rebased}
+		return logResult(syncPushResult{Remote: stPush.Remote, Pushed: stPush.Pushed, Pulled: stPull.Pulled, Rebased: stPull.Rebased, StorageErr: storageErr})
 	}
 
 	pusher = newSyncPusher(runPush, 1*time.Second)
@@ -195,17 +229,31 @@ func setupHubWiring(vaultPath string, overridePort int, devicesPath string) (roo
 	hubOpts := hub.Options{
 		Dir: root,
 		Lock: func() (func(), error) {
-			return lockVault(root)
+			if isHubDiverged(root) {
+				return nil, &hub.Error{Code: hub.CodeDiverged, Message: "hub vault diverged from the remote; run lw sync on the hub host"}
+			}
+			release, err := lockVaultWait(root, 15*time.Second)
+			if err != nil {
+				return nil, err
+			}
+			if isHubDiverged(root) {
+				release()
+				return nil, &hub.Error{Code: hub.CodeDiverged, Message: "hub vault diverged from the remote; run lw sync on the hub host"}
+			}
+			return release, nil
 		},
 		Commit: func(message string) error {
 			if isHubDiverged(root) {
 				return &hub.Error{Code: hub.CodeDiverged, Message: "hub vault diverged from the remote; run lw sync on the hub host"}
 			}
-			release, err := lockVault(root)
+			release, err := lockVaultWait(root, 15*time.Second)
 			if err != nil {
 				return err
 			}
 			defer release()
+			if isHubDiverged(root) {
+				return &hub.Error{Code: hub.CodeDiverged, Message: "hub vault diverged from the remote; run lw sync on the hub host"}
+			}
 			if err := noInterruptedCommit(root); err != nil {
 				return err
 			}
@@ -219,13 +267,13 @@ func setupHubWiring(vaultPath string, overridePort int, devicesPath string) (roo
 			return nil
 		},
 		Refresh: func(ctx context.Context) error {
-			if isHubDiverged(root) {
-				return &hub.Error{Code: hub.CodeDiverged, Message: "hub vault diverged from the remote; run lw sync on the hub host"}
-			}
 			hubRefreshMu.Lock()
 			elapsed := time.Since(lastHubRefresh)
 			if elapsed < 10*time.Second {
 				hubRefreshMu.Unlock()
+				if isHubDiverged(root) {
+					return &hub.Error{Code: hub.CodeDiverged, Message: "hub vault diverged from the remote; run lw sync on the hub host"}
+				}
 				return nil
 			}
 			lastHubRefresh = time.Now()
@@ -235,6 +283,12 @@ func setupHubWiring(vaultPath string, overridePort int, devicesPath string) (roo
 			var hubErr *hub.Error
 			if errors.As(err, &hubErr) {
 				return hubErr
+			}
+			if err != nil {
+				return err
+			}
+			if isHubDiverged(root) {
+				return &hub.Error{Code: hub.CodeDiverged, Message: "hub vault diverged from the remote; run lw sync on the hub host"}
 			}
 			return nil
 		},
@@ -279,6 +333,7 @@ func cmdHubServe(args []string) error {
 	if err != nil {
 		return err
 	}
+	attachLoggingAt(root)
 
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
 	ln, err := net.Listen("tcp", addr)

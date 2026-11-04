@@ -307,7 +307,10 @@ func (e *Engine) Put(ctx context.Context, dev Device, p, base string, body []byt
 	isReceipt := strings.HasPrefix(p, "ledger/receipts/")
 	isDay := isLedgerDayFile(p)
 
-	if base == BaseNew {
+	if exists && currentSHA == bodySHA {
+		result = ResultApplied
+		finalSHA = bodySHA
+	} else if base == BaseNew {
 		if !exists {
 			if err := writeAtomic(e.opts.Dir, p, body); err != nil {
 				return PutResult{}, err
@@ -321,32 +324,27 @@ func (e *Engine) Put(ctx context.Context, dev Device, p, base string, body []byt
 				commitMsg = fmt.Sprintf("hub: %s put %s", dev.Name, p)
 			}
 		} else {
-			if currentSHA == bodySHA {
-				result = ResultApplied
-				finalSHA = bodySHA
-			} else {
-				if isDay {
-					mergedBytes, changed := mergeLedgerDay(currentBytes, body)
-					result = ResultMerged
-					if changed {
-						if err := writeAtomic(e.opts.Dir, p, mergedBytes); err != nil {
-							return PutResult{}, err
-						}
-						finalSHA = hexSHA256(mergedBytes)
-						commitMsg = fmt.Sprintf("hub: %s merge %s", dev.Name, p)
-					} else {
-						finalSHA = currentSHA
-					}
-				} else {
-					cPath, err := e.createConflictCopy(dev, p, body)
-					if err != nil {
+			if isDay {
+				mergedBytes, changed := mergeLedgerDay(currentBytes, body)
+				result = ResultMerged
+				if changed {
+					if err := writeAtomic(e.opts.Dir, p, mergedBytes); err != nil {
 						return PutResult{}, err
 					}
-					result = ResultConflictCopy
-					conflictPath = cPath
+					finalSHA = hexSHA256(mergedBytes)
+					commitMsg = fmt.Sprintf("hub: %s merge %s", dev.Name, p)
+				} else {
 					finalSHA = currentSHA
-					commitMsg = fmt.Sprintf("hub: %s conflict %s -> %s", dev.Name, p, cPath)
 				}
+			} else {
+				cPath, err := e.createConflictCopy(dev, p, body)
+				if err != nil {
+					return PutResult{}, err
+				}
+				result = ResultConflictCopy
+				conflictPath = cPath
+				finalSHA = currentSHA
+				commitMsg = fmt.Sprintf("hub: %s conflict %s -> %s", dev.Name, p, cPath)
 			}
 		}
 	} else {
