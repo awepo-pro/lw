@@ -20,7 +20,7 @@ session, you answer questions yourself: lw prepares the ask brief, you explore t
    under the vault. The ask path is strictly read-only.
 2. **Never run `lw commit`, `lw sync`, `lw config set`, `lw doctor --discard-changeset`, `lw revert`, or any `lw tool`
    call without `--ask`.** Calling `lw tool` without `--ask` belongs to ingest workflows with an open staging changeset.
-   For questions, every tool call must include `--ask`.
+   For questions, every tool call must include `--ask`. `lw search` and `lw show` are fine: they only read.
 3. **Cite only what you read.** Every factual claim drawn from the vault must end with its citation marker
    (e.g. `^[raw/<path>.md]` or `^[raw/<path>.md p.N]`) copied from the wiki page or raw source. Never cite anything you
    did not read, and never invent citations.
@@ -47,6 +47,20 @@ v2.53.0+, stop and tell the user `lw query --prepare` needs v2.53.0.
 If the user specifies a vault path, pass `--vault <path>` (e.g. `LW query --vault <path> --prepare "..."` and
 `LW tool --vault <path> --ask ...`). Otherwise, omit `--vault` to run from the current directory or rely on the
 configured `[vault] path`.
+
+## Quick lookups (no brief)
+
+When the user only wants to FIND or READ a wiki page ("where is my page on X", "show me the page on Y", "which
+pages mention Z") and not a synthesized answer, skip the brief:
+
+```bash
+LW search [--vault <path>] <words>        # ranked committed pages with a snippet; exit 1 = no match
+LW show [--vault <path>] [--links] <page> # one page by path, basename, title or alias
+```
+
+Report what they print. Both are read-only, need no key, and exist from `lw v2.66.0` (check `LW version`; on an older
+lw, use the normal procedure). They see committed wiki pages only, not `notes/` or `raw/`. For any real question,
+follow Step 2 onward as before.
 
 ## Step 2 — prepare the brief
 

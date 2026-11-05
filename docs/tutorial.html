@@ -4,8 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Learn lw</title>
-<meta name="description" content="A hands-on tutorial for lw v2.65.0: from an empty directory to a reviewed, cited markdown wiki.">
-<meta name="lw-version" content="v2.65.0">
+<meta name="description" content="A hands-on tutorial for lw v2.66.0: from an empty directory to a reviewed, cited markdown wiki.">
+<meta name="lw-version" content="v2.66.0">
 <style>
 :root {
   --bg: #fbfaf7;
@@ -230,7 +230,7 @@ footer { margin-top: 80px; color: var(--muted); font-size: 14px; border-top: 1px
 <nav class="toc" id="toc">
   <div class="brand">Learn <code>lw</code><button class="toggle-toc" id="toggleToc" aria-expanded="false">Lessons</button></div>
   <div class="sub">From an empty directory to a reviewed wiki</div>
-  <div class="ver" title="The lw release this page was checked against">lw v2.65.0</div>
+  <div class="ver" title="The lw release this page was checked against">lw v2.66.0</div>
   <ol id="tocList">
     <li><a href="#model"><span class="tick"></span>0 · The mental model</a></li>
     <li><a href="#install"><span class="tick"></span>1 · Install &amp; connect</a></li>
@@ -259,7 +259,7 @@ footer { margin-top: 80px; color: var(--muted); font-size: 14px; border-top: 1px
 
 <main>
 <header class="hero">
-  <div class="ver">Covers lw v2.65.0 · 2026-11-04</div>
+  <div class="ver">Covers lw v2.66.0 · 2026-11-05</div>
   <h1>Learn <code>lw</code> by doing</h1>
   <p class="lede">You start with sources — an article, a paper, a saved chat — and end with a small, cross-linked markdown wiki where every claim cites where it came from. <code>lw</code> is the compiler in the middle. An agent proposes the pages, and you decide what lands.</p>
   <div class="callout">
@@ -267,10 +267,11 @@ footer { margin-top: 80px; color: var(--muted); font-size: 14px; border-top: 1px
     Each lesson has a goal, the commands, what you should see, and a short check at the end. Open a terminal next to it and type along. Mark a lesson done when you've run it. Your progress is saved in this browser only. The terminal output shown here comes from real runs. Long output is trimmed, and trims are marked with <code>…</code>.
   </div>
   <details class="quiz">
-    <summary>Which lw is this page for? (v2.65.0, and what changed since v2.35.0)</summary>
-    <p>This page was checked against <strong>lw v2.65.0</strong>. Run <code>lw version</code>. If yours is older, some behaviour below won't match. If it's newer, trust <code>lw --help</code> where they disagree.</p>
+    <summary>Which lw is this page for? (v2.66.0, and what changed since v2.35.0)</summary>
+    <p>This page was checked against <strong>lw v2.66.0</strong>. Run <code>lw version</code>. If yours is older, some behaviour below won't match. If it's newer, trust <code>lw --help</code> where they disagree.</p>
     <p>Changes since the last edition of this page (v2.35.0):</p>
     <ul>
+      <li><strong>v2.66.0</strong>: six read-only, keyless verbs: <code>lw search</code> and <code>lw show</code> (<a href="#search-show">lesson 6</a>); <code>lw stats</code> (<a href="#stats">lesson 9</a>) and <code>lw digest</code> (<a href="#digest">lesson 9</a>); <code>lw export html</code> (<a href="#export-html">lesson 10</a>); shell <code>lw completion</code> (<a href="#install">lesson 1</a>).</li>
       <li><strong>v2.65.0</strong>: phone sync with <code>lw hub</code> and the Obsidian plugin over Tailscale; automatic pull before write and self-healing divergence; conflict copies for concurrent note edits (<a href="#sync">lesson 13</a>).</li>
       <li><strong>v2.63.0</strong>: <code>lw ledger check</code> / <code>lw ledger sum [YYYY-MM]</code> / <code>lw ledger import</code> (receipts from <code>ledger/receipts/</code> copied into lw storage, never overwritten; a different file under the same name is a conflict, exit 1); a note from the vault's <code>notes/</code> is ingested into <code>raw/notes/</code> instead of <code>raw/articles/</code> (<a href="#more">lesson 10</a>).</li>
       <li><strong>v2.62.2</strong>: fixes found by independent review: a frontmatter alias cycle no longer crashes lw (the page is a parse error); the note done mark picks the newest copy when two PCs ingested the same note on the same day; <code>--instruction-file</code> refuses files over 64 KiB; the <code>--note</code> help says to repeat the flag (<a href="#health">lesson 9</a>, <a href="#more">lesson 10</a>, <a href="#agent">lesson 11</a>).</li>
@@ -393,6 +394,7 @@ nix profile install github:awepo-pro/lw</code></pre>
 <pre><code><span class="p">$ </span>lw version
 lw v2.63.0</code></pre>
   <p>The version comes from the release tag the binary was built from, so a bug report can name the exact build.</p>
+  <p>Shell completion for bash, zsh, or fish can be generated with <code>source &lt;(lw completion bash)</code>.</p>
 
   <h3>Point it at a model</h3>
   <p>lw sends requests in the plain OpenAI chat-completions format and defaults to DeepSeek. <code>lw config</code> shows what lw will actually use:</p>
@@ -580,7 +582,7 @@ no open changeset</code></pre>
   <p>Nothing is deleted. The buffer moves to <code>changesets/rejected/</code>, and <code>lw log --rejected</code> shows it afterwards.</p>
   <div class="callout">
     <strong>Lint severities</strong>
-    Only an <strong>error</strong> makes <code>lw lint</code> exit non-zero. <strong>warn</strong> and <strong>info</strong> don't. A single-source page with <code>confidence: low</code> produces an <code>info</code> finding. That's normal and means "find a second source when you can", not "fix this now". There are 18 checks in total; see <a href="vault-schema.md">vault-schema.md</a>.
+    Only an <strong>error</strong> makes <code>lw lint</code> exit non-zero. <strong>warn</strong> and <strong>info</strong> don't. A single-source page with <code>confidence: low</code> produces an <code>info</code> finding. That's normal and means "find a second source when you can", not "fix this now". There are 20 checks in total; see <a href="vault-schema.md">vault-schema.md</a>.
   </div>
   <details class="quiz"><summary>Check: you hand-edited <code>kv-cache.md</code> while a changeset patching it was open. What happens at commit?</summary>
     <p>The op is stale and the commit is refused, so your edit is never silently overwritten.</p></details>
@@ -602,6 +604,34 @@ them for the whole prefix. ^[raw/articles/kv-cache-explained.md] …</code></pre
   <p>If you don't have an API key configured (or hit provider rate limits), lw doesn't block you. It prints an agent fallback hint:</p>
 <pre><code>hint: no LLM API key is configured. An agent with its own model can still answer from this vault: lw query --prepare "&lt;your question&gt;"</code></pre>
   <p>Run <code>lw query --prepare "&lt;question&gt;"</code>. It prints an ask brief with the question, vault orientation, and rules. Your external agent (or the <code>lw-ask</code> skill) then runs read-only tools via <code>lw tool --ask &lt;name&gt; '&lt;json&gt;'</code> (such as <code>wiki.search</code>, <code>wiki.get</code>, <code>raw.get</code>) and synthesizes the answer with its own model—calling no provider from lw and needing no API key (see <a href="#agent-ask">lesson 12</a>).</p>
+
+  <h3 id="search-show">Find a page without a model</h3>
+  <p>When you only want to locate or inspect a page without running an LLM, use <code>lw search</code> and <code>lw show</code>:</p>
+<pre><code><span class="p">$ </span>lw search attention
+wiki/concepts/flash-attention.md  (FlashAttention)  0.93
+    FlashAttention is a fused attention kernel that tiles the computation to keep intermediate values in fast on-chip memory rather than materializing the full attention matrix. It cuts the memory-bandw…
+wiki/entities/gpt-4.md  (GPT-4)  0.83
+    …serving cost has made inference efficiency a first-class systems problem. Techniques such as speculative decoding and fused attention kernels exist largely to reduce its latency and per-token cost.
+wiki/concepts/kv-cache.md  (KV Cache)  0.82
+    The key/value cache stores per-layer attention projections from earlier decoding steps so a new token attends to cached keys and values instead of recomputing them. This turns per-token work into a…</code></pre>
+<pre><code><span class="p">$ </span>lw show kv-cache
+---
+title: KV Cache
+created: 2026-08-20
+updated: 2026-08-29
+type: concept
+tags: [inference, memory]
+sources: [raw/articles/kv-cache-explained.md]
+confidence: high
+---
+
+# KV Cache
+
+The key/value cache stores per-layer attention projections from previous
+decoding steps so each new token only attends to cached keys and values
+instead of recomputing them.^[raw/articles/kv-cache-explained.md]
+...</code></pre>
+  <p>Pass <code>--links</code> to <code>lw show</code> to append outbound links and backlinks to the output.</p>
 
   <h3>Keep an answer</h3>
   <p>In the TUI's Ask screen, an answer that cites the vault (it contains a <code>^[raw/…]</code> or <code>^[wiki/…]</code> marker) can be saved with <kbd>ctrl+s</kbd>. That stages a <code>wiki/queries/</code> page, which you review like any other change. A read-only ask turn opens no changeset until you save or stage something. An answer with no vault citation can't be saved: <em>"this answer cites no vault source; nothing to save"</em>.</p>
@@ -744,6 +774,37 @@ lw doctor — /home/you/ml-wiki
   <p><strong>Recovery, honestly:</strong> each file is written atomically, but a commit across many files isn't. If a commit is interrupted, <code>lw doctor</code> shows which files were applied and which are pending, and finishes the commit <em>forward</em> from the object store. You never have to repair it by hand.</p>
   <p><strong>Let the agent fix lint:</strong> <code>lw lint --fix</code> sends findings to the agent one page at a time. The fixes are staged as a changeset for you to review.</p>
   <p><strong>Your own frontmatter keys survive.</strong> If you add Obsidian properties such as <code>aliases: [kv, kv cache]</code>, a <code>cssclasses:</code> block list or a nested map to a page, lw keeps them byte-for-byte whenever it rewrites that page (a patch, a rename, a merge, a retraction). Comments inside such a value are dropped. Before v2.62.0 these keys were silently emptied (<code>aliases: </code>), so a vault written by an older lw on another PC can still lose them: upgrade every PC.</p>
+
+  <h3 id="stats">Vault shape with lw stats</h3>
+  <p><code>lw stats</code> prints an overview of vault health, shape, coverage, and activity at a glance:</p>
+<pre><code><span class="p">$ </span>lw stats
+pages
+  total: 4
+  by type: concept: 3, entity: 1
+
+raw sources
+  total: 2, assets: 0
+  by kind: articles: 1, papers: 1
+
+tags
+  distinct: 7
+  top tags:
+    inference            2
+    attention            1
+    decoding             1
+    kernels              1
+    llm                  1
+    memory               1
+...</code></pre>
+  <p>Pass <code>--json</code> for structured output or <code>--stale-days N</code> to tune freshness.</p>
+
+  <h3 id="digest">What the wiki learned: lw digest</h3>
+  <p><code>lw digest</code> summarizes what the wiki learned over a time window: new and updated pages with their gist, sources, top tags, and commits. The default window is the last 7 days (<code>--since 7d</code>). Use <code>--since DATE</code> and <code>--until DATE</code> for custom ranges, and <code>--format html -o &lt;file&gt;</code> to save a standalone HTML report.</p>
+<pre><code><span class="p">$ </span>lw digest --since 7d
+# Wiki digest 2026-10-29 .. 2026-11-05
+
+nothing was committed in this window</code></pre>
+<pre><code><span class="p">$ </span>lw digest --format html -o digest.html</code></pre>
   <button class="mark-done" data-for="health">Mark lesson done</button>
 </section>
 
@@ -819,6 +880,18 @@ HKD  total     -286.10  (7)
 USD  software  -19.98   (2)
 USD  total     -19.98   (2)</code></pre>
   <p>Setting up the phone (Syncthing, Obsidian, the bridge PC) is in <a href="#sync">lesson 13</a>; the one-line expense format is in <a href="mobile.md">mobile.md</a>.</p>
+
+  <h3 id="export-html">Export a static site</h3>
+  <p><code>lw export html &lt;outdir&gt;</code> builds an offline HTML site of the committed vault with client-side search, working wikilinks, citations, and backlinks. It opens offline in any browser without needing a web server.</p>
+  <p>It writes <code>index.html</code>, stylesheets, client search scripts, and rendered HTML pages for every committed page and raw source. To avoid overwriting existing files, it refuses a non-empty directory unless you pass <code>--force</code>, and it never writes through symlinks or into the vault directory:</p>
+<pre><code><span class="p">$ </span>lw export html /tmp/site
+exported 4 pages, 2 raw sources, 0 assets to /tmp/site
+open /tmp/site/index.html
+<span class="p">$ </span>lw export html /tmp/site
+lw: export: output directory /tmp/site exists and is not empty (use --force to overwrite)
+<span class="p">$ </span>lw export html --force /tmp/site
+exported 4 pages, 2 raw sources, 0 assets to /tmp/site
+open /tmp/site/index.html</code></pre>
 
   <h3>Use lw from another agent (MCP)</h3>
 <pre><code>{
@@ -1302,7 +1375,7 @@ Note:    baseline model weights</code></pre>
   <p><strong>Where to go next:</strong> <a href="vault-schema.md">vault-schema.md</a> · <a href="changesets.md">changesets.md</a> · <a href="tools.md">tools.md</a> · <a href="hotkeys.md">hotkeys.md</a> · <a href="design.md">design.md</a></p>
 </section>
 
-<footer>Covers <strong>lw v2.65.0</strong> (tagged 2026-11-04). It matches <code>lw --help</code>. If a command here doesn't match your build, trust <code>lw --help</code>.</footer>
+<footer>Covers <strong>lw v2.66.0</strong> (tagged 2026-11-05). It matches <code>lw --help</code>. If a command here doesn't match your build, trust <code>lw --help</code>.</footer>
 </main>
 </div>
 

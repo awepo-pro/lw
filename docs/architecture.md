@@ -94,6 +94,10 @@ rationale attached.
 | `internal/extract` | HTML/markdown sources into deterministic markdown |
 | `internal/config` | `~/.config/lw/config.toml`; secrets are referenced, never stored |
 | `internal/ui` | Bubble Tea v2 TUI: browse, review, ask, lint, log |
+| `internal/vaultstats` | Computes vault health, shape, coverage, and activity metrics |
+| `internal/digest` | Aggregates committed changes in a vault over a time window into a structured digest with markdown and HTML renderers |
+| `internal/htmlexport` | Exports the vault into a static offline HTML site |
+| `internal/safewrite` | Filesystem write operations that guard a vault directory against being modified or overwritten, directly or through symlinks |
 | `cmd/lw` | The CLI verbs; `lw` with no argument is the TUI |
 
 ---
