@@ -35,11 +35,20 @@ var verbs = []verb{
 	{"diff", cmdDiff},
 	{"commit", cmdCommit},
 	{"log", cmdLog},
+	{"digest", cmdDigest},
 	{"session", cmdSession},
 	{"trace", cmdTrace},
 	{"revert", cmdRevert},
 	{"query", cmdQuery},
+	{"search", cmdSearch},
+	{"show", cmdShow},
 	{"lint", cmdLint},
+	{"graph", cmdGraph},
+	{"stats", cmdStats},
+	{"export", cmdExport},
+	{"related", cmdRelated},
+	{"dupes", cmdDupes},
+	{"cards", cmdCards},
 	{"mcp", cmdMCP},
 	{"doctor", cmdDoctor},
 	{"sync", cmdSync},
@@ -48,6 +57,7 @@ var verbs = []verb{
 	{"stage", cmdStage},
 	{"storage", cmdStorage},
 	{"ledger", cmdLedger},
+	{"completion", cmdCompletion},
 	{"version", cmdVersion},
 }
 
@@ -187,6 +197,8 @@ commands:
   diff [--op <id>]             show the projected diff of the open changeset
   commit -m "..." [--force]    commit the open changeset
   log [--rejected] [--agent]   show changeset history
+  digest [--since 7d|DATE] [--format md|html] [-o FILE]
+                               what the wiki learned in a window: new/updated pages with their gist, sources
   session list [--json]        list recorded agent sessions
   session show [<id>] [--plain] [--json] [--thinking]
                                print one session's transcript
@@ -195,7 +207,21 @@ commands:
   query "..."                  ask the curator agent a question
   query --prepare "..."        print a brief for an external agent to answer the question
                                (no LLM, no key); the agent calls lw tool --ask
+  search [--type T] [--tag t] [-n N] [--json] <words>
+                               word-search committed pages (no LLM, no key); exit 1 when nothing matches
+  show [--links] [--json] <page>
+                               print a page by path, basename, title or alias; --links adds links and backlinks
   lint [--fix]                 run the lint checks
+  graph [--format text|dot|json|mermaid] [--focus <page> [--depth N]]
+                               summarise or export the wikilink graph (hubs, orphans, islands)
+  stats [--json] [--stale-days N]
+                               vault shape at a glance: types, tags, sourcing, uncited raws, freshness, activity
+  export html [--force] <dir>  write a static, offline HTML site of the committed vault (search, backlinks)
+  related [-n N] [--json] <page>
+                               pages most related to <page> (shared links, sources, tags, words)
+  dupes [--threshold F] [-n N] list near-duplicate page pairs that may need merging
+  cards [--format anki|md|json] [-o FILE]
+                               export spaced-repetition flashcards from page sections (stable ids)
   mcp [--ask]                  run the MCP server over stdio; --ask serves only the read-only
                                ask tools and sees the open changeset as lw query does
   doctor [--unlock] [--rebuild-index] [--discard-changeset] [--json]
@@ -218,6 +244,7 @@ commands:
   ledger check                 verify ledger syntax, dates, and duplicate IDs
   ledger sum [YYYY-MM]         total ledger amounts by currency and category
   ledger import [--dry-run]    copy Syncthing receipts into storage
+  completion bash|zsh|fish     print a shell completion script (e.g. source <(lw completion bash))
   version                      print the build version and exit
 
 flags:
