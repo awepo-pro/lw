@@ -236,16 +236,22 @@ are the same flag). Exit codes: `0` success, `1` failure, `2` usage error.
 | `diff` | `-op <id>`, `-stat`, `-render` | The projected diff of the buffer — what commit would write. `lw diff --render [--op <id>]` renders each changed page as it will read after commit, as plain text when stdout is not a terminal; it cannot be combined with `--stat` |
 | `commit` | `-m <msg>` (required), `-force` | Re-hashes the tree first; an op whose `before` hash no longer matches is stale and the commit is refused. Refuses a lint regression unless `--force`, which is journalled |
 | `log` | `-rejected`, `-agent`, `-limit <n>`, `-page <path>`, `-since <rfc3339\|YYYY-MM-DD>` | The journal, including what you rejected |
+| `digest` | `-since <7d\|DATE>`, `-until <DATE>`, `-format <md\|html>`, `-o <file>` | What the wiki learned in a window: new/updated pages with their gist, sources |
 | `session` | `list`: `-json`; `show`: `<id>`, `-plain`, `-json`, `-thinking` | Reads the transcript every agent conversation leaves in the vault — see [Transcripts](#transcripts) below. `list` prints one row per session, newest first. `show` prints one back: the question, every tool call with its full arguments and result, and each answer as the TUI rendered it — the thinking folded to one line unless `--thinking`. With no id it shows the open session; a short prefix works. Read-only, and needs no provider |
 | `revert` | (positional) `<commit-id>` | Opens the inverse ops as a *new* changeset — a rollback is reviewed like anything else |
 | `query` | (positional) `"…"` | One-shot answer with citations; uses an ephemeral in-process session and never touches a changeset |
+| `search` | `-type <T>`, `-tag <t>`, `-n <N>`, `-json`, (positional) `<words…>` | Word-search committed pages (no LLM, no key); exit 1 when nothing matches |
+| `show` | `-links`, `-json`, (positional) `<page>` | Print a page by path, basename, title or alias; `--links` adds links and backlinks |
 | `lint` | `-checks <id,id,…>`, `-fix`, `-json` | 20 checks ([docs/vault-schema.md](docs/vault-schema.md#the-20-lint-checks)). Exits 1 only on errors. `--fix` asks the agent to propose repairs — one page at a time (one agent round per page, a single changeset), as a changeset; a page whose round fails is named in the output and fails the command |
+| `stats` | `--json`, `--stale-days <n>` | Vault shape at a glance: types, tags, sourcing, uncited raws, freshness, activity |
+| `export` | `html [--vault <path>] [--force] [--title <text>] <outdir>` | Write a static, offline HTML site of the committed vault (search, backlinks) |
 | `note` | `-m "<text>"`; `list`: `-n <count>` | Captures a quick raw note into `notes/` (outside the wiki: no LLM, no changeset, never indexed or snapshotted). No `-m` opens `$VISUAL`/`$EDITOR`; an empty buffer saves nothing |
 | `mcp` | — | stdio MCP server; see below |
 | `doctor` | `--unlock`, `--rebuild-index`, `--discard-changeset`, `--json` | Index freshness, object-store completeness, journal tail, interrupted apply, stale lock, config, provider. Every failure prints the fix. `--discard-changeset` moves the open changeset to `changesets/rejected/`, journalled — the CLI way to discard one without opening the TUI. Exit 1 on any failure |
 | `sync` | `status`, `init <remote>`, `clone <remote> <dir>`, `--take-remote` | Pull then push the vault through its [sync] remotes over SSH |
 | `hub` | `serve`, `status`, `devices`, `approve <name>`, `revoke <name>`, `install --print` | Built-in phone sync hub over Tailscale |
 | `tui` | — | The TUI; also the default with no command |
+| `completion` | `bash|zsh|fish` | Print a shell completion script (e.g. `source <(lw completion bash)`) |
 
 ## The TUI
 
