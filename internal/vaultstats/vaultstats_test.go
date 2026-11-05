@@ -20,7 +20,7 @@ func setupTestVault(t *testing.T) (string, string) {
 	dir := t.TempDir()
 
 	// Copy SCHEMA.md from spec/fixtures/minimal
-	schemaSrc, err := os.ReadFile("/home/anton/learning/llmwiki-078-x3-stats/spec/fixtures/minimal/SCHEMA.md")
+	schemaSrc, err := os.ReadFile("../../spec/fixtures/minimal/SCHEMA.md")
 	if err != nil {
 		t.Fatalf("read minimal SCHEMA.md: %v", err)
 	}
@@ -352,7 +352,7 @@ func TestVaultStats_S6_MissingJournal(t *testing.T) {
 func TestVaultStats_S7_JSONEmptySlices(t *testing.T) {
 	// Create empty vault
 	dir := t.TempDir()
-	schemaSrc, err := os.ReadFile("/home/anton/learning/llmwiki-078-x3-stats/spec/fixtures/minimal/SCHEMA.md")
+	schemaSrc, err := os.ReadFile("../../spec/fixtures/minimal/SCHEMA.md")
 	if err != nil {
 		t.Fatal(err)
 	}

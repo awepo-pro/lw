@@ -43,12 +43,8 @@ var verbs = []verb{
 	{"search", cmdSearch},
 	{"show", cmdShow},
 	{"lint", cmdLint},
-	{"graph", cmdGraph},
 	{"stats", cmdStats},
 	{"export", cmdExport},
-	{"related", cmdRelated},
-	{"dupes", cmdDupes},
-	{"cards", cmdCards},
 	{"mcp", cmdMCP},
 	{"doctor", cmdDoctor},
 	{"sync", cmdSync},
@@ -212,16 +208,9 @@ commands:
   show [--links] [--json] <page>
                                print a page by path, basename, title or alias; --links adds links and backlinks
   lint [--fix]                 run the lint checks
-  graph [--format text|dot|json|mermaid] [--focus <page> [--depth N]]
-                               summarise or export the wikilink graph (hubs, orphans, islands)
   stats [--json] [--stale-days N]
                                vault shape at a glance: types, tags, sourcing, uncited raws, freshness, activity
   export html [--force] <dir>  write a static, offline HTML site of the committed vault (search, backlinks)
-  related [-n N] [--json] <page>
-                               pages most related to <page> (shared links, sources, tags, words)
-  dupes [--threshold F] [-n N] list near-duplicate page pairs that may need merging
-  cards [--format anki|md|json] [-o FILE]
-                               export spaced-repetition flashcards from page sections (stable ids)
   mcp [--ask]                  run the MCP server over stdio; --ask serves only the read-only
                                ask tools and sees the open changeset as lw query does
   doctor [--unlock] [--rebuild-index] [--discard-changeset] [--json]

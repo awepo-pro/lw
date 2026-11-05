@@ -3,7 +3,6 @@ package main
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/awepo-pro/lw/internal/vault"
@@ -184,56 +183,4 @@ func TestResolvePageArg(t *testing.T) {
 			t.Fatalf("expected nil page and 2 ambiguous candidates for foo.md, got p=%v, len(amb)=%d", p2, len(amb2))
 		}
 	})
-}
-
-func TestResolvePageArg_GraphFocus(t *testing.T) {
-	root := setupPageArgTestVault(t)
-
-	// Case-insensitive title match for graph --focus
-	stdout, stderr, code := captureRun(t, func() int {
-		return run([]string{"graph", "--vault", root, "--focus", "FLASH ATTENTION SYSTEM"})
-	})
-	if code != 0 {
-		t.Fatalf("graph --focus with title failed (exit %d): stderr=%s", code, stderr)
-	}
-	if !strings.Contains(stdout, "wiki/concepts/flash-attention.md") {
-		t.Errorf("stdout missing focus node: %s", stdout)
-	}
-
-	// Ambiguous title prints error and exits 1
-	_, stderrAmb, codeAmb := captureRun(t, func() int {
-		return run([]string{"graph", "--vault", root, "--focus", "duplicate concept"})
-	})
-	if codeAmb != 1 {
-		t.Fatalf("expected exit 1 for ambiguous focus, got %d", codeAmb)
-	}
-	if !strings.Contains(stderrAmb, `"duplicate concept" is ambiguous`) {
-		t.Errorf("stderr missing ambiguous message: %s", stderrAmb)
-	}
-}
-
-func TestResolvePageArg_RelatedAlias(t *testing.T) {
-	root := setupPageArgTestVault(t)
-
-	// Resolve by alias for related
-	stdout, stderr, code := captureRun(t, func() int {
-		return run([]string{"related", "--vault", root, "kvc"})
-	})
-	if code != 0 {
-		t.Fatalf("related with alias failed (exit %d): stderr=%s", code, stderr)
-	}
-	if !strings.Contains(stdout, "related to wiki/concepts/kv-cache.md") {
-		t.Errorf("stdout missing expected related target: %s", stdout)
-	}
-
-	// Ambiguous title prints error and exits 1
-	_, stderrAmb, codeAmb := captureRun(t, func() int {
-		return run([]string{"related", "--vault", root, "Duplicate Concept"})
-	})
-	if codeAmb != 1 {
-		t.Fatalf("expected exit 1 for ambiguous related target, got %d", codeAmb)
-	}
-	if !strings.Contains(stderrAmb, `"Duplicate Concept" is ambiguous`) {
-		t.Errorf("stderr missing ambiguous message: %s", stderrAmb)
-	}
 }

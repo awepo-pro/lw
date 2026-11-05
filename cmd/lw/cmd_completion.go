@@ -17,6 +17,7 @@ var completionSubcommands = map[string][]string{
 	"sync":       {"status", "init", "clone"},
 	"storage":    {"add", "list", "show", "get", "rm"},
 	"ledger":     {"check", "sum", "import"},
+	"hub":        {"serve", "status", "devices", "approve", "revoke", "install"},
 	"completion": {"bash", "zsh", "fish"},
 }
 

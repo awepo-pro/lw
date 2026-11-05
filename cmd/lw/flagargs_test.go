@@ -181,19 +181,6 @@ func TestVerbsAcceptTrailingFlags(t *testing.T) {
 			},
 		},
 		{
-			name: "graph trailing --format json",
-			args: []string{"graph", "--vault", root, "--format", "json"},
-			checkFunc: func(t *testing.T, stdout, stderr string, code int) {
-				if code != 0 {
-					t.Fatalf("graph exit %d, stderr: %s", code, stderr)
-				}
-				var parsed map[string]any
-				if err := json.Unmarshal([]byte(stdout), &parsed); err != nil {
-					t.Fatalf("expected valid JSON from graph, got err %v; stdout:\n%s", err, stdout)
-				}
-			},
-		},
-		{
 			name: "stats trailing --json",
 			args: []string{"stats", "--vault", root, "--json"},
 			checkFunc: func(t *testing.T, stdout, stderr string, code int) {
@@ -231,45 +218,11 @@ func TestVerbsAcceptTrailingFlags(t *testing.T) {
 			},
 		},
 		{
-			name: "related trailing -n 1 after page positional",
-			args: []string{"related", "kv-cache", "-n", "1", "--vault", root},
-			checkFunc: func(t *testing.T, stdout, stderr string, code int) {
-				if code != 0 {
-					t.Fatalf("related exit %d, stderr: %s", code, stderr)
-				}
-				if !strings.Contains(stdout, "flash-attention.md") {
-					t.Errorf("expected flash-attention.md in related stdout:\n%s", stdout)
-				}
-				// Should only have 1 match
-				if strings.Contains(stdout, "gpt-4.md") {
-					t.Errorf("expected only 1 match with -n 1, got stdout:\n%s", stdout)
-				}
-			},
-		},
-		{
-			name: "dupes trailing --threshold",
-			args: []string{"dupes", "--vault", root, "--threshold", "0.01", "-n", "1"},
-			checkFunc: func(t *testing.T, stdout, stderr string, code int) {
-				if code != 0 {
-					t.Fatalf("dupes exit %d, stderr: %s", code, stderr)
-				}
-			},
-		},
-		{
 			name: "digest trailing -o",
 			args: []string{"digest", "--vault", root, "--since", "365d", "-o", filepath.Join(tempDir, "digest.md")},
 			checkFunc: func(t *testing.T, stdout, stderr string, code int) {
 				if code != 0 {
 					t.Fatalf("digest exit %d, stderr: %s", code, stderr)
-				}
-			},
-		},
-		{
-			name: "cards trailing --format json",
-			args: []string{"cards", "--vault", root, "-o", filepath.Join(tempDir, "cards.json"), "--format", "json"},
-			checkFunc: func(t *testing.T, stdout, stderr string, code int) {
-				if code != 0 {
-					t.Fatalf("cards exit %d, stderr: %s", code, stderr)
 				}
 			},
 		},
