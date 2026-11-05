@@ -170,6 +170,17 @@ lw mcp --ask                                      # MCP server serving only ask 
 
 External agent ask is strictly read-only: no changeset is opened, no `tool.lock` is taken, no session record is written, and only the 8 read-only ask tools (`wiki.*`, `raw.get`, `raw.list`, `vault.orient`) are offered.
 
+**From the shell, no model needed.**
+
+```bash
+lw search "attention"                         # word-search committed pages (no LLM, no key)
+lw show kv-cache                              # print page content (--links adds backlinks)
+lw stats                                      # vault shape: types, tags, citations, activity
+lw digest --since 7d                          # what the wiki learned in the window
+lw export html <dir>                          # static offline HTML site of the vault
+source <(lw completion bash)                  # shell tab completion (bash, zsh, fish)
+```
+
 ## Command reference
 
 ```
@@ -251,7 +262,7 @@ are the same flag). Exit codes: `0` success, `1` failure, `2` usage error.
 | `sync` | `status`, `init <remote>`, `clone <remote> <dir>`, `--take-remote` | Pull then push the vault through its [sync] remotes over SSH |
 | `hub` | `serve`, `status`, `devices`, `approve <name>`, `revoke <name>`, `install --print` | Built-in phone sync hub over Tailscale |
 | `tui` | — | The TUI; also the default with no command |
-| `completion` | `bash|zsh|fish` | Print a shell completion script (e.g. `source <(lw completion bash)`) |
+| `completion` | `bash\|zsh\|fish` | Print a shell completion script (e.g. `source <(lw completion bash)`) |
 
 ## The TUI
 
