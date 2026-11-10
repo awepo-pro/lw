@@ -230,7 +230,9 @@ commands:
   sync status                  show ahead/behind against the remote, without changing anything
   sync init <remote>           put this vault under lw sync and push it to an empty remote
   sync clone <remote> <dir>    copy a synced vault from its remote to this PC
+  sync watch                   sync continuously in the background
                                (lw sync owns the vault's .gitignore and rewrites it)
+  sync install --print         print systemd user service or launchd plist
   hub serve [--vault P] [--port N]
                                serve phone sync on loopback
   hub status                   show hub status and diverged state
@@ -243,7 +245,9 @@ commands:
                                manage non-wiki storage files in the vault
   ledger check                 verify ledger syntax, dates, and duplicate IDs
   ledger sum [YYYY-MM]         total ledger amounts by currency and category
-  ledger import [--dry-run]    copy receipts into storage
+  ledger report [YYYY-MM]      report monthly spending and budget
+  ledger collect               collect and archive daily bookkeeping notes
+  ledger import [--dry-run]    copy receipts in ledger/receipts/ into storage
   completion bash|zsh|fish     print a shell completion script (e.g. source <(lw completion bash))
   version                      print the build version and exit
 
@@ -280,11 +284,11 @@ are the same flag). Exit codes: `0` success, `1` failure, `2` usage error.
 | `note` | `-m "<text>"`; `list`: `-n <count>` | Captures a quick raw note into `notes/` (outside the wiki: no LLM, no changeset, never indexed or snapshotted). No `-m` opens `$VISUAL`/`$EDITOR`; an empty buffer saves nothing |
 | `mcp` | — | stdio MCP server; see below |
 | `doctor` | `--unlock`, `--rebuild-index`, `--discard-changeset`, `--json` | Index freshness, object-store completeness, journal tail, interrupted apply, stale lock, config, provider. Every failure prints the fix. `--discard-changeset` moves the open changeset to `changesets/rejected/`, journalled — the CLI way to discard one without opening the TUI. Exit 1 on any failure |
-| `sync` | `status`, `init <remote>`, `clone <remote> <dir>`, `--take-remote` | Pull then push the vault through its [sync] remotes over SSH |
+| `sync` | `status`, `init <remote>`, `clone <remote> <dir>`, `watch [--collect]`, `install --print [--collect]`, `--take-remote` | Pull then push the vault through its [sync] remotes over SSH; `watch` syncs continuously; `install --print` generates service units |
 | `hub` | `serve`, `status`, `devices`, `approve <name>`, `revoke <name>`, `install --print` | Built-in phone sync hub over Tailscale |
 | `tui` | — | The TUI; also the default with no command |
 | `storage` | `add`, `list`, `show`, `get`, `rm` | Manage non-wiki storage files in the vault; bytes travel beside git via `<remote>.storage/objects/` |
-| `ledger` | `check`, `sum [YYYY-MM]`, `import [--dry-run]` | Validate ledger syntax and duplicate IDs, sum expense amounts by currency/category, or copy receipts into storage |
+| `ledger` | `check`, `sum [YYYY-MM]`, `report [YYYY-MM]`, `collect [--dry-run] [--include-today]`, `import [--dry-run]` | Validate ledger syntax and dates, sum totals by currency/category, report monthly spending and budget, collect day notes, or copy receipts in `ledger/receipts/` into storage |
 | `completion` | `bash\|zsh\|fish` | Print a shell completion script (e.g. `source <(lw completion bash)`) |
 | `version` | — | Print the build version and exit |
 
@@ -462,6 +466,63 @@ and lw never runs that command itself — it reports, and the user decides.
 `lw session list` and `lw session show` read transcripts back, read-only; see
 the command table above.
 
+## Sync
+
+`lw sync` keeps vaults synchronized across PCs through a bare Git repository over SSH. The remote needs only `sshd` and `git` — no `lw` binary and no runtime.
+
+### Background Sync (`lw sync watch`)
+
+`lw sync watch` runs continuous, unattended synchronization in the background:
+
+```bash
+lw sync watch [--vault <dir>] [--interval <duration>] [--quiet <duration>] [--collect]
+```
+
+- **What triggers a sync**:
+  - **Start**: runs one sync cycle immediately upon starting.
+  - **Local changes**: detected on a 2-second ticker loop; debounced by a quiet period (default 3 s, minimum 1 s; maximum wait 30 s before forcing a sync).
+  - **Remote changes**: checks whether the remote branch has moved every interval (default 15 s, minimum 5 s).
+  - **Retry**: if a cycle fails due to network or lock contention, retries with exponential backoff (starting at quiet duration, then doubling from 2×interval up to 5 minutes).
+- **`--collect` flag**:
+  `lw sync watch --collect` : once at start and whenever the date changes, the watcher runs `lw ledger collect` and `lw ledger import` before its next sync.
+
+### Service Installation (`lw sync install --print`)
+
+Generate a system service configuration for unattended background sync:
+
+```bash
+lw sync install --print [--vault <dir>]
+```
+
+This outputs a systemd user service unit on Linux (`~/.config/systemd/user/lw-sync.service`) or a launchd plist on macOS (`~/Library/LaunchAgents/pro.awepo.lw-sync.plist`). `lw sync install --print --collect` puts the flag in the unit.
+
+### Conflict Copies
+
+When the same note was edited concurrently on two PCs, `lw sync` automatically preserves both versions rather than failing or overwriting work. The rebased version saves the local PC's edit as a **conflict copy** beside the original:
+
+```
+<stem>.conflict-<host>-<YYYYMMDD>-<HHMMSS><ext>
+```
+(If multiple conflict copies occur within the same second, `-2`, `-3`, etc., is appended before `<ext>`.)
+
+For example:
+```
+notes/project-ideas.conflict-thinkpad-20261110-143000.md
+```
+
+Conflict copy resolution applies to notes under `notes/`, files in `ledger/` (outside `ledger/receipts/`), and loose files at the vault root (excluding system files `SCHEMA.md`, `index.md`, `log.md`, `curator-memory.md`, and `.gitignore`). `lw sync` reports the copies so you can merge changes and remove the conflict file.
+
+### Safety Guards (What the Watcher Never Does)
+
+The background watcher operates unattended and enforces strict safety invariants:
+- **Never passes `--take-remote`**: diverged commits cannot be automatically overwritten; they must be inspected and resolved manually by running `lw sync` or `lw sync --take-remote`.
+- **Never force pushes**: pushes are strictly fast-forward rebase replays; history is never overwritten.
+- **Never commits a mass deletion**: if more than 20 tracked files and more than a quarter (> 25%) of the vault are deleted, the watcher holds every cycle with a log warning until confirmed with manual `lw sync` or the deleted files are restored.
+
+### Upgrade Note
+
+Every PC and the hub host syncing a vault must run this version. It changes two files lw writes into every vault: the managed `.gitignore` (new entries for lw's own temp files, Obsidian's `/.trash/`, and editor lock and swap files) and `.git/info/attributes` (a line-union merge for `/.llmwiki/journal.ndjson` and `/bookkeeping.md`, so two devices appending to either never conflict). An older lw rewrites the `.gitignore` back to its own list on every sync, which costs one extra commit per sync until it is upgraded.
+
 ## Documentation
 
 | | |
@@ -471,6 +532,7 @@ the command table above.
 | [docs/vault-schema.md](docs/vault-schema.md) | The vault layout, frontmatter, and the 20 lint checks |
 | [docs/tools.md](docs/tools.md) | The 19 tools — 18 vault tools plus conditional web.search — and what each one reads |
 | [docs/changesets.md](docs/changesets.md) | Changeset layout, the journal, and recovery |
+| [docs/bookkeeping.md](docs/bookkeeping.md) | Daily expense notes, the central ledger, collection and reports |
 | [spec/vault-schema.md](spec/vault-schema.md) | The normative vault schema |
 | [spec/changeset.schema.json](spec/changeset.schema.json) | The JSON Schema every changeset validates against |
 | [NOTICE](NOTICE) | Third-party dependencies and licences |

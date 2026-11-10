@@ -80,6 +80,7 @@ Do these in order. Below, `N` is a file name and `enc(N)` is `N` with spaces as 
 
 **2a. Root notes go to `notes/`.** For each root `X.md` (not one of lw's four):
 
+- A root file named `YYYY-MM-DD.md` and `bookkeeping.md` are NOT moved into `notes/` (they are bookkeeping; `lw ledger collect` handles day notes).
 - If `V/notes/X.md` exists, do not move; report the clash (ASK).
 - If any file links to it with a markdown path link (`](X.md)`, `](./X.md)`, or the `enc` form), moving would break
   that link: do not move; report (ASK). Wikilinks (`[[X]]`) resolve by name anywhere, so they do not block a move.
@@ -133,6 +134,7 @@ Put each path in exactly one class:
 | Class | Paths | Action |
 |---|---|---|
 | OK | `notes/**`, `ledger/**`, moves made in Step 2 (they show as a delete at the root plus an add) | sync |
+| OK | `bookkeeping.md`, root `YYYY-MM-DD.md` | sync (a root file named `YYYY-MM-DD.md` and `bookkeeping.md` are NOT moved into `notes/`; they are bookkeeping; `lw ledger collect` handles day notes) |
 | OK | `.obsidian/**`, `.gitignore` | sync (lw sync manages `.gitignore` itself) |
 | OK | a root image Step 2 left in place | sync; it was reported |
 | STOP | anything under `wiki/`, `raw/`, `.llmwiki/`, or `index.md`, `log.md`, `SCHEMA.md`, `curator-memory.md` | do not sync; report |

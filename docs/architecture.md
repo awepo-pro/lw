@@ -102,7 +102,7 @@ rationale attached.
 | `internal/hub` | Phone sync engine, protocol, scope validation, and device management |
 | `internal/hubserver` | Loopback HTTP server behind tailscale serve for phone sync |
 | `internal/storage` | Content-addressed storage for non-wiki files (`storage/`, `.llmwiki/storage.json`) |
-| `internal/ledger` | Grammar v1 expense tracking validation and aggregation (`check`, `sum`) |
+| `internal/ledger` | Loose central file (`bookkeeping.md`), day notes, and reports (`check`, `sum`, `report`, `collect`, `import`) |
 | `internal/trace` | Turn tracing and inspection under `.llmwiki/traces/` |
 | `internal/cite` | Parsing and grammar for `^[source]` and `^[source p.N]` provenance markers |
 | `internal/web` | Search provider client (Tavily) behind `web.search` |
