@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -422,6 +423,18 @@ func (r *runner) procErr(ctx context.Context, bin string, c call) (string, strin
 	return stdout.String(), stderr.String(), &cmdError{stderr: stderr.String(), err: err}
 }
 
+func (r *runner) isVaultGitLock(path string) bool {
+	cleanPath := filepath.Clean(path)
+	for _, root := range []string{r.o.Dir, realPath(r.o.Dir)} {
+		gitDir := filepath.Clean(filepath.Join(root, ".git"))
+		rel, err := filepath.Rel(gitDir, cleanPath)
+		if err == nil && !strings.HasPrefix(rel, "..") && rel != "." {
+			return true
+		}
+	}
+	return false
+}
+
 // gitCall runs one git call with the lw identity and flags and returns stdout.
 func (r *runner) gitCall(ctx context.Context, c call) (string, error) {
 	args := append([]string{
@@ -433,6 +446,22 @@ func (r *runner) gitCall(ctx context.Context, c call) (string, error) {
 	var ce *cmdError
 	if errors.As(err, &ce) {
 		if p := r.lockPath(ce.stderr); p != "" {
+			if r.isVaultGitLock(p) {
+				if fi, serr := os.Stat(p); serr == nil && time.Since(fi.ModTime()) > 10*time.Minute {
+					if rerr := os.Remove(p); rerr == nil {
+						slog.Info("sync: removed stale git lock", "path", p, "age", time.Since(fi.ModTime()))
+						// retry that call at most once
+						out2, err2 := r.proc(ctx, r.git, c)
+						var ce2 *cmdError
+						if errors.As(err2, &ce2) {
+							if p2 := r.lockPath(ce2.stderr); p2 != "" {
+								return out2, &lockError{path: p2}
+							}
+						}
+						return out2, err2
+					}
+				}
+			}
 			return out, &lockError{path: p}
 		}
 	}

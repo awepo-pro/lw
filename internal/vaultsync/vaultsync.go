@@ -52,6 +52,13 @@ const Ignore = "# managed by lw sync: per-PC state, never synced\n" +
 	"/.obsidian/cache\n" +
 	"/" + vault.StorageDir + "/\n" +
 	"/ledger/receipts/\n" +
+	"/.llmwiki/.storage-json-tmp-*\n" +
+	"*.lw-tmp\n" +
+	"/.trash/\n" +
+	".#*\n" +
+	"\\#*#\n" +
+	"*~\n" +
+	".*.sw?\n" +
 	".DS_Store\n"
 
 // Branch is the one branch lw sync uses, locally and on the remote.

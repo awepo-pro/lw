@@ -31,6 +31,7 @@ type watchLoop struct {
 	cycle                    func() error                     // one full sync, as plain `lw sync`
 	logf                     func(format string, a ...any)    // one line per call
 
+	retry           bool
 	firstDirty      time.Time
 	lastRemoteCheck time.Time
 	nextRemoteCheck time.Time
@@ -40,6 +41,50 @@ type watchLoop struct {
 	lastDirtyErr    string
 	lastRemoteErr   string
 	heldDeletions   bool
+}
+
+func isSyncBusy(err error) bool {
+	return errors.Is(err, errSyncBusy) || errors.Is(err, errBusyTryAgain)
+}
+
+func (w *watchLoop) recordCycleResult(err error, currentTime time.Time) {
+	w.nextRemoteCheck = currentTime.Add(w.interval)
+	if err != nil {
+		if isSyncBusy(err) {
+			// FW1: busy is not an error; no log line, no backoff, next tick tries again
+			w.retry = true
+			return
+		}
+		// FW2: real error sets retry, backoff sequence: quiet for first failure, then 2*interval, doubling, cap 5 min
+		w.retry = true
+		errStr := err.Error()
+		if errStr != w.lastCycleErr {
+			w.logf("sync: %v", err)
+			w.lastCycleErr = errStr
+		}
+		if w.backoffDuration == 0 {
+			w.backoffDuration = w.quiet
+		} else if w.backoffDuration == w.quiet {
+			w.backoffDuration = 2 * w.interval
+		} else {
+			w.backoffDuration *= 2
+			if w.backoffDuration > 5*time.Minute {
+				w.backoffDuration = 5 * time.Minute
+			}
+		}
+		w.backoffUntil = currentTime.Add(w.backoffDuration)
+		return
+	}
+
+	// Success
+	if w.lastCycleErr != "" || w.backoffDuration > 0 {
+		w.logf("sync: recovered")
+	}
+	w.retry = false
+	w.lastCycleErr = ""
+	w.backoffDuration = 0
+	w.backoffUntil = time.Time{}
+	w.firstDirty = time.Time{}
 }
 
 func (w *watchLoop) step() {
@@ -79,6 +124,11 @@ func (w *watchLoop) step() {
 	}
 	w.heldDeletions = false
 
+	backoffActive := !w.backoffUntil.IsZero() && currentTime.Before(w.backoffUntil)
+
+	// FW2: when the backoff has passed, step runs the cycle again whatever dirty and remote say
+	retryTrigger := w.retry && !backoffActive
+
 	// Local dirty check
 	localTrigger := false
 	if len(st.Paths) > 0 {
@@ -99,7 +149,7 @@ func (w *watchLoop) step() {
 	// Remote check (W4)
 	remoteTrigger := false
 	remoteDue := w.nextRemoteCheck.IsZero() || !currentTime.Before(w.nextRemoteCheck)
-	if !localTrigger && remoteDue {
+	if !retryTrigger && !localTrigger && remoteDue {
 		w.nextRemoteCheck = currentTime.Add(w.interval)
 		changed, rerr := w.remote()
 		if rerr != nil {
@@ -116,44 +166,28 @@ func (w *watchLoop) step() {
 		}
 	}
 
-	if !localTrigger && !remoteTrigger {
+	if !retryTrigger && !localTrigger && !remoteTrigger {
 		return
 	}
 
-	// Backoff check (W5)
-	if !w.backoffUntil.IsZero() && currentTime.Before(w.backoffUntil) {
+	// Backoff check (W5: local change during backoff does not shorten it)
+	if backoffActive {
 		return
 	}
 
 	// Run cycle
 	err = w.cycle()
-	w.nextRemoteCheck = currentTime.Add(w.interval)
-	if err != nil {
-		errStr := err.Error()
-		if errStr != w.lastCycleErr {
-			w.logf("sync: %v", err)
-			w.lastCycleErr = errStr
-		}
-		if w.backoffDuration == 0 {
-			w.backoffDuration = 2 * w.interval
-		} else {
-			w.backoffDuration *= 2
-			if w.backoffDuration > 5*time.Minute {
-				w.backoffDuration = 5 * time.Minute
-			}
-		}
-		w.backoffUntil = currentTime.Add(w.backoffDuration)
-		return
-	}
+	w.recordCycleResult(err, currentTime)
+}
 
-	// Success
-	if w.lastCycleErr != "" || w.backoffDuration > 0 {
-		w.logf("sync: recovered")
+func (w *watchLoop) initStartCycle() {
+	nowFn := time.Now
+	if w.now != nil {
+		nowFn = w.now
 	}
-	w.lastCycleErr = ""
-	w.backoffDuration = 0
-	w.backoffUntil = time.Time{}
-	w.firstDirty = time.Time{}
+	currentTime := nowFn()
+	err := w.cycle()
+	w.recordCycleResult(err, currentTime)
 }
 
 func lockWatch(root string) (release func(), err error) {
@@ -295,25 +329,17 @@ func cmdSyncWatch(args []string, vaultDefault string) error {
 	defer releaseLock()
 
 	tw := &timestampWriter{dst: os.Stdout}
+	var ct conflictTracker
 	cycle := func() error {
 		cctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		defer tw.Flush()
-		return runSyncCycle(cctx, root, o, tw, os.Stderr, false, true, nil)
+		return runSyncCycle(cctx, root, o, tw, os.Stderr, false, true, nil, &ct)
 	}
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(sigCh)
-
-	// Runs one cycle at start
-	_ = cycle()
-
-	select {
-	case <-sigCh:
-		return nil
-	default:
-	}
 
 	w := &watchLoop{
 		quiet:    *quietFlag,
@@ -333,7 +359,15 @@ func cmdSyncWatch(args []string, vaultDefault string) error {
 		cycle: cycle,
 		logf:  watchLogf,
 	}
-	w.nextRemoteCheck = time.Now().Add(*intervalFlag)
+
+	// Runs one cycle at start through same error handling (FW3)
+	w.initStartCycle()
+
+	select {
+	case <-sigCh:
+		return nil
+	default:
+	}
 
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
@@ -389,6 +423,7 @@ func cmdSyncInstall(args []string, vaultDefault string) error {
 		return err
 	}
 
+	pathEnv := os.Getenv("PATH")
 	if syncInstallGOOS == "darwin" {
 		fmt.Printf(`# ~/Library/LaunchAgents/pro.awepo.lw-sync.plist
 <?xml version="1.0" encoding="UTF-8"?>
@@ -405,6 +440,11 @@ func cmdSyncInstall(args []string, vaultDefault string) error {
 		<string>--vault</string>
 		<string>%s</string>
 	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>%s</string>
+	</dict>
 	<key>RunAtLoad</key>
 	<true/>
 	<key>KeepAlive</key>
@@ -414,7 +454,7 @@ func cmdSyncInstall(args []string, vaultDefault string) error {
 
 # Commands to enable and run:
 launchctl load -w ~/Library/LaunchAgents/pro.awepo.lw-sync.plist
-`, absExe, absRoot)
+`, absExe, absRoot, pathEnv)
 		return nil
 	}
 
@@ -426,6 +466,7 @@ After=network-online.target
 [Service]
 Type=simple
 ExecStart=%s sync watch --vault %s
+Environment="PATH=%s"
 Restart=on-failure
 RestartSec=10
 
@@ -435,6 +476,6 @@ WantedBy=default.target
 # Commands to enable and run:
 systemctl --user daemon-reload
 systemctl --user enable --now lw-sync.service
-`, absExe, absRoot)
+`, absExe, absRoot, pathEnv)
 	return nil
 }

@@ -252,38 +252,54 @@ func TestSyncWatch_W5_ErrorBackoff(t *testing.T) {
 		t.Fatalf("W5: logs = %v, want ['sync: connection refused']", logs)
 	}
 
-	// Initial backoff is 2*interval = 30s.
-	// Step at t=10s: local change occurs during backoff. Must NOT trigger cycle.
-	currentTime = time.Unix(1010, 0)
+	// Initial backoff is quiet = 3s (A-083-1).
+	// Step at t=1002s (2s < quiet): local change occurs during backoff. Must NOT trigger cycle.
+	currentTime = time.Unix(1002, 0)
 	w.step()
 	if cycles != 1 {
 		t.Fatalf("W5: cycle ran during backoff (cycles = %d, want 1)", cycles)
 	}
 
-	// Step at t=30s: backoff passed (1000 + 30s = 1030s). Cycle runs and fails again with same error.
-	currentTime = time.Unix(1030, 0)
+	// Step at t=1003s: backoff passed (1000 + 3s = 1003s). Cycle runs and fails again with same error.
+	currentTime = time.Unix(1003, 0)
 	w.step()
 	if cycles != 2 {
-		t.Fatalf("W5: cycle did not run after backoff (cycles = %d, want 2)", cycles)
+		t.Fatalf("W5: cycle did not run after quiet backoff (cycles = %d, want 2)", cycles)
 	}
 	// Identical error text must NOT be logged again!
 	if len(logs) != 1 {
 		t.Fatalf("W5: error logged again: logs = %v", logs)
 	}
 
-	// Next backoff doubled: 30s * 2 = 60s -> until 1030 + 60 = 1090s.
-	currentTime = time.Unix(1089, 0)
+	// Next backoff is 2*interval = 30s -> until 1003 + 30 = 1033s.
+	currentTime = time.Unix(1020, 0)
 	w.step()
 	if cycles != 2 {
+		t.Fatalf("W5: cycle ran before 2*interval backoff expired")
+	}
+
+	currentTime = time.Unix(1033, 0)
+	w.step()
+	if cycles != 3 {
+		t.Fatalf("W5: cycle did not run after 2*interval backoff (cycles = %d, want 3)", cycles)
+	}
+	if len(logs) != 1 {
+		t.Fatalf("W5: error logged again: logs = %v", logs)
+	}
+
+	// Next backoff doubled: 30s * 2 = 60s -> until 1033 + 60 = 1093s.
+	currentTime = time.Unix(1092, 0)
+	w.step()
+	if cycles != 3 {
 		t.Fatalf("W5: cycle ran before doubled backoff expired")
 	}
 
-	// Step at t=1090s: backoff passed. Cycle succeeds!
-	currentTime = time.Unix(1090, 0)
+	// Step at t=1093s: backoff passed. Cycle succeeds!
+	currentTime = time.Unix(1093, 0)
 	cycleErr = nil
 	w.step()
-	if cycles != 3 {
-		t.Fatalf("W5: cycle did not run at t=1090s (cycles = %d, want 3)", cycles)
+	if cycles != 4 {
+		t.Fatalf("W5: cycle did not run at t=1093s (cycles = %d, want 4)", cycles)
 	}
 	// Must log "sync: recovered"
 	if len(logs) != 2 || logs[1] != "sync: recovered" {
@@ -555,7 +571,7 @@ func TestSyncWatch_W11_Integration(t *testing.T) {
 			return sha != "" && sha != local, nil
 		},
 		cycle: func() error {
-			return runSyncCycle(context.Background(), aRoot, aOpts, &aOut, io.Discard, false, true, nil)
+			return runSyncCycle(context.Background(), aRoot, aOpts, &aOut, io.Discard, false, true, nil, nil)
 		},
 		logf: func(format string, args ...any) {},
 	}
@@ -588,7 +604,7 @@ func TestSyncWatch_W11_Integration(t *testing.T) {
 			return sha != "" && sha != local, nil
 		},
 		cycle: func() error {
-			return runSyncCycle(context.Background(), bRoot, bOpts, &bOut, io.Discard, false, true, nil)
+			return runSyncCycle(context.Background(), bRoot, bOpts, &bOut, io.Discard, false, true, nil, nil)
 		},
 		logf: func(format string, args ...any) {},
 	}
@@ -694,6 +710,11 @@ func TestSyncWatch_W13_InstallPrint(t *testing.T) {
 	if !strings.Contains(stdout, "ExecStart=") || !strings.Contains(stdout, "sync watch --vault") {
 		t.Errorf("W13 linux: missing ExecStart with sync watch --vault")
 	}
+	pathEnv := os.Getenv("PATH")
+	wantLinuxEnv := fmt.Sprintf("Environment=\"PATH=%s\"", pathEnv)
+	if !strings.Contains(stdout, wantLinuxEnv) {
+		t.Errorf("W13 linux: missing %s", wantLinuxEnv)
+	}
 	if !strings.Contains(stdout, "systemctl --user enable --now lw-sync.service") {
 		t.Errorf("W13 linux: missing systemctl command")
 	}
@@ -712,6 +733,10 @@ func TestSyncWatch_W13_InstallPrint(t *testing.T) {
 	}
 	if !strings.Contains(stdoutDarwin, "<key>RunAtLoad</key>") || !strings.Contains(stdoutDarwin, "<key>KeepAlive</key>") {
 		t.Errorf("W13 darwin: missing RunAtLoad or KeepAlive")
+	}
+	wantDarwinEnv := fmt.Sprintf("<key>EnvironmentVariables</key>\n\t<dict>\n\t\t<key>PATH</key>\n\t\t<string>%s</string>\n\t</dict>", pathEnv)
+	if !strings.Contains(stdoutDarwin, wantDarwinEnv) {
+		t.Errorf("W13 darwin: missing %s", wantDarwinEnv)
 	}
 	if !strings.Contains(stdoutDarwin, "launchctl load") {
 		t.Errorf("W13 darwin: missing launchctl load command")

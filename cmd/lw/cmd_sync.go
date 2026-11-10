@@ -328,10 +328,14 @@ func syncRun(vaultPath string, takeRemote bool) error {
 	ctx, stop := syncContext()
 	defer stop()
 
-	return runSyncCycle(ctx, root, o, os.Stdout, os.Stderr, takeRemote, false, tracker)
+	return runSyncCycle(ctx, root, o, os.Stdout, os.Stderr, takeRemote, false, tracker, nil)
 }
 
-func runSyncCycle(ctx context.Context, root string, o vaultsync.Options, stdout, stderr io.Writer, takeRemote, quietUpToDate bool, tracker *waitingNoteTracker) error {
+type conflictTracker struct {
+	last []string
+}
+
+func runSyncCycle(ctx context.Context, root string, o vaultsync.Options, stdout, stderr io.Writer, takeRemote, quietUpToDate bool, tracker *waitingNoteTracker, ct *conflictTracker) error {
 	// 066: what storage does is told AFTER the git phase (R5), so its errors are
 	// collected, not returned. If the git phase itself fails they are only logged:
 	// the lines say "wiki synced", and it did not.
@@ -381,7 +385,7 @@ func runSyncCycle(ctx context.Context, root string, o vaultsync.Options, stdout,
 	remote := st.Remote
 	if pulled > 0 {
 		fmt.Fprintf(stdout, "pulled %d commit(s) from %s\n", pulled, remote)
-		if err := printIndexRebuild(root); err != nil {
+		if err := printIndexRebuildTo(stdout, root); err != nil {
 			return err
 		}
 	}
@@ -421,17 +425,38 @@ func runSyncCycle(ctx context.Context, root string, o vaultsync.Options, stdout,
 	if tracker != nil {
 		tracker.maybePrintNote(nil)
 	}
-	printConflictCopies(stdout, root)
+	printConflictCopies(stdout, root, ct)
 	if err := issues.finish(stderr); err != nil {
 		return err
 	}
 	return nil
 }
 
-func printConflictCopies(w io.Writer, root string) {
+func sameStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func printConflictCopies(w io.Writer, root string, ct *conflictTracker) {
 	conflicts := findConflictCopies(root)
 	if len(conflicts) == 0 {
+		if ct != nil {
+			ct.last = nil
+		}
 		return
+	}
+	if ct != nil && sameStrings(conflicts, ct.last) {
+		return
+	}
+	if ct != nil {
+		ct.last = append([]string(nil), conflicts...)
 	}
 	word := "copies"
 	if len(conflicts) == 1 {
@@ -499,12 +524,16 @@ func syncTake(ctx context.Context, root string, o vaultsync.Options) error {
 // says so. It is doctor --rebuild-index's own rebuild, run because the pull
 // changed the pages the index is built from.
 func printIndexRebuild(root string) error {
+	return printIndexRebuildTo(os.Stdout, root)
+}
+
+func printIndexRebuildTo(w io.Writer, root string) error {
 	rebuilt, err := rebuildIndexIfStale(root)
 	if err != nil {
 		return fmt.Errorf("rebuild the search index: %w", err)
 	}
 	if rebuilt {
-		fmt.Println("rebuilt the search index")
+		fmt.Fprintln(w, "rebuilt the search index")
 	}
 	return nil
 }
