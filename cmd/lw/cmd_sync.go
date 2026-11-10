@@ -39,6 +39,9 @@ func syncUsage(w io.Writer) {
        lw sync status [--vault P]               show ahead/behind against the remote, without changing anything
        lw sync init <remote> [--vault P]        put this vault under lw sync and push it to an empty remote
        lw sync clone <remote> <dir>             copy a synced vault from its remote to this PC
+       lw sync watch [--vault P] [--interval D] [--quiet D]
+                                                sync continuously when the tree is dirty or remote moves
+       lw sync install --print [--vault P]      print systemd user service or launchd plist
 
 A remote is host:path (over ssh), an ssh:// URL or a local path; the server needs
 only sshd and git. [sync] remotes in config.toml lists them, tried in order.
@@ -51,6 +54,10 @@ different pages — and pushes them; HEAD from before is kept in refs/lw/pre-reb
 A conflict (the same page edited on both, or an lw commit on each side) is refused
 and nothing changes; --take-remote then keeps the remote and saves this PC's
 commits on a branch named lw-diverged-<time>.
+
+lw sync watch runs unattended: it never passes --take-remote (diverged commits must
+be inspected by hand), and it holds every cycle if more than 20 tracked files and
+more than a quarter of the vault are deleted until confirmed with plain lw sync or restored.
 
 Files stored with lw storage travel beside git, never inside it: lw sync uploads the
 ones the catalog names to <remote>.storage/objects/ before it pulls (so before it
@@ -123,6 +130,10 @@ func cmdSync(args []string) error {
 			return &exitError{code: 2}
 		}
 		return syncClone(pos[0], pos[1])
+	case "watch":
+		return cmdSyncWatch(subArgs, *vaultPath)
+	case "install":
+		return cmdSyncInstall(subArgs, *vaultPath)
 	}
 	fmt.Fprintf(os.Stderr, "lw sync: unknown subcommand %q\n", rest[0])
 	syncUsage(os.Stderr)
@@ -314,12 +325,16 @@ func syncRun(vaultPath string, takeRemote bool) error {
 	ctx, stop := syncContext()
 	defer stop()
 
+	return runSyncCycle(ctx, root, o, os.Stdout, os.Stderr, takeRemote, false, tracker)
+}
+
+func runSyncCycle(ctx context.Context, root string, o vaultsync.Options, stdout, stderr io.Writer, takeRemote, quietUpToDate bool, tracker *waitingNoteTracker) error {
 	// 066: what storage does is told AFTER the git phase (R5), so its errors are
 	// collected, not returned. If the git phase itself fails they are only logged:
 	// the lines say "wiki synced", and it did not.
 	var issues storageIssues
 	if warn := storageUnsupportedWarning(root, o); warn != "" {
-		fmt.Fprintln(os.Stderr, warn)
+		fmt.Fprintln(stderr, warn)
 	}
 	// X-2: the payloads this PC holds go up before anything can refuse or reshape
 	// the vault, and on EVERY run, not only when it pushes (C-066-1): a failed upload
@@ -327,7 +342,7 @@ func syncRun(vaultPath string, takeRemote bool) error {
 	// otherwise find no push to hang the upload on. A catalog edit that is about to be
 	// taken away (--take-remote) or rebased still names bytes that must exist
 	// somewhere afterwards. Content before pointer (B6).
-	endNotice := slowNotice(os.Stderr, "uploading storage files")
+	endNotice := slowNotice(stderr, "uploading storage files")
 	issues.add(storageUpload(ctx, root, o))
 	endNotice()
 
@@ -341,10 +356,12 @@ func syncRun(vaultPath string, takeRemote bool) error {
 		if err := syncTake(ctx, root, o); err != nil {
 			return syncExplicitErr(err, vaultsync.State{})
 		}
-		if err := issues.finish(os.Stderr); err != nil {
+		if err := issues.finish(stderr); err != nil {
 			return err
 		}
-		tracker.maybePrintNote(nil)
+		if tracker != nil {
+			tracker.maybePrintNote(nil)
+		}
 		return nil
 	}
 
@@ -360,7 +377,7 @@ func syncRun(vaultPath string, takeRemote bool) error {
 	pulled := st.Pulled
 	remote := st.Remote
 	if pulled > 0 {
-		fmt.Printf("pulled %d commit(s) from %s\n", pulled, remote)
+		fmt.Fprintf(stdout, "pulled %d commit(s) from %s\n", pulled, remote)
 		if err := printIndexRebuild(root); err != nil {
 			return err
 		}
@@ -368,7 +385,7 @@ func syncRun(vaultPath string, takeRemote bool) error {
 	if st.Rebased > 0 {
 		// A divergence that conflicted with nothing: the local commits now sit
 		// on the remote's, and the push below sends them.
-		fmt.Println(rebasedLine("", st.Rebased, remote))
+		fmt.Fprintln(stdout, rebasedLine("", st.Rebased, remote))
 	}
 
 	// Only a commit this run made, or one that was already waiting (Ahead), has
@@ -386,19 +403,23 @@ func syncRun(vaultPath string, takeRemote bool) error {
 
 	switch {
 	case pushed > 0:
-		fmt.Printf("pushed %d commit(s) to %s\n", pushed, remote)
+		fmt.Fprintf(stdout, "pushed %d commit(s) to %s\n", pushed, remote)
 	case pulled == 0 && st.Rebased == 0:
-		fmt.Printf("up to date with %s\n", remote)
+		if !quietUpToDate {
+			fmt.Fprintf(stdout, "up to date with %s\n", remote)
+		}
 	}
 
 	// The git phase is done: bring in the payloads this PC lacks, then tell what
 	// went wrong with storage, if anything, and fail the command (R5).
-	endNotice = slowNotice(os.Stderr, "fetching storage files")
+	endNotice = slowNotice(stderr, "fetching storage files")
 	issues.add(storageFetch(ctx, root, o))
 	endNotice()
-	tracker.maybePrintNote(nil)
-	printConflictCopies(os.Stdout, root)
-	if err := issues.finish(os.Stderr); err != nil {
+	if tracker != nil {
+		tracker.maybePrintNote(nil)
+	}
+	printConflictCopies(stdout, root)
+	if err := issues.finish(stderr); err != nil {
 		return err
 	}
 	return nil
@@ -514,6 +535,9 @@ func syncStatus(vaultPath string) error {
 	}
 	if st.Diverged() {
 		fmt.Println("diverged — run lw sync for details")
+	}
+	if pid := runningWatchPid(root); pid != "" {
+		fmt.Printf("watch    running (pid %s)\n", pid)
 	}
 	return nil
 }
