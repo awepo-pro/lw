@@ -24,6 +24,9 @@ var (
 	// testConflictCopyPostHook is called after resolving an unmerged path.
 	testConflictCopyPostHook func(p string) error
 
+	// testRebaseContinueHook is called before rebase --continue for tests.
+	testRebaseContinueHook func() error
+
 	// testNowFunc overrides time.Now in tests.
 	testNowFunc func() time.Time
 )
@@ -31,6 +34,11 @@ var (
 // SetTestConflictCopyPostHook sets testConflictCopyPostHook for tests.
 func SetTestConflictCopyPostHook(fn func(p string) error) {
 	testConflictCopyPostHook = fn
+}
+
+// SetTestRebaseContinueHook sets testRebaseContinueHook for tests.
+func SetTestRebaseContinueHook(fn func() error) {
+	testRebaseContinueHook = fn
 }
 
 // unmergedPaths returns the sorted list of unmerged paths (diff-filter=U)
@@ -43,7 +51,6 @@ func (r *runner) unmergedPaths(ctx context.Context) ([]string, error) {
 	parts := strings.Split(out, "\x00")
 	var paths []string
 	for _, p := range parts {
-		p = strings.TrimSpace(p)
 		if p != "" {
 			paths = append(paths, filepath.ToSlash(p))
 		}
@@ -246,18 +253,30 @@ func (r *runner) continueOrSkip(ctx context.Context) error {
 				"-c", "core.editor=true", "rebase", "--skip"},
 			env: []string{"GIT_EDITOR=true", "GIT_SEQUENCE_EDITOR=true"},
 		})
-		if serr != nil && !r.gitRebaseRunning(ctx) {
-			return wrap("rebase --skip", serr)
+		if serr != nil {
+			if !r.gitRebaseRunning(ctx) {
+				return wrap("rebase --skip", serr)
+			}
+			unmerged, _ := r.unmergedPaths(ctx)
+			if len(unmerged) == 0 {
+				return wrap("rebase --skip", serr)
+			}
 		}
 		return nil
 	}
 
 	// Changes are staged: continue rebase
-	_, cerr := r.gitCall(ctx, call{
-		args: []string{"-c", "rebase.autoStash=false", "-c", "rebase.updateRefs=false", "-c", "rerere.enabled=false",
-			"-c", "core.editor=true", "rebase", "--continue"},
-		env: []string{"GIT_EDITOR=true", "GIT_SEQUENCE_EDITOR=true"},
-	})
+	var cerr error
+	if testRebaseContinueHook != nil {
+		cerr = testRebaseContinueHook()
+	}
+	if cerr == nil {
+		_, cerr = r.gitCall(ctx, call{
+			args: []string{"-c", "rebase.autoStash=false", "-c", "rebase.updateRefs=false", "-c", "rerere.enabled=false",
+				"-c", "core.editor=true", "rebase", "--continue"},
+			env: []string{"GIT_EDITOR=true", "GIT_SEQUENCE_EDITOR=true"},
+		})
+	}
 	if cerr != nil {
 		if !r.gitRebaseRunning(ctx) {
 			return wrap("rebase --continue", cerr)
@@ -270,9 +289,20 @@ func (r *runner) continueOrSkip(ctx context.Context) error {
 					"-c", "core.editor=true", "rebase", "--skip"},
 				env: []string{"GIT_EDITOR=true", "GIT_SEQUENCE_EDITOR=true"},
 			})
-			if serr != nil && !r.gitRebaseRunning(ctx) {
-				return wrap("rebase --skip", serr)
+			if serr != nil {
+				if !r.gitRebaseRunning(ctx) {
+					return wrap("rebase --skip", serr)
+				}
+				unmerged, _ := r.unmergedPaths(ctx)
+				if len(unmerged) == 0 {
+					return wrap("rebase --skip", serr)
+				}
 			}
+			return nil
+		}
+		unmerged, _ := r.unmergedPaths(ctx)
+		if len(unmerged) == 0 {
+			return wrap("rebase --continue", cerr)
 		}
 	}
 	return nil

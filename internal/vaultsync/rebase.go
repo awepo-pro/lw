@@ -491,6 +491,9 @@ func (r *runner) rebaseDiverged(ctx context.Context, st State, carry []carried, 
 				return st, false, errors.Join(cause, wrap("rebase --abort", aerr))
 			}
 		}
+		for _, f := range createdFiles {
+			_ = os.Remove(f)
+		}
 		afterRebaseAbort(ctx, r)
 		if !r.treeIsAt(ctx, pre) {
 			// The abort did not restore everything. The tree was clean of
@@ -548,7 +551,13 @@ func (r *runner) rebaseDiverged(ctx context.Context, st State, carry []carried, 
 			return st, false, nil
 		}
 
+		maxRounds := 2*st.Ahead + 4
+		rounds := 0
 		for r.gitRebaseRunning(ctx) {
+			rounds++
+			if rounds > maxRounds {
+				return giveUp(fmt.Errorf("vaultsync: rebase resolve loop exceeded limit of %d rounds", maxRounds))
+			}
 			unmerged, err := r.unmergedPaths(ctx)
 			if err != nil {
 				return giveUp(err)

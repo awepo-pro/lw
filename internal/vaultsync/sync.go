@@ -83,7 +83,8 @@ func (r *runner) commitWork(ctx context.Context, message string) (bool, error) {
 // global attributes or a .gitattributes inside the vault say (H1 of the S1
 // review: `* text=auto` rewrote CRLF).
 const infoAttributes = "* -text -eol -filter -ident -working-tree-encoding\n" +
-	"/.llmwiki/journal.ndjson merge=union\n"
+	"/.llmwiki/journal.ndjson merge=union\n" +
+	"/bookkeeping.md merge=union\n"
 
 // ensureAttributes keeps .git/info/attributes at infoAttributes.
 func (r *runner) ensureAttributes(ctx context.Context) error {

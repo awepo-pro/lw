@@ -23,7 +23,8 @@ import (
 func uniq(k int) string { return strconv.Itoa(200000 + os.Getpid()%100000 + k) }
 
 const wantInfoAttributes = "* -text -eol -filter -ident -working-tree-encoding\n" +
-	"/.llmwiki/journal.ndjson merge=union\n"
+	"/.llmwiki/journal.ndjson merge=union\n" +
+	"/bookkeeping.md merge=union\n"
 
 // H1: a user's git configuration must neither drop a vault file nor rewrite
 // its bytes. This user has ~/.config/git/ignore; a global attributesFile or a
