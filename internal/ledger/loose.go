@@ -77,8 +77,62 @@ var (
 		"december":  "12",
 		"dec":       "12",
 	}
+	monthLineOrder = []string{
+		"september", "february", "november", "december",
+		"january", "october", "august", "march", "april",
+		"june", "july", "sept", "jan", "feb", "mar",
+		"apr", "may", "jun", "jul", "aug", "sep", "oct",
+		"nov", "dec",
+	}
 	multiSpaceRegex = regexp.MustCompile(`\s+`)
 )
+
+func is4Digits(s string) bool {
+	if len(s) != 4 {
+		return false
+	}
+	for i := 0; i < 4; i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func normalizeFullWidth(line string) string {
+	var sb strings.Builder
+	for _, r := range line {
+		switch {
+		case r == '\uff0c':
+			sb.WriteByte(',')
+		case r == '\uff1a':
+			sb.WriteByte(':')
+		case r == '\uff0b':
+			sb.WriteByte('+')
+		case r == '\uff08':
+			sb.WriteByte('(')
+		case r == '\uff09':
+			sb.WriteByte(')')
+		case r == '\uff03':
+			sb.WriteByte('#')
+		case r == '\uff1d':
+			sb.WriteByte('=')
+		case r == '\uff04':
+			sb.WriteByte('$')
+		case r == '\uff0d':
+			sb.WriteByte('-')
+		case r == '\uff0e':
+			sb.WriteByte('.')
+		case r == '\u3000':
+			sb.WriteByte(' ')
+		case r >= '\uff10' && r <= '\uff19':
+			sb.WriteByte(byte('0' + (r - '\uff10')))
+		default:
+			sb.WriteRune(r)
+		}
+	}
+	return sb.String()
+}
 
 // parseLooseAmount converts an amount string (like "49.5" or "44") to integer cents without non-integer types.
 func parseLooseAmount(s string) (int64, error) {
@@ -214,7 +268,7 @@ func ParseLoose(path string, data []byte) (entries []Entry, issues []Issue, budg
 
 	lines := make([]string, len(splitLines))
 	for i, l := range splitLines {
-		lines[i] = strings.TrimRight(l, " \t\r")
+		lines[i] = normalizeFullWidth(strings.TrimRight(l, " \t\r"))
 	}
 
 	// G0 frontmatter: when line 1 is exactly `---` and a later line is exactly `---`, lines 1..that line are skipped.
@@ -663,103 +717,95 @@ func ParseLoose(path string, data []byte) (entries []Entry, issues []Issue, budg
 
 // tryParseMonthLine attempts to parse a G8 month line.
 func tryParseMonthLine(line string) (intermediateMonthLine, bool) {
-	// Look for last token as amount: digits with optional . and 1-2 digits
-	fields := strings.Fields(line)
-	if len(fields) < 3 {
+	// Guard: a day line starting with YYYY-MM-DD must never be parsed as a month line.
+	if dayLineRegex.MatchString(line) {
 		return intermediateMonthLine{}, false
 	}
 
-	lastTok := fields[len(fields)-1]
+	// The amount is digits with optional . and 1-2 digits, the LAST whitespace-delimited token.
+	lastSpaceIdx := strings.LastIndexAny(line, " \t")
+	if lastSpaceIdx == -1 {
+		return intermediateMonthLine{}, false
+	}
+	lastTok := strings.TrimSpace(line[lastSpaceIdx:])
 	m := budgetAmtRegex.FindStringSubmatch(lastTok)
 	if m == nil {
 		return intermediateMonthLine{}, false
 	}
 	amountStr := m[1]
 
-	// Find the sign: - or +
-	// Sign can have optional spaces around it.
-	// But sign must be after the MONTH [YYYY] part and before the label.
-	// Let's inspect the beginning of the line for MONTH and optional YYYY.
-	monthToken := fields[0]
-	explicitYear := ""
-	monthNum := ""
-	restIdx := 1
+	head := strings.TrimRight(line[:lastSpaceIdx], " \t")
+	if head == "" {
+		return intermediateMonthLine{}, false
+	}
 
-	// Check YYYY-MM
-	if len(monthToken) == 7 && monthToken[4] == '-' {
-		y := monthToken[:4]
-		mPart := monthToken[5:7]
-		if _, err := strconv.Atoi(y); err == nil {
-			if mVal, err := strconv.Atoi(mPart); err == nil && mVal >= 1 && mVal <= 12 {
-				explicitYear = y
-				monthNum = mPart
+	var explicitYear string
+	var monthNum string
+	var rem string
+
+	// Form A: YYYY-MM
+	if len(head) >= 7 && is4Digits(head[:4]) && head[4] == '-' {
+		mCandidate := head[5:7]
+		if mVal, err := strconv.Atoi(mCandidate); err == nil && mVal >= 1 && mVal <= 12 {
+			if len(head) == 7 || head[7] == ' ' || head[7] == '\t' || head[7] == '-' || head[7] == '+' {
+				explicitYear = head[:4]
+				monthNum = mCandidate
+				rem = head[7:]
 			}
 		}
 	}
 
-	// Check <N>\u6708
-	if monthNum == "" && strings.HasSuffix(monthToken, "\u6708") {
-		numStr := strings.TrimSuffix(monthToken, "\u6708")
-		if n, err := strconv.Atoi(numStr); err == nil && n >= 1 && n <= 12 {
-			monthNum = fmt.Sprintf("%02d", n)
-		}
-	}
-
-	// Check English month name
-	if monthNum == "" {
-		if mn, ok := monthLineMonths[strings.ToLower(monthToken)]; ok {
-			monthNum = mn
-		}
-	}
-
-	if monthNum == "" {
-		return intermediateMonthLine{}, false
-	}
-
-	// If explicitYear wasn't set by YYYY-MM, check if next field is a 4-digit year
-	if explicitYear == "" && restIdx < len(fields)-1 {
-		cand := fields[restIdx]
-		if len(cand) == 4 {
-			if _, err := strconv.Atoi(cand); err == nil {
-				explicitYear = cand
-				restIdx++
+	// Form B: <N>\u6708 (N 1..12)
+	if monthNum == "" && strings.Contains(head, "\u6708") {
+		idx := strings.Index(head, "\u6708")
+		if idx == 1 || idx == 2 {
+			nStr := head[:idx]
+			if n, err := strconv.Atoi(nStr); err == nil && n >= 1 && n <= 12 {
+				afterYue := head[idx+len("\u6708"):]
+				if afterYue == "" || afterYue[0] == ' ' || afterYue[0] == '\t' || afterYue[0] == '-' || afterYue[0] == '+' {
+					monthNum = fmt.Sprintf("%02d", n)
+					rem = afterYue
+				}
 			}
 		}
 	}
 
-	// What remains after MONTH [YYYY]:
-	// In the original line, find where MONTH [YYYY] ended.
-	var afterMonth string
-	if explicitYear != "" && len(monthToken) != 7 {
-		// Both monthToken and explicitYear were separate
-		idx1 := strings.Index(line, monthToken)
-		idx2 := strings.Index(line[idx1+len(monthToken):], explicitYear)
-		afterMonth = line[idx1+len(monthToken)+idx2+len(explicitYear):]
-	} else {
-		idx1 := strings.Index(line, monthToken)
-		afterMonth = line[idx1+len(monthToken):]
+	// Form C: English month name
+	if monthNum == "" {
+		lowerHead := strings.ToLower(head)
+		for _, cand := range monthLineOrder {
+			if strings.HasPrefix(lowerHead, cand) {
+				cLen := len(cand)
+				if len(head) > cLen && (head[cLen] == ' ' || head[cLen] == '\t' || head[cLen] == '-' || head[cLen] == '+') {
+					monthNum = monthLineMonths[cand]
+					rem = head[cLen:]
+					break
+				}
+			}
+		}
 	}
 
-	// In afterMonth, find the sign (- or +)
-	afterMonthTrimmed := strings.TrimLeft(afterMonth, " \t")
-	if len(afterMonthTrimmed) == 0 {
+	if monthNum == "" {
 		return intermediateMonthLine{}, false
 	}
 
-	signChar := afterMonthTrimmed[0]
-	if signChar != '-' && signChar != '+' {
-		return intermediateMonthLine{}, false
+	// Parse optional 4-digit YYYY if not already explicit from YYYY-MM
+	remTrimmed := strings.TrimLeft(rem, " \t")
+	if explicitYear == "" && len(remTrimmed) >= 4 && is4Digits(remTrimmed[:4]) {
+		if len(remTrimmed) == 4 || remTrimmed[4] == ' ' || remTrimmed[4] == '\t' || remTrimmed[4] == '-' || remTrimmed[4] == '+' {
+			explicitYear = remTrimmed[:4]
+			remTrimmed = strings.TrimLeft(remTrimmed[4:], " \t")
+		}
 	}
-	sign := string(signChar)
 
-	// After sign up to the last whitespace-delimited token is label
-	afterSign := afterMonthTrimmed[1:]
-	// The amount is the last token
-	lastIdx := strings.LastIndex(afterSign, lastTok)
-	if lastIdx == -1 {
+	// The sign is '-' or '+' with optional spaces around it
+	if len(remTrimmed) == 0 || (remTrimmed[0] != '-' && remTrimmed[0] != '+') {
 		return intermediateMonthLine{}, false
 	}
-	label := strings.TrimSpace(afterSign[:lastIdx])
+	sign := string(remTrimmed[0])
+
+	// Label is what lies between sign and amount, trimmed, not empty
+	label := strings.TrimSpace(remTrimmed[1:])
 	if label == "" {
 		return intermediateMonthLine{}, false
 	}

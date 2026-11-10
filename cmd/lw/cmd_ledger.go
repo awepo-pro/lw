@@ -114,6 +114,16 @@ func cmdLedgerCheck(args []string) error {
 	return &exitError{code: 1}
 }
 
+func nonWarnIssuesCount(issues []ledger.Issue) int {
+	var count int
+	for _, issue := range issues {
+		if !issue.Warn {
+			count++
+		}
+	}
+	return count
+}
+
 func cmdLedgerSum(args []string) error {
 	fl := flag.NewFlagSet("ledger sum", flag.ContinueOnError)
 	fl.SetOutput(os.Stderr)
@@ -150,8 +160,8 @@ func cmdLedgerSum(args []string) error {
 		return err
 	}
 
-	if len(book.Issues) > 0 {
-		fmt.Fprintf(os.Stderr, "lw: ledger: %d issue(s) found; totals may be wrong - run lw ledger check\n", len(book.Issues))
+	if n := nonWarnIssuesCount(book.Issues); n > 0 {
+		fmt.Fprintf(os.Stderr, "lw: ledger: %d issue(s) found; totals may be wrong - run lw ledger check\n", n)
 	}
 
 	type sumRow struct {
@@ -283,8 +293,8 @@ func cmdLedgerReport(args []string) error {
 		return err
 	}
 
-	if len(book.Issues) > 0 {
-		fmt.Fprintf(os.Stderr, "lw: ledger: %d issue(s) found; totals may be wrong - run lw ledger check\n", len(book.Issues))
+	if n := nonWarnIssuesCount(book.Issues); n > 0 {
+		fmt.Fprintf(os.Stderr, "lw: ledger: %d issue(s) found; totals may be wrong - run lw ledger check\n", n)
 	}
 
 	out := ledger.Report(book, month, today)
