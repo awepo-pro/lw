@@ -219,20 +219,24 @@ func ParseDayNote(path, date string, data []byte) DayNote {
 
 			pieces := splitPlusOutsideParens(rest)
 			for _, p := range pieces {
-				item, issue := parseDayNotePiece(p, lineNum, path)
-				if issue != nil {
-					issues = append(issues, *issue)
-				} else {
-					entries = append(entries, Entry{
-						Date:     date,
-						Month:    month,
-						Cents:    item.Cents,
-						Category: item.Tag,
-						Note:     item.Note,
-						Kind:     KindDay,
-						Path:     path,
-						Line:     lineNum,
-					})
+				commaPieces := splitCommaOutsideParens(p)
+				repaired := repairCommaPieces(commaPieces)
+				for _, cp := range repaired {
+					item, issue := parseDayNotePiece(cp, lineNum, path)
+					if issue != nil {
+						issues = append(issues, *issue)
+					} else {
+						entries = append(entries, Entry{
+							Date:     date,
+							Month:    month,
+							Cents:    item.Cents,
+							Category: item.Tag,
+							Note:     item.Note,
+							Kind:     KindDay,
+							Path:     path,
+							Line:     lineNum,
+						})
+					}
 				}
 			}
 			continue
@@ -250,20 +254,24 @@ func ParseDayNote(path, date string, data []byte) DayNote {
 
 		pieces := splitPlusOutsideParens(content)
 		for _, p := range pieces {
-			item, issue := parseDayNotePiece(p, lineNum, path)
-			if issue != nil {
-				issues = append(issues, *issue)
-			} else {
-				entries = append(entries, Entry{
-					Date:     date,
-					Month:    month,
-					Cents:    item.Cents,
-					Category: item.Tag,
-					Note:     item.Note,
-					Kind:     KindDay,
-					Path:     path,
-					Line:     lineNum,
-				})
+			commaPieces := splitCommaOutsideParens(p)
+			repaired := repairCommaPieces(commaPieces)
+			for _, cp := range repaired {
+				item, issue := parseDayNotePiece(cp, lineNum, path)
+				if issue != nil {
+					issues = append(issues, *issue)
+				} else {
+					entries = append(entries, Entry{
+						Date:     date,
+						Month:    month,
+						Cents:    item.Cents,
+						Category: item.Tag,
+						Note:     item.Note,
+						Kind:     KindDay,
+						Path:     path,
+						Line:     lineNum,
+					})
+				}
 			}
 		}
 	}
@@ -295,30 +303,33 @@ func parseDayNotePiece(p string, lineNum int, path string) (intermediateDayItem,
 		}
 	}
 
+	amtIndices, _ := amountTokensOutsideParens(p)
+	if len(amtIndices) >= 2 {
+		return intermediateDayItem{}, &Issue{
+			Path: path,
+			Line: lineNum,
+			Msg:  fmt.Sprintf("two numbers in %q (write 23 + 45, or put the note in parentheses)", p),
+		}
+	}
+	if len(amtIndices) == 0 {
+		return intermediateDayItem{}, &Issue{
+			Path: path,
+			Line: lineNum,
+			Msg:  fmt.Sprintf("no amount in %q", p),
+		}
+	}
+
 	// (a) G7 item (amount first)
 	m := dayItemRegex.FindStringSubmatch(p)
 	if m != nil {
 		tail := m[3]
-		if tail == "" || strings.HasPrefix(tail, " ") || strings.HasPrefix(tail, "\t") || strings.HasPrefix(tail, "(") {
-			tag, note, inParens := parseItemTailWithParens(tail)
-			if !inParens && note != "" {
-				noteTokens := strings.Fields(note)
-				if len(noteTokens) > 0 {
-					allNumbers := true
-					for _, tok := range noteTokens {
-						if !isNumberToken(tok) {
-							allNumbers = false
-							break
-						}
-					}
-					if allNumbers {
-						return intermediateDayItem{}, &Issue{
-							Path: path,
-							Line: lineNum,
-							Msg:  fmt.Sprintf("two numbers in %q (write 23 + 45, or put the note in parentheses)", p),
-						}
-					}
-				}
+		if tail == "" || strings.HasPrefix(tail, " ") || strings.HasPrefix(tail, "\t") || strings.HasPrefix(tail, "(") || strings.Trim(tail, ",;:. \t") == "" {
+			trimmedTail := strings.TrimLeft(tail, ",;: \t")
+			tag, note, _ := parseItemTailWithParens(trimmedTail)
+			note = strings.TrimRight(note, ",;:\t ")
+			if strings.HasPrefix(note, "(") && strings.HasSuffix(note, ")") {
+				note = strings.TrimSpace(note[1 : len(note)-1])
+				note = strings.TrimRight(note, ",;:\t ")
 			}
 
 			centsVal, err := parseLooseAmount(m[2])
@@ -359,15 +370,17 @@ func parseDayNotePiece(p string, lineNum int, path string) (intermediateDayItem,
 		}
 	}
 
-	var amtIndices []int
+	amtIdx := -1
 	for i, tok := range nonTags {
-		tokM := dayItemRegex.FindStringSubmatch(tok)
+		cleanTok := strings.TrimRight(tok, ",;:. \t")
+		tokM := dayItemRegex.FindStringSubmatch(cleanTok)
 		if tokM != nil && tokM[3] == "" {
-			amtIndices = append(amtIndices, i)
+			amtIdx = i
+			break
 		}
 	}
 
-	if len(amtIndices) == 0 {
+	if amtIdx == -1 {
 		return intermediateDayItem{}, &Issue{
 			Path: path,
 			Line: lineNum,
@@ -375,17 +388,9 @@ func parseDayNotePiece(p string, lineNum int, path string) (intermediateDayItem,
 		}
 	}
 
-	if len(amtIndices) >= 2 {
-		return intermediateDayItem{}, &Issue{
-			Path: path,
-			Line: lineNum,
-			Msg:  fmt.Sprintf("two numbers in %q (write 23 + 45, or put the note in parentheses)", p),
-		}
-	}
-
-	amtIdx := amtIndices[0]
 	amtTok := nonTags[amtIdx]
-	tokM := dayItemRegex.FindStringSubmatch(amtTok)
+	cleanAmtTok := strings.TrimRight(amtTok, ",;:. \t")
+	tokM := dayItemRegex.FindStringSubmatch(cleanAmtTok)
 	centsVal, err := parseLooseAmount(tokM[2])
 	if err != nil {
 		return intermediateDayItem{}, &Issue{

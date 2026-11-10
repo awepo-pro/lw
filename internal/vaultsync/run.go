@@ -448,6 +448,9 @@ func (r *runner) gitCall(ctx context.Context, c call) (string, error) {
 		if p := r.lockPath(ce.stderr); p != "" {
 			if r.isVaultGitLock(p) {
 				if fi, serr := os.Stat(p); serr == nil && time.Since(fi.ModTime()) > 10*time.Minute {
+					// Git locks carry no pid, so a clock jump or an external git command
+					// that legitimately runs more than 10 minutes can lose its lock; git then
+					// fails that command cleanly ("unable to commit lock file") and the index is intact.
 					if rerr := os.Remove(p); rerr == nil {
 						slog.Info("sync: removed stale git lock", "path", p, "age", time.Since(fi.ModTime()))
 						// retry that call at most once

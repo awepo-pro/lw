@@ -32,25 +32,52 @@ type watchLoop struct {
 	logf                     func(format string, a ...any)    // one line per call
 	collect                  func(today string) error         // runs batch collect + import before cycle
 
-	retry           bool
-	firstDirty      time.Time
-	lastRemoteCheck time.Time
-	nextRemoteCheck time.Time
-	backoffUntil    time.Time
-	backoffDuration time.Duration
-	lastCycleErr    string
-	lastDirtyErr    string
-	lastRemoteErr   string
-	heldDeletions   bool
-	lastCollectDay  string
-	lastCollectErr  string
+	retry            bool
+	firstDirty       time.Time
+	lastRemoteCheck  time.Time
+	nextRemoteCheck  time.Time
+	backoffUntil     time.Time
+	backoffDuration  time.Duration
+	lastCycleErr     string
+	lastDirtyErr     string
+	lastRemoteErr    string
+	heldDeletions    bool
+	lastCollectDay   string
+	lastCollectErr   string
+	nextCollectRetry time.Time
 }
 
 func isSyncBusy(err error) bool {
 	return errors.Is(err, errSyncBusy) || errors.Is(err, errBusyTryAgain)
 }
 
+func (w *watchLoop) runCollect(today string) {
+	if w.collect == nil {
+		return
+	}
+	if err := w.collect(today); err != nil {
+		errStr := err.Error()
+		if errStr != w.lastCollectErr {
+			w.logf("sync: %v", err)
+			w.lastCollectErr = errStr
+		}
+		nowFn := time.Now
+		if w.now != nil {
+			nowFn = w.now
+		}
+		w.nextCollectRetry = nowFn().Add(60 * time.Second)
+	} else {
+		w.lastCollectDay = today
+		w.lastCollectErr = ""
+		w.nextCollectRetry = time.Time{}
+	}
+}
+
 func (w *watchLoop) recordCycleResult(err error, currentTime time.Time) {
+	w.recordCycleResultWithCollect(err, currentTime, true)
+}
+
+func (w *watchLoop) recordCycleResultWithCollect(err error, currentTime time.Time, runPostCollect bool) {
 	w.nextRemoteCheck = currentTime.Add(w.interval)
 	if err != nil {
 		if isSyncBusy(err) {
@@ -88,6 +115,12 @@ func (w *watchLoop) recordCycleResult(err error, currentTime time.Time) {
 	w.backoffDuration = 0
 	w.backoffUntil = time.Time{}
 	w.firstDirty = time.Time{}
+
+	// R2: collect runs after every successful sync cycle
+	if runPostCollect && w.collect != nil {
+		today := currentTime.Format("2006-01-02")
+		w.runCollect(today)
+	}
 }
 
 func (w *watchLoop) step() {
@@ -170,7 +203,7 @@ func (w *watchLoop) step() {
 	}
 
 	today := currentTime.Format("2006-01-02")
-	dateTrigger := (w.collect != nil && today != w.lastCollectDay)
+	dateTrigger := (w.collect != nil && ((today != w.lastCollectDay && w.nextCollectRetry.IsZero()) || (!w.nextCollectRetry.IsZero() && !currentTime.Before(w.nextCollectRetry))))
 
 	if !retryTrigger && !localTrigger && !remoteTrigger && !dateTrigger {
 		return
@@ -181,22 +214,13 @@ func (w *watchLoop) step() {
 		return
 	}
 
-	if w.collect != nil && today != w.lastCollectDay {
-		w.lastCollectDay = today
-		if err := w.collect(today); err != nil {
-			errStr := err.Error()
-			if errStr != w.lastCollectErr {
-				w.logf("sync: %v", err)
-				w.lastCollectErr = errStr
-			}
-		} else {
-			w.lastCollectErr = ""
-		}
+	if dateTrigger {
+		w.runCollect(today)
 	}
 
 	// Run cycle
 	err = w.cycle()
-	w.recordCycleResult(err, currentTime)
+	w.recordCycleResultWithCollect(err, currentTime, !dateTrigger)
 }
 
 func (w *watchLoop) initStartCycle() {
@@ -207,19 +231,10 @@ func (w *watchLoop) initStartCycle() {
 	currentTime := nowFn()
 	if w.collect != nil {
 		today := currentTime.Format("2006-01-02")
-		w.lastCollectDay = today
-		if err := w.collect(today); err != nil {
-			errStr := err.Error()
-			if errStr != w.lastCollectErr {
-				w.logf("sync: %v", err)
-				w.lastCollectErr = errStr
-			}
-		} else {
-			w.lastCollectErr = ""
-		}
+		w.runCollect(today)
 	}
 	err := w.cycle()
-	w.recordCycleResult(err, currentTime)
+	w.recordCycleResultWithCollect(err, currentTime, false)
 }
 
 func lockWatch(root string) (release func(), err error) {
@@ -325,6 +340,64 @@ func watchLogf(format string, a ...any) {
 	fmt.Fprintf(os.Stdout, "%s %s\n", ts, msg)
 }
 
+type collectTracker struct {
+	lastWaitingSkipped string
+}
+
+func (ct *collectTracker) filterAndPrint(tw io.Writer, output string) bool {
+	lines := strings.Split(output, "\n")
+	var waitingSkipped []string
+	noteCollected := false
+	receiptStored := false
+
+	for _, l := range lines {
+		trimmed := strings.TrimSpace(l)
+		if trimmed == "" {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "collected ") && !strings.HasPrefix(trimmed, "collected 0 ") {
+			noteCollected = true
+		}
+		if strings.HasPrefix(trimmed, "would collect ") && !strings.HasPrefix(trimmed, "would collect 0 ") {
+			noteCollected = true
+		}
+		if strings.HasPrefix(trimmed, "stored ") {
+			receiptStored = true
+		}
+		if strings.Contains(trimmed, " stored, ") && !strings.HasPrefix(trimmed, "0 stored, ") {
+			receiptStored = true
+		}
+		if strings.HasPrefix(trimmed, "waiting ") || strings.HasPrefix(trimmed, "skipped ") {
+			waitingSkipped = append(waitingSkipped, trimmed)
+		}
+	}
+
+	wsKey := strings.Join(waitingSkipped, "\n")
+	wsChanged := (wsKey != ct.lastWaitingSkipped)
+
+	shouldPrint := false
+	if noteCollected || receiptStored {
+		shouldPrint = true
+		ct.lastWaitingSkipped = wsKey
+	} else if len(waitingSkipped) > 0 && wsChanged {
+		shouldPrint = true
+		ct.lastWaitingSkipped = wsKey
+	} else if len(waitingSkipped) == 0 {
+		ct.lastWaitingSkipped = ""
+	}
+
+	if shouldPrint {
+		for _, l := range lines {
+			trimmed := strings.TrimRight(l, "\r\n")
+			if trimmed != "" {
+				fmt.Fprintln(tw, trimmed)
+			}
+		}
+		return true
+	}
+	return false
+}
+
 func cmdSyncWatch(args []string, vaultDefault string) error {
 	fs := flag.NewFlagSet("sync watch", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -376,12 +449,26 @@ func cmdSyncWatch(args []string, vaultDefault string) error {
 
 	var collectFn func(today string) error
 	if *collectFlag {
+		var ct collectTracker
+		firstCollect := true
 		collectFn = func(today string) error {
 			defer tw.Flush()
-			if err := collectDayNotes(tw, root, today, false, false); err != nil {
+			var buf bytes.Buffer
+			if err := collectDayNotes(&buf, root, today, false, false); err != nil {
 				return err
 			}
-			return importReceipts(tw, root, false)
+			// importReceipts hashes every file under ledger/receipts/. It runs once
+			// at start (receipts an earlier run left behind) and afterwards only
+			// when this collect moved a receipt, never on every sync cycle.
+			movedReceipt := strings.Contains(buf.String(), "run lw ledger import")
+			if firstCollect || movedReceipt {
+				if err := importReceipts(&buf, root, false); err != nil {
+					return err
+				}
+			}
+			firstCollect = false
+			ct.filterAndPrint(tw, buf.String())
+			return nil
 		}
 	}
 

@@ -230,9 +230,9 @@ commands:
   sync status                  show ahead/behind against the remote, without changing anything
   sync init <remote>           put this vault under lw sync and push it to an empty remote
   sync clone <remote> <dir>    copy a synced vault from its remote to this PC
-  sync watch                   sync continuously in the background
                                (lw sync owns the vault's .gitignore and rewrites it)
-  sync install --print         print systemd user service or launchd plist
+  sync watch [--collect]       keep the vault synced by itself; --collect also runs ledger collect each day
+  sync install --print         print a systemd user unit or launchd plist that runs sync watch
   hub serve [--vault P] [--port N]
                                serve phone sync on loopback
   hub status                   show hub status and diverged state
@@ -484,7 +484,7 @@ lw sync watch [--vault <dir>] [--interval <duration>] [--quiet <duration>] [--co
   - **Remote changes**: checks whether the remote branch has moved every interval (default 15 s, minimum 5 s).
   - **Retry**: if a cycle fails due to network or lock contention, retries with exponential backoff (starting at quiet duration, then doubling from 2×interval up to 5 minutes).
 - **`--collect` flag**:
-  `lw sync watch --collect` : once at start and whenever the date changes, the watcher runs `lw ledger collect` and `lw ledger import` before its next sync.
+  `lw sync watch --collect`: at start, whenever the date changes, and after every successful sync, the watcher runs `lw ledger collect`, and `lw ledger import` when a receipt was moved. Use it on one PC only; see [docs/bookkeeping.md](docs/bookkeeping.md).
 
 ### Service Installation (`lw sync install --print`)
 

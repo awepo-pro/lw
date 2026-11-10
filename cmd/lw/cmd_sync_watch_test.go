@@ -692,7 +692,124 @@ func TestSyncWatch_W13_InstallPrint(t *testing.T) {
 		t.Fatalf("W13: stderr = %q", stderr)
 	}
 
-	// With --print on Linux
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	absExe, err := filepath.Abs(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	absRoot, err := filepath.Abs(pc.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pathEnv := os.Getenv("PATH")
+
+	wantLinux := fmt.Sprintf(`# ~/.config/systemd/user/lw-sync.service
+[Unit]
+Description=llmwiki sync watch
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%s sync watch --vault %s
+Environment="PATH=%s"
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target
+
+# Commands to enable and run:
+systemctl --user daemon-reload
+systemctl --user enable --now lw-sync.service
+`, absExe, absRoot, pathEnv)
+
+	wantLinuxCollect := fmt.Sprintf(`# ~/.config/systemd/user/lw-sync.service
+[Unit]
+Description=llmwiki sync watch
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%s sync watch --vault %s --collect
+Environment="PATH=%s"
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target
+
+# Commands to enable and run:
+systemctl --user daemon-reload
+systemctl --user enable --now lw-sync.service
+`, absExe, absRoot, pathEnv)
+
+	wantDarwin := fmt.Sprintf(`# ~/Library/LaunchAgents/pro.awepo.lw-sync.plist
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>pro.awepo.lw-sync</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>%s</string>
+		<string>sync</string>
+		<string>watch</string>
+		<string>--vault</string>
+		<string>%s</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>%s</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+</dict>
+</plist>
+
+# Commands to enable and run:
+launchctl load -w ~/Library/LaunchAgents/pro.awepo.lw-sync.plist
+`, absExe, absRoot, pathEnv)
+
+	wantDarwinCollect := fmt.Sprintf(`# ~/Library/LaunchAgents/pro.awepo.lw-sync.plist
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>pro.awepo.lw-sync</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>%s</string>
+		<string>sync</string>
+		<string>watch</string>
+		<string>--collect</string>
+		<string>--vault</string>
+		<string>%s</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>%s</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+</dict>
+</plist>
+
+# Commands to enable and run:
+launchctl load -w ~/Library/LaunchAgents/pro.awepo.lw-sync.plist
+`, absExe, absRoot, pathEnv)
+
+	// With --print on Linux (without --collect)
 	oldGOOS := syncInstallGOOS
 	defer func() { syncInstallGOOS = oldGOOS }()
 	syncInstallGOOS = "linux"
@@ -701,45 +818,36 @@ func TestSyncWatch_W13_InstallPrint(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("W13 linux: code = %d, want 0", code)
 	}
-	if !strings.Contains(stdout, "# ~/.config/systemd/user/lw-sync.service") {
-		t.Errorf("W13 linux: missing unit path header")
-	}
-	if !strings.Contains(stdout, "Description=llmwiki sync watch") {
-		t.Errorf("W13 linux: missing description")
-	}
-	if !strings.Contains(stdout, "ExecStart=") || !strings.Contains(stdout, "sync watch --vault") {
-		t.Errorf("W13 linux: missing ExecStart with sync watch --vault")
-	}
-	pathEnv := os.Getenv("PATH")
-	wantLinuxEnv := fmt.Sprintf("Environment=\"PATH=%s\"", pathEnv)
-	if !strings.Contains(stdout, wantLinuxEnv) {
-		t.Errorf("W13 linux: missing %s", wantLinuxEnv)
-	}
-	if !strings.Contains(stdout, "systemctl --user enable --now lw-sync.service") {
-		t.Errorf("W13 linux: missing systemctl command")
+	if stdout != wantLinux {
+		t.Errorf("W13 linux mismatch:\ngot:\n%s\nwant:\n%s", stdout, wantLinux)
 	}
 
-	// With --print on Darwin
+	// With --print on Linux (with --collect)
+	stdoutCollect, _, codeCollect := pc.lw("sync", "install", "--print", "--collect", "--vault", pc.root)
+	if codeCollect != 0 {
+		t.Fatalf("W13 linux --collect: code = %d, want 0", codeCollect)
+	}
+	if stdoutCollect != wantLinuxCollect {
+		t.Errorf("W13 linux --collect mismatch:\ngot:\n%s\nwant:\n%s", stdoutCollect, wantLinuxCollect)
+	}
+
+	// With --print on Darwin (without --collect)
 	syncInstallGOOS = "darwin"
-	stdoutDarwin, _, code := pc.lw("sync", "install", "--print", "--vault", pc.root)
-	if code != 0 {
-		t.Fatalf("W13 darwin: code = %d, want 0", code)
+	stdoutDarwin, _, codeDarwin := pc.lw("sync", "install", "--print", "--vault", pc.root)
+	if codeDarwin != 0 {
+		t.Fatalf("W13 darwin: code = %d, want 0", codeDarwin)
 	}
-	if !strings.Contains(stdoutDarwin, "~/Library/LaunchAgents/pro.awepo.lw-sync.plist") {
-		t.Errorf("W13 darwin: missing plist path")
+	if stdoutDarwin != wantDarwin {
+		t.Errorf("W13 darwin mismatch:\ngot:\n%s\nwant:\n%s", stdoutDarwin, wantDarwin)
 	}
-	if !strings.Contains(stdoutDarwin, "pro.awepo.lw-sync") {
-		t.Errorf("W13 darwin: missing label")
+
+	// With --print on Darwin (with --collect)
+	stdoutDarwinCollect, _, codeDarwinCollect := pc.lw("sync", "install", "--print", "--collect", "--vault", pc.root)
+	if codeDarwinCollect != 0 {
+		t.Fatalf("W13 darwin --collect: code = %d, want 0", codeDarwinCollect)
 	}
-	if !strings.Contains(stdoutDarwin, "<key>RunAtLoad</key>") || !strings.Contains(stdoutDarwin, "<key>KeepAlive</key>") {
-		t.Errorf("W13 darwin: missing RunAtLoad or KeepAlive")
-	}
-	wantDarwinEnv := fmt.Sprintf("<key>EnvironmentVariables</key>\n\t<dict>\n\t\t<key>PATH</key>\n\t\t<string>%s</string>\n\t</dict>", pathEnv)
-	if !strings.Contains(stdoutDarwin, wantDarwinEnv) {
-		t.Errorf("W13 darwin: missing %s", wantDarwinEnv)
-	}
-	if !strings.Contains(stdoutDarwin, "launchctl load") {
-		t.Errorf("W13 darwin: missing launchctl load command")
+	if stdoutDarwinCollect != wantDarwinCollect {
+		t.Errorf("W13 darwin --collect mismatch:\ngot:\n%s\nwant:\n%s", stdoutDarwinCollect, wantDarwinCollect)
 	}
 }
 

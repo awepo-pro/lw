@@ -226,4 +226,40 @@ func TestDayNote_D7(t *testing.T) {
 			t.Errorf("extra %d note mismatch: got %q, want %q", i, entriesExtra[i].Note, noteExtra.Entries[i].Note)
 		}
 	}
+
+	// Round trip for R1 inputs: 44, 55; kfc 45, mcd 55; lunch with sam, 88; 45, kfc; 6 (bus 26); 7仔 49.5; 44,
+	r1Inputs := []string{
+		"44, 55\n",
+		"kfc 45, mcd 55\n",
+		"lunch with sam, 88\n",
+		"45, kfc\n",
+		"6 (bus 26)\n",
+		"7\u4ed4 49.5\n",
+		"44,\n",
+	}
+	for _, in := range r1Inputs {
+		n := ParseDayNote("2026-11-10.md", "2026-11-10", []byte(in))
+		if len(n.Issues) != 0 {
+			t.Fatalf("R1 input %q has issues: %+v", in, n.Issues)
+		}
+		cl := CentralLine("2026-11-10", n.Entries)
+		e, iss, _, _ := ParseLoose("bookkeeping.md", []byte(cl+"\n"))
+		if len(iss) != 0 {
+			t.Fatalf("R1 input %q CentralLine %q ParseLoose issues: %+v", in, cl, iss)
+		}
+		if len(e) != len(n.Entries) {
+			t.Fatalf("R1 input %q entry count mismatch: got %d, want %d", in, len(e), len(n.Entries))
+		}
+		for i := range e {
+			if e[i].Cents != n.Entries[i].Cents {
+				t.Errorf("R1 input %q entry %d cents mismatch: %d vs %d", in, i, e[i].Cents, n.Entries[i].Cents)
+			}
+			if e[i].Note != n.Entries[i].Note {
+				t.Errorf("R1 input %q entry %d note mismatch: %q vs %q", in, i, e[i].Note, n.Entries[i].Note)
+			}
+			if e[i].Category != n.Entries[i].Category {
+				t.Errorf("R1 input %q entry %d cat mismatch: %q vs %q", in, i, e[i].Category, n.Entries[i].Category)
+			}
+		}
+	}
 }

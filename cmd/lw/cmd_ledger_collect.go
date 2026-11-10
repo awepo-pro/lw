@@ -17,6 +17,8 @@ import (
 
 var dayNoteFileNameRegex = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}\.md$`)
 
+var collectStepHook func(step string) error
+
 type candidateNote struct {
 	path string
 	name string
@@ -342,6 +344,11 @@ func processReadableCandidate(w io.Writer, root string, cand candidateNote, entr
 			return 0, 1, 0, nil
 		}
 	}
+	if collectStepHook != nil {
+		if err := collectStepHook("archive-check"); err != nil {
+			return 0, 0, 0, err
+		}
+	}
 
 	// 3b. bookkeeping.md append check
 	centralLine := ledger.CentralLine(cand.date, entries)
@@ -412,29 +419,13 @@ func processReadableCandidate(w io.Writer, root string, cand candidateNote, entr
 			}
 		}
 	}
-
-	// 3c. Move note to archive path
-	if !dryRun {
-		if archExists {
-			// Identical copy already in archive: remove source
-			if err := os.Remove(cand.path); err != nil && !os.IsNotExist(err) {
-				return 0, 0, 0, err
-			}
-		} else {
-			if err := os.MkdirAll(filepath.Dir(archPath), 0o755); err != nil {
-				return 0, 0, 0, err
-			}
-			if err := os.Rename(cand.path, archPath); err != nil {
-				// If rename fails, copy and remove
-				if err := os.WriteFile(archPath, candData, 0o644); err != nil {
-					return 0, 0, 0, err
-				}
-				os.Remove(cand.path)
-			}
+	if collectStepHook != nil {
+		if err := collectStepHook("append-line"); err != nil {
+			return 0, 0, 0, err
 		}
 	}
 
-	// 3d. Move receipt images
+	// 3c. Move receipt images (R3: moves receipt images BEFORE it moves the note)
 	receiptsMoved := 0
 
 	for _, target := range images {
@@ -478,14 +469,19 @@ func processReadableCandidate(w io.Writer, root string, cand candidateNote, entr
 			break
 		}
 
-		if resolvedSrc == "" {
-			fmt.Fprintf(w, "no file for image %s\n", target)
-			continue
-		}
-
 		// Destination path
 		destRel := fmt.Sprintf("ledger/receipts/%s/%s/%s", cand.date[:4], cand.date[5:7], baseName)
 		destPath := filepath.Join(root, destRel)
+
+		if resolvedSrc == "" {
+			if _, serr := os.Stat(destPath); serr == nil {
+				// Already moved in previous attempt
+				receiptsMoved++
+				continue
+			}
+			fmt.Fprintf(w, "no file for image %s\n", target)
+			continue
+		}
 
 		srcBytes, err := os.ReadFile(resolvedSrc)
 		if err != nil {
@@ -521,6 +517,37 @@ func processReadableCandidate(w io.Writer, root string, cand candidateNote, entr
 				}
 			}
 			receiptsMoved++
+		}
+	}
+	if collectStepHook != nil {
+		if err := collectStepHook("move-images"); err != nil {
+			return 0, 0, 0, err
+		}
+	}
+
+	// 3d. Move note to archive path
+	if !dryRun {
+		if archExists {
+			// Identical copy already in archive: remove source
+			if err := os.Remove(cand.path); err != nil && !os.IsNotExist(err) {
+				return 0, 0, 0, err
+			}
+		} else {
+			if err := os.MkdirAll(filepath.Dir(archPath), 0o755); err != nil {
+				return 0, 0, 0, err
+			}
+			if err := os.Rename(cand.path, archPath); err != nil {
+				// If rename fails, copy and remove
+				if err := os.WriteFile(archPath, candData, 0o644); err != nil {
+					return 0, 0, 0, err
+				}
+				os.Remove(cand.path)
+			}
+		}
+	}
+	if collectStepHook != nil {
+		if err := collectStepHook("move-note"); err != nil {
+			return 0, 0, 0, err
 		}
 	}
 

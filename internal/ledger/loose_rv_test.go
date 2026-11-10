@@ -125,7 +125,7 @@ func TestLoose_RV5(t *testing.T) {
 }
 
 // TestLoose_RV9 tests RV-9: a day item whose note, outside parentheses, consists only of number tokens
-// is the issue 'two numbers in one item "..." (write 23 + 45, or put the note in parentheses)'.
+// is the issue 'two numbers in "..." (write 23 + 45, or put the note in parentheses)'.
 // '25 (bus 26)' stays valid.
 func TestLoose_RV9(t *testing.T) {
 	inputBad := "2026-11-04, 23 45\n"
@@ -136,7 +136,7 @@ func TestLoose_RV9(t *testing.T) {
 	if len(issues) != 1 {
 		t.Fatalf("expected 1 issue for bad input, got %d: %+v", len(issues), issues)
 	}
-	wantMsg := "two numbers in one item \"23 45\" (write 23 + 45, or put the note in parentheses)"
+	wantMsg := "two numbers in \"23 45\" (write 23 + 45, or put the note in parentheses)"
 	if issues[0].Msg != wantMsg {
 		t.Errorf("issue msg mismatch: got %q, want %q", issues[0].Msg, wantMsg)
 	}

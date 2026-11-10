@@ -89,10 +89,127 @@ var (
 	multiSpaceRegex  = regexp.MustCompile(`\s+`)
 	numberTokenRegex = regexp.MustCompile(`^[-+]?\$?[0-9]+(?:\.[0-9]+)?$`)
 	sourceLinkRegex  = regexp.MustCompile(`\s+\[\[([^\[\]]+)\]\]$`)
+	amountTokenRegex = regexp.MustCompile(`^([+-])?\$?([0-9]{1,12}(?:\.[0-9]+)?)([,;:.]*)$`)
 )
 
 func isNumberToken(s string) bool {
 	return numberTokenRegex.MatchString(s)
+}
+
+func stripParens(s string) string {
+	var sb strings.Builder
+	depth := 0
+	for _, r := range s {
+		if r == '(' {
+			depth++
+			sb.WriteByte(' ')
+		} else if r == ')' {
+			if depth > 0 {
+				depth--
+			}
+			sb.WriteByte(' ')
+		} else if depth == 0 {
+			sb.WriteRune(r)
+		} else {
+			sb.WriteByte(' ')
+		}
+	}
+	return sb.String()
+}
+
+func isStandaloneAmountToken(tok string) bool {
+	m := amountTokenRegex.FindStringSubmatch(tok)
+	if m == nil {
+		return false
+	}
+	return len(m[2]) > 0
+}
+
+func amountTokensOutsideParens(s string) (amtIndices []int, allTokens []string) {
+	outside := stripParens(s)
+	rawTokens := strings.Fields(outside)
+	var tokens []string
+	for _, tok := range rawTokens {
+		if strings.HasPrefix(tok, "#") && len(tok) > 1 && isValidTagWord(tok[1:]) {
+			continue
+		}
+		tokens = append(tokens, tok)
+	}
+	for i, tok := range tokens {
+		if isStandaloneAmountToken(tok) {
+			amtIndices = append(amtIndices, i)
+		}
+	}
+	return amtIndices, tokens
+}
+
+func hasAmountToken(s string) bool {
+	amtIndices, _ := amountTokensOutsideParens(s)
+	return len(amtIndices) > 0
+}
+
+func splitCommaOutsideParens(s string) []string {
+	var pieces []string
+	var cur strings.Builder
+	depth := 0
+	runes := []rune(s)
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		if r == '(' {
+			depth++
+			cur.WriteRune(r)
+		} else if r == ')' {
+			if depth > 0 {
+				depth--
+			}
+			cur.WriteRune(r)
+		} else if r == ',' && depth == 0 {
+			// Do NOT split if comma is between digits (e.g. 1,200 or 12,5)
+			if i > 0 && unicode.IsDigit(runes[i-1]) && i+1 < len(runes) && unicode.IsDigit(runes[i+1]) {
+				cur.WriteRune(r)
+			} else {
+				pieces = append(pieces, strings.TrimSpace(cur.String()))
+				cur.Reset()
+			}
+		} else {
+			cur.WriteRune(r)
+		}
+	}
+	pieces = append(pieces, strings.TrimSpace(cur.String()))
+	return pieces
+}
+
+func repairCommaPieces(pieces []string) []string {
+	var res []string
+	for _, p := range pieces {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			res = append(res, p)
+		}
+	}
+	if len(res) <= 1 {
+		return res
+	}
+	i := 0
+	for i < len(res) {
+		if !hasAmountToken(res[i]) {
+			if i+1 < len(res) {
+				// join with space to the piece after it
+				res[i+1] = res[i] + " " + res[i+1]
+				res = append(res[:i], res[i+1:]...)
+			} else if i > 0 {
+				// last piece: join to the piece before it
+				res[i-1] = res[i-1] + " " + res[i]
+				res = res[:i]
+				i--
+			} else {
+				i++
+			}
+		} else {
+			i++
+		}
+	}
+	return res
 }
 
 func checkBalancedParens(s string) bool {
@@ -520,12 +637,21 @@ func ParseLoose(path string, data []byte) (entries []Entry, issues []Issue, budg
 			var lineItems []intermediateDayItem
 
 			for _, p := range pieces {
-				if p == "" {
+				if p == "" || strings.ContainsRune(stripParens(p), ',') {
 					allValid = false
 					issues = append(issues, Issue{
 						Path: path,
 						Line: lineNum,
 						Msg:  fmt.Sprintf("bad amount %q (want e.g. 44, 49.5 (note), 45 (kfc) #food)", p),
+					})
+					break
+				}
+				if amtIndices, _ := amountTokensOutsideParens(p); len(amtIndices) >= 2 {
+					allValid = false
+					issues = append(issues, Issue{
+						Path: path,
+						Line: lineNum,
+						Msg:  fmt.Sprintf("two numbers in %q (write 23 + 45, or put the note in parentheses)", p),
 					})
 					break
 				}
@@ -569,28 +695,7 @@ func ParseLoose(path string, data []byte) (entries []Entry, issues []Issue, budg
 					centsVal = -centsVal
 				}
 
-				tag, note, inParens := parseItemTailWithParens(tail)
-				if !inParens && note != "" {
-					noteTokens := strings.Fields(note)
-					if len(noteTokens) > 0 {
-						allNumbers := true
-						for _, tok := range noteTokens {
-							if !isNumberToken(tok) {
-								allNumbers = false
-								break
-							}
-						}
-						if allNumbers {
-							allValid = false
-							issues = append(issues, Issue{
-								Path: path,
-								Line: lineNum,
-								Msg:  fmt.Sprintf("two numbers in one item %q (write 23 + 45, or put the note in parentheses)", p),
-							})
-							break
-						}
-					}
-				}
+				tag, note, _ := parseItemTailWithParens(tail)
 
 				lineItems = append(lineItems, intermediateDayItem{
 					Cents: centsVal,

@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -50,6 +52,14 @@ func TestSyncConflictCopyCC1(t *testing.T) {
 	copyRel := copies[0]
 	if !strings.HasPrefix(copyRel, "notes/x.conflict-") {
 		t.Errorf("conflict copy path %q does not start with notes/x.conflict-", copyRel)
+	}
+	copyBase := filepath.Base(copyRel)
+	if !conflictCopyPattern.MatchString(copyBase) {
+		t.Errorf("conflict copy base %q does not match conflictCopyPattern", copyBase)
+	}
+	wantStdout := fmt.Sprintf("kept both versions of 1 note(s): this PC's edit is in %s\n", copyRel)
+	if !strings.Contains(stdout, wantStdout) {
+		t.Errorf("stdout does not contain %q\ngot:\n%s", wantStdout, stdout)
 	}
 	if got := b.read(copyRel); got != bContentBefore {
 		t.Errorf("conflict copy content = %q, want B's content %q", got, bContentBefore)
@@ -404,5 +414,24 @@ func TestIsConflictCopyableNote(t *testing.T) {
 		if got := isConflictCopyableNote(tc.path); got != tc.want {
 			t.Errorf("isConflictCopyableNote(%q) = %v, want %v", tc.path, got, tc.want)
 		}
+	}
+}
+
+// TestSyncConflictCopy_AutoSyncPrefix tests R4: auto-sync path asserts its 'sync: '-prefixed form:
+// "sync: kept both versions of 1 note(s): this PC's edit is in <path>".
+func TestSyncConflictCopy_AutoSyncPrefix(t *testing.T) {
+	var buf bytes.Buffer
+	copyPath := "notes/x.conflict-myhost-20261110-143045.md"
+	if !conflictCopyPattern.MatchString(filepath.Base(copyPath)) {
+		t.Fatalf("test path %q does not match conflictCopyPattern", copyPath)
+	}
+	auto := &autoSync{
+		root:               t.TempDir(),
+		lastConflictCopies: []string{copyPath},
+	}
+	auto.report(&buf, syncPushResult{Rebased: 1, Remote: "origin"})
+	wantLine := fmt.Sprintf("sync: kept both versions of 1 note(s): this PC's edit is in %s\n", copyPath)
+	if !strings.Contains(buf.String(), wantLine) {
+		t.Errorf("autoSync report output = %q, want %q", buf.String(), wantLine)
 	}
 }

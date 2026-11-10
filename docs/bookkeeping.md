@@ -13,7 +13,8 @@ Frontmatter (`---`), code fences, blank lines, comments (`# `, `>`, `//`, `<!--`
 What a line may look like:
 - **Amount first**: `44 (jollibee)`, `$49.50 (lunch)`, or `12.50 bus #transit`
 - **Note first**: `kfc 45`, `bus 12.50`, or `lunch 25 #food`
-- **Multiple items with `+`**: `lunch 25 + dinner 30`
+- **Multiple items with `+` or a comma**: `lunch 25 + dinner 30`, `kfc 45, mcd 55`, `44, 55`
+- **One number per item**: outside parentheses an item holds exactly one amount. Put any other number in parentheses: `6 (bus 26)`, `40 (2 coffees)`. `bus 26 6`, `2 x 15` and `45 dinner 50` are held as waiting rather than guessed. `1,200` is not read as an amount: write `1200`.
 - **Money in with `-`**: `-500 refund` or `refund -500`
 - **Pasted receipt image**: `![[receipt-lunch.jpg]]` or `![](receipt-lunch.jpg)`
 
@@ -148,7 +149,7 @@ average per recorded day 58.83
 
 ## Every day, automatically
 
-`lw sync watch --collect` : once at start and whenever the date changes, the watcher runs `lw ledger collect` and `lw ledger import` before its next sync. `lw sync install --print --collect` puts the flag in the unit.
+`lw sync watch --collect`: at start, whenever the date changes, and after every successful sync, the watcher runs `lw ledger collect` (never today's note); when a collect moved a receipt it also runs `lw ledger import`. A day note that arrives from another device is therefore collected seconds after it syncs. Run it on one PC only. `lw sync install --print --collect` puts the flag in the unit.
 
 ## Grammar v1
 
