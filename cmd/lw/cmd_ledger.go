@@ -23,6 +23,7 @@ import (
 	"sort"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/awepo-pro/lw/internal/ledger"
 	"github.com/awepo-pro/lw/internal/storage"
@@ -43,6 +44,10 @@ func cmdLedger(args []string) error {
 		return cmdLedgerCheck(rest)
 	case "sum":
 		return cmdLedgerSum(rest)
+	case "report":
+		return cmdLedgerReport(rest)
+	case "collect":
+		return cmdLedgerCollect(rest)
 	case "import":
 		return cmdLedgerImport(rest)
 	case "-h", "--help", "help":
@@ -59,6 +64,9 @@ func ledgerUsage(w io.Writer) {
 	fmt.Fprintf(w, `usage: lw ledger import [--dry-run] [--vault P]
        lw ledger check [--vault P]
        lw ledger sum [YYYY-MM] [--vault P]
+       lw ledger report [YYYY-MM] [--today YYYY-MM-DD] [--vault P]
+       lw ledger collect [--dry-run] [--include-today] [--today YYYY-MM-DD] [--vault P]
+       lw ledger collect --day YYYY-MM-DD --line "<items>" [--dry-run] [--vault P]
 
 Receipts delivered to %s/receipts/ are copied into storage/ as
 receipts/<path>, where lw sync carries them to other PCs.
@@ -86,22 +94,38 @@ func cmdLedgerCheck(args []string) error {
 	}
 	attachLoggingAt(root)
 
-	txns, issues, files, err := ledger.Load(root)
+	book, err := ledger.LoadBook(root)
 	if err != nil {
 		return err
 	}
 
-	for _, issue := range issues {
-		fmt.Printf("%s:%d: %s\n", issue.Path, issue.Line, issue.Msg)
+	var nonWarnCount int
+	for _, issue := range book.Issues {
+		if issue.Warn {
+			fmt.Printf("%s:%d: warning: %s\n", issue.Path, issue.Line, issue.Msg)
+		} else {
+			nonWarnCount++
+			fmt.Printf("%s:%d: %s\n", issue.Path, issue.Line, issue.Msg)
+		}
 	}
 
-	if len(issues) == 0 {
-		fmt.Printf("ok: %d transaction(s) in %d file(s)\n", len(txns), files)
+	if nonWarnCount == 0 {
+		fmt.Printf("ok: %d transaction(s) in %d file(s)\n", len(book.Entries), book.Files)
 		return nil
 	}
 
-	fmt.Printf("%d issue(s); %d valid transaction(s) in %d file(s)\n", len(issues), len(txns), files)
+	fmt.Printf("%d issue(s); %d valid transaction(s) in %d file(s)\n", nonWarnCount, len(book.Entries), book.Files)
 	return &exitError{code: 1}
+}
+
+func nonWarnIssuesCount(issues []ledger.Issue) int {
+	var count int
+	for _, issue := range issues {
+		if !issue.Warn {
+			count++
+		}
+	}
+	return count
 }
 
 func cmdLedgerSum(args []string) error {
@@ -135,49 +159,163 @@ func cmdLedgerSum(args []string) error {
 	}
 	attachLoggingAt(root)
 
-	txns, issues, _, err := ledger.Load(root)
+	book, err := ledger.LoadBook(root)
 	if err != nil {
 		return err
 	}
 
-	if len(issues) > 0 {
-		fmt.Fprintf(os.Stderr, "lw: ledger: %d issue(s) found; totals may be wrong - run lw ledger check\n", len(issues))
+	if n := nonWarnIssuesCount(book.Issues); n > 0 {
+		fmt.Fprintf(os.Stderr, "lw: ledger: %d issue(s) found; totals may be wrong - run lw ledger check\n", n)
 	}
 
-	totals := ledger.Sum(txns, month)
-	if len(totals) == 0 {
+	type sumRow struct {
+		currency string
+		category string
+		cents    int64
+		count    int
+	}
+	type key struct {
+		cur string
+		cat string
+	}
+	totalsMap := make(map[key]*sumRow)
+	var keys []key
+
+	for _, e := range book.Entries {
+		if month != "" && e.Month != month {
+			continue
+		}
+		curDisplay := e.Currency
+		if curDisplay == "" {
+			curDisplay = "-"
+		}
+		catDisplay := e.Category
+		if catDisplay == "" {
+			catDisplay = "uncategorized"
+		}
+		k := key{cur: curDisplay, cat: catDisplay}
+		row, exists := totalsMap[k]
+		if !exists {
+			row = &sumRow{
+				currency: curDisplay,
+				category: catDisplay,
+			}
+			totalsMap[k] = row
+			keys = append(keys, k)
+		}
+		row.cents += e.Cents
+		row.count++
+	}
+
+	if len(keys) == 0 {
 		fmt.Println("no transactions")
 		return nil
 	}
 
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].cur != keys[j].cur {
+			return keys[i].cur < keys[j].cur
+		}
+		return keys[i].cat < keys[j].cat
+	})
+
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	type curGroup struct {
 		currency string
-		totals   []ledger.Total
+		rows     []*sumRow
 		cents    int64
 		count    int
 	}
 
 	var groups []curGroup
 	var curG *curGroup
-	for _, tot := range totals {
-		if curG == nil || curG.currency != tot.Currency {
-			groups = append(groups, curGroup{currency: tot.Currency})
+	for _, k := range keys {
+		row := totalsMap[k]
+		if curG == nil || curG.currency != row.currency {
+			groups = append(groups, curGroup{currency: row.currency})
 			curG = &groups[len(groups)-1]
 		}
-		curG.totals = append(curG.totals, tot)
-		curG.cents += tot.Cents
-		curG.count += tot.Count
+		curG.rows = append(curG.rows, row)
+		curG.cents += row.cents
+		curG.count += row.count
 	}
 
 	for _, g := range groups {
-		for _, tot := range g.totals {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t(%d)\n", tot.Currency, tot.Category, ledger.FormatCents(tot.Cents), tot.Count)
+		for _, row := range g.rows {
+			fmt.Fprintf(tw, "%s\t%s\t%s\t(%d)\n", row.currency, row.category, ledger.FormatCents(row.cents), row.count)
 		}
 		fmt.Fprintf(tw, "%s\ttotal\t%s\t(%d)\n", g.currency, ledger.FormatCents(g.cents), g.count)
 	}
 
 	return tw.Flush()
+}
+
+func cmdLedgerReport(args []string) error {
+	fl := flag.NewFlagSet("ledger report", flag.ContinueOnError)
+	fl.SetOutput(os.Stderr)
+	vaultPath := fl.String("vault", "", "vault root (default: nearest ancestor directory containing SCHEMA.md)")
+	todayFlag := fl.String("today", "", "today's date (YYYY-MM-DD)")
+
+	positional, err := parseStorageFlags(fl, args)
+	if err != nil {
+		return &exitError{code: 2}
+	}
+	if len(positional) > 1 {
+		fmt.Fprintf(os.Stderr, "lw ledger report: unexpected argument %q\n", positional[1])
+		ledgerUsage(os.Stderr)
+		return &exitError{code: 2}
+	}
+
+	today := time.Now().Format("2006-01-02")
+	if *todayFlag != "" {
+		if _, parseErr := time.Parse("2006-01-02", *todayFlag); parseErr != nil {
+			fmt.Fprintf(os.Stderr, "lw ledger report: invalid today %q (want YYYY-MM-DD)\n", *todayFlag)
+			ledgerUsage(os.Stderr)
+			return &exitError{code: 2}
+		}
+		today = *todayFlag
+	}
+
+	month := today[:7]
+	if len(positional) == 1 {
+		if !monthRegex.MatchString(positional[0]) {
+			fmt.Fprintf(os.Stderr, "lw ledger report: invalid month %q (want YYYY-MM)\n", positional[0])
+			ledgerUsage(os.Stderr)
+			return &exitError{code: 2}
+		}
+		month = positional[0]
+	}
+
+	root, err := storageVaultRoot(*vaultPath)
+	if err != nil {
+		return err
+	}
+	attachLoggingAt(root)
+
+	book, err := ledger.LoadBook(root)
+	if err != nil {
+		return err
+	}
+
+	if n := nonWarnIssuesCount(book.Issues); n > 0 {
+		fmt.Fprintf(os.Stderr, "lw: ledger: %d issue(s) found; totals may be wrong - run lw ledger check\n", n)
+	}
+
+	out := ledger.Report(book, month, today)
+
+	candidates, _ := findCandidates(root)
+	var notCollectedCount int
+	for _, c := range candidates {
+		if c.date <= today {
+			notCollectedCount++
+		}
+	}
+	if notCollectedCount > 0 {
+		out += fmt.Sprintf("%d day note(s) not collected yet: run lw ledger collect\n", notCollectedCount)
+	}
+
+	fmt.Print(out)
+	return nil
 }
 
 type receiptFile struct {

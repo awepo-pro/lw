@@ -52,6 +52,13 @@ const Ignore = "# managed by lw sync: per-PC state, never synced\n" +
 	"/.obsidian/cache\n" +
 	"/" + vault.StorageDir + "/\n" +
 	"/ledger/receipts/\n" +
+	"/.llmwiki/.storage-json-tmp-*\n" +
+	"*.lw-tmp\n" +
+	"/.trash/\n" +
+	".#*\n" +
+	"\\#*#\n" +
+	"*~\n" +
+	".*.sw?\n" +
 	".DS_Store\n"
 
 // Branch is the one branch lw sync uses, locally and on the remote.
@@ -71,6 +78,11 @@ type Options struct {
 	// open changeset has appended to the journal, and the PC that holds one
 	// must still be able to take another PC's commits.
 	AppendOnly []string
+
+	// ConflictCopy reports whether an unmerged path from a rebase conflict
+	// may be resolved as a conflict copy (083 S1b). When nil, every conflict
+	// is refused.
+	ConflictCopy func(path string) bool
 
 	// Quiesce, when set, is called to hold off every other writer of the
 	// append-only files for the length of a local mutation of the work tree —
@@ -101,6 +113,10 @@ type State struct {
 	// remote commits now underneath them, Ahead the replayed commits still to
 	// push (or, from Push, 0 once they are pushed), and Behind 0.
 	Rebased int
+
+	// ConflictCopies lists the vault-relative paths of conflict copies
+	// written during rebase conflict resolution (083 S1b).
+	ConflictCopies []string
 }
 
 // Diverged reports that both sides have commits the other lacks.
@@ -132,6 +148,10 @@ func (e *dirtyError) Unwrap() error { return ErrDirty }
 // other lacks. The State returned beside it carries the counts; nothing was
 // changed.
 var ErrDiverged = errors.New("diverged")
+
+// ErrUnrelated is returned when the remote holds a history with no commit in
+// common with this vault (084 B1a).
+var ErrUnrelated = errors.New("vaultsync: the remote holds a different vault")
 
 // FormatError says the remote vault's on-disk format is newer than this lw
 // can write safely. An older lw that wrote it anyway would silently drop the

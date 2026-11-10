@@ -1,6 +1,6 @@
 {
   "name": "lw-obsidian",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "description": "lw phone sync: Obsidian plugin that syncs notes/ and ledger/ with lw hub over the tailnet (079).",
   "type": "module",

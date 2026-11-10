@@ -220,6 +220,8 @@ commands:
   sync init <remote>           put this vault under lw sync and push it to an empty remote
   sync clone <remote> <dir>    copy a synced vault from its remote to this PC
                                (lw sync owns the vault's .gitignore and rewrites it)
+  sync watch [--collect]       keep the vault synced by itself; --collect also runs ledger collect each day
+  sync install --print         print a systemd user unit or launchd plist that runs sync watch
   hub serve [--vault P] [--port N]
                                serve phone sync on loopback
   hub status                   show hub status and diverged state
@@ -232,7 +234,9 @@ commands:
                                manage non-wiki storage files in the vault
   ledger check                 verify ledger syntax, dates, and duplicate IDs
   ledger sum [YYYY-MM]         total ledger amounts by currency and category
-  ledger import [--dry-run]    copy Syncthing receipts into storage
+  ledger report [YYYY-MM]      report monthly spending and budget
+  ledger collect               collect and archive daily bookkeeping notes
+  ledger import [--dry-run]    copy receipts in ledger/receipts/ into storage
   completion bash|zsh|fish     print a shell completion script (e.g. source <(lw completion bash))
   version                      print the build version and exit
 

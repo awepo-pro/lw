@@ -37,13 +37,15 @@ case-sensitive: `a` and `A` are different keys.
 
 ## Rebindable actions
 
-These are the twenty actions in the keymap. Defaults are frozen; the
+These are the 22 actions in the keymap. Defaults are frozen; the
 `toml` key is the only way to change one.
 
 | TOML key | Default | Action | Screens |
 |---|---|---|---|
 | `accept_hunk` | `y` | Accept (undrop) the selected hunk and advance | Review |
 | `drop_hunk` | `n` | Drop the selected hunk and advance | Review |
+| `drop_op` | `d` | Drop the selected op and its dependents (two-press) | Review |
+| `restore_op` | `u` | Restore a dropped op and its prerequisites | Review |
 | `split_hunk` | `s` | Split the selected hunk — not implemented yet; Review says so and suggests dropping the op instead | Review |
 | `accept_all` | `A` | Accept every hunk; refused unless lint is clean | Review |
 | `reject_changeset` | `X` | Reject the whole changeset | Review |

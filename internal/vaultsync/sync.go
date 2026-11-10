@@ -82,7 +82,9 @@ func (r *runner) commitWork(ctx context.Context, message string) (bool, error) {
 // PDF — must reach the other PC exactly as they are, whatever the user's
 // global attributes or a .gitattributes inside the vault say (H1 of the S1
 // review: `* text=auto` rewrote CRLF).
-const infoAttributes = "* -text -eol -filter -ident -working-tree-encoding\n"
+const infoAttributes = "* -text -eol -filter -ident -working-tree-encoding\n" +
+	"/.llmwiki/journal.ndjson merge=union\n" +
+	"/bookkeeping.md merge=union\n"
 
 // ensureAttributes keeps .git/info/attributes at infoAttributes.
 func (r *runner) ensureAttributes(ctx context.Context) error {
@@ -232,6 +234,43 @@ func (r *runner) fetchOne(ctx context.Context, spec string) (empty bool, err err
 	return false, err
 }
 
+// prevTrackRef returns the commit id trackRef currently points to, and whether it exists.
+func (r *runner) prevTrackRef(ctx context.Context) (sha string, exists bool) {
+	if !r.hasRef(ctx, trackRef) {
+		return "", false
+	}
+	out, err := r.out(ctx, "rev-parse", trackRef)
+	if err != nil {
+		return "", false
+	}
+	return out, true
+}
+
+// checkUnrelated verifies that HEAD and trackRef share a commit when both exist.
+// If there is no common commit, trackRef is restored to prevRef (or deleted if it
+// did not exist) and ErrUnrelated wrapped with spec is returned.
+func (r *runner) checkUnrelated(ctx context.Context, spec string, prevRef string, hadPrev bool) error {
+	if !r.hasHead(ctx) || !r.hasRef(ctx, trackRef) {
+		return nil
+	}
+	_, err := r.out(ctx, "merge-base", "HEAD", trackRef)
+	if err != nil {
+		// git merge-base exits 1 when there is no common commit; anything else
+		// (a broken repo, a cancelled call) is that error, not a verdict.
+		var ce *cmdError
+		if !errors.As(err, &ce) || ce.exitCode() != 1 {
+			return err
+		}
+		if hadPrev {
+			_, _ = r.out(ctx, "update-ref", trackRef, prevRef)
+		} else {
+			_, _ = r.out(ctx, "update-ref", "-d", trackRef)
+		}
+		return fmt.Errorf("%s: %w", spec, ErrUnrelated)
+	}
+	return nil
+}
+
 // progress reports whether git should be told to print transfer progress:
 // only when a person is watching — an interactive call whose Stderr is a
 // terminal. git draws progress with carriage returns, so into a pipe or a log
@@ -327,7 +366,17 @@ func Status(ctx context.Context, o Options) (State, error) {
 	if err := r.requireRepo(ctx); err != nil {
 		return State{}, err
 	}
-	return r.fetch(ctx)
+	prevRef, hadPrev := r.prevTrackRef(ctx)
+	st, err := r.fetch(ctx)
+	if err != nil {
+		return st, err
+	}
+	// 084 B1a: counts against an unrelated vault mean nothing, and the tracking
+	// ref must not be left pointing into it.
+	if err := r.checkUnrelated(ctx, st.Remote, prevRef, hadPrev); err != nil {
+		return st, err
+	}
+	return st, nil
 }
 
 // Pull fetches, then fast-forwards HEAD to the remote tip when this PC has
@@ -369,8 +418,12 @@ func Pull(ctx context.Context, o Options, maxFormat int) (State, error) {
 	if err := r.refuseIfCollided(ctx); err != nil {
 		return State{}, err
 	}
+	prevRef, hadPrev := r.prevTrackRef(ctx)
 	st, err := r.fetch(ctx)
 	if err != nil {
+		return st, err
+	}
+	if err := r.checkUnrelated(ctx, st.Remote, prevRef, hadPrev); err != nil {
 		return st, err
 	}
 
@@ -461,8 +514,12 @@ func Push(ctx context.Context, o Options) (State, error) {
 	if err := r.refuseIfCollided(ctx); err != nil {
 		return State{}, err
 	}
+	prevRef, hadPrev := r.prevTrackRef(ctx)
 	st, err := r.fetch(ctx)
 	if err != nil {
+		return st, err
+	}
+	if err := r.checkUnrelated(ctx, st.Remote, prevRef, hadPrev); err != nil {
 		return st, err
 	}
 	if st.Diverged() {
@@ -553,8 +610,12 @@ func takeRemoteAt(ctx context.Context, o Options, maxFormat int, now time.Time) 
 	if _, err := r.recoverRebase(ctx); err != nil {
 		return "", State{}, err
 	}
+	prevRef, hadPrev := r.prevTrackRef(ctx)
 	st, err := r.fetch(ctx)
 	if err != nil {
+		return "", st, err
+	}
+	if err := r.checkUnrelated(ctx, st.Remote, prevRef, hadPrev); err != nil {
 		return "", st, err
 	}
 	if st.RemoteFormat == 0 {

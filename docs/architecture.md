@@ -87,7 +87,7 @@ rationale attached.
 | `internal/index` | In-memory inverted word index — no SQLite, no FTS5 |
 | `internal/lint` | The 20 checks ([vault-schema.md](vault-schema.md#the-20-lint-checks)) |
 | `internal/stage` | CAS (`objects/`), journal, changesets, lock, apply/revert, snapshots, recovery |
-| `internal/tools` | The 18 vault tools plus the conditional web.search ([tools.md](tools.md)) — one definition, two consumers |
+| `internal/tools` | The 18 vault tools plus the conditional web.search ([tools.md](tools.md)) — one definition, three consumers |
 | `internal/mcp` | stdio transport for the same registry; name mapping only, no new tools |
 | `internal/llm` | OpenAI-compatible streaming client |
 | `internal/agent` | The tool-calling loop, sessions, context building |
@@ -98,6 +98,16 @@ rationale attached.
 | `internal/digest` | Aggregates committed changes in a vault over a time window into a structured digest with markdown and HTML renderers |
 | `internal/htmlexport` | Exports the vault into a static offline HTML site |
 | `internal/safewrite` | Filesystem write operations that guard a vault directory against being modified or overwritten, directly or through symlinks |
+| `internal/vaultsync` | Git-based vault synchronization (pull, rebase, push over SSH, remote tracking) |
+| `internal/hub` | Phone sync engine, protocol, scope validation, and device management |
+| `internal/hubserver` | Loopback HTTP server behind tailscale serve for phone sync |
+| `internal/storage` | Content-addressed storage for non-wiki files (`storage/`, `.llmwiki/storage.json`) |
+| `internal/ledger` | Loose central file (`bookkeeping.md`), day notes, and reports (`check`, `sum`, `report`, `collect`, `import`) |
+| `internal/trace` | Turn tracing and inspection under `.llmwiki/traces/` |
+| `internal/cite` | Parsing and grammar for `^[source]` and `^[source p.N]` provenance markers |
+| `internal/web` | Search provider client (Tavily) behind `web.search` |
+| `internal/slug` | Lowercase ASCII slug generation for paths |
+| `internal/logging` | Contextual logging and turn ID propagation |
 | `cmd/lw` | The CLI verbs; `lw` with no argument is the TUI |
 
 ---

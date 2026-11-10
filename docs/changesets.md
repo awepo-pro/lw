@@ -104,9 +104,9 @@ retracted keeps the session already written.
 
 | Event | Meaning |
 |---|---|
-| `changeset_opened` | a buffer was opened, with intent and author |
+| `changeset_opened` / `changeset_joined` | a buffer was opened (or joined), with intent and author |
 | `op_proposed` | a tool call appended an op — **before** anyone approves it |
-| `op_accepted` / `op_dropped` | the reviewer took or dropped an op |
+| `op_accepted` / `op_dropped` / `op_restored` | the reviewer took, dropped, or restored an op |
 | `hunk_dropped` / `hunk_undropped` | hunk-level review decisions |
 | `commit_begin` | an apply started |
 | `commit_end` | that apply finished |
