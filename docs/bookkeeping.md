@@ -1,0 +1,155 @@
+# Bookkeeping
+
+## The idea
+
+Write a day note, lw summarises it into `bookkeeping.md` and archives it. No model inside lw: parsing and reporting are deterministic Go.
+
+## Day notes
+
+A day note is named `YYYY-MM-DD.md` and sits directly at the vault root or in `ledger/`.
+
+Frontmatter (`---`), code fences, blank lines, comments (`# `, `>`, `//`, `<!--`), and horizontal rules (`---`) are ignored. Leading bullets (`- ` or `* `) are stripped, and a line with only the note's date is skipped. Full-width numbers and punctuation are normalized automatically.
+
+What a line may look like:
+- **Amount first**: `44 (jollibee)`, `$49.50 (lunch)`, or `12.50 bus #transit`
+- **Note first**: `kfc 45`, `bus 12.50`, or `lunch 25 #food`
+- **Multiple items with `+`**: `lunch 25 + dinner 30`
+- **Money in with `-`**: `-500 refund` or `refund -500`
+- **Pasted receipt image**: `![[receipt-lunch.jpg]]` or `![](receipt-lunch.jpg)`
+
+What makes a note "waiting":
+- **Prose without an amount**: `went to the supermarket and bought milk` (`waiting 2026-11-07.md: line 1: no amount in "went to the supermarket and bought milk"`)
+- **Two numbers in one item**: `lunch 23 45` (`waiting 2026-11-06.md: line 1: two numbers in "lunch 23 45" (write 23 + 45, or put the note in parentheses)`)
+- **Only an image**: `![[receipt-store.jpg]]` (`waiting 2026-11-05.md: only a receipt image`)
+- **Date mismatch**: `2026-11-09` inside `2026-11-08.md` (`waiting 2026-11-08.md: line 1: date 2026-11-09 is not this note's date`)
+- **Unbalanced parentheses**: `44 (lunch` (`waiting 2026-11-08.md: line 1: unbalanced parentheses`)
+- **Archive collision**: destination file already exists with different contents (`waiting 2026-11-08.md: the archive already holds a different 2026-11-08.md`)
+
+A receipt photo with no typed amount needs a person or an agent to read it.
+
+How to supply its line:
+```bash
+lw ledger collect --day 2026-11-05 --line "88 (supermarket) #groceries"
+```
+
+## The central file
+
+`bookkeeping.md` sits at the vault root. lw only ever appends to it; it never edits or rewrites existing entries.
+
+Line shapes:
+- **Day line**: `YYYY-MM-DD, <items> [[YYYY-MM-DD]]`
+  ```
+  2026-11-08, 44 (jollibee) + 45 (kfc) + 12.50 (bus) + -500 (refund) [[2026-11-08]]
+  ```
+  The trailing `[[date]]` is the source link to the archived day note in `ledger/YYYY/MM/YYYY-MM-DD.md`.
+- **Month line**: `<MONTH>[ <YYYY>] <sign> <label> <amount>`
+  ```
+  Nov - rent 1200
+  2026-11 + salary 30000
+  11月 - utilities 350
+  ```
+  A `-` indicates fixed expenses and `+` indicates recurring income. The year is explicit or inferred from nearby day lines.
+- **Directives**:
+  ```
+  currency = HKD
+  budget = 5000
+  ```
+- **Category rules**:
+  ```
+  #food = jollibee, kfc, lunch, dinner, coffee
+  #transit = bus, subway, taxi
+  #misc = *
+  ```
+  Keywords are case-insensitive substring matches against item notes. `*` acts as a catch-all category for items not matched by earlier rules.
+
+## Commands
+
+Commands run against a vault created with `lw init --schema test`:
+
+### `lw ledger collect --dry-run`
+```
+$ lw ledger collect --dry-run
+would collect 2026-11-08: 44 (jollibee) + 45 (kfc) + 12.50 (bus) + -500 (refund) -> ledger/2026/11/2026-11-08.md (1 receipt(s))
+would collect 2026-11-09: 25 (lunch) + 30 (dinner) -> ledger/2026/11/2026-11-09.md
+skipped 2026-11-10.md: today (use --include-today)
+would collect 2 day note(s), 0 waiting
+```
+
+### `lw ledger collect`
+```
+$ lw ledger collect
+collected 2026-11-08: 44 (jollibee) + 45 (kfc) + 12.50 (bus) + -500 (refund) -> ledger/2026/11/2026-11-08.md (1 receipt(s))
+collected 2026-11-09: 25 (lunch) + 30 (dinner) -> ledger/2026/11/2026-11-09.md
+skipped 2026-11-10.md: today (use --include-today)
+collected 2 day note(s), 0 waiting
+run lw ledger import to store the receipts so lw sync carries them
+```
+
+### `lw ledger collect --include-today`
+```
+$ lw ledger collect --include-today
+collected 2026-11-10: 20 (coffee) -> ledger/2026/11/2026-11-10.md
+collected 1 day note(s), 0 waiting
+```
+
+### `lw ledger import --dry-run`
+```
+$ lw ledger import --dry-run
+would store receipts/2026/11/receipt-lunch.jpg
+1 stored, 0 unchanged, 0 conflict(s), 0 error(s)
+```
+
+### `lw ledger import`
+```
+$ lw ledger import
+stored receipts/2026/11/receipt-lunch.jpg
+1 stored, 0 unchanged, 0 conflict(s), 0 error(s)
+run lw sync to carry them to your other PCs
+```
+
+### `lw ledger check`
+```
+$ lw ledger check
+ok: 8 transaction(s) in 4 file(s)
+```
+
+### `lw ledger sum`
+```
+$ lw ledger sum
+HKD  food           -164.00   (5)
+HKD  rent           -1200.00  (1)
+HKD  transit        -12.50    (1)
+HKD  uncategorized  500.00    (1)
+HKD  total          -876.50   (8)
+```
+
+### `lw ledger report`
+```
+$ lw ledger report 2026-11
+2026-11 HKD
+spent 176.50 (6 item(s) on 3 day(s))
+fixed 1200.00 (rent 1200.00)
+money in 500.00
+net out 876.50
+budget 5000.00: 4823.50 left
+by category:
+  rent 1200.00 (1)
+  food 164.00 (5)
+  transit 12.50 (1)
+average per recorded day 58.83
+```
+
+## Where things end up
+
+- Day notes are moved to `ledger/YYYY/MM/YYYY-MM-DD.md`.
+- Embedded receipt images are moved to `ledger/receipts/YYYY/MM/<image>`.
+
+`ledger/receipts/` is kept out of git by the managed `.gitignore`. Receipts are carried into content-addressed storage by `lw ledger import`, and `lw sync` carries them across PCs.
+
+## Every day, automatically
+
+`lw sync watch --collect` : once at start and whenever the date changes, the watcher runs `lw ledger collect` and `lw ledger import` before its next sync. `lw sync install --print --collect` puts the flag in the unit.
+
+## Grammar v1
+
+The older `- (id:: ...)` day-file lines still work and feed the same totals. They can coexist with loose bookkeeping lines in the same vault.

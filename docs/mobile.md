@@ -12,24 +12,9 @@ Your vault uses dedicated root directories for mobile capture outside the compil
 
 Both `notes/` and `ledger/` are kept outside `wiki/` and `raw/`, meaning they are not indexed or compiled into wiki pages. When a note from `notes/` is ingested into the wiki (via `lw ingest --note <id>` or `lw ingest notes/<file>.md`), it lands in `raw/notes/` (074 S3).
 
-## Grammar v1 (Expense Tracking)
+## Bookkeeping
 
-Ledger entries live in daily files such as `ledger/2026/10/2026-10-31.md`.
-Each transaction is recorded on a single line:
-
-`- (id:: 20261031-1230-a) (amt:: -45.00) (cur:: HKD) (cat:: food) (acct:: cash) (receipt:: [[r-20261031-1230.jpg]]) lunch`
-
-### Field Rules
-
-- Grammar v1 is expense tracking only (not double-entry bookkeeping).
-- Key order is fixed: `(id:: ...) (amt:: ...) (cur:: ...) (cat:: ...) (acct:: ...) [(receipt:: ...)] <description>`
-- `(id:: <val>)`: Unique transaction identifier composed of timestamp plus device letter (e.g., `20261031-1230-a`).
-- `(amt:: <val>)`: Amount formatted as a fixed two-decimal string; negative numbers indicate spending/expenses (e.g. `-45.00`).
-- `(cur:: <val>)`: Currency code, required on every line (e.g. `HKD`, `USD`).
-- `(cat:: <val>)`: Category slug (e.g. `food`, `transit`, `supplies`).
-- `(acct:: <val>)`: Account identifier (e.g. `cash`, `visa`, `bank`).
-- `(receipt:: <val>)`: Optional receipt attachment link, e.g. `(receipt:: [[r-20261031-1230.jpg]])`.
-- Free text: Transaction description follows the metadata tags.
+Daily notes and money tracking are explained in [docs/bookkeeping.md](bookkeeping.md), including day note line formats, the central `bookkeeping.md` ledger, reporting commands, and legacy Grammar v1 syntax.
 
 ## Phone sync with lw hub
 
@@ -144,10 +129,13 @@ Configure your Android device. The plugin is currently sideloaded; BRAT plugin s
    Approve only devices you recognise. You can revoke access at any time with `lw hub revoke <name>`.
 7. The first sync runs automatically and reports `"lw: synced N files"`.
 8. Set Obsidian's attachment location: in **Settings** > **Files & Links**, set "Default location for new attachments" to "Same folder as current file" (so pasted images sit beside the note that embeds them).
+9. Enable Obsidian's core **Daily notes** plugin (**Settings** > **Core plugins** > **Daily notes**). Set the date format to `YYYY-MM-DD` and new file location to the vault root (default). The phone writes day notes here.
 
 *Note on BRAT (planned)*: Once the `lw` repository is published with a release, Obsidian's BRAT plugin will be able to install and update the plugin directly from `github.com/awepo-pro/lw`. Until then, install by sideloading the two files.
 
 ### Daily use
+
+The phone writes day notes directly in Obsidian using the core Daily notes plugin (date format `YYYY-MM-DD` at the vault root). Type expenses or paste receipt photos; `lw ledger collect` on your PC gathers and archives them into the central ledger.
 
 Sync runs automatically in the background without needing manual commands:
 - when Obsidian starts
@@ -208,7 +196,7 @@ If someone made manual commits directly inside the hub's vault clone, the hub ca
 ### Quirks and traps
 
 - **Double `.md` extension**: Obsidian automatically adds `.md` to file titles. If you name a note `from-phone.md` in Obsidian, it saves as `from-phone.md.md`.
-- **Daily notes root location**: Obsidian's Daily Notes core plugin places notes at the vault root by default. These files sync to PCs, but they are not processed by `lw ledger`. Ledger files must reside in `ledger/YYYY/MM/YYYY-MM-DD.md` using Grammar v1 syntax (`(amt:: ...)` lines).
+- **Daily notes root location**: Obsidian's Daily Notes core plugin places notes at the vault root by default (date format `YYYY-MM-DD`). This is the expected location: `lw ledger collect` reads `YYYY-MM-DD.md` files at the vault root and moves them into `ledger/YYYY/MM/` automatically.
 - **Global remote trap**: `lw sync` always uses the remote configured in the global configuration file (`~/.config/lw/config.toml` under `[sync] remotes`), for every vault on that machine. If you test or scratch-test a vault with plain `lw sync`, it will sync against your production remote! Always set `XDG_CONFIG_HOME=<scratch-config-dir>` when experimenting with test vaults.
 - **Pointing at a different hub**: Before pointing the plugin at a different hub, delete the old phone vault or the plugin's `data.json`.
 
@@ -224,17 +212,7 @@ This stores receipts under `receipts/<path>` in content-addressed storage, where
 
 ## Ledger Verification and Totals
 
-Use `lw ledger check` to validate ledger files for grammar syntax, directory layout, date matching, and duplicate IDs:
-
-```bash
-lw ledger check
-```
-
-Use `lw ledger sum` to aggregate amounts by currency and category, optionally filtered by month (`YYYY-MM`):
-
-```bash
-lw ledger sum 2026-10
-```
+Verification and reporting commands (`lw ledger check`, `lw ledger sum`, `lw ledger report`, `lw ledger collect`) are documented in [docs/bookkeeping.md](bookkeeping.md).
 
 ## What lw does not do
 
