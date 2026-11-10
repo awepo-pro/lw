@@ -229,8 +229,12 @@ func TestSyncFixR_R2_IntegrationCollectAfterSync(t *testing.T) {
 		return runSyncCycle(context.Background(), aRoot, aOpts, tw, io.Discard, false, true, nil, &ct)
 	}
 
-	fakeTime, _ := time.Parse("2006-01-02 15:04:05", "2026-11-10 12:00:00")
-	yest := "2026-11-09"
+	// The fake clock starts at the real one: this loop reads the REAL mtimes of
+	// the files collect moves (vaultsync.Dirty), and a fixed fake time made the
+	// test pass only while the wall clock was earlier than it (it failed from
+	// 2026-11-10 12:00 UTC on).
+	fakeTime := time.Now()
+	yest := fakeTime.AddDate(0, 0, -1).Format("2006-01-02")
 	var colTracker collectTracker
 	wA := &watchLoop{
 		quiet:    1 * time.Second,
