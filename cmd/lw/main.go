@@ -233,7 +233,9 @@ commands:
                                manage non-wiki storage files in the vault
   ledger check                 verify ledger syntax, dates, and duplicate IDs
   ledger sum [YYYY-MM]         total ledger amounts by currency and category
-  ledger import [--dry-run]    copy Syncthing receipts into storage
+  ledger report [YYYY-MM]      report monthly spending and budget
+  ledger collect               collect and archive daily bookkeeping notes
+  ledger import [--dry-run]    copy receipts in ledger/receipts/ into storage
   completion bash|zsh|fish     print a shell completion script (e.g. source <(lw completion bash))
   version                      print the build version and exit
 
