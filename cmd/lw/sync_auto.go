@@ -64,11 +64,12 @@ type autoSync struct {
 	remotes []string
 	pusher  *syncPusher // the TUI's; nil for a CLI verb, which pushes in place
 
-	mu           sync.Mutex      // one CLI push at a time
-	queued       bool            // a CLI verb has asked for its push at the end (atVerbEnd)
-	notes        []string        // storage lines the TUI's pusher held back for the exit report (storageSay)
-	said         map[string]bool // storage lines a CLI verb already printed (storageSay)
-	warnedRemote bool            // the "remote cannot hold storage files" line was said (once per run, X-7)
+	mu                 sync.Mutex      // one CLI push at a time
+	queued             bool            // a CLI verb has asked for its push at the end (atVerbEnd)
+	notes              []string        // storage lines the TUI's pusher held back for the exit report (storageSay)
+	said               map[string]bool // storage lines a CLI verb already printed (storageSay)
+	warnedRemote       bool            // the "remote cannot hold storage files" line was said (once per run, X-7)
+	lastConflictCopies []string
 }
 
 // notSyncingLine is what a writing verb says when [sync] remotes are
@@ -160,11 +161,12 @@ func loadTUIAutoSync(root string) *autoSync {
 // (A-042-7).
 func (a *autoSync) options() vaultsync.Options {
 	return vaultsync.Options{
-		Dir:        a.root,
-		Remotes:    orderedRemotes(a.root, a.remotes),
-		Timeout:    remoteBudget(syncAutoTimeout, len(a.remotes)),
-		AppendOnly: syncAppendOnly,
-		Quiesce:    quiesceVault(a.root),
+		Dir:          a.root,
+		Remotes:      orderedRemotes(a.root, a.remotes),
+		Timeout:      remoteBudget(syncAutoTimeout, len(a.remotes)),
+		AppendOnly:   syncAppendOnly,
+		Quiesce:      quiesceVault(a.root),
+		ConflictCopy: isConflictCopyableNote,
 	}
 }
 
@@ -360,6 +362,7 @@ func (a *autoSync) pull() {
 	fmt.Fprintf(os.Stderr, "sync: pulled %d commit(s) from %s\n", st.Pulled, st.Remote)
 	if st.Rebased > 0 {
 		fmt.Fprintln(os.Stderr, rebasedLine("sync: ", st.Rebased, st.Remote))
+		printConflictCopiesKept(os.Stderr, "sync: ", st.ConflictCopies)
 	}
 }
 
@@ -512,6 +515,11 @@ func (a *autoSync) commitAndPull(ctx context.Context) (vaultsync.State, error) {
 		return st, err
 	}
 	st, err := pull()
+	if a != nil {
+		a.mu.Lock()
+		a.lastConflictCopies = st.ConflictCopies
+		a.mu.Unlock()
+	}
 	if errors.Is(err, vaultsync.ErrDirty) {
 		if err := commit(); err != nil {
 			return st, err
@@ -631,6 +639,8 @@ func (a *autoSync) report(w io.Writer, res syncPushResult) {
 	a.mu.Lock()
 	notes := a.notes
 	a.notes = nil
+	copies := a.lastConflictCopies
+	a.lastConflictCopies = nil
 	a.mu.Unlock()
 	for _, line := range notes {
 		fmt.Fprintln(w, line)
@@ -640,6 +650,7 @@ func (a *autoSync) report(w io.Writer, res syncPushResult) {
 	}
 	if res.Rebased > 0 {
 		fmt.Fprintln(w, rebasedLine("sync: ", res.Rebased, res.Remote))
+		printConflictCopiesKept(w, "sync: ", copies)
 	}
 	switch {
 	case res.Err != nil:

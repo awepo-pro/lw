@@ -72,6 +72,11 @@ type Options struct {
 	// must still be able to take another PC's commits.
 	AppendOnly []string
 
+	// ConflictCopy reports whether an unmerged path from a rebase conflict
+	// may be resolved as a conflict copy (083 S1b). When nil, every conflict
+	// is refused.
+	ConflictCopy func(path string) bool
+
 	// Quiesce, when set, is called to hold off every other writer of the
 	// append-only files for the length of a local mutation of the work tree —
 	// carrying a tail, a fast-forward, a rebase, take-remote's reset, a
@@ -101,6 +106,10 @@ type State struct {
 	// remote commits now underneath them, Ahead the replayed commits still to
 	// push (or, from Push, 0 once they are pushed), and Behind 0.
 	Rebased int
+
+	// ConflictCopies lists the vault-relative paths of conflict copies
+	// written during rebase conflict resolution (083 S1b).
+	ConflictCopies []string
 }
 
 // Diverged reports that both sides have commits the other lacks.

@@ -475,8 +475,12 @@ func (r *runner) rebaseDiverged(ctx context.Context, st State, carry []carried, 
 		return st, false, err
 	}
 
+	var createdFiles []string
 	// From here the vault changes; any failure goes through giveUp.
 	giveUp := func(cause error) (State, bool, error) {
+		for _, f := range createdFiles {
+			_ = os.Remove(f)
+		}
 		if r.gitRebaseRunning(ctx) {
 			// Lines a writer outside the quiesce appended meanwhile are not lost
 			// to the abort's reset.
@@ -528,15 +532,49 @@ func (r *runner) rebaseDiverged(ctx context.Context, st State, carry []carried, 
 		env: []string{"GIT_EDITOR=true", "GIT_SEQUENCE_EDITOR=true"},
 	})
 	afterRebase(ctx, r)
+	var allConflictCopies []string
 	if rerr != nil {
 		conflicted := r.gitRebaseRunning(ctx)
-		if _, _, err := giveUp(nil); err != nil {
-			return st, false, err
+		if !conflicted {
+			if _, _, err := giveUp(wrap("rebase", rerr)); err != nil {
+				return st, false, err
+			}
+			return st, false, wrap("rebase", rerr)
 		}
-		if conflicted {
+		if r.o.ConflictCopy == nil {
+			if _, _, err := giveUp(nil); err != nil {
+				return st, false, err
+			}
 			return st, false, nil
 		}
-		return st, false, wrap("rebase", rerr)
+
+		for r.gitRebaseRunning(ctx) {
+			unmerged, err := r.unmergedPaths(ctx)
+			if err != nil {
+				return giveUp(err)
+			}
+			if len(unmerged) == 0 {
+				if err := r.continueOrSkip(ctx); err != nil {
+					return giveUp(err)
+				}
+				continue
+			}
+			// The conflict is RESOLVABLE only when EVERY unmerged path is a NOTE PATH
+			for _, p := range unmerged {
+				if !r.o.ConflictCopy(p) {
+					return giveUp(nil)
+				}
+			}
+			copies, err := r.resolveConflictPaths(ctx, unmerged, allConflictCopies, &createdFiles)
+			if err != nil {
+				return giveUp(err)
+			}
+			allConflictCopies = append(allConflictCopies, copies...)
+
+			if err := r.continueOrSkip(ctx); err != nil {
+				return giveUp(err)
+			}
+		}
 	}
 
 	ahead, behind, err := r.counts(ctx)
@@ -549,6 +587,7 @@ func (r *runner) rebaseDiverged(ctx context.Context, st State, carry []carried, 
 	}
 	out := st
 	out.Pulled, out.Rebased, out.Ahead, out.Behind = st.Behind, ahead, ahead, 0
+	out.ConflictCopies = allConflictCopies
 	// Checked before the tails go back, as after a fast-forward: they are
 	// uncommitted changes, and verifyCheckout reads any difference as a collision.
 	checkoutErr := r.verifyCheckout(ctx)
