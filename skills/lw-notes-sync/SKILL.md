@@ -18,7 +18,7 @@ receipts in `ledger/receipts/`.
 
 With `lw hub`, the phone's notes reach the remote directly; no bridge PC has to carry them. They arrive on every PC
 where Obsidian left them (often the vault root), so this skill is still how a PC tidies them into `notes/`, whichever
-device wrote them, before `lw sync`. On the Syncthing phone path this skill also bridges what arrived from the phone.
+device wrote them, before `lw sync`.
 
 Your job: move what Obsidian scattered to where lw expects it, make sure nothing that
 needs review is about to be pushed, and sync. You do not ingest, edit or judge the notes: they may be unfinished.
@@ -32,7 +32,7 @@ Follow this procedure exactly.
    *move* files, keeping their names, and only as Step 2 allows. Every move uses `mv -n` (never overwrite).
 3. **Never touch `wiki/`, `raw/`, `index.md`, `log.md`, `SCHEMA.md`, `curator-memory.md`, `.llmwiki/`, `storage/`, or
    `.git/`.** Hand edits there skip the review gate (`wiki/`) or break immutability (`raw/`). If they are dirty, stop
-   and report (Step 3). The one exception is appending `/.stfolder/` to `.git/info/exclude` (Step 3).
+   and report (Step 3).
 4. **Never run `lw sync --take-remote`, `lw commit`, `lw revert`, `lw doctor --discard-changeset`, `git reset`,
    `git checkout`, `git stash`, `git push --force`, or `rm`.** Nothing is ever deleted. A sync conflict goes back to
    the user.
@@ -133,22 +133,12 @@ Put each path in exactly one class:
 | Class | Paths | Action |
 |---|---|---|
 | OK | `notes/**`, `ledger/**`, moves made in Step 2 (they show as a delete at the root plus an add) | sync |
-| OK | `.obsidian/**`, `.gitignore`, `.stignore` | sync (lw sync manages `.gitignore` itself) |
+| OK | `.obsidian/**`, `.gitignore` | sync (lw sync manages `.gitignore` itself) |
 | OK | a root image Step 2 left in place | sync; it was reported |
-| EXCLUDE | `.stfolder/**` (Syncthing's per-device folder marker) | never commit it; see below |
 | STOP | anything under `wiki/`, `raw/`, `.llmwiki/`, or `index.md`, `log.md`, `SCHEMA.md`, `curator-memory.md` | do not sync; report |
 | ASK | anything else (a new folder, a PDF, a root note Step 2 could not move) | do not sync; report and ask |
 
-EXCLUDE: `lw sync` rewrites `.gitignore`, so the marker goes in this PC's own git exclude file instead. Append it once:
-
-```bash
-grep -qxF '/.stfolder/' V/.git/info/exclude 2>/dev/null || echo '/.stfolder/' >> V/.git/info/exclude
-```
-
-Never delete `.stfolder/`: Syncthing stops syncing the folder without it.
-
-A Syncthing conflict copy (`*.sync-conflict-*`) is OK to sync, but report it: merging the two versions is the user's
-call. Then check Obsidian's attachment setting once:
+Check Obsidian's attachment setting once:
 
 ```bash
 cat V/.obsidian/app.json 2>/dev/null
