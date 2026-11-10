@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -360,5 +361,159 @@ func TestSyncInitAndCloneMakeTheJournalLock(t *testing.T) {
 		if got := pc.git("ls-files", ".llmwiki/tmp"); got != "" {
 			t.Errorf("after sync %s the lock is tracked: %q", name, got)
 		}
+	}
+}
+
+// TestSyncUnionsJournalOnlyDivergence: when two PCs each appended a valid
+// journal line while diverged, git's union merge driver on the journal resolves
+// the divergence cleanly (084 B2).
+func TestSyncUnionsJournalOnlyDivergence(t *testing.T) {
+	a, b, remote := journalPair(t)
+	baseJournal := a.read(".llmwiki/journal.ndjson")
+
+	ja, err := stage.OpenJournal(filepath.Join(a.root, ".llmwiki", "journal.ndjson"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ja.Append(stage.Event{
+		TS:        time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC),
+		Kind:      stage.EvChangesetOpened,
+		Changeset: "cs-a",
+		Actor:     stage.Author{Kind: "human"},
+		Message:   "line from a",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	lineA := a.read(".llmwiki/journal.ndjson")[len(baseJournal):]
+
+	jb, err := stage.OpenJournal(filepath.Join(b.root, ".llmwiki", "journal.ndjson"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := jb.Append(stage.Event{
+		TS:        time.Date(2026, 10, 9, 12, 1, 0, 0, time.UTC),
+		Kind:      stage.EvChangesetOpened,
+		Changeset: "cs-b",
+		Actor:     stage.Author{Kind: "human"},
+		Message:   "line from b",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	lineB := b.read(".llmwiki/journal.ndjson")[len(baseJournal):]
+
+	a.write("notes/from-a.md", "note from a\n")
+	a.git("add", "-A")
+	a.git("commit", "--quiet", "-m", "a note and journal")
+
+	b.write("notes/from-b.md", "note from b\n")
+	b.git("add", "-A")
+	b.git("commit", "--quiet", "-m", "b note and journal")
+
+	if _, stderr, code := b.lw("sync"); code != 0 {
+		t.Fatalf("B sync: exit %d stderr %q", code, stderr)
+	}
+
+	stdout, stderr, code := a.lw("sync")
+	want := "pulled 1 commit(s) from " + remote + "\n" +
+		"rebased 1 local commit(s) onto " + remote + "\n" +
+		"pushed 1 commit(s) to " + remote + "\n"
+	if code != 0 || stdout != want {
+		t.Fatalf("A sync: exit %d\nstdout %q\nwant   %q\nstderr %q", code, stdout, want, stderr)
+	}
+
+	wantJournal := baseJournal + lineB + lineA
+	if got := a.read(".llmwiki/journal.ndjson"); got != wantJournal {
+		t.Errorf("A journal:\ngot  %q\nwant %q", got, wantJournal)
+	}
+	if strings.Contains(a.read(".llmwiki/journal.ndjson"), "<<<<<<<") {
+		t.Errorf("A journal contains conflict markers")
+	}
+	if a.read("notes/from-a.md") == "" || a.read("notes/from-b.md") == "" {
+		t.Error("a note is missing on A")
+	}
+	if remoteFile(t, remote, "notes/from-a.md") == "" || remoteFile(t, remote, "notes/from-b.md") == "" {
+		t.Error("a note is missing on remote")
+	}
+}
+
+// TestJournalUnionKeepsEveryLine: 3 lines appended on each side, none lost,
+// each side's own order kept.
+func TestJournalUnionKeepsEveryLine(t *testing.T) {
+	a, b, remote := journalPair(t)
+	baseJournal := a.read(".llmwiki/journal.ndjson")
+
+	ja, err := stage.OpenJournal(filepath.Join(a.root, ".llmwiki", "journal.ndjson"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 3; i++ {
+		if err := ja.Append(stage.Event{
+			TS:        time.Date(2026, 10, 9, 12, i, 0, 0, time.UTC),
+			Kind:      stage.EvChangesetOpened,
+			Changeset: fmt.Sprintf("cs-a-%d", i),
+			Actor:     stage.Author{Kind: "human"},
+			Message:   fmt.Sprintf("line a%d", i),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	linesA := a.read(".llmwiki/journal.ndjson")[len(baseJournal):]
+
+	jb, err := stage.OpenJournal(filepath.Join(b.root, ".llmwiki", "journal.ndjson"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 3; i++ {
+		if err := jb.Append(stage.Event{
+			TS:        time.Date(2026, 10, 9, 12, 10+i, 0, 0, time.UTC),
+			Kind:      stage.EvChangesetOpened,
+			Changeset: fmt.Sprintf("cs-b-%d", i),
+			Actor:     stage.Author{Kind: "human"},
+			Message:   fmt.Sprintf("line b%d", i),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	linesB := b.read(".llmwiki/journal.ndjson")[len(baseJournal):]
+
+	a.write("notes/from-a.md", "note from a\n")
+	a.git("add", "-A")
+	a.git("commit", "--quiet", "-m", "a note and 3 journal lines")
+
+	b.write("notes/from-b.md", "note from b\n")
+	b.git("add", "-A")
+	b.git("commit", "--quiet", "-m", "b note and 3 journal lines")
+
+	if _, stderr, code := b.lw("sync"); code != 0 {
+		t.Fatalf("B sync: exit %d stderr %q", code, stderr)
+	}
+
+	stdout, stderr, code := a.lw("sync")
+	want := "pulled 1 commit(s) from " + remote + "\n" +
+		"rebased 1 local commit(s) onto " + remote + "\n" +
+		"pushed 1 commit(s) to " + remote + "\n"
+	if code != 0 || stdout != want {
+		t.Fatalf("A sync: exit %d stderr %q\nstdout %q\nwant   %q", code, stderr, stdout, want)
+	}
+
+	wantJournal := baseJournal + linesB + linesA
+	gotJournal := a.read(".llmwiki/journal.ndjson")
+	if gotJournal != wantJournal {
+		t.Errorf("A journal:\ngot  %q\nwant %q", gotJournal, wantJournal)
+	}
+	idxB1 := strings.Index(gotJournal, "line b1")
+	idxB2 := strings.Index(gotJournal, "line b2")
+	idxB3 := strings.Index(gotJournal, "line b3")
+	idxA1 := strings.Index(gotJournal, "line a1")
+	idxA2 := strings.Index(gotJournal, "line a2")
+	idxA3 := strings.Index(gotJournal, "line a3")
+	if idxB1 == -1 || idxB2 == -1 || idxB3 == -1 || idxA1 == -1 || idxA2 == -1 || idxA3 == -1 {
+		t.Fatalf("missing lines in journal: %q", gotJournal)
+	}
+	if !(idxB1 < idxB2 && idxB2 < idxB3) {
+		t.Errorf("B lines out of order in %q", gotJournal)
+	}
+	if !(idxA1 < idxA2 && idxA2 < idxA3) {
+		t.Errorf("A lines out of order in %q", gotJournal)
 	}
 }

@@ -242,6 +242,9 @@ func syncExplicitErr(err error, st vaultsync.State) error {
 	case errors.Is(err, errCommitInterrupted):
 		return errCommitInterrupted
 	}
+	if errors.Is(err, vaultsync.ErrUnrelated) {
+		return fmt.Errorf("%s holds a different vault (no commit in common with this one); nothing was changed - check [sync] remotes in the config", st.Remote)
+	}
 	if errors.Is(err, vaultsync.ErrDiverged) {
 		return fmt.Errorf("diverged from %s: this PC has %d commit(s) the remote lacks, the remote has %d this PC lacks; "+
 			"nothing was changed — lw sync --take-remote keeps the remote and saves this PC's commits on a backup branch",
@@ -516,6 +519,9 @@ func syncStatus(vaultPath string) error {
 	defer stop()
 	st, err := vaultsync.Status(ctx, o)
 	if err != nil {
+		if errors.Is(err, vaultsync.ErrUnrelated) {
+			return syncExplicitErr(err, st)
+		}
 		return err
 	}
 	rec := readSyncState(root)

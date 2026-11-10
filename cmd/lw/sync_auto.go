@@ -265,6 +265,8 @@ func syncReason(err error, st vaultsync.State) (text string, named bool) {
 		return errCommitInterrupted.Error(), true
 	case errors.Is(err, errSyncBusy):
 		return "vault is busy", true
+	case errors.Is(err, vaultsync.ErrUnrelated):
+		return fmt.Sprintf("%s holds a different vault (no commit in common with this one)", st.Remote), true
 	case errors.Is(err, vaultsync.ErrDiverged):
 		return fmt.Sprintf("diverged from %s — run lw sync", st.Remote), true
 	case errors.As(err, &fe):
