@@ -221,12 +221,13 @@ func syncSetup(vaultPath string, mode syncMode) (root string, o vaultsync.Option
 		return "", o, vaultsync.ErrNotRepo
 	}
 	return root, vaultsync.Options{
-		Dir:         root,
-		Remotes:     orderedRemotes(root, remotes),
-		Interactive: true,
-		Stderr:      os.Stderr,
-		AppendOnly:  syncAppendOnly,
-		Quiesce:     quiesceVault(root),
+		Dir:          root,
+		Remotes:      orderedRemotes(root, remotes),
+		Interactive:  true,
+		Stderr:       os.Stderr,
+		AppendOnly:   syncAppendOnly,
+		Quiesce:      quiesceVault(root),
+		ConflictCopy: isConflictCopyableNote,
 	}, nil
 }
 
@@ -393,6 +394,7 @@ func runSyncCycle(ctx context.Context, root string, o vaultsync.Options, stdout,
 		// A divergence that conflicted with nothing: the local commits now sit
 		// on the remote's, and the push below sends them.
 		fmt.Fprintln(stdout, rebasedLine("", st.Rebased, remote))
+		printConflictCopiesKept(stdout, "", st.ConflictCopies)
 	}
 
 	// Only a commit this run made, or one that was already waiting (Ahead), has

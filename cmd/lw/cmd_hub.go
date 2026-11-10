@@ -542,6 +542,9 @@ func setupHubWiring(vaultPath string, overridePort int, devicesPath string) (roo
 	syncOpts.Stderr = io.Discard
 	syncOpts.Quiesce = quiesceVault(root)
 	syncOpts.AppendOnly = syncAppendOnly
+	// 083 S1b: the hub settles a divergence its own way (heal, device-named
+	// conflict copies); it never rewrites a note during a rebase.
+	syncOpts.ConflictCopy = nil
 
 	doPull := func(ctx context.Context) error {
 		if err := guardVault(root); err != nil {
