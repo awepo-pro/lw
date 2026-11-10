@@ -219,8 +219,9 @@ commands:
   sync status                  show ahead/behind against the remote, without changing anything
   sync init <remote>           put this vault under lw sync and push it to an empty remote
   sync clone <remote> <dir>    copy a synced vault from its remote to this PC
-  sync watch                   sync continuously in the background
                                (lw sync owns the vault's .gitignore and rewrites it)
+  sync watch [--collect]       keep the vault synced by itself; --collect also runs ledger collect each day
+  sync install --print         print a systemd user unit or launchd plist that runs sync watch
   hub serve [--vault P] [--port N]
                                serve phone sync on loopback
   hub status                   show hub status and diverged state

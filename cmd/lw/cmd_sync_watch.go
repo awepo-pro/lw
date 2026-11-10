@@ -30,6 +30,7 @@ type watchLoop struct {
 	remote                   func() (changed bool, err error) // true when RemoteHead's sha != local
 	cycle                    func() error                     // one full sync, as plain `lw sync`
 	logf                     func(format string, a ...any)    // one line per call
+	collect                  func(today string) error         // runs batch collect + import before cycle
 
 	retry           bool
 	firstDirty      time.Time
@@ -41,6 +42,8 @@ type watchLoop struct {
 	lastDirtyErr    string
 	lastRemoteErr   string
 	heldDeletions   bool
+	lastCollectDay  string
+	lastCollectErr  string
 }
 
 func isSyncBusy(err error) bool {
@@ -166,13 +169,29 @@ func (w *watchLoop) step() {
 		}
 	}
 
-	if !retryTrigger && !localTrigger && !remoteTrigger {
+	today := currentTime.Format("2006-01-02")
+	dateTrigger := (w.collect != nil && today != w.lastCollectDay)
+
+	if !retryTrigger && !localTrigger && !remoteTrigger && !dateTrigger {
 		return
 	}
 
 	// Backoff check (W5: local change during backoff does not shorten it)
 	if backoffActive {
 		return
+	}
+
+	if w.collect != nil && today != w.lastCollectDay {
+		w.lastCollectDay = today
+		if err := w.collect(today); err != nil {
+			errStr := err.Error()
+			if errStr != w.lastCollectErr {
+				w.logf("sync: %v", err)
+				w.lastCollectErr = errStr
+			}
+		} else {
+			w.lastCollectErr = ""
+		}
 	}
 
 	// Run cycle
@@ -186,6 +205,19 @@ func (w *watchLoop) initStartCycle() {
 		nowFn = w.now
 	}
 	currentTime := nowFn()
+	if w.collect != nil {
+		today := currentTime.Format("2006-01-02")
+		w.lastCollectDay = today
+		if err := w.collect(today); err != nil {
+			errStr := err.Error()
+			if errStr != w.lastCollectErr {
+				w.logf("sync: %v", err)
+				w.lastCollectErr = errStr
+			}
+		} else {
+			w.lastCollectErr = ""
+		}
+	}
 	err := w.cycle()
 	w.recordCycleResult(err, currentTime)
 }
@@ -300,6 +332,7 @@ func cmdSyncWatch(args []string, vaultDefault string) error {
 	vaultPath := fs.String("vault", vaultDefault, "vault root")
 	intervalFlag := fs.Duration("interval", 15*time.Second, "remote check interval (minimum 5s)")
 	quietFlag := fs.Duration("quiet", 3*time.Second, "debounce quiet time (minimum 1s)")
+	collectFlag := fs.Bool("collect", false, "run daily batch collect and import before sync")
 	if err := fs.Parse(args); err != nil {
 		return &exitError{code: 2}
 	}
@@ -341,6 +374,17 @@ func cmdSyncWatch(args []string, vaultDefault string) error {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(sigCh)
 
+	var collectFn func(today string) error
+	if *collectFlag {
+		collectFn = func(today string) error {
+			defer tw.Flush()
+			if err := collectDayNotes(tw, root, today, false, false); err != nil {
+				return err
+			}
+			return importReceipts(tw, root, false)
+		}
+	}
+
 	w := &watchLoop{
 		quiet:    *quietFlag,
 		maxWait:  30 * time.Second,
@@ -356,8 +400,9 @@ func cmdSyncWatch(args []string, vaultDefault string) error {
 			}
 			return sha != "" && sha != local, nil
 		},
-		cycle: cycle,
-		logf:  watchLogf,
+		cycle:   cycle,
+		collect: collectFn,
+		logf:    watchLogf,
 	}
 
 	// Runs one cycle at start through same error handling (FW3)
@@ -392,6 +437,7 @@ func cmdSyncInstall(args []string, vaultDefault string) error {
 	fs.SetOutput(os.Stderr)
 	fs.Usage = func() { syncUsage(os.Stderr) }
 	printFlag := fs.Bool("print", false, "print systemd user service or launchd plist")
+	collectFlag := fs.Bool("collect", false, "add --collect to sync watch")
 	vaultPath := fs.String("vault", vaultDefault, "vault root")
 	if err := fs.Parse(args); err != nil {
 		return &exitError{code: 2}
@@ -425,6 +471,10 @@ func cmdSyncInstall(args []string, vaultDefault string) error {
 
 	pathEnv := os.Getenv("PATH")
 	if syncInstallGOOS == "darwin" {
+		collectPlistArg := ""
+		if *collectFlag {
+			collectPlistArg = "\n\t\t<string>--collect</string>"
+		}
 		fmt.Printf(`# ~/Library/LaunchAgents/pro.awepo.lw-sync.plist
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -436,7 +486,7 @@ func cmdSyncInstall(args []string, vaultDefault string) error {
 	<array>
 		<string>%s</string>
 		<string>sync</string>
-		<string>watch</string>
+		<string>watch</string>%s
 		<string>--vault</string>
 		<string>%s</string>
 	</array>
@@ -454,8 +504,13 @@ func cmdSyncInstall(args []string, vaultDefault string) error {
 
 # Commands to enable and run:
 launchctl load -w ~/Library/LaunchAgents/pro.awepo.lw-sync.plist
-`, absExe, absRoot, pathEnv)
+`, absExe, collectPlistArg, absRoot, pathEnv)
 		return nil
+	}
+
+	execStart := fmt.Sprintf("%s sync watch --vault %s", absExe, absRoot)
+	if *collectFlag {
+		execStart += " --collect"
 	}
 
 	fmt.Printf(`# ~/.config/systemd/user/lw-sync.service
@@ -465,7 +520,7 @@ After=network-online.target
 
 [Service]
 Type=simple
-ExecStart=%s sync watch --vault %s
+ExecStart=%s
 Environment="PATH=%s"
 Restart=on-failure
 RestartSec=10
@@ -476,6 +531,6 @@ WantedBy=default.target
 # Commands to enable and run:
 systemctl --user daemon-reload
 systemctl --user enable --now lw-sync.service
-`, absExe, absRoot, pathEnv)
+`, execStart, pathEnv)
 	return nil
 }

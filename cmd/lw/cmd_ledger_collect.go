@@ -37,7 +37,7 @@ func findCandidates(root string) ([]candidateNote, error) {
 		return nil, err
 	}
 	for _, e := range entries {
-		if !e.IsDir() && dayNoteFileNameRegex.MatchString(e.Name()) {
+		if e.Type().IsRegular() && dayNoteFileNameRegex.MatchString(e.Name()) {
 			dateStr := strings.TrimSuffix(e.Name(), ".md")
 			if isValidDate(dateStr) {
 				candidates = append(candidates, candidateNote{
@@ -54,7 +54,7 @@ func findCandidates(root string) ([]candidateNote, error) {
 	lEntries, err := os.ReadDir(ledgerDir)
 	if err == nil {
 		for _, e := range lEntries {
-			if !e.IsDir() && dayNoteFileNameRegex.MatchString(e.Name()) {
+			if e.Type().IsRegular() && dayNoteFileNameRegex.MatchString(e.Name()) {
 				dateStr := strings.TrimSuffix(e.Name(), ".md")
 				if isValidDate(dateStr) {
 					candidates = append(candidates, candidateNote{
@@ -75,6 +75,77 @@ func findCandidates(root string) ([]candidateNote, error) {
 	})
 
 	return candidates, nil
+}
+
+func collectDayNotes(w io.Writer, root string, today string, includeToday bool, dryRun bool) error {
+	candidates, err := findCandidates(root)
+	if err != nil {
+		return err
+	}
+
+	var collectedCount, waitingCount, totalReceipts int
+
+	for _, cand := range candidates {
+		if cand.date > today {
+			fmt.Fprintf(w, "skipped %s: future date\n", cand.name)
+			continue
+		}
+		if cand.date == today && !includeToday {
+			fmt.Fprintf(w, "skipped %s: today (use --include-today)\n", cand.name)
+			continue
+		}
+
+		data, err := os.ReadFile(cand.path)
+		if err != nil {
+			return err
+		}
+		relPath, _ := filepath.Rel(root, cand.path)
+		parsed := ledger.ParseDayNote(relPath, cand.date, data)
+
+		// 1. Empty after G0-G3 and with no image
+		if len(parsed.Entries) == 0 && len(parsed.Issues) == 0 && len(parsed.Images) == 0 {
+			fmt.Fprintf(w, "skipped %s: empty\n", cand.name)
+			continue
+		}
+
+		// 2. Not readable
+		if len(parsed.Issues) > 0 {
+			for _, iss := range parsed.Issues {
+				if iss.Line > 0 {
+					fmt.Fprintf(w, "waiting %s: line %d: %s\n", cand.name, iss.Line, iss.Msg)
+				} else {
+					fmt.Fprintf(w, "waiting %s: %s\n", cand.name, iss.Msg)
+				}
+			}
+			waitingCount++
+			continue
+		}
+		if len(parsed.Entries) == 0 && len(parsed.Images) > 0 {
+			fmt.Fprintf(w, "waiting %s: only a receipt image\n", cand.name)
+			waitingCount++
+			continue
+		}
+
+		// 3. Readable
+		c, wt, r, err := processReadableCandidate(w, root, cand, parsed.Entries, parsed.Images, dryRun)
+		if err != nil {
+			return err
+		}
+		collectedCount += c
+		waitingCount += wt
+		totalReceipts += r
+	}
+
+	collectWord := "collected"
+	if dryRun {
+		collectWord = "would collect"
+	}
+	fmt.Fprintf(w, "%s %d day note(s), %d waiting\n", collectWord, collectedCount, waitingCount)
+	if totalReceipts > 0 && !dryRun {
+		fmt.Fprintln(w, "run lw ledger import to store the receipts so lw sync carries them")
+	}
+
+	return nil
 }
 
 func cmdLedgerCollect(args []string) error {
@@ -123,6 +194,10 @@ func cmdLedgerCollect(args []string) error {
 		if *dayFlag == "" || *lineFlag == "" {
 			fmt.Fprintln(os.Stderr, "lw ledger collect: --day and --line must be used together")
 			ledgerUsage(os.Stderr)
+			return &exitError{code: 2}
+		}
+		if strings.ContainsAny(*lineFlag, "\n\r") || strings.Contains(*lineFlag, "[[") {
+			fmt.Fprintln(os.Stderr, "lw ledger collect: --line must not contain newlines or [[ links")
 			return &exitError{code: 2}
 		}
 		if !isValidDate(*dayFlag) {
@@ -179,79 +254,84 @@ func cmdLedgerCollect(args []string) error {
 	}
 
 	// Mode 1: batch collect
-	var collectedCount, waitingCount, totalReceipts int
+	return collectDayNotes(os.Stdout, root, today, *includeToday, *dryRun)
+}
 
-	for _, cand := range candidates {
-		if cand.date > today {
-			fmt.Printf("skipped %s: future date\n", cand.name)
-			continue
+func findSymlinkElement(root string, relPath string) (string, bool) {
+	relPath = filepath.ToSlash(relPath)
+	parts := strings.Split(relPath, "/")
+	cur := ""
+	for i, part := range parts {
+		if cur == "" {
+			cur = part
+		} else {
+			cur = cur + "/" + part
 		}
-		if cand.date == today && !*includeToday {
-			fmt.Printf("skipped %s: today (use --include-today)\n", cand.name)
-			continue
-		}
-
-		data, err := os.ReadFile(cand.path)
-		if err != nil {
-			return err
-		}
-		relPath, _ := filepath.Rel(root, cand.path)
-		parsed := ledger.ParseDayNote(relPath, cand.date, data)
-
-		// 1. Empty after G0-G3 and with no image
-		if len(parsed.Entries) == 0 && len(parsed.Issues) == 0 && len(parsed.Images) == 0 {
-			fmt.Printf("skipped %s: empty\n", cand.name)
-			continue
-		}
-
-		// 2. Not readable
-		if len(parsed.Issues) > 0 {
-			for _, iss := range parsed.Issues {
-				if iss.Line > 0 {
-					fmt.Printf("waiting %s: line %d: %s\n", cand.name, iss.Line, iss.Msg)
-				} else {
-					fmt.Printf("waiting %s: %s\n", cand.name, iss.Msg)
+		full := filepath.Join(root, filepath.FromSlash(cur))
+		fi, err := os.Lstat(full)
+		if err == nil && (fi.Mode()&os.ModeSymlink != 0) {
+			elem := cur
+			if i < len(parts)-1 {
+				elem += "/"
+			} else {
+				if targetFi, err := os.Stat(full); err == nil && targetFi.IsDir() {
+					elem += "/"
 				}
 			}
-			waitingCount++
-			continue
+			return elem, true
 		}
-		if len(parsed.Entries) == 0 && len(parsed.Images) > 0 {
-			fmt.Printf("waiting %s: only a receipt image\n", cand.name)
-			waitingCount++
-			continue
-		}
-
-		// 3. Readable
-		c, w, r, err := processReadableCandidate(os.Stdout, root, cand, parsed.Entries, parsed.Images, *dryRun)
-		if err != nil {
-			return err
-		}
-		collectedCount += c
-		waitingCount += w
-		totalReceipts += r
 	}
-
-	collectWord := "collected"
-	if *dryRun {
-		collectWord = "would collect"
-	}
-	fmt.Printf("%s %d day note(s), %d waiting\n", collectWord, collectedCount, waitingCount)
-	if totalReceipts > 0 && !*dryRun {
-		fmt.Println("run lw ledger import to store the receipts so lw sync carries them")
-	}
-
-	return nil
+	return "", false
 }
 
 func processReadableCandidate(w io.Writer, root string, cand candidateNote, entries []ledger.Entry, images []string, dryRun bool) (collected int, waiting int, receipts int, err error) {
+	// 3a0. Check for symlinks in archive path and receipt paths under vault
+	archRel := fmt.Sprintf("ledger/%s/%s/%s.md", cand.date[:4], cand.date[5:7], cand.date)
+	if symlinkElem, found := findSymlinkElement(root, archRel); found {
+		fmt.Fprintf(w, "waiting %s: %s holds a symlink\n", cand.name, symlinkElem)
+		return 0, 1, 0, nil
+	}
+
+	cleanRoot := filepath.Clean(root)
+	for _, target := range images {
+		baseName := filepath.Base(target)
+		candsToTry := []string{
+			filepath.Join(filepath.Dir(cand.path), target),
+			filepath.Join(root, baseName),
+			filepath.Join(root, vault.LedgerDir, baseName),
+		}
+		var resolvedSrc string
+		for _, tryPath := range candsToTry {
+			cleanTry := filepath.Clean(tryPath)
+			if cleanTry != cleanRoot && !strings.HasPrefix(cleanTry, cleanRoot+string(filepath.Separator)) {
+				continue
+			}
+			lfi, err := os.Lstat(cleanTry)
+			if err != nil || lfi.Mode()&os.ModeSymlink != 0 || !lfi.Mode().IsRegular() {
+				continue
+			}
+			relToRoot, err := filepath.Rel(root, cleanTry)
+			if err != nil || strings.HasPrefix(filepath.ToSlash(relToRoot), "ledger/receipts/") {
+				continue
+			}
+			resolvedSrc = cleanTry
+			break
+		}
+		if resolvedSrc != "" {
+			destRel := fmt.Sprintf("ledger/receipts/%s/%s/%s", cand.date[:4], cand.date[5:7], baseName)
+			if symlinkElem, found := findSymlinkElement(root, destRel); found {
+				fmt.Fprintf(w, "waiting %s: %s holds a symlink\n", cand.name, symlinkElem)
+				return 0, 1, 0, nil
+			}
+		}
+	}
+
 	candData, err := os.ReadFile(cand.path)
 	if err != nil {
 		return 0, 0, 0, err
 	}
 
 	// 3a. Archive path check
-	archRel := fmt.Sprintf("ledger/%s/%s/%s.md", cand.date[:4], cand.date[5:7], cand.date)
 	archPath := filepath.Join(root, archRel)
 
 	archData, archErr := os.ReadFile(archPath)
@@ -293,6 +373,11 @@ func processReadableCandidate(w io.Writer, root string, cand candidateNote, entr
 		}
 
 		if !dryRun {
+			bkPerm := os.FileMode(0o644)
+			if st, err := os.Stat(bkPath); err == nil {
+				bkPerm = st.Mode().Perm()
+			}
+
 			tmpDir := filepath.Join(root, ".llmwiki", "tmp")
 			if err := os.MkdirAll(tmpDir, 0o755); err != nil {
 				return 0, 0, 0, err
@@ -302,6 +387,11 @@ func processReadableCandidate(w io.Writer, root string, cand candidateNote, entr
 				return 0, 0, 0, err
 			}
 			tmpName := tmpFile.Name()
+			if err := tmpFile.Chmod(bkPerm); err != nil {
+				tmpFile.Close()
+				os.Remove(tmpName)
+				return 0, 0, 0, err
+			}
 			if _, err := tmpFile.Write(newBk); err != nil {
 				tmpFile.Close()
 				os.Remove(tmpName)
@@ -346,7 +436,6 @@ func processReadableCandidate(w io.Writer, root string, cand candidateNote, entr
 
 	// 3d. Move receipt images
 	receiptsMoved := 0
-	cleanRoot := filepath.Clean(root)
 
 	for _, target := range images {
 		// Resolve order:

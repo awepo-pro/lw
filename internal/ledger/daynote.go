@@ -409,8 +409,10 @@ func parseDayNotePiece(p string, lineNum int, path string) (intermediateDayItem,
 	}
 	note := strings.Join(noteWords, " ")
 	note = strings.TrimSpace(note)
+	note = strings.TrimRight(note, ",;:\t ")
 	if strings.HasPrefix(note, "(") && strings.HasSuffix(note, ")") {
 		note = strings.TrimSpace(note[1 : len(note)-1])
+		note = strings.TrimRight(note, ",;:\t ")
 	}
 
 	return intermediateDayItem{

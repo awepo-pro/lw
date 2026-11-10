@@ -39,9 +39,10 @@ func syncUsage(w io.Writer) {
        lw sync status [--vault P]               show ahead/behind against the remote, without changing anything
        lw sync init <remote> [--vault P]        put this vault under lw sync and push it to an empty remote
        lw sync clone <remote> <dir>             copy a synced vault from its remote to this PC
-       lw sync watch [--vault P] [--interval D] [--quiet D]
+       lw sync watch [--vault P] [--interval D] [--quiet D] [--collect]
                                                 sync continuously when the tree is dirty or remote moves
-       lw sync install --print [--vault P]      print systemd user service or launchd plist
+       lw sync install --print [--vault P] [--collect]
+                                                print systemd user service or launchd plist
 
 A remote is host:path (over ssh), an ssh:// URL or a local path; the server needs
 only sshd and git. [sync] remotes in config.toml lists them, tried in order.
@@ -298,6 +299,12 @@ func syncPreflight(root string) error {
 	return nil
 }
 
+// syncPrePushHook is a test hook called immediately before syncPush in runSyncCycle.
+var syncPrePushHook func()
+
+// syncPreRetryPushHook is a test hook called immediately before the retry syncPush.
+var syncPreRetryPushHook func()
+
 // syncRun is `lw sync` and `lw sync --take-remote`.
 //
 // The plain verb pulls first (A-042-7 b): a PC whose only uncommitted change is
@@ -401,7 +408,45 @@ func runSyncCycle(ctx context.Context, root string, o vaultsync.Options, stdout,
 	// anything to push — and a second fetch to pay for.
 	pushed := 0
 	if committed || st.Ahead > 0 {
+		if syncPrePushHook != nil {
+			hook := syncPrePushHook
+			syncPrePushHook = nil
+			hook()
+		}
 		pst, err := syncPush(ctx, o)
+		if err != nil && errors.Is(err, vaultsync.ErrDiverged) && ctx.Err() == nil {
+			// Remote moved meanwhile: pull and push ONCE more inside the same cycle.
+			st2, _, errPull2 := syncPullAndCommit(ctx, root, o)
+			if errPull2 != nil {
+				recordSyncAhead(root, "", errPull2, st2.Ahead)
+				return syncExplicitErr(errPull2, st2)
+			}
+			issues.add(storageReconcile(ctx, root, o))
+			if st2.Pulled > 0 {
+				fmt.Fprintf(stdout, "pulled %d commit(s) from %s\n", st2.Pulled, st2.Remote)
+				if err := printIndexRebuildTo(stdout, root); err != nil {
+					return err
+				}
+			}
+			if st2.Rebased > 0 {
+				fmt.Fprintln(stdout, rebasedLine("", st2.Rebased, st2.Remote))
+				printConflictCopiesKept(stdout, "", st2.ConflictCopies)
+			}
+			if syncPreRetryPushHook != nil {
+				hook := syncPreRetryPushHook
+				syncPreRetryPushHook = nil
+				hook()
+			}
+			pst2, errPush2 := syncPush(ctx, o)
+			if errPush2 != nil {
+				recordSyncAhead(root, "", errPush2, pst2.Ahead)
+				return syncExplicitErr(errPush2, pst2)
+			}
+			pst = pst2
+			err = nil
+			pulled += st2.Pulled
+			st.Rebased += st2.Rebased
+		}
 		if err != nil {
 			recordSyncAhead(root, "", err, pst.Ahead)
 			return syncExplicitErr(err, pst)
