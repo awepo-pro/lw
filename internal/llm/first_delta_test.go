@@ -111,8 +111,9 @@ func TestFirstDeltaGrowsWithPreDeltaGap(t *testing.T) {
 	defer gappedSrv.Close()
 	gapped := streamFinishDelta(t, gappedSrv)
 
-	if gapped < preDeltaGap.Milliseconds() {
-		t.Errorf("gapped first_delta_ms = %d, want >= %d (the staged pre-delta gap)", gapped, preDeltaGap.Milliseconds())
+	// Amendment A-084-2: the gap is slept on the server and measured on the client; allow 5 ms.
+	if gapped < (preDeltaGap - 5*time.Millisecond).Milliseconds() {
+		t.Errorf("gapped first_delta_ms = %d, want >= %d (the staged pre-delta gap - 5ms)", gapped, (preDeltaGap - 5*time.Millisecond).Milliseconds())
 	}
 	if gapped <= plain {
 		t.Errorf("gapped first_delta_ms = %d, want > plain %d", gapped, plain)

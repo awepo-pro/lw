@@ -133,6 +133,10 @@ func (e *dirtyError) Unwrap() error { return ErrDirty }
 // changed.
 var ErrDiverged = errors.New("diverged")
 
+// ErrUnrelated is returned when the remote holds a history with no commit in
+// common with this vault (084 B1a).
+var ErrUnrelated = errors.New("vaultsync: the remote holds a different vault")
+
 // FormatError says the remote vault's on-disk format is newer than this lw
 // can write safely. An older lw that wrote it anyway would silently drop the
 // fields it does not know (encoding/json ignores unknown fields), so the
