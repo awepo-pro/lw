@@ -42,6 +42,7 @@ type Issue struct {
 	Path string
 	Line int
 	Msg  string
+	Warn bool
 }
 
 // ParseLine parses one line. isTxn is false (and err nil) for a line that is not a
