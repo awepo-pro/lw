@@ -46,6 +46,8 @@ func cmdLedger(args []string) error {
 		return cmdLedgerSum(rest)
 	case "report":
 		return cmdLedgerReport(rest)
+	case "collect":
+		return cmdLedgerCollect(rest)
 	case "import":
 		return cmdLedgerImport(rest)
 	case "-h", "--help", "help":
@@ -63,6 +65,8 @@ func ledgerUsage(w io.Writer) {
        lw ledger check [--vault P]
        lw ledger sum [YYYY-MM] [--vault P]
        lw ledger report [YYYY-MM] [--today YYYY-MM-DD] [--vault P]
+       lw ledger collect [--dry-run] [--include-today] [--today YYYY-MM-DD] [--vault P]
+       lw ledger collect --day YYYY-MM-DD --line "<items>" [--dry-run] [--vault P]
 
 Receipts delivered to %s/receipts/ are copied into storage/ as
 receipts/<path>, where lw sync carries them to other PCs.
@@ -298,6 +302,18 @@ func cmdLedgerReport(args []string) error {
 	}
 
 	out := ledger.Report(book, month, today)
+
+	candidates, _ := findCandidates(root)
+	var notCollectedCount int
+	for _, c := range candidates {
+		if c.date <= today {
+			notCollectedCount++
+		}
+	}
+	if notCollectedCount > 0 {
+		out += fmt.Sprintf("%d day note(s) not collected yet: run lw ledger collect\n", notCollectedCount)
+	}
+
 	fmt.Print(out)
 	return nil
 }

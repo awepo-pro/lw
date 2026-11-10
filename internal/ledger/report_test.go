@@ -186,19 +186,27 @@ func TestReport_R6_MultipleCurrencies(t *testing.T) {
 	}
 
 	got := Report(b, "2026-11", "2026-11-10")
-	norm := normalizeReport(got)
-	blocks := strings.Split(norm, "\n\n")
-	if len(blocks) != 2 {
-		t.Fatalf("expected 2 blocks separated by blank line, got %d:\n%s", len(blocks), norm)
-	}
+	want := "2026-11\n" +
+		"spent 277.50 (8 item(s) on 4 day(s))\n" +
+		"fixed 4000.00 (\u5bb6\u7528 4000.00)\n" +
+		"money in 0.00\n" +
+		"net out 4277.50\n" +
+		"by category:\n" +
+		"\u5bb6\u7528 4000.00 (1)\n" +
+		"uncategorized 277.50 (8)\n" +
+		"average per recorded day 69.38\n" +
+		"no entry on 5 day(s): 06 07 08 09 10\n\n" +
+		"2026-11 HKD\n" +
+		"spent 15.00 (1 item(s) on 1 day(s))\n" +
+		"fixed 0.00\n" +
+		"money in 0.00\n" +
+		"net out 15.00\n" +
+		"by category:\n" +
+		"transit 15.00 (1)\n" +
+		"average per recorded day 15.00\n" +
+		"no entry on 9 day(s): 02 03 04 05 06 07 08 09 10"
 
-	block1Lines := strings.Split(blocks[0], "\n")
-	if len(block1Lines) == 0 || block1Lines[0] != "2026-11" {
-		t.Errorf("block 1 header mismatch: got %q, want '2026-11'", block1Lines[0])
-	}
-
-	block2Lines := strings.Split(blocks[1], "\n")
-	if len(block2Lines) == 0 || block2Lines[0] != "2026-11 HKD" {
-		t.Errorf("block 2 header mismatch: got %q, want '2026-11 HKD'", block2Lines[0])
+	if normalizeReport(got) != normalizeReport(want) {
+		t.Errorf("report mismatch:\ngot:\n%s\nwant:\n%s", got, want)
 	}
 }

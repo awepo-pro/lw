@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -31,6 +32,7 @@ type Entry struct {
 	Kind     Kind
 	Path     string // vault-relative, slash-separated
 	Line     int    // 1-based
+	Source   string // text inside [[...]] source link at end of day line, "" when absent
 }
 
 type Book struct {
@@ -84,8 +86,29 @@ var (
 		"apr", "may", "jun", "jul", "aug", "sep", "oct",
 		"nov", "dec",
 	}
-	multiSpaceRegex = regexp.MustCompile(`\s+`)
+	multiSpaceRegex  = regexp.MustCompile(`\s+`)
+	numberTokenRegex = regexp.MustCompile(`^[-+]?\$?[0-9]+(?:\.[0-9]+)?$`)
+	sourceLinkRegex  = regexp.MustCompile(`\s+\[\[([^\[\]]+)\]\]$`)
 )
+
+func isNumberToken(s string) bool {
+	return numberTokenRegex.MatchString(s)
+}
+
+func checkBalancedParens(s string) bool {
+	depth := 0
+	for _, r := range s {
+		if r == '(' {
+			depth++
+		} else if r == ')' {
+			if depth == 0 {
+				return false
+			}
+			depth--
+		}
+	}
+	return depth == 0
+}
 
 func is4Digits(s string) bool {
 	if len(s) != 4 {
@@ -214,7 +237,7 @@ func isValidTagWord(s string) bool {
 }
 
 // parseItemTail extracts the first tag (if any) and the note from an item's tail.
-func parseItemTail(tail string) (firstTag string, note string) {
+func parseItemTailWithParens(tail string) (firstTag string, note string, inParens bool) {
 	tokens := strings.Fields(tail)
 	var nonTags []string
 	for _, tok := range tokens {
@@ -229,11 +252,17 @@ func parseItemTail(tail string) (firstTag string, note string) {
 	rem := strings.Join(nonTags, " ")
 	rem = strings.TrimSpace(rem)
 	if strings.HasPrefix(rem, "(") && strings.HasSuffix(rem, ")") {
+		inParens = true
 		rem = rem[1 : len(rem)-1]
 		rem = strings.TrimSpace(rem)
 	}
 	note = rem
-	return firstTag, note
+	return firstTag, note, inParens
+}
+
+func parseItemTail(tail string) (firstTag string, note string) {
+	tag, note, _ := parseItemTailWithParens(tail)
+	return tag, note
 }
 
 type intermediateDayLine struct {
@@ -243,6 +272,7 @@ type intermediateDayLine struct {
 	Year     string
 	Items    []intermediateDayItem
 	DateWarn *Issue
+	Source   string
 }
 
 type intermediateDayItem struct {
@@ -282,11 +312,47 @@ func ParseLoose(path string, data []byte) (entries []Entry, issues []Issue, budg
 		}
 	}
 
-	inFence := false
+	// G1 fence pre-pass
+	var fenceLines []int
+	for idx, l := range lines {
+		lineNum := idx + 1
+		if idx <= skipFrontmatterUntil {
+			continue
+		}
+		trimmed := strings.TrimLeft(l, " \t")
+		if strings.HasPrefix(trimmed, "```") {
+			fenceLines = append(fenceLines, lineNum)
+		}
+	}
+
+	closedFenceRanges := make(map[int]bool)
+	unclosedFenceLine := -1
+	numFences := len(fenceLines)
+	if numFences%2 != 0 {
+		unclosedFenceLine = fenceLines[numFences-1]
+		numFences--
+	}
+	for i := 0; i < numFences; i += 2 {
+		for ln := fenceLines[i]; ln <= fenceLines[i+1]; ln++ {
+			closedFenceRanges[ln] = true
+		}
+	}
+	if unclosedFenceLine != -1 {
+		issues = append(issues, Issue{
+			Path: path,
+			Line: unclosedFenceLine,
+			Msg:  "unclosed code fence",
+		})
+	}
+
 	var rules []categoryRule
 	var dayLines []intermediateDayLine
 	var monthLines []intermediateMonthLine
-	seenDates := make(map[string]int)
+	type dateOccurrence struct {
+		lineNum   int
+		hasSource bool
+	}
+	seenDateOccurrences := make(map[string][]dateOccurrence)
 
 	type lineResult struct {
 		lineNum  int
@@ -308,11 +374,10 @@ func ParseLoose(path string, data []byte) (entries []Entry, issues []Issue, budg
 		trimmed := strings.TrimLeft(line, " \t")
 
 		// G1 fence
-		if strings.HasPrefix(trimmed, "```") {
-			inFence = !inFence
+		if closedFenceRanges[lineNum] {
 			continue
 		}
-		if inFence {
+		if lineNum == unclosedFenceLine {
 			continue
 		}
 
@@ -426,11 +491,26 @@ func ParseLoose(path string, data []byte) (entries []Entry, issues []Issue, budg
 				rest = strings.TrimSpace(rest[1:])
 			}
 
+			source := ""
+			if m := sourceLinkRegex.FindStringSubmatchIndex(rest); m != nil {
+				source = rest[m[2]:m[3]]
+				rest = strings.TrimSpace(rest[:m[0]])
+			}
+
 			if rest == "" {
 				issues = append(issues, Issue{
 					Path: path,
 					Line: lineNum,
 					Msg:  "no amount after the date",
+				})
+				continue
+			}
+
+			if !checkBalancedParens(rest) {
+				issues = append(issues, Issue{
+					Path: path,
+					Line: lineNum,
+					Msg:  "unbalanced parentheses",
 				})
 				continue
 			}
@@ -461,7 +541,7 @@ func ParseLoose(path string, data []byte) (entries []Entry, issues []Issue, budg
 				}
 
 				tail := m[3]
-				if tail != "" && !strings.HasPrefix(tail, " ") && !strings.HasPrefix(tail, "(") {
+				if tail != "" && !strings.HasPrefix(tail, " ") && !strings.HasPrefix(tail, "\t") && !strings.HasPrefix(tail, "(") {
 					allValid = false
 					issues = append(issues, Issue{
 						Path: path,
@@ -489,7 +569,29 @@ func ParseLoose(path string, data []byte) (entries []Entry, issues []Issue, budg
 					centsVal = -centsVal
 				}
 
-				tag, note := parseItemTail(tail)
+				tag, note, inParens := parseItemTailWithParens(tail)
+				if !inParens && note != "" {
+					noteTokens := strings.Fields(note)
+					if len(noteTokens) > 0 {
+						allNumbers := true
+						for _, tok := range noteTokens {
+							if !isNumberToken(tok) {
+								allNumbers = false
+								break
+							}
+						}
+						if allNumbers {
+							allValid = false
+							issues = append(issues, Issue{
+								Path: path,
+								Line: lineNum,
+								Msg:  fmt.Sprintf("two numbers in one item %q (write 23 + 45, or put the note in parentheses)", p),
+							})
+							break
+						}
+					}
+				}
+
 				lineItems = append(lineItems, intermediateDayItem{
 					Cents: centsVal,
 					Tag:   tag,
@@ -502,16 +604,26 @@ func ParseLoose(path string, data []byte) (entries []Entry, issues []Issue, budg
 			}
 
 			var warn *Issue
-			if firstLine, seen := seenDates[dateStr]; seen {
-				warn = &Issue{
-					Path: path,
-					Line: lineNum,
-					Msg:  fmt.Sprintf("date %s also on line %d", dateStr, firstLine),
-					Warn: true,
+			hasSource := (source != "")
+			if prevs, seen := seenDateOccurrences[dateStr]; seen {
+				if !hasSource {
+					for _, p := range prevs {
+						if !p.hasSource {
+							warn = &Issue{
+								Path: path,
+								Line: lineNum,
+								Msg:  fmt.Sprintf("date %s also on line %d", dateStr, p.lineNum),
+								Warn: true,
+							}
+							break
+						}
+					}
 				}
-			} else {
-				seenDates[dateStr] = lineNum
 			}
+			seenDateOccurrences[dateStr] = append(seenDateOccurrences[dateStr], dateOccurrence{
+				lineNum:   lineNum,
+				hasSource: hasSource,
+			})
 
 			dl := intermediateDayLine{
 				LineNum:  lineNum,
@@ -520,6 +632,7 @@ func ParseLoose(path string, data []byte) (entries []Entry, issues []Issue, budg
 				Year:     dateStr[:4],
 				Items:    lineItems,
 				DateWarn: warn,
+				Source:   source,
 			}
 			dayLines = append(dayLines, dl)
 			lineResults = append(lineResults, lineResult{
@@ -599,6 +712,7 @@ func ParseLoose(path string, data []byte) (entries []Entry, issues []Issue, budg
 				Kind:     KindDay,
 				Path:     path,
 				Line:     dl.LineNum,
+				Source:   dl.Source,
 			})
 		}
 		lineEntriesMap[dl.LineNum] = itemEntries
@@ -688,6 +802,9 @@ func ParseLoose(path string, data []byte) (entries []Entry, issues []Issue, budg
 	}
 
 	// Merge issues in line order
+	sort.SliceStable(issues, func(i, j int) bool {
+		return issues[i].Line < issues[j].Line
+	})
 	var allIssues []Issue
 	// Existing directive/rule/parse issues
 	issueIdx := 0
@@ -806,7 +923,7 @@ func tryParseMonthLine(line string) (intermediateMonthLine, bool) {
 
 	// Label is what lies between sign and amount, trimmed, not empty
 	label := strings.TrimSpace(remTrimmed[1:])
-	if label == "" {
+	if label == "" || strings.HasPrefix(label, "+") || strings.HasPrefix(label, "-") {
 		return intermediateMonthLine{}, false
 	}
 

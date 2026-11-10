@@ -183,7 +183,7 @@ func Report(b Book, month string, today string) string {
 			}
 		}
 
-		if len(recordedDatesMap) > 0 && todayMonth != "" && month <= todayMonth {
+		if daysCount > 0 && todayMonth != "" && month <= todayMonth {
 			var recDates []string
 			for d := range recordedDatesMap {
 				recDates = append(recDates, d)

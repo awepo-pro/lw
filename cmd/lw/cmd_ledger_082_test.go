@@ -92,11 +92,9 @@ func TestLedger082_C3_CheckWarningOnly(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr, stdout)
 	}
-	if !strings.Contains(stdout, "bookkeeping.md:2: warning: date 2026-11-02 also on line 1\n") {
-		t.Errorf("stdout missing warning line: %q", stdout)
-	}
-	if !strings.Contains(stdout, "ok: 2 transaction(s) in 1 file(s)\n") {
-		t.Errorf("stdout missing ok line: %q", stdout)
+	wantStdout := "bookkeeping.md:2: warning: date 2026-11-02 also on line 1\nok: 2 transaction(s) in 1 file(s)\n"
+	if stdout != wantStdout {
+		t.Errorf("stdout mismatch: got %q, want %q", stdout, wantStdout)
 	}
 }
 
@@ -119,15 +117,11 @@ func TestLedger082_C4_SumReal(t *testing.T) {
 	}
 
 	norm := normalizeOutput(stdout)
-	wantLines := []string{
-		"- uncategorized -277.50 (8)",
-		"- \u5bb6\u7528 -4000.00 (1)",
-		"- total -4277.50 (9)",
-	}
-	for _, w := range wantLines {
-		if !strings.Contains(norm, w) {
-			t.Errorf("stdout missing line %q, got:\n%s", w, norm)
-		}
+	want := "- uncategorized -277.50 (8)\n" +
+		"- \u5bb6\u7528 -4000.00 (1)\n" +
+		"- total -4277.50 (9)"
+	if norm != want {
+		t.Errorf("stdout mismatch:\ngot:\n%s\nwant:\n%s", norm, want)
 	}
 }
 
