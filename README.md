@@ -189,26 +189,39 @@ usage: lw <command> [arguments]
 commands:
   init [--schema <domain>]     initialize a new vault
   config                       view or edit configuration
-  ingest <url|path>...         ingest one or more sources
-  ingest --prepare [--agent <name>] <url|path>...
+  ingest <url|path|dir>...     ingest one or more sources
+  ingest --note <id>           ingest a note from notes/ by id or unique prefix; repeat --note for more
+  ingest --prepare [--agent <name>] [--instruction <text>|--instruction-file <path|->] <url|path|dir>...
                                open a changeset for the sources and print a brief for an external agent
   tool <name> [<json> | --from <file|->]
                                run one tool of that agent's ingest; tool --list prints every schema,
                                tool --brief prints the agent's brief again
   tool --ask <name> [<json>]   run one read-only tool for an external agent's answer;
                                tool --ask --list prints their schemas
+  note [-m "..." | -F <file>]  capture a quick raw note outside the wiki (no LLM, no review)
+  note list [-n N] [--pending] list captured notes, newest first (--pending: not yet ingested)
   status                       show the open changeset, if any
   diff [--op <id>]             show the projected diff of the open changeset
   commit -m "..." [--force]    commit the open changeset
   log [--rejected] [--agent]   show changeset history
+  digest [--since 7d|DATE] [--format md|html] [-o FILE]
+                               what the wiki learned in a window: new/updated pages with their gist, sources
   session list [--json]        list recorded agent sessions
   session show [<id>] [--plain] [--json] [--thinking]
                                print one session's transcript
+  trace [-n N]                 list agent turn traces; trace show <ref> inspects one
   revert <commit-id>           open a reverse changeset for review
   query "..."                  ask the curator agent a question
   query --prepare "..."        print a brief for an external agent to answer the question
                                (no LLM, no key); the agent calls lw tool --ask
+  search [--type T] [--tag t] [-n N] [--json] <words>
+                               word-search committed pages (no LLM, no key); exit 1 when nothing matches
+  show [--links] [--json] <page>
+                               print a page by path, basename, title or alias; --links adds links and backlinks
   lint [--fix]                 run the lint checks
+  stats [--json] [--stale-days N]
+                               vault shape at a glance: types, tags, sourcing, uncited raws, freshness, activity
+  export html [--force] <dir>  write a static, offline HTML site of the committed vault (search, backlinks)
   mcp [--ask]                  run the MCP server over stdio; --ask serves only the read-only
                                ask tools and sees the open changeset as lw query does
   doctor [--unlock] [--rebuild-index] [--discard-changeset] [--json]
@@ -226,6 +239,13 @@ commands:
   hub revoke <slug|id>         revoke an approved phone device
   hub install --print          print systemd user unit and tailscale serve commands
   tui                          launch the terminal UI (default with no command)
+  storage [add|list|show|get|rm]
+                               manage non-wiki storage files in the vault
+  ledger check                 verify ledger syntax, dates, and duplicate IDs
+  ledger sum [YYYY-MM]         total ledger amounts by currency and category
+  ledger import [--dry-run]    copy receipts into storage
+  completion bash|zsh|fish     print a shell completion script (e.g. source <(lw completion bash))
+  version                      print the build version and exit
 
 flags:
   --version    print the version and exit
@@ -241,7 +261,7 @@ are the same flag). Exit codes: `0` success, `1` failure, `2` usage error.
 |---|---|---|
 | `init` | `--schema <domain>`, `--force` | Scaffolds the full vault layout. Without `--schema` it asks: domain, tags, page-type conventions. Refuses a non-empty directory unless `--force`. The result passes `lw lint` with zero errors |
 | `config` | `set <key> <value>`, `--probe` | Prints the resolved config; `set` writes `~/.config/lw/config.toml`; `--probe` checks the provider is reachable and that tool calling actually works. The API key is printed only as `env:NAME (set)` / `(missing)` |
-| `ingest` | `-kind article\|paper\|transcript`, `-recompile`, `-dry-run`, `-prepare`, `-agent <name>` | One or more URLs or local paths. Extracts every source *before* opening a changeset, so a bad URL fails the whole command with nothing created. `-prepare` does the part that needs no model — extract, dedupe, limits, stage the raws — and prints a curator brief for an external agent, which curates through `lw tool`; it builds no agent and reads no API key. `-agent` names that agent (default `agy`) and needs `-prepare`, which cannot be combined with `-dry-run` |
+| `ingest` | `-kind article\|paper\|transcript`, `-recompile`, `-dry-run`, `-prepare`, `-agent <name>`, `--note <id>`, `--attach`, `--instruction <text>` | One or more URLs, local paths, or directories. Extracts every source *before* opening a changeset, so a bad URL fails the whole command with nothing created. `-prepare` does the part that needs no model — extract, dedupe, limits, stage the raws — and prints a curator brief for an external agent, which curates through `lw tool`; it builds no agent and reads no API key. `-agent` names that agent (default `agy`) and needs `-prepare`, which cannot be combined with `-dry-run`. `--note` ingests notes from `notes/` |
 | `tool` | (positional) `<name> [<json>]`, `-from <file\|->`, `-list` | One tool call of an `lw ingest --prepare` changeset, for the agent that prepare briefed: the tools of [docs/tools.md](docs/tools.md) except `stage.open` and `web.search`. `-list` prints their JSON schemas and `-brief` the curator brief again. Output is the tool's text; exit `1` when it refused, `2` for a usage mistake or a changeset `--prepare` did not open. Calls serialize on a lock, so they may run in parallel |
 | `status` | — | The open changeset, if any |
 | `diff` | `-op <id>`, `-stat`, `-render` | The projected diff of the buffer — what commit would write. `lw diff --render [--op <id>]` renders each changed page as it will read after commit, as plain text when stdout is not a terminal; it cannot be combined with `--stat` |
@@ -249,6 +269,7 @@ are the same flag). Exit codes: `0` success, `1` failure, `2` usage error.
 | `log` | `-rejected`, `-agent`, `-limit <n>`, `-page <path>`, `-since <rfc3339\|YYYY-MM-DD>` | The journal, including what you rejected |
 | `digest` | `-since <7d\|DATE>`, `-until <DATE>`, `-format <md\|html>`, `-o <file>` | What the wiki learned in a window: new/updated pages with their gist, sources |
 | `session` | `list`: `-json`; `show`: `<id>`, `-plain`, `-json`, `-thinking` | Reads the transcript every agent conversation leaves in the vault — see [Transcripts](#transcripts) below. `list` prints one row per session, newest first. `show` prints one back: the question, every tool call with its full arguments and result, and each answer as the TUI rendered it — the thinking folded to one line unless `--thinking`. With no id it shows the open session; a short prefix works. Read-only, and needs no provider |
+| `trace` | `-n <N>`; `show`: `<ref>`, `-body`, `-json`, `-thinking` | List agent turn traces (-n N, default 20); `trace show <ref>` inspects one turn's exact request bytes, stream, timings, and usage |
 | `revert` | (positional) `<commit-id>` | Opens the inverse ops as a *new* changeset — a rollback is reviewed like anything else |
 | `query` | (positional) `"…"` | One-shot answer with citations; uses an ephemeral in-process session and never touches a changeset |
 | `search` | `-type <T>`, `-tag <t>`, `-n <N>`, `-json`, (positional) `<words…>` | Word-search committed pages (no LLM, no key); exit 1 when nothing matches |
@@ -262,7 +283,10 @@ are the same flag). Exit codes: `0` success, `1` failure, `2` usage error.
 | `sync` | `status`, `init <remote>`, `clone <remote> <dir>`, `--take-remote` | Pull then push the vault through its [sync] remotes over SSH |
 | `hub` | `serve`, `status`, `devices`, `approve <name>`, `revoke <name>`, `install --print` | Built-in phone sync hub over Tailscale |
 | `tui` | — | The TUI; also the default with no command |
+| `storage` | `add`, `list`, `show`, `get`, `rm` | Manage non-wiki storage files in the vault; bytes travel beside git via `<remote>.storage/objects/` |
+| `ledger` | `check`, `sum [YYYY-MM]`, `import [--dry-run]` | Validate ledger syntax and duplicate IDs, sum expense amounts by currency/category, or copy receipts into storage |
 | `completion` | `bash\|zsh\|fish` | Print a shell completion script (e.g. `source <(lw completion bash)`) |
+| `version` | — | Print the build version and exit |
 
 ## The TUI
 
@@ -290,6 +314,7 @@ still quits.
 | `pgup`/`pgdn`, `ctrl+u`/`ctrl+d`, `home`/`end` | Review, Browse, Ask | scroll the content panel — Review's detail, Browse's preview, Ask's transcript — a page, half a page, or to its top / bottom |
 | mouse wheel | Review, Browse, Ask | scroll the panel under the pointer; over Review's Ops list or Browse's Pages tree it moves the cursor |
 | `y` / `n` | Review | accept (undrop) / drop the selected hunk and advance |
+| `d` / `u` | Review | drop op (and dependents, two-press) / restore op (and prerequisites) |
 | `p` | Review | toggle the detail panel between the diff and a preview of the page as it will read after commit |
 | `A` | Review | accept every remaining hunk; refused unless lint is clean |
 | `X` | Review | reject the whole changeset |
@@ -464,9 +489,9 @@ Stated plainly, because a tool asking for this much trust should not oversell.
   and because every post-image is already in the content-addressed store the
   commit is **rolled forward** from `objects/` rather than repaired by hand.
   See [docs/changesets.md](docs/changesets.md#recovery--and-the-honest-boundary).
-- **Dependencies.** lw depends on **14 direct Go modules** (39 including
+- **Dependencies.** lw depends on **16 direct Go modules** (40 including
   transitive ones); [NOTICE](NOTICE) names every one with its licence. Two
-  of the fourteen became direct with the colour work rather than being
+  of the sixteen became direct with the colour work rather than being
   added: `github.com/alecthomas/chroma/v2`, which syntax-highlights code in
   rendered markdown, and `github.com/charmbracelet/colorprofile`, which
   resolves the terminal's colour profile. Both already arrived through
