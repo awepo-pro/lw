@@ -11,8 +11,9 @@ For each note it reports what `lw ingest` will see, using the same rules lw's ma
              FOLDER and copies only .png .jpg .jpeg .gif .svg .webp into raw/assets/. Anything else
              (not found there, other extension) stays as dead text in the immutable raw file.
 
-It never changes a file. It prints a verdict per note and the exact `mv -n` commands that would put a
-misplaced image beside the note that embeds it.
+It never changes a file. It prints a verdict per note, the exact `mv -n` commands that would put a
+misplaced image beside the note that embeds it, and a `FIX  title: <file name>` line when lw would name
+the note after a section heading (the agent adds that frontmatter line itself; SKILL.md Step 3).
 
 usage: python3 -I notes_preflight.py <vault> [<note.md> ...]
        (no notes given: every .md directly in <vault>/notes/ and at the vault root, minus lw's own files)
@@ -178,8 +179,13 @@ def main(argv):
         # (YYYYMMDD-HHMMSS-<slug>.md) carry their real title in the first heading.
         if why == "first '# ' heading" and title != stem and not LW_QUICK_NOTE.match(stem):
             where = "first line" if first_content_line(body).startswith("# ") else "a mid-note heading"
-            problems.append(f"ASK  title will be {title!r} ({where}), not the file name {stem!r}; "
-                            f"the raw path and every asset name follow it")
+            has_fm = text.startswith("---\n") or text.startswith("---\r\n")
+            if has_fm and not split_frontmatter(text)[2]:
+                problems.append(f"ASK  title will be {title!r} ({where}), not the file name {stem!r}, and the "
+                                f"frontmatter is never closed, so a `title:` line would be ignored")
+            else:
+                how = "insert after the first '---'" if has_fm else "prepend a new ---/title/--- block"
+                moves.append(f"title: {stem}   ({how}; lw would otherwise use {title!r} from {where})")
         words = word_count(body)
         if words < STUB_WORDS:
             problems.append(f"ASK  stub: {words} words; ingest only if the user named this note")

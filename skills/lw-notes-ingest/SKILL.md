@@ -37,7 +37,7 @@ lw's extractor has two silent traps that this skill exists to catch:
    is a `lw tool stage.*` call.
 2. **The only file changes you may make are:** `mv -n` of an image into the folder of the note that embeds it (the
    exact commands the preflight prints as `FIX`), `mv -n` of a root note into `notes/` (as in the `lw-notes-sync`
-   skill's Step 2a), and, **only after the user agrees**, adding one `title:` line to a note's frontmatter. Never fix
+   skill's Step 2a), and adding the one `title:` line the preflight prints as `FIX  title: …`. Never fix
    typos, rename files, rewrite links or delete anything.
 3. **Never ingest a note the preflight marks `ASK` or `FIX`.** Fix it or get the user's decision first. A bad ingest
    cannot be repaired by re-ingesting.
@@ -106,13 +106,15 @@ python3 -I SKILL_DIR/notes_preflight.py V "V/notes/<note 1>.md" "V/notes/<note 2
 |---|---|---|
 | `READY` | every local embed resolves from the note's folder to a supported image, the title is right | ingest it |
 | `FIX  mv -n …` | an image is elsewhere in the vault, unique by name, and only notes in this folder embed it | run that exact `mv -n` line, then rerun the preflight |
-| `ASK  title will be …` | lw would name the raw file and its assets after a section heading | ask the user (once, for all such notes): add `title: <file name>` to the frontmatter? |
+| `FIX  title: <file name>` | lw would name the raw file and its assets after a section heading | add that `title:` line yourself (below), without asking, then rerun the preflight |
+| `ASK  title will be … never closed` | the note opens a `---` frontmatter it never closes, so lw ignores any `title:` in it | report it; skip the note |
 | `ASK  stub: N words` | a near-empty note (`Testing`, `dlsite`) | skip it unless the user named it; a stub makes no wiki page worth reviewing |
 | `ASK  … not on this PC` | the image is still on the device that pasted it | skip the note until it syncs (`lw sync`, or the `lw-notes-sync` skill on that device) |
 | `ASK  … .heic` (etc.) | lw does not copy that format | ask: the user converts it to PNG/JPG in place, or accepts losing that image |
 | `ASK  … several folders` / `copies` / path embed / non-image | moving would break another note, or lw cannot resolve it | report it; skip the note |
 
-**Adding the title, after the user agrees.** If the note starts with a `---` frontmatter block, insert
+**Adding the title (no need to ask).** The file name is the title in Obsidian, so this restores what the user
+already sees. If the note starts with a `---` frontmatter block, insert
 `title: <file name without .md>` as the line right after the first `---`. If it has no frontmatter, prepend:
 
 ```
@@ -121,9 +123,9 @@ title: <file name without .md>
 ---
 ```
 
-Change nothing else. Then rerun the preflight: the line must read `title='<file name>' (frontmatter)`. (Tell the user
-this edits the note; if the phone edits the same note before the next `lw sync`, that note can come back as a sync
-conflict.)
+Change nothing else. Then rerun the preflight: the line must read `title='<file name>' (frontmatter)`. List every
+title you added in the report (Step 5): it is an edit to the user's note, and if the phone edits the same note before
+the next `lw sync`, that note can come back as a sync conflict.
 
 Do not continue until every note you are about to ingest is `READY`.
 
