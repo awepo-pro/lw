@@ -26,8 +26,8 @@ Follow this procedure exactly.
 
 ## Rules you must not break
 
-1. **Never ingest.** No `lw ingest`, no `lw tool`. If the user wants a note compiled, that is the `lw-ingest` skill,
-   on their say-so, later.
+1. **Never ingest.** No `lw ingest`, no `lw tool`. If the user wants a note compiled, that is the `lw-notes-ingest`
+   skill, on their say-so, later.
 2. **Never change a file's text or name.** No typo fixes, no frontmatter, no renames, no link rewrites. You only
    *move* files, keeping their names, and only as Step 2 allows. Every move uses `mv -n` (never overwrite).
 3. **Never touch `wiki/`, `raw/`, `index.md`, `log.md`, `SCHEMA.md`, `curator-memory.md`, `.llmwiki/`, `storage/`, or

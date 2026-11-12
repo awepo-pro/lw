@@ -52,6 +52,9 @@ LW ingest --prepare --agent <you>:<model> <source>...
 - If the user gave extra wording beyond the source ("only chapter 3", "tag it cuda", "in Chinese"), pass it VERBATIM with
   `--instruction "<their words>"` (or `--instruction-file <path>` for a long one; needs lw v2.60.0+). Never paraphrase it away or
   drop it; it steers what to cover, and the Curator rules in the brief still win.
+- Notes the user wrote by hand in Obsidian (pasted images, `![[…]]` embeds, file name = title): use the
+  `lw-notes-ingest` skill instead (next to this one). It runs a preflight first; skipping it can leave dead image
+  embeds in a raw file that can never be fixed.
 - "Ingest my waiting notes": `LW note list --pending` prints only the notes no committed raw has been ingested from (needs lw v2.61.0+);
   ingest each with `--note <id>` as below (one `--prepare` call may carry several `--note` flags). `no pending notes` means there is nothing to do.
 - A quick note from `lw note list` (needs lw v2.58.0+): ingest it by its id, from any directory, with
