@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "currency": "MOP",
+  "salary": 16000,
+  "default_tag": "daily",
+  "large_item_threshold": 500,
+  "buckets": [
+    {
+      "id": "needs",
+      "name": "Needs",
+      "desc": "Daily necessities, food, transport and family money (家用).",
+      "kind": "spend",
+      "budget": 6000,
+      "tags": [
+        {"tag": "家用", "label": "Family money (家用)", "desc": "Fixed monthly money to family. Written as a month line, not a day item.", "fixed": true},
+        {"tag": "daily", "label": "Daily food & necessities", "desc": "Meals, drinks, snacks, groceries, small everyday items. Any item with no tag lands here.", "budget": 1500},
+        {"tag": "transport", "label": "Transport", "desc": "Bus, taxi, fuel, parking."},
+        {"tag": "bill", "label": "Bills", "desc": "Phone, internet, utilities, subscriptions you need."},
+        {"tag": "health", "label": "Health", "desc": "Doctor, medicine, dental."}
+      ]
+    },
+    {
+      "id": "growth",
+      "name": "Growth & wants",
+      "desc": "Courses, wants and exploring: money spent on yourself.",
+      "kind": "spend",
+      "budget": 3000,
+      "tags": [
+        {"tag": "course", "label": "Courses & learning", "desc": "Courses, books, certifications, learning tools."},
+        {"tag": "explore", "label": "Explore", "desc": "Trying something new: workshops, side-project costs, experiments."},
+        {"tag": "gadget", "label": "Gadgets", "desc": "Devices, hardware, peripherals."},
+        {"tag": "travel", "label": "Travel", "desc": "Trips, hotels, flights."},
+        {"tag": "social", "label": "Social", "desc": "Meals out with others, gifts, gatherings."},
+        {"tag": "fun", "label": "Fun", "desc": "Games, movies, hobbies, treats for yourself."}
+      ]
+    },
+    {
+      "id": "risk",
+      "name": "High-risk investing",
+      "desc": "Money moved into stocks and other high-risk bets.",
+      "kind": "invest",
+      "budget": 3000,
+      "tags": [
+        {"tag": "stock", "label": "Stocks", "desc": "Money moved into the brokerage account or other high-risk bets."}
+      ]
+    },
+    {
+      "id": "safe",
+      "name": "Saving & safe investing",
+      "desc": "What remains: emergency money and safe investments that beat inflation.",
+      "kind": "save",
+      "budget": 4000,
+      "residual": true,
+      "tags": [
+        {"tag": "saving", "label": "Saving", "desc": "Money moved into savings, time deposits or safe funds."}
+      ]
+    }
+  ],
+  "theory": {
+    "barbell_risk_share_of_invested": [0.10, 0.15],
+    "annual_rates": {"safe": 0.03, "index": 0.06, "risk": 0.0},
+    "notes": [
+      "Taleb's barbell: 85-90% of invested money very safe, 10-15% very risky. The share is of invested money, not of salary.",
+      "50/30/20 budgeting splits income; the barbell splits savings. They do not clash.",
+      "Index investing (Bogle) disagrees with the barbell: it says the diversified middle is the best trade-off.",
+      "A course that leads to a raise is an explore bet with more upside than most stock picks."
+    ]
+  }
+}
