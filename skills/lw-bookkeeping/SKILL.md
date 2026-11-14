@@ -130,3 +130,6 @@ Provide a short summary:
 - **Lines from photos**: state every line recorded from a receipt photo so the user can check it.
 - **Left waiting**: any notes that could not be parsed (e.g. illegible receipt, unreadable handwriting) and why.
 - **Summary**: present the output from `lw ledger report`.
+
+If the user wants a review of the week or month (budget against actual, where the money went, an interactive
+page), that is the `lw-finance-review` skill, not this one.

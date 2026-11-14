@@ -140,6 +140,37 @@ by category:
 average per recorded day 58.83
 ```
 
+## The review page
+
+`lw ledger report` prints one month as text. For a page that shows where the money went, use the
+`lw-finance-review` agent skill (in `skills/`, installed by `sh skills/install.sh`). Ask your agent
+"review my spending" or "weekly review". lw does not build this page itself and no model adds the numbers: the
+skill runs a script.
+
+The page needs two files in the vault:
+
+- `bookkeeping.md`, with the day lines that `lw ledger collect` wrote.
+- `ledger/plan.json`: your plan. It holds the salary, the buckets (for example Needs, Growth & wants, High-risk
+  investing, Saving), each bucket's monthly budget and the tags that belong to it. The skill writes a default plan
+  the first time; the numbers are yours to edit.
+
+The script runs `lw ledger check`, then compares every category total with `lw ledger sum`. If a total differs,
+it writes nothing and says which one. Otherwise it writes `ledger/reviews/<period>.html`, for example
+`2026-11.html` or `2026-W46.html`. The page is one file with no network requests, so it opens offline.
+
+From top to bottom the page shows: four key figures, the key findings, a flow diagram from income to buckets to
+tags, the budget against actual for each bucket and tag, the spending pace with the biggest items, every
+transaction, and a month by month chart. Selecting a block, a row, a day or an item filters the transactions to it.
+The page can switch between any month and any week in the ledger.
+
+The page differs from `lw ledger report` in two ways:
+
+- Money moved to saving or investing (`#saving`, `#stock`) is not counted as spending on the page. lw's `spent`
+  line counts it.
+- Budgets come from `ledger/plan.json`, one for each bucket. The `budget =` line in `bookkeeping.md` is not used.
+
+The rules for writing expenses so that the page stays correct are in `skills/lw-finance-review/RULES.md`.
+
 ## Where things end up
 
 - Day notes are moved to `ledger/YYYY/MM/YYYY-MM-DD.md`.
