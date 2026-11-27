@@ -114,7 +114,7 @@ func appendOrientOpenChangeset(b *strings.Builder, d Deps, cs *stage.Changeset) 
 	seen := make(map[string]bool)
 	for _, op := range live {
 		p := op.Path
-		if op.Kind == stage.OpRenamePage || op.Kind == stage.OpMergePages {
+		if op.Kind == stage.OpRenamePage || op.Kind == stage.OpMergePages || op.Kind == stage.OpMoveRaw {
 			if op.To != "" {
 				p = op.To
 			}

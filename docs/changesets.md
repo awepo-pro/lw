@@ -67,11 +67,21 @@ from the moment the changeset is opened**, not just at commit.
 }
 ```
 
-Eight op kinds: `ingest_source`, `create_page`, `patch_page`, `rename_page`,
-`merge_pages`, `split_page`, `add_link`, `retract`. Each carries its rationale
+Nine op kinds: `ingest_source`, `create_page`, `patch_page`, `rename_page`,
+`merge_pages`, `split_page`, `add_link`, `retract`, `move_raw`. Each carries its rationale
 and its provenance back into `raw/`; a `patch_page` carries `before`/`after`
 hashes and per-hunk detail, and a `rename_page` carries the full backlink
 cascade so every rewrite is reviewed on its own.
+
+`move_raw` (staged by `lw raw mv <raw/x.md> <raw/dir/>`) relocates a committed raw
+source filed in the wrong folder, e.g. a chat export ingested as a note. The text
+moves byte for byte (its sha256, so dedupe and `src-integrity`, are unchanged);
+its original (`x.md.orig`, `x.pdf`) moves beside it with the one `original:` line
+that names it; and a cascade of `patch_page` ops rewrites every `^[raw/...]`,
+link and `sources:` entry in the wiki that names the old path. The old file goes
+to `tombstones/` like a renamed page. `log.md` and other raw sources are history
+and are not rewritten. `lw revert` does not invert a move (raw files are skipped,
+so its changeset fails lint); move it back with `lw raw mv` instead.
 
 Ops move through states: `proposed` → `accepted` | `dropped` | `rejected`, and
 go `stale` when the file they were proposed against has changed on disk since

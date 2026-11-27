@@ -107,7 +107,7 @@ TUI.
 
 `lw ingest`, `lw query` and `lw lint --fix` need a configured provider with a
 resolvable API key. **Every other verb works offline with no LLM at all** —
-`lw diff`, `lw commit`, `lw log`, `lw revert`, `lw lint`, `lw status`,
+`lw diff`, `lw commit`, `lw log`, `lw revert`, `lw raw mv`, `lw lint`, `lw status`,
 `lw doctor`, `lw note` and `lw mcp` are pure Go over the vault — and so are
 `lw ingest --prepare` and `lw tool`, which let an agent of your own curate an
 ingest (below).

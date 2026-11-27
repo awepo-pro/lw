@@ -553,10 +553,10 @@ func TestC9(t *testing.T) {
 	}
 }
 
-// TestC10: the vault format is unchanged (FormatVersion 4, TestFormatFingerprint untouched); make check green.
+// TestC10: the vault format pin (FormatVersion 5 since move_raw); make check green.
 func TestC10(t *testing.T) {
-	if stage.FormatVersion != 4 {
-		t.Fatalf("stage.FormatVersion = %d, want 4", stage.FormatVersion)
+	if stage.FormatVersion != 5 {
+		t.Fatalf("stage.FormatVersion = %d, want 5", stage.FormatVersion)
 	}
 }
 

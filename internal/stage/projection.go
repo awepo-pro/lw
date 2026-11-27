@@ -194,6 +194,16 @@ func (e *Engine) applyOp(tree map[string][]byte, atts map[string]string, op Op) 
 		if p, ok := e.vault.Page(op.From); ok {
 			tree[op.To] = p.Serialize()
 		}
+	case OpMoveRaw:
+		b, err := e.postImage(op)
+		if err != nil {
+			return err
+		}
+		delete(tree, op.From)
+		tree[op.To] = b
+		if op.OriginalPath != "" && op.Original != "" {
+			atts[op.OriginalPath] = op.Original
+		}
 	case OpRetract:
 		if page, ok := e.vault.Page(op.Path); ok {
 			tree[op.Path] = retractTombstone(page, op.Rationale, e.now().UTC().Format("2006-01-02"))

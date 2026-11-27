@@ -202,6 +202,9 @@ func refreshOp(op *Op, v, chainV *vault.Vault) {
 		}
 	case OpRenamePage:
 		stale = sourcesChanged(v, []string{op.From}, op.SourceSHAs)
+	case OpMoveRaw:
+		stale = sourcesChanged(v, []string{op.From}, op.SourceSHAs) || v.Exists(op.To) ||
+			(op.OriginalPath != "" && v.Exists(op.OriginalPath))
 	case OpMergePages:
 		stale = sourcesChanged(v, op.Sources, op.SourceSHAs)
 	case OpSplitPage:

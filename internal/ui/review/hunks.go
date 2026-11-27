@@ -157,7 +157,7 @@ func flattenLiveCascade(cascade []stage.Op) []stage.Op {
 // are From/To rather than Path.
 func opDisplayPath(op stage.Op) string {
 	switch op.Kind {
-	case stage.OpRenamePage:
+	case stage.OpRenamePage, stage.OpMoveRaw:
 		return op.From + " -> " + op.To
 	case stage.OpMergePages:
 		return strings.Join(op.Sources, ", ") + " -> " + op.To

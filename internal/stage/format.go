@@ -19,12 +19,14 @@ import (
 	"syscall"
 )
 
-// FormatVersion is the on-disk shape this lw reads and writes. It is 4 (074: the
-// managed .gitignore gained /ledger/receipts/; no on-disk shape moved, the bump
-// makes an older lw refuse a vault it would un-ignore). A change to anything the
+// FormatVersion is the on-disk shape this lw reads and writes. It is 5 (move_raw:
+// a changeset may carry the new op kind, which an older lw would neither
+// validate nor commit; nothing already on disk changes, so the migration from 4
+// is the stamp alone). 4 was 074 (the managed .gitignore gained
+// /ledger/receipts/). A change to anything the
 // fingerprint test records means bumping this, adding a migration, and
 // regenerating testdata/format-fingerprint.txt — in that order.
-const FormatVersion = 4
+const FormatVersion = 5
 
 // formatFileName is the file inside .llmwiki/ that records a vault's format.
 // While FormatVersion is 1 lw writes none: a missing file means format 1, so

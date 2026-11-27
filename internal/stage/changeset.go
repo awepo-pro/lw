@@ -21,6 +21,7 @@ const (
 	OpSplitPage    OpKind = "split_page"
 	OpAddLink      OpKind = "add_link"
 	OpRetract      OpKind = "retract"
+	OpMoveRaw      OpKind = "move_raw" // relocate a committed raw source (move_raw.go)
 )
 
 // OpState is where an Op currently stands in review.

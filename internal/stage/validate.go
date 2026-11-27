@@ -121,8 +121,8 @@ func validateOpForAppend(op Op, v, committed *vault.Vault, s *vault.Schema) erro
 	// 034's new-cite refusal. Confirmed by probe before this guard existed
 	// (a create_page carrying ^[raw/nope.md p.9] in a cascade sub-op
 	// appended cleanly and its sub-op content was CAS-stored).
-	if len(op.Cascade) > 0 && op.Kind != OpRenamePage && op.Kind != OpMergePages {
-		return fmt.Errorf("%w: %s: cascade is not accepted; only rename_page and merge_pages carry one, and Append builds it itself", ErrValidation, op.Kind)
+	if len(op.Cascade) > 0 && op.Kind != OpRenamePage && op.Kind != OpMergePages && op.Kind != OpMoveRaw {
+		return fmt.Errorf("%w: %s: cascade is not accepted; only rename_page, merge_pages and move_raw carry one, and Append builds it itself", ErrValidation, op.Kind)
 	}
 	if len(op.Assets) > 0 && op.Kind != OpIngestSource {
 		return fmt.Errorf("%w: %s: assets are only allowed on ingest_source", ErrValidation, op.Kind)
@@ -176,6 +176,8 @@ func validateOpForAppend(op Op, v, committed *vault.Vault, s *vault.Schema) erro
 		return validateAddLink(op, v)
 	case OpRetract:
 		return validateRetract(op, v)
+	case OpMoveRaw:
+		return validateMoveRaw(op, v)
 	default:
 		return fmt.Errorf("%w: op kind %q is not one of the taxonomy's eight kinds", ErrValidation, op.Kind)
 	}

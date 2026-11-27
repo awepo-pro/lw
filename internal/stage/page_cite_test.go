@@ -363,7 +363,7 @@ func TestAppendRefusesCallerSuppliedCascade(t *testing.T) {
 	if !errors.Is(err, ErrValidation) {
 		t.Fatalf("Append error %v does not wrap ErrValidation", err)
 	}
-	if want := "stage: op failed validation: create_page: cascade is not accepted; only rename_page and merge_pages carry one, and Append builds it itself"; err.Error() != want {
+	if want := "stage: op failed validation: create_page: cascade is not accepted; only rename_page, merge_pages and move_raw carry one, and Append builds it itself"; err.Error() != want {
 		t.Errorf("refusal =\n\t%q\nwant\n\t%q", err.Error(), want)
 	}
 }

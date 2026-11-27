@@ -52,6 +52,7 @@ var verbs = []verb{
 	{"tui", cmdTUI},
 	{"stage", cmdStage},
 	{"storage", cmdStorage},
+	{"raw", cmdRaw},
 	{"ledger", cmdLedger},
 	{"completion", cmdCompletion},
 	{"version", cmdVersion},
@@ -200,6 +201,8 @@ commands:
                                print one session's transcript
   trace [-n N]                 list agent turn traces; trace show <ref> inspects one
   revert <commit-id>           open a reverse changeset for review
+  raw mv <raw/x.md> <raw/dir/> move a raw source (and its original) to another raw/ folder for review,
+                               rewriting the wiki citations to it
   query "..."                  ask the curator agent a question
   query --prepare "..."        print a brief for an external agent to answer the question
                                (no LLM, no key); the agent calls lw tool --ask

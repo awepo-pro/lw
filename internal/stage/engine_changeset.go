@@ -378,7 +378,7 @@ func (e *Engine) storeOpContent(op *Op) error {
 		}
 		op.Content = nil
 	}
-	if op.Kind == OpIngestSource && op.OriginalContent != nil {
+	if (op.Kind == OpIngestSource || op.Kind == OpMoveRaw) && op.OriginalContent != nil {
 		sha, err := e.store.Put(op.OriginalContent)
 		if err != nil {
 			return fmt.Errorf("stage: store op original: %w", err)
@@ -413,7 +413,7 @@ func (e *Engine) storeOpContent(op *Op) error {
 func (e *Engine) captureSourceSHAs(op *Op) error {
 	var sources []string
 	switch op.Kind {
-	case OpRenamePage:
+	case OpRenamePage, OpMoveRaw:
 		sources = []string{op.From}
 	case OpMergePages:
 		sources = append([]string(nil), op.Sources...)
@@ -571,6 +571,28 @@ func (e *Engine) Append(op Op) (string, error) {
 			return "", fmt.Errorf("stage: append: %w", err)
 		}
 		op.Cascade = cascade
+	case OpMoveRaw:
+		// Like rename_page: the source must be committed and untouched by
+		// any live op, and the move is built from the working tree, since
+		// Commit moves the committed file.
+		if op.From == "" || !e.vault.Exists(op.From) {
+			return "", fmt.Errorf("%w: move_raw: source %s does not exist in the working tree; commit the op that produces it first", ErrValidation, op.From)
+		}
+		for _, l := range c.Live() {
+			if hit, ok := liveContentOpFor([]Op{l}, op.From); ok {
+				return "", fmt.Errorf("%w: move_raw: source %s has a live content op in this changeset (%s, %s); commit the changeset first", ErrValidation, op.From, hit.ID, hit.Kind)
+			}
+			if l.Kind == OpMoveRaw && (l.From == op.From || l.To == op.To) {
+				return "", fmt.Errorf("%w: move_raw: %s already has a staged move in this changeset (%s)", ErrValidation, op.From, l.ID)
+			}
+		}
+		var err error
+		if cv, err = e.cascadeBase(c.Live()); err != nil {
+			return "", fmt.Errorf("stage: append: %w", err)
+		}
+		if err := prepareMoveRaw(&op, e.vault, cv); err != nil {
+			return "", fmt.Errorf("stage: append: %w", err)
+		}
 	case OpCreatePage, OpPatchPage:
 		// Root-file patches are the exception (020 T-A): rootfile
 		// validation reads v.Root() — checkRootFileOneWriter walks the

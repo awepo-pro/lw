@@ -555,6 +555,26 @@ func (e *Engine) planOp(m *commitMaterialization, op Op, retractedDate string) e
 		m.moves[op.From] = content
 		m.writes[op.To] = content
 
+	case OpMoveRaw:
+		content, ok := canonicalContent(e.vault, op.From)
+		if !ok {
+			return fmt.Errorf("commit: move_raw: source %s is no longer readable", op.From)
+		}
+		b, err := e.postImage(op)
+		if err != nil {
+			return fmt.Errorf("commit %s: %w", op.ID, err)
+		}
+		if old := oldOriginalPath(e.vault, op.From); old != "" && op.OriginalPath != "" {
+			orig, err := e.store.Get(op.Original)
+			if err != nil {
+				return fmt.Errorf("commit %s: original %s: %w", op.ID, op.OriginalPath, err)
+			}
+			m.moves[old] = orig
+			m.writes[op.OriginalPath] = orig
+		}
+		m.moves[op.From] = content
+		m.writes[op.To] = b
+
 	case OpMergePages:
 		for _, src := range op.Sources {
 			content, ok := canonicalContent(e.vault, src)
@@ -1146,6 +1166,14 @@ func collectRecoverTargets(targets map[string]recoverTarget, op Op, dateStr stri
 		if len(op.SourceSHAs) > 0 {
 			targets[op.From] = recoverTarget{move: true, sha: op.SourceSHAs[0]}
 			targets[op.To] = recoverTarget{sha: op.SourceSHAs[0]}
+		}
+	case OpMoveRaw:
+		if len(op.SourceSHAs) > 0 {
+			targets[op.From] = recoverTarget{move: true, sha: op.SourceSHAs[0]}
+		}
+		targets[op.To] = recoverTarget{sha: op.After}
+		if op.OriginalPath != "" {
+			targets[op.OriginalPath] = recoverTarget{sha: op.Original}
 		}
 	case OpMergePages:
 		for i, src := range op.Sources {

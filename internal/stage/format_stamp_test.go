@@ -17,7 +17,7 @@ import (
 )
 
 // TestFormatStamp_MutatingVerbsLeavesStamp verifies that each mutating verb
-// on a vault with NO format file leaves {"version":4}\n behind (072 S1 item 1, 074 S1).
+// on a vault with NO format file leaves {"version":5}\n behind (072 S1 item 1, 074 S1, move_raw).
 func TestFormatStamp_MutatingVerbsLeavesStamp(t *testing.T) {
 	tests := []struct {
 		name  string

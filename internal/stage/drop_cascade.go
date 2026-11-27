@@ -342,7 +342,7 @@ func opWritesPath(op Op, p string) bool {
 	switch op.Kind {
 	case OpCreatePage, OpPatchPage, OpIngestSource:
 		return p == op.Path
-	case OpRenamePage, OpMergePages:
+	case OpRenamePage, OpMergePages, OpMoveRaw:
 		return p == op.To
 	}
 	return false

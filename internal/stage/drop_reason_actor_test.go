@@ -398,8 +398,8 @@ func TestJournalOpDroppedMessage(t *testing.T) {
 // TestFormatVersion069 verifies FormatVersion is at least 3, that OpenEngine refuses
 // a vault whose .llmwiki/format is newer, and opens vaults with format 2 and 3.
 func TestFormatVersion069(t *testing.T) {
-	if FormatVersion != 4 {
-		t.Fatalf("FormatVersion = %d, want 4", FormatVersion)
+	if FormatVersion != 5 {
+		t.Fatalf("FormatVersion = %d, want 5", FormatVersion)
 	}
 
 	t.Run("refuses newer format", func(t *testing.T) {

@@ -261,6 +261,20 @@ func (e *Engine) fileDiffsForOp(op Op) ([]FileDiff, error) {
 			Old: "", New: toContent, Stale: stale,
 		})
 
+	case OpMoveRaw:
+		newContent, err := e.postImage(op)
+		if err != nil {
+			return nil, fmt.Errorf("stage: diff: %s: %w", op.ID, err)
+		}
+		out = append(out, FileDiff{
+			Path: op.From, OpID: op.ID, Kind: op.Kind,
+			Old: e.workingTreeContent(op.From), New: "", Stale: stale,
+		})
+		out = append(out, FileDiff{
+			Path: op.To, OpID: op.ID, Kind: op.Kind,
+			Old: "", New: string(newContent), Stale: stale,
+		})
+
 	case OpMergePages:
 		cascaded := cascadePathSet(op)
 		for _, src := range op.Sources {
@@ -353,7 +367,7 @@ func (e *Engine) workingTreeContent(p string) string {
 // of which top-level op produced it.
 func diffRisk(k OpKind) int {
 	switch k {
-	case OpCreatePage, OpRenamePage, OpMergePages, OpSplitPage:
+	case OpCreatePage, OpRenamePage, OpMergePages, OpSplitPage, OpMoveRaw:
 		return 1
 	case OpPatchPage, OpIngestSource, OpRetract:
 		return 2

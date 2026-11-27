@@ -172,8 +172,8 @@ func TestFormatErrorText(t *testing.T) {
 	if err.Error() != want {
 		t.Errorf("FormatError text = %q, want %q", err.Error(), want)
 	}
-	if FormatVersion != 4 {
-		t.Errorf("FormatVersion = %d; 074 ships format 4", FormatVersion)
+	if FormatVersion != 5 {
+		t.Errorf("FormatVersion = %d; move_raw ships format 5", FormatVersion)
 	}
 }
 

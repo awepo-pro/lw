@@ -2,7 +2,7 @@
 # Changing anything below means a vault written by one lw may be misread by another:
 # bump stage.FormatVersion, add a migration, then
 #   go test ./internal/stage -run TestFormatFingerprint -update
-format-version: 4
+format-version: 5
 
 [types]
 agent.Record: Args(args,string) Carried(carried,bool) Content(content,string) Finish(finish,string) Reasoning(reasoning,string) Result(result,string) Role(role,string) Staged(staged,bool) Tool(tool,string) TS(ts,time) Turn(turn,string)
@@ -18,7 +18,7 @@ stage.revertedPayload: Skipped(skipped,[]string)
 
 [enums]
 stage.EventKind: changeset_joined changeset_opened changeset_rejected commit_begin commit_end hunk_dropped hunk_undropped op_accepted op_dropped op_proposed op_restored reverted
-stage.OpKind: add_link create_page ingest_source merge_pages patch_page rename_page retract split_page
+stage.OpKind: add_link create_page ingest_source merge_pages move_raw patch_page rename_page retract split_page
 stage.OpState: accepted dropped proposed rejected stale
 
 [snapshot tree]

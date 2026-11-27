@@ -96,7 +96,7 @@ func liveStagedTargets(cs *stage.Changeset) map[string]bool {
 			if op.Path != "" {
 				targets[op.Path] = true
 			}
-		case stage.OpRenamePage, stage.OpMergePages:
+		case stage.OpRenamePage, stage.OpMergePages, stage.OpMoveRaw:
 			if op.To != "" {
 				targets[op.To] = true
 			}
