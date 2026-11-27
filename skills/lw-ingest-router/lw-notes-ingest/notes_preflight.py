@@ -11,9 +11,19 @@ For each note it reports what `lw ingest` will see, using the same rules lw's ma
              FOLDER and copies only .png .jpg .jpeg .gif .svg .webp into raw/assets/. Anything else
              (not found there, other extension) stays as dead text in the immutable raw file.
 
-It never changes a file. It prints a verdict per note, the exact `mv -n` commands that would put a
+It never changes a file. It prints a verdict per note, the exact safe_move.py commands that would put a
 misplaced image beside the note that embeds it, and a `FIX  title: <file name>` line when lw would name
-the note after a section heading (the agent adds that frontmatter line itself; SKILL.md Step 3).
+the note after a section heading (the agent adds that frontmatter line itself; GUIDE.md Step 3).
+
+A note that is not directly in <vault>/notes/ (at the vault root, in another vault folder, or outside
+the vault, e.g. a chat export in ~/Downloads) gets the verdict MOVE with the safe_move.py lines that move it,
+and every image it embeds from its own folder, into <vault>/notes/ (GUIDE.md Step 2b). Moving, never
+copying: the vault keeps one copy, and cleanup after ingest (Step 7) finds everything in notes/.
+
+A name already taken in notes/ does not block the move. safe_move.py replaces a file holding the same
+bytes, and gives a different file the first free `<stem>-2<ext>` name. This script plans that name the
+same way: a renamed image gets a `FIX  embed:` line (the moved note must point at the new name), a
+renamed note whose title would come from its file name gets `FIX  title: <original name>`.
 
 usage: python3 -I notes_preflight.py <vault> [<note.md> ...]
        (no notes given: every .md directly in <vault>/notes/ and at the vault root, minus lw's own files)
@@ -22,6 +32,12 @@ import os
 import re
 import sys
 from urllib.parse import unquote
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)  # this guide's own folder only (python3 -I leaves it off sys.path)
+from safe_move import pick_dest  # noqa: E402
+
+MOVE_CMD = "python3 -I " + "'" + os.path.join(HERE, "safe_move.py").replace("'", "'\\''") + "'"
 
 SUPPORTED = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp"}
 IMAGE_LIKE = SUPPORTED | {".heic", ".heif", ".avif", ".bmp", ".tif", ".tiff"}
@@ -142,6 +158,59 @@ def all_embedders(vault, notes_text):
     return users
 
 
+def plan_move(vault, path, body, scan, problems):
+    """(move lines, edit lines, note renamed?) that move a note not directly in notes/, plus the images
+    it embeds from its own folder, into <vault>/notes/. A taken name is planned as safe_move.py will
+    resolve it (same bytes: replaced; different: <stem>-2<ext>). Appends an ASK to problems (and returns
+    nothing) when a move would break a link or an embed, or take an image another file still needs."""
+    src_dir = os.path.dirname(path)
+    name = os.path.basename(path)
+    dst_dir = os.path.join(vault, "notes")
+    inside = not os.path.relpath(path, vault).startswith("..")
+    before = len(problems)
+    note_dst, note_how = pick_dest(path, os.path.join(dst_dir, name))
+    edits = []
+    # Other markdown files that would lose something: notes in the vault, or siblings outside it.
+    others = {p: t for p, t in scan.items() if p != path}
+    if not inside:
+        for f in sorted(os.listdir(src_dir)):
+            p = os.path.join(src_dir, f)
+            if f.endswith(".md") and p != path and os.path.isfile(p):
+                others[p] = open(p, encoding="utf-8", errors="replace").read()
+    enc = name.replace(" ", "%20")
+    for p, t in others.items():
+        if os.path.dirname(p) == src_dir and any(k in t for k in (f"]({name})", f"](./{name})", f"]({enc})")):
+            problems.append(f"ASK  {os.path.basename(p)} links to it by path: moving would break that link")
+    lines = [f"{MOVE_CMD} {q(path)} {q(note_dst)}"]
+    for dest in embeds(body):
+        if is_remote(dest):
+            continue
+        rp = unquote(dest.split("#")[0].split("?")[0])
+        target = os.path.normpath(os.path.join(src_dir, rp))
+        if not os.path.isfile(target):
+            continue  # unresolved embeds are reported by the main loop
+        if "/" in rp:
+            problems.append(f"ASK  {dest!r} is a path embed: moving the note to notes/ would break it")
+            continue
+        img = os.path.basename(rp)
+        sharers = [os.path.basename(p) for p, t in others.items()
+                   if os.path.dirname(p) == src_dir and img in [os.path.basename(unquote(d)) for d in embeds(split_frontmatter(t)[1])]]
+        if sharers:
+            problems.append(f"ASK  {img!r} is also embedded by {', '.join(sorted(sharers))}: moving it would break that")
+            continue
+        img_dst, img_how = pick_dest(target, os.path.join(dst_dir, img))
+        line = f"{MOVE_CMD} {q(target)} {q(img_dst)}"
+        if line not in lines:
+            lines.append(line)
+            if img_how == "renamed":
+                new = os.path.basename(img_dst)
+                edits.append(f"embed: {img} -> {new}   (notes/{img} holds a different image; after the move, change "
+                             f"only this note's embed of {img!r} to {new!r})")
+    if len(problems) != before:
+        return [], [], False
+    return lines, edits, note_how == "renamed"
+
+
 def q(p):
     return "'" + p.replace("'", "'\\''") + "'"
 
@@ -161,7 +230,7 @@ def main(argv):
             scan[p] = open(p, encoding="utf-8", errors="replace").read()
     users = all_embedders(vault, scan)
     by_name = vault_files(vault)
-    totals = {"READY": 0, "FIX": 0, "ASK": 0}
+    totals = {"READY": 0, "MOVE": 0, "FIX": 0, "ASK": 0}
 
     for path in notes:
         text = scan[path]
@@ -172,9 +241,9 @@ def main(argv):
         problems, moves = [], []
 
         inside = not rel.startswith("..")
-        if inside and os.path.dirname(rel) != "notes":
-            problems.append("ASK  inside the vault but not directly in notes/: move it there first "
-                            "(lw-notes-sync Step 2a)")
+        relocate, relocate_edits, renamed = [], [], False
+        if os.path.dirname(rel) != "notes":
+            relocate, relocate_edits, renamed = plan_move(vault, path, body, scan, problems)
         # In Obsidian the file name is the title and "# " lines are sections. Only `lw note` quick notes
         # (YYYYMMDD-HHMMSS-<slug>.md) carry their real title in the first heading.
         if why == "first '# ' heading" and title != stem and not LW_QUICK_NOTE.match(stem):
@@ -186,6 +255,11 @@ def main(argv):
             else:
                 how = "insert after the first '---'" if has_fm else "prepend a new ---/title/--- block"
                 moves.append(f"title: {stem}   ({how}; lw would otherwise use {title!r} from {where})")
+        elif renamed and why == "file name":
+            has_fm = text.startswith("---\n") or text.startswith("---\r\n")
+            how = "insert after the first '---'" if has_fm else "prepend a new ---/title/--- block"
+            moves.append(f"title: {stem}   ({how}, after the move; notes/{stem}.md holds a different note, so this "
+                         f"one gets a -N suffix and would otherwise be titled after it)")
         words = word_count(body)
         if words < STUB_WORDS:
             problems.append(f"ASK  stub: {words} words; ingest only if the user named this note")
@@ -212,7 +286,7 @@ def main(argv):
                 problems.append(f"ASK  {dest!r} is not in the note's folder {os.path.dirname(path)}: "
                                 f"put it there (the note is outside the vault, so this script does not search for it)")
             elif len(found) == 1 and folders <= {os.path.dirname(path)} and "/" not in rp:
-                moves.append(f"mv -n {q(found[0])} {q(os.path.join(os.path.dirname(path), name))}")
+                moves.append(f"{MOVE_CMD} {q(found[0])} {q(pick_dest(found[0], os.path.join(os.path.dirname(path), name))[0])}")
             elif not found:
                 problems.append(f"ASK  {dest!r} is not on this PC (not synced yet?): it would stay dead text in raw")
             elif len(found) > 1:
@@ -225,16 +299,18 @@ def main(argv):
                 problems.append(f"ASK  {dest!r} is embedded by notes in several folders: "
                                 + ", ".join(sorted(os.path.relpath(f, vault) for f in folders)))
 
-        verdict = "ASK" if problems else ("FIX" if moves else "READY")
+        if relocate and not problems:
+            moves = relocate + relocate_edits + moves
+        verdict = "ASK" if problems else ("MOVE" if relocate else ("FIX" if moves else "READY"))
         totals[verdict] += 1
         n_img = sum(1 for d in embeds(body) if not is_remote(d))
         print(f"{verdict:5} {rel}")
         print(f"      id={stem!r}  title={title!r} ({why})  words={words}  local embeds={n_img}")
         for m in moves:
-            print(f"      FIX  {m}")
+            print(f"      {'MOVE' if m in relocate else 'FIX '} {m}")
         for p in problems:
             print(f"      {p}")
-    print(f"\nsummary: READY {totals['READY']}  FIX {totals['FIX']}  ASK {totals['ASK']}")
+    print(f"\nsummary: READY {totals['READY']}  MOVE {totals['MOVE']}  FIX {totals['FIX']}  ASK {totals['ASK']}")
     return 0
 
 

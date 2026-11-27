@@ -192,7 +192,7 @@ there only points you to the real page.
 
 - Lead with the answer, then the evidence: one line per hit with its **path** and **trust level**.
 - If the wiki has nothing but a note does, say exactly that ("not in your wiki; your note `notes/IPsec.md` covers
-  it, unreviewed") and offer to ingest it (the **lw-notes-ingest** skill).
+  it, unreviewed") and offer to ingest it (the **lw-ingest-router** skill; it routes notes to its notes-ingest guide).
 - If nothing anywhere matches, say which stores you searched and which words you tried.
 - If a staged (`cs-...`) result or a `note:` line appeared, say the content is unreviewed (rule 6).
 
@@ -201,8 +201,7 @@ there only points you to the real page.
 | The user wants to | Skill |
 |---|---|
 | A synthesized answer with citations | `lw-ask` |
-| Add a source to the wiki | `lw-ingest` |
-| Ingest hand notes with images | `lw-notes-ingest` |
+| Add a source, ingest hand notes with images, or store an HTML page | `lw-ingest-router` |
 | Tidy and push Obsidian notes | `lw-notes-sync` |
 | Collect day notes, read receipts | `lw-bookkeeping` |
 | A weekly / monthly spending review page | `lw-finance-review` |

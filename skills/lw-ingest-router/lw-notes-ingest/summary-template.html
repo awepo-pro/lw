@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<!--
+  lw-notes-ingest revision summary template.
+
+  How the agent fills it (GUIDE.md Step 8):
+  - Replace every {{PLACEHOLDER}}. HTML-escape all text taken from notes (& < > ").
+  - Copy the block between "repeat: topic" markers once per topic, in reading order.
+    Inside a topic, copy the "repeat: point", "repeat: term", "repeat: qa", "repeat: figure",
+    "repeat: page" and "repeat: source" blocks once per item.
+  - Copy the "repeat: toc" block once per topic too (same TOPIC_ID and TOPIC_TITLE).
+  - A block between "optional: x" markers is deleted whole when it would be empty.
+  - Delete every marker comment in the finished file, and this comment.
+  - Image src: the absolute file:// path of the committed copy, file://V/raw/assets/<name>.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Revision: {{SUMMARY_TITLE}}</title>
+<style>
+  :root {
+    --bg: #faf9f6; --card: #ffffff; --text: #1f1e1c; --muted: #6b6a65; --line: #e4e2dc;
+    --accent: #3c6e71; --accent-bg: #e6f0ef; --code-bg: #f3f2ee; --warn: #8a5a00; --warn-bg: #fbf1dd;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1b1b1a; --card: #242423; --text: #ecebe6; --muted: #a3a29c; --line: #3a3a38;
+      --accent: #7fb7b9; --accent-bg: #233434; --code-bg: #2d2d2b; --warn: #f0c070; --warn-bg: #3a2f1a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 860px; margin: 0 auto; padding: 40px 20px 64px; }
+  header h1 { font-size: 26px; font-weight: 600; margin: 0 0 6px; }
+  .meta { color: var(--muted); font-size: 14px; margin: 0 0 20px; }
+  .meta span + span::before { content: " · "; }
+  nav { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 32px; }
+  nav a { text-decoration: none; color: var(--accent); background: var(--accent-bg);
+          padding: 4px 12px; border-radius: 999px; font-size: 14px; }
+  section.topic { background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+                  padding: 24px 28px; margin: 0 0 24px; }
+  section.topic h2 { font-size: 21px; font-weight: 600; margin: 0 0 4px; }
+  .tldr { margin: 0 0 18px; color: var(--muted); }
+  h3 { font-size: 13px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+       color: var(--muted); margin: 22px 0 8px; }
+  ul.points { margin: 0; padding-left: 20px; }
+  ul.points li { margin: 4px 0; }
+  dl.terms { margin: 0; display: grid; grid-template-columns: minmax(120px, max-content) 1fr; gap: 6px 16px; }
+  dl.terms dt { font-weight: 600; }
+  dl.terms dd { margin: 0; }
+  pre { background: var(--code-bg); border-radius: 8px; padding: 12px 14px; overflow-x: auto;
+        font: 13.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; margin: 0 0 6px; }
+  .cmd-note { color: var(--muted); font-size: 14px; margin: 0 0 12px; }
+  figure { margin: 0 0 14px; }
+  figure img { max-width: 100%; border: 1px solid var(--line); border-radius: 8px; }
+  figcaption { color: var(--muted); font-size: 14px; }
+  details { border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; margin: 0 0 8px; }
+  details summary { cursor: pointer; font-weight: 500; }
+  details p { margin: 8px 0 2px; }
+  .caveat { background: var(--warn-bg); color: var(--warn); border-radius: 8px; padding: 8px 12px;
+            font-size: 14px; margin: 16px 0 0; }
+  .refs { color: var(--muted); font-size: 14px; margin-top: 22px; border-top: 1px solid var(--line); padding-top: 12px; }
+  .refs code { font-size: 13px; }
+  footer { color: var(--muted); font-size: 13px; text-align: center; margin-top: 32px; }
+  @media print {
+    body { background: #fff; color: #000; }
+    nav, footer { display: none; }
+    section.topic { break-inside: avoid; border-color: #ccc; }
+    details { border: none; padding: 0; }
+    details > *:not(summary) { display: block; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>{{SUMMARY_TITLE}}</h1>
+    <p class="meta">
+      <span>{{DATE}}</span>
+      <span>{{NOTE_COUNT}} notes</span>
+      <span>{{TOPIC_COUNT}} topics</span>
+      <span>changeset <code>{{CHANGESET_ID}}</code></span>
+    </p>
+  </header>
+
+  <nav aria-label="Topics">
+    <!-- repeat: toc -->
+    <a href="#{{TOPIC_ID}}">{{TOPIC_TITLE}}</a>
+    <!-- /repeat: toc -->
+  </nav>
+
+  <!-- repeat: topic -->
+  <section class="topic" id="{{TOPIC_ID}}">
+    <h2>{{TOPIC_TITLE}}</h2>
+    <p class="tldr">{{TOPIC_TLDR}}</p>
+
+    <h3>Key points</h3>
+    <ul class="points">
+      <!-- repeat: point -->
+      <li>{{POINT}}</li>
+      <!-- /repeat: point -->
+    </ul>
+
+    <!-- optional: terms -->
+    <h3>Terms</h3>
+    <dl class="terms">
+      <!-- repeat: term -->
+      <dt>{{TERM}}</dt><dd>{{TERM_MEANING}}</dd>
+      <!-- /repeat: term -->
+    </dl>
+    <!-- /optional: terms -->
+
+    <!-- optional: commands -->
+    <h3>Commands and snippets</h3>
+    <!-- repeat: command -->
+    <pre><code>{{COMMAND}}</code></pre>
+    <p class="cmd-note">{{COMMAND_NOTE}}</p>
+    <!-- /repeat: command -->
+    <!-- /optional: commands -->
+
+    <!-- optional: figures -->
+    <h3>Figures</h3>
+    <!-- repeat: figure -->
+    <figure>
+      <img src="{{FIGURE_SRC}}" alt="{{FIGURE_ALT}}" loading="lazy">
+      <figcaption>{{FIGURE_CAPTION}}</figcaption>
+    </figure>
+    <!-- /repeat: figure -->
+    <!-- /optional: figures -->
+
+    <!-- optional: qa -->
+    <h3>Check yourself</h3>
+    <!-- repeat: qa -->
+    <details>
+      <summary>{{QUESTION}}</summary>
+      <p>{{ANSWER}}</p>
+    </details>
+    <!-- /repeat: qa -->
+    <!-- /optional: qa -->
+
+    <!-- optional: caveat -->
+    <p class="caveat">{{CAVEAT}}</p>
+    <!-- /optional: caveat -->
+
+    <div class="refs">
+      Wiki:
+      <!-- repeat: page -->
+      <code>{{WIKI_PAGE_PATH}}</code>
+      <!-- /repeat: page -->
+      <br>From notes:
+      <!-- repeat: source -->
+      <code>{{RAW_NOTE_PATH}}</code>
+      <!-- /repeat: source -->
+    </div>
+  </section>
+  <!-- /repeat: topic -->
+
+  <footer>Generated by lw-notes-ingest from committed changeset {{CHANGESET_ID}}. The wiki pages are the full record; this page is for quick revision.</footer>
+</main>
+</body>
+</html>

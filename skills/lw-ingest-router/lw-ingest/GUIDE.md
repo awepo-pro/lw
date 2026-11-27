@@ -1,11 +1,5 @@
----
-name: lw-ingest
-description: >-
-  Ingest a source (PDF, HTML, markdown, text, URL, or a folder of them) into the user's lw (llmwiki) vault, with YOU as
-  the curator — lw calls no model and needs no API key. Use when the user says "ingest X", "add this paper/article to
-  my wiki/vault", "lw ingest X", "compile X into wiki pages", or "recompile raw/…". You stage reviewable wiki pages
-  through `lw tool`; the human reviews and commits. Works in any agent with a shell (Claude Code, Codex, Antigravity).
----
+> Part of the **lw-ingest-router** skill (`../SKILL.md` decides when this guide applies). Route: an
+> outside source; the user reviews and commits.
 
 # lw-ingest — curate an lw ingest yourself
 
@@ -16,7 +10,9 @@ hunk before anything lands. Follow this procedure exactly.
 ## Rules you must not break
 
 1. **Never write vault files yourself** — no editor, no `cat >`, no `sed -i`, no `mv`/`rm` under the vault. Every
-   change is a `lw tool stage.*` call. You have a shell, but the review gate is a promise you keep.
+   change is a `lw tool stage.*` call. You have a shell, but the review gate is a promise you keep. The one exception
+   is Step 4b: moving the user's own input files into the vault's `.trash/` with `safe_move.py` once the ingest is
+   closed, so an ingested file is never kept twice.
 2. **Never run `lw commit`, `lw sync`, `lw doctor --discard-changeset`, `lw revert`, or `lw config set`.** Committing,
    discarding and configuration belong to the human. If something needs them, say so in your report.
 3. **Read every chunk of every source before you close.** Never shorten a chunk with `head`, `tail`, `cut` or `grep`;
@@ -53,7 +49,7 @@ LW ingest --prepare --agent <you>:<model> <source>...
   `--instruction "<their words>"` (or `--instruction-file <path>` for a long one; needs lw v2.60.0+). Never paraphrase it away or
   drop it; it steers what to cover, and the Curator rules in the brief still win.
 - Notes the user wrote by hand in Obsidian (pasted images, `![[…]]` embeds, file name = title): use the
-  `lw-notes-ingest` skill instead (next to this one). It runs a preflight first; skipping it can leave dead image
+  `lw-notes-ingest` guide instead (`../lw-notes-ingest/GUIDE.md`). It runs a preflight first; skipping it can leave dead image
   embeds in a raw file that can never be fixed.
 - "Ingest my waiting notes": `LW note list --pending` prints only the notes no committed raw has been ingested from (needs lw v2.61.0+);
   ingest each with `--note <id>` as below (one `--prepare` call may carry several `--note` flags). `no pending notes` means there is nothing to do.
@@ -128,10 +124,33 @@ LW tool stage.close
 
 Only ingest tools are offered (no `web.search`, no `stage.open`). Wire names work too (`raw_get` = `raw.get`).
 
+## Step 4b — move the ingested originals out (move, never copy)
+
+Once `stage.close` has succeeded, the raw copy holds the source, so the original file the user named must not stay
+where it was (a download left in `~/Downloads`, for instance). Move each one into the vault's trash:
+
+```bash
+V="$(LW config | sed -n 's/^vault\.path *= *//p' | sed 's/ *([^)]*)$//')"   # or the vault the user named
+python3 -I <lw-ingest-router>/lw-notes-ingest/safe_move.py "<original>" "$V/.trash/lw-ingest/<YYYY-MM-DD>/"
+```
+
+- `<original>` is each path the brief lists as `original source:`, plus each input it reported as
+  `skipped …: already in the vault` (its text is already committed). For a folder input, that is each file it
+  ingested from the folder; leave the folder itself.
+- **Move only local files outside the vault.** Nothing to move for a URL, a `--note` id or `--recompile`. A file
+  inside the vault (`Clippings/`, the root) stays: other notes may link to it; report it.
+- `safe_move.py` replaces an identical file already in the trash folder and gives a different one a `-2` suffix;
+  read its `FINAL` line. A non-zero exit means the file stayed: report it.
+- `.trash/` is git-ignored by lw sync and stays on this PC. If the user later discards the changeset
+  (`lw doctor --discard-changeset`), the original is still there to move back.
+
+Never move before `stage.close` succeeds: an ingest that stops halfway leaves the original where it was.
+
 ## Step 5 — report to the user, then stop
 
 Tell the user, briefly:
 - the changeset id, and what you staged: each new page and each patch, one line each, with why;
+- each original moved in Step 4b (`from -> FINAL path`), and each one left in place and why;
 - anything you could not do (an unreadable chunk, a source you skipped, a check you could not make pass);
 - how to review: `lw tui` → Review → `y`/`n` per hunk → `C` to commit, or `lw diff` then `lw commit -m "…"`;
   the full trail of your calls: `lw session show --plain`; to throw it away: `lw doctor --discard-changeset`.
